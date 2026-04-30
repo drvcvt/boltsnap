@@ -1,0 +1,4 @@
+/target
+**/*.rs.bk
+.omx/
+.DS_Store
