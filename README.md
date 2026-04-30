@@ -13,6 +13,26 @@ Fast Rust screenshot tool for Wayland (wlroots, Hyprland, sway) and X11.
 cargo install --path .
 ```
 
+### NixOS
+
+A `flake.nix` is included. Either:
+
+```sh
+nix run github:drvcvt/boltsnap            # one-shot run
+nix profile install github:drvcvt/boltsnap # install to profile
+nix develop                                # dev shell with cargo + libs ready
+```
+
+Without flakes:
+
+```sh
+nix-shell                                  # uses shell.nix
+cargo build --release
+```
+
+The flake bakes RPATH so the binary finds wayland, libxkbcommon, vulkan-loader,
+libGL, libdrm and the xorg stack from the nix store at runtime.
+
 Runtime helpers:
 
 | Backend | Capture | Region select | Clipboard |
