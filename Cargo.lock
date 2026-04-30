@@ -465,12 +465,14 @@ dependencies = [
 name = "boltsnap"
 version = "0.3.0"
 dependencies = [
+ "arboard",
  "eframe",
  "egui-phosphor",
  "image",
  "libwayshot",
  "serde_json",
  "wl-clipboard-rs",
+ "x11rb",
 ]
 
 [[package]]

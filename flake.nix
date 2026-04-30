@@ -12,14 +12,20 @@
         pkgs = import nixpkgs { inherit system; };
         lib = pkgs.lib;
 
+        # libgbm was split out of mesa in newer nixpkgs; fall back so this
+        # works on both old and new channels.
+        gbm = pkgs.libgbm or pkgs.mesa;
+
         runtimeLibs = with pkgs; [
           # Wayland
           wayland
           libxkbcommon
-          # GPU / wgpu (vulkan-loader is dlopen'd, must be in LD path)
+          # GPU / wgpu (these are dlopen'd, must be reachable at runtime —
+          # RPATH alone is not enough)
           vulkan-loader
           libGL
           libdrm
+          gbm
           # X11 stack (winit links it even on Wayland)
           xorg.libX11
           xorg.libXcursor
@@ -36,13 +42,14 @@
       {
         packages.default = pkgs.rustPlatform.buildRustPackage {
           pname = "boltsnap";
-          version = "0.3.0";
+          version = "0.4.0";
           src = ./.;
           cargoLock.lockFile = ./Cargo.lock;
 
           nativeBuildInputs = with pkgs; [ pkg-config makeWrapper ];
           buildInputs = runtimeLibs;
 
+          # No helper PATH wrapping needed — boltsnap is fully in-process now.
           postFixup = ''
             patchelf --set-rpath "${rpath}" $out/bin/boltsnap
             wrapProgram $out/bin/boltsnap \
