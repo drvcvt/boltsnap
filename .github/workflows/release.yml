@@ -1,0 +1,88 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (e.g. v0.4.0)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  linux-x86_64:
+    name: Linux x86_64 (binary + .deb)
+    runs-on: ubuntu-22.04
+    env:
+      TAG_NAME: ${{ github.event.inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config build-essential \
+            libxkbcommon-dev libxkbcommon-x11-dev \
+            libwayland-dev wayland-protocols \
+            libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+            libgl1-mesa-dev libegl1-mesa-dev \
+            libfontconfig1-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Cargo build (release)
+        run: cargo build --release --locked
+
+      - name: Cargo test
+        run: cargo test --release --locked
+
+      - name: Strip binary
+        run: strip target/release/boltsnap
+
+      - name: Stage binary tarball
+        id: stage
+        run: |
+          set -euo pipefail
+          TAG="${TAG_NAME}"
+          NAME="boltsnap-${TAG}-x86_64-linux"
+          mkdir -p "dist/${NAME}"
+          install -Dm755 target/release/boltsnap "dist/${NAME}/boltsnap"
+          install -Dm644 README.md             "dist/${NAME}/README.md"
+          install -Dm644 LICENSE               "dist/${NAME}/LICENSE"
+          tar -C dist -czvf "dist/${NAME}.tar.gz" "${NAME}"
+          rm -rf "dist/${NAME}"
+          echo "tarball=dist/${NAME}.tar.gz" >> "$GITHUB_OUTPUT"
+
+      - name: Install cargo-deb
+        run: cargo install --locked cargo-deb
+
+      - name: Build .deb
+        run: |
+          set -euo pipefail
+          cargo deb --no-build --output dist/
+          ls -la dist/
+
+      - name: Generate SHA256 sums
+        run: |
+          cd dist
+          sha256sum *.tar.gz *.deb > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Create / update GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG_NAME }}
+          name: boltsnap ${{ env.TAG_NAME }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/*.tar.gz
+            dist/*.deb
+            dist/SHA256SUMS

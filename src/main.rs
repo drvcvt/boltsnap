@@ -198,6 +198,16 @@ fn run() -> DynResult<()> {
                 .ok_or("__serve-clipboard needs a PNG path")?;
             return serve_wayland_clipboard(&path);
         }
+        "__select-overlay" => {
+            // In-process selection overlay: takes a PNG of the screen
+            // already on disk, opens fullscreen, prints "x,y wxh" in image
+            // pixel coords on stdout. Hidden from --help on purpose.
+            let path = args
+                .image
+                .clone()
+                .ok_or("__select-overlay needs a PNG path")?;
+            return run_select_overlay(&path);
+        }
         "edit" => {
             let image = args.image.clone().unwrap_or(last_screenshot_path()?);
             ensure_file(&image)?;
@@ -390,18 +400,9 @@ fn strip_uniform_border(path: &Path) -> DynResult<()> {
 fn capture_x11(mode: CaptureMode, output: &Path) -> DynResult<()> {
     match mode {
         CaptureMode::Full => {
-            if has_cmd("maim") {
-                run_status(Command::new("maim").arg("--hidecursor").arg(output))
-            } else if has_cmd("import") {
-                run_status(
-                    Command::new("import")
-                        .arg("-window")
-                        .arg("root")
-                        .arg(output),
-                )
-            } else {
-                Err("X11 full capture needs maim or ImageMagick import".into())
-            }
+            let img = x11_capture_root(None)?;
+            img.save(output)?;
+            Ok(())
         }
         CaptureMode::Area => capture_x11_area(output),
         CaptureMode::Window => capture_x11_window(output),
@@ -409,85 +410,189 @@ fn capture_x11(mode: CaptureMode, output: &Path) -> DynResult<()> {
     }
 }
 
+// Area selection on X11 uses the same in-process overlay path as Wayland:
+// grab a full-screen frame, hand it to the boltsnap selector, crop to the
+// returned rect.
 fn capture_x11_area(output: &Path) -> DynResult<()> {
-    if has_cmd("maim") {
-        run_status(
-            Command::new("maim")
-                .arg("--hidecursor")
-                .arg("--select")
-                .arg("--bordersize=2")
-                .arg("--color=0.92,0.92,0.92,0.9")
-                .arg(output),
-        )
-    } else if has_cmd("import") {
-        run_status(Command::new("import").arg(output))
-    } else {
-        Err("X11 area capture needs maim or ImageMagick import".into())
-    }
+    let full = x11_capture_root(None)?;
+    let geometry = boltsnap_select_overlay(&full, "area")?;
+    let region = parse_image_geometry(&geometry)?;
+    let cropped =
+        image::imageops::crop_imm(&full, region.0, region.1, region.2, region.3).to_image();
+    cropped.save(output)?;
+    Ok(())
 }
 
 fn capture_x11_window(output: &Path) -> DynResult<()> {
-    if let Some(id) = select_x11_window_id()? {
-        capture_x11_window_id(&id, output)
-    } else if has_cmd("maim") {
-        // Huge tolerance turns slop's drag-region into a window-click pick.
-        run_status(
-            Command::new("maim")
-                .arg("--hidecursor")
-                .arg("--select")
-                .arg("--tolerance=9999999")
-                .arg("--bordersize=2")
-                .arg("--color=0.7,0.7,0.7,0.92")
-                .arg(output),
-        )
-    } else {
-        capture_x11_area(output)
+    match x11_pick_window_id()? {
+        Some(id) => capture_x11_window_id(id, output),
+        None => capture_x11_area(output),
     }
 }
 
 fn capture_x11_active_window(output: &Path) -> DynResult<()> {
-    if has_cmd("xdotool") {
-        let id = run_capture(Command::new("xdotool").arg("getactivewindow"))?;
-        let id = String::from_utf8_lossy(&id).trim().to_string();
-        if !id.is_empty() {
-            return capture_x11_window_id(&id, output);
-        }
+    match x11_active_window_id()? {
+        Some(id) => capture_x11_window_id(id, output),
+        None => capture_x11_window(output),
     }
-    capture_x11_window(output)
 }
 
-fn select_x11_window_id() -> DynResult<Option<String>> {
-    if has_cmd("xdotool") {
-        let out = run_capture(Command::new("xdotool").arg("selectwindow"))?;
-        let id = String::from_utf8_lossy(&out).trim().to_string();
-        return Ok((!id.is_empty()).then_some(id));
-    }
-    if has_cmd("xwininfo") {
-        let out = run_capture(&mut Command::new("xwininfo"))?;
-        let text = String::from_utf8_lossy(&out);
-        for token in text.split_whitespace() {
-            if token.starts_with("0x") {
-                return Ok(Some(token.to_string()));
-            }
-        }
-    }
-    Ok(None)
+fn capture_x11_window_id(win: u32, output: &Path) -> DynResult<()> {
+    let geom = x11_window_geometry(win)?;
+    let img = x11_capture_root(Some(geom))?;
+    img.save(output)?;
+    Ok(())
 }
 
-fn capture_x11_window_id(id: &str, output: &Path) -> DynResult<()> {
-    if has_cmd("maim") {
-        run_status(
-            Command::new("maim")
-                .arg("--hidecursor")
-                .arg("--window")
-                .arg(id)
-                .arg(output),
+// In-process X11 capture via x11rb. Reads the root window's pixels with
+// GetImage in ZPixmap format, swizzles BGRX/BGRA into RGBA8.
+fn x11_capture_root(rect: Option<(i16, i16, u16, u16)>) -> DynResult<RgbaImage> {
+    use x11rb::connection::Connection;
+    use x11rb::protocol::xproto::{ConnectionExt, ImageFormat};
+
+    let (conn, screen_num) =
+        x11rb::connect(None).map_err(|e| format!("X11 connect failed: {e}"))?;
+    let screen = &conn.setup().roots[screen_num];
+    let root = screen.root;
+    let (x, y, w, h) = match rect {
+        Some(v) => v,
+        None => {
+            let g = conn
+                .get_geometry(root)
+                .map_err(|e| format!("get_geometry root: {e}"))?
+                .reply()
+                .map_err(|e| format!("get_geometry root reply: {e}"))?;
+            (0, 0, g.width, g.height)
+        }
+    };
+    if w == 0 || h == 0 {
+        return Err(format!("zero-sized X11 capture rect {w}x{h}").into());
+    }
+    let reply = conn
+        .get_image(ImageFormat::Z_PIXMAP, root, x, y, w, h, !0u32)
+        .map_err(|e| format!("X11 get_image: {e}"))?
+        .reply()
+        .map_err(|e| format!("X11 get_image reply: {e}"))?;
+
+    let stride = reply.data.len() / h as usize;
+    let bpp = stride / w as usize;
+    if bpp != 4 {
+        return Err(format!(
+            "unexpected X11 pixmap stride: {bpp} bytes per pixel (depth {})",
+            reply.depth
         )
-    } else if has_cmd("import") {
-        run_status(Command::new("import").arg("-window").arg(id).arg(output))
-    } else {
-        Err("X11 window capture needs maim or ImageMagick import".into())
+        .into());
     }
+    let mut rgba = Vec::with_capacity(w as usize * h as usize * 4);
+    for chunk in reply.data.chunks_exact(4) {
+        rgba.push(chunk[2]);
+        rgba.push(chunk[1]);
+        rgba.push(chunk[0]);
+        rgba.push(255);
+    }
+    RgbaImage::from_raw(w as u32, h as u32, rgba)
+        .ok_or_else(|| format!("could not build RgbaImage {w}x{h}").into())
+}
+
+fn x11_active_window_id() -> DynResult<Option<u32>> {
+    use x11rb::connection::Connection;
+    use x11rb::protocol::xproto::{AtomEnum, ConnectionExt};
+
+    let (conn, screen_num) =
+        x11rb::connect(None).map_err(|e| format!("X11 connect failed: {e}"))?;
+    let screen = &conn.setup().roots[screen_num];
+    let atom = conn
+        .intern_atom(false, b"_NET_ACTIVE_WINDOW")
+        .map_err(|e| format!("intern_atom: {e}"))?
+        .reply()
+        .map_err(|e| format!("intern_atom reply: {e}"))?
+        .atom;
+    let prop = conn
+        .get_property(false, screen.root, atom, AtomEnum::WINDOW, 0, 1)
+        .map_err(|e| format!("get_property: {e}"))?
+        .reply()
+        .map_err(|e| format!("get_property reply: {e}"))?;
+    let Some(mut iter) = prop.value32() else {
+        return Ok(None);
+    };
+    Ok(iter.next().filter(|w| *w != 0))
+}
+
+fn x11_window_geometry(win: u32) -> DynResult<(i16, i16, u16, u16)> {
+    use x11rb::protocol::xproto::ConnectionExt;
+
+    let (conn, _screen_num) =
+        x11rb::connect(None).map_err(|e| format!("X11 connect failed: {e}"))?;
+    let geom = conn
+        .get_geometry(win)
+        .map_err(|e| format!("get_geometry: {e}"))?
+        .reply()
+        .map_err(|e| format!("get_geometry reply: {e}"))?;
+    let trans = conn
+        .translate_coordinates(win, geom.root, 0, 0)
+        .map_err(|e| format!("translate_coordinates: {e}"))?
+        .reply()
+        .map_err(|e| format!("translate_coordinates reply: {e}"))?;
+    Ok((trans.dst_x, trans.dst_y, geom.width, geom.height))
+}
+
+// Crosshair window picker: grab pointer with crosshair cursor, wait for
+// click, hand back whatever child window was clicked.
+fn x11_pick_window_id() -> DynResult<Option<u32>> {
+    use x11rb::connection::Connection;
+    use x11rb::protocol::Event;
+    use x11rb::protocol::xproto::{ConnectionExt, EventMask, GrabMode, GrabStatus};
+
+    let (conn, screen_num) =
+        x11rb::connect(None).map_err(|e| format!("X11 connect failed: {e}"))?;
+    let screen = &conn.setup().roots[screen_num];
+
+    let cursor_font = conn
+        .generate_id()
+        .map_err(|e| format!("generate_id font: {e}"))?;
+    conn.open_font(cursor_font, b"cursor")
+        .map_err(|e| format!("open_font cursor: {e}"))?;
+    let cursor = conn
+        .generate_id()
+        .map_err(|e| format!("generate_id cursor: {e}"))?;
+    // 34 = XC_crosshair, 35 = the mask glyph paired with it.
+    conn.create_glyph_cursor(
+        cursor, cursor_font, cursor_font, 34, 35, 0, 0, 0, 0xffff, 0xffff, 0xffff,
+    )
+    .map_err(|e| format!("create_glyph_cursor: {e}"))?;
+    conn.flush().map_err(|e| format!("flush: {e}"))?;
+
+    let grab = conn
+        .grab_pointer(
+            false,
+            screen.root,
+            EventMask::BUTTON_PRESS | EventMask::BUTTON_RELEASE,
+            GrabMode::ASYNC,
+            GrabMode::ASYNC,
+            x11rb::NONE,
+            cursor,
+            x11rb::CURRENT_TIME,
+        )
+        .map_err(|e| format!("grab_pointer: {e}"))?
+        .reply()
+        .map_err(|e| format!("grab_pointer reply: {e}"))?;
+    if grab.status != GrabStatus::SUCCESS {
+        return Ok(None);
+    }
+
+    let target: Option<u32> = loop {
+        let event = conn
+            .wait_for_event()
+            .map_err(|e| format!("wait_for_event: {e}"))?;
+        if let Event::ButtonPress(ev) = event {
+            break Some(if ev.child != 0 { ev.child } else { ev.event });
+        }
+    };
+    let _ = conn.ungrab_pointer(x11rb::CURRENT_TIME);
+    let _ = conn.free_cursor(cursor);
+    let _ = conn.close_font(cursor_font);
+    let _ = conn.flush();
+    Ok(target.filter(|w| *w != 0))
 }
 
 fn capture_wayland(mode: CaptureMode, output: &Path) -> DynResult<()> {
@@ -505,19 +610,18 @@ fn capture_wayland(mode: CaptureMode, output: &Path) -> DynResult<()> {
                 .map_err(|e| format!("wayshot screenshot active failed: {e}"))?
         }
         CaptureMode::Area | CaptureMode::Window => {
-            // Capture before slurp opens. Cropping happens in memory so
-            // slurp's selection rectangle never lands in the output.
+            // Snap the screen, then run our own in-process selector against
+            // that frame so no slurp/hyprctl helper is required.
             let full = conn
                 .screenshot_all(false)
                 .map_err(|e| format!("wayshot screenshot_all failed: {e}"))?;
-            let geometry = match mode {
-                CaptureMode::Area => slurp_area_geometry()?,
-                CaptureMode::Window => hyprland_select_window_geometry()?
-                    .ok_or("window selection on Wayland needs hyprctl + slurp")?,
-                _ => unreachable!(),
-            };
-            let region = parse_geometry(&geometry)?;
-            crop_to_region(&conn, full, region)?
+            let rgba = full.to_rgba8();
+            let geometry = boltsnap_select_overlay(&rgba, mode.label())?;
+            let region = parse_image_geometry(&geometry)?;
+            let cropped =
+                image::imageops::crop_imm(&rgba, region.0, region.1, region.2, region.3)
+                    .to_image();
+            image::DynamicImage::ImageRgba8(cropped)
         }
     };
 
@@ -528,51 +632,26 @@ fn capture_wayland(mode: CaptureMode, output: &Path) -> DynResult<()> {
     Ok(())
 }
 
-// Crop screenshot_all output to a LogicalRegion. Subtracts the
-// bounding-box origin so layouts with negative output coords work.
-fn crop_to_region(
-    conn: &libwayshot::WayshotConnection,
-    full: image::DynamicImage,
-    region: libwayshot::region::LogicalRegion,
-) -> DynResult<image::DynamicImage> {
-    let outputs = conn.get_all_outputs();
-    if outputs.is_empty() {
-        return Err("no outputs to crop against".into());
+// Geometry strings for the in-process overlay live in image-pixel space:
+// "x,y wxh" with no compositor scaling involved.
+fn parse_image_geometry(geometry: &str) -> DynResult<(u32, u32, u32, u32)> {
+    let (pos, size) = geometry
+        .split_once(' ')
+        .ok_or_else(|| format!("bad geometry '{geometry}'"))?;
+    let (x, y) = pos
+        .split_once(',')
+        .ok_or_else(|| format!("bad geometry position '{pos}'"))?;
+    let (w, h) = size
+        .split_once('x')
+        .ok_or_else(|| format!("bad geometry size '{size}'"))?;
+    let x: u32 = x.trim().parse()?;
+    let y: u32 = y.trim().parse()?;
+    let w: u32 = w.trim().parse()?;
+    let h: u32 = h.trim().parse()?;
+    if w == 0 || h == 0 {
+        return Err(format!("zero-sized region '{geometry}'").into());
     }
-    let min_x = outputs
-        .iter()
-        .map(|o| o.logical_region.inner.position.x)
-        .min()
-        .unwrap_or(0);
-    let min_y = outputs
-        .iter()
-        .map(|o| o.logical_region.inner.position.y)
-        .min()
-        .unwrap_or(0);
-    let img_w = full.width() as i64;
-    let img_h = full.height() as i64;
-    let mut x = (region.inner.position.x - min_x) as i64;
-    let mut y = (region.inner.position.y - min_y) as i64;
-    let mut w = region.inner.size.width as i64;
-    let mut h = region.inner.size.height as i64;
-    if x < 0 {
-        w += x;
-        x = 0;
-    }
-    if y < 0 {
-        h += y;
-        y = 0;
-    }
-    if x + w > img_w {
-        w = img_w - x;
-    }
-    if y + h > img_h {
-        h = img_h - y;
-    }
-    if w <= 0 || h <= 0 {
-        return Err("selection lies outside the captured screen".into());
-    }
-    Ok(full.crop_imm(x as u32, y as u32, w as u32, h as u32))
+    Ok((x, y, w, h))
 }
 
 fn parse_geometry(geometry: &str) -> DynResult<libwayshot::region::LogicalRegion> {
@@ -604,29 +683,6 @@ fn parse_geometry(geometry: &str) -> DynResult<libwayshot::region::LogicalRegion
     })
 }
 
-fn slurp_area_geometry() -> DynResult<String> {
-    require_cmd("slurp", "Wayland area/window selection needs slurp")?;
-    let out = run_capture(
-        Command::new("slurp")
-            .arg("-b")
-            .arg("00000066")
-            .arg("-c")
-            .arg("ebebebee")
-            .arg("-s")
-            .arg("ffffff18")
-            .arg("-w")
-            .arg("2")
-            .arg("-f")
-            .arg("%x,%y %wx%h"),
-    )?;
-    let geometry = String::from_utf8_lossy(&out).trim().to_string();
-    if geometry.is_empty() {
-        Err("selection cancelled: slurp returned no geometry".into())
-    } else {
-        Ok(geometry)
-    }
-}
-
 fn hyprland_active_window_geometry() -> DynResult<Option<String>> {
     if !has_cmd("hyprctl") {
         return Ok(None);
@@ -635,65 +691,11 @@ fn hyprland_active_window_geometry() -> DynResult<Option<String>> {
     Ok(parse_hypr_window_geometry(&String::from_utf8_lossy(&out)))
 }
 
-fn hyprland_select_window_geometry() -> DynResult<Option<String>> {
-    if !has_cmd("hyprctl") || !has_cmd("slurp") {
-        return Ok(None);
-    }
-    let out = run_capture(Command::new("hyprctl").arg("-j").arg("clients"))?;
-    let boxes = parse_hypr_client_boxes(&String::from_utf8_lossy(&out));
-    if boxes.is_empty() {
-        return Ok(None);
-    }
-    let stdin = boxes.join("\n") + "\n";
-    let selected = run_capture_stdin(
-        Command::new("slurp")
-            .arg("-r")
-            .arg("-b")
-            .arg("00000066")
-            .arg("-c")
-            .arg("b8b8b8ee")
-            .arg("-s")
-            .arg("ffffff18")
-            .arg("-w")
-            .arg("2")
-            .arg("-f")
-            .arg("%x,%y %wx%h"),
-        stdin.as_bytes(),
-    )?;
-    let geometry = String::from_utf8_lossy(&selected).trim().to_string();
-    Ok((!geometry.is_empty()).then_some(geometry))
-}
-
 fn parse_hypr_window_geometry(json: &str) -> Option<String> {
     let v: Value = serde_json::from_str(json).ok()?;
     let at = v.get("at")?.as_array()?;
     let size = v.get("size")?.as_array()?;
     geometry_from_json_arrays(at, size)
-}
-
-fn parse_hypr_client_boxes(json: &str) -> Vec<String> {
-    let Ok(Value::Array(clients)) = serde_json::from_str(json) else {
-        return Vec::new();
-    };
-    clients
-        .iter()
-        .filter_map(|client| {
-            let at = client.get("at")?.as_array()?;
-            let size = client.get("size")?.as_array()?;
-            let geometry = geometry_from_json_arrays(at, size)?;
-            let class = client
-                .get("class")
-                .and_then(Value::as_str)
-                .unwrap_or("window");
-            let title = client.get("title").and_then(Value::as_str).unwrap_or("");
-            Some(format!(
-                "{} {}: {}",
-                geometry,
-                class,
-                title.replace('\n', " ")
-            ))
-        })
-        .collect()
 }
 
 fn geometry_from_json_arrays(at: &[Value], size: &[Value]) -> Option<String> {
@@ -743,84 +745,30 @@ fn copy_to_clipboard(path: &Path, backend: Backend) -> DynResult<Backend> {
                 .spawn()?;
         }
         Backend::X11 => {
-            let data = fs::read(path)?;
-            require_cmd("xclip", "X11 clipboard needs xclip")?;
-            run_stdin(
-                Command::new("xclip")
-                    .arg("-selection")
-                    .arg("clipboard")
-                    .arg("-target")
-                    .arg("image/png")
-                    .arg("-i"),
-                &data,
-            )?;
+            // arboard's set_image owns the X11 selection; on X11 it forks a
+            // helper that lives until another client takes the selection,
+            // so we don't need an external xclip helper.
+            let img = image::open(path)?.to_rgba8();
+            let (w, h) = (img.width() as usize, img.height() as usize);
+            let bytes = std::borrow::Cow::Owned(img.into_raw());
+            let mut clipboard = arboard::Clipboard::new()
+                .map_err(|e| format!("X11 clipboard open failed: {e}"))?;
+            clipboard
+                .set_image(arboard::ImageData {
+                    width: w,
+                    height: h,
+                    bytes,
+                })
+                .map_err(|e| format!("X11 clipboard set_image failed: {e}"))?;
         }
         Backend::Auto => unreachable!(),
     }
     Ok(backend)
 }
 
-fn run_status(cmd: &mut Command) -> DynResult<()> {
-    let debug = format!("{:?}", cmd);
-    let out = cmd.output()?;
-    if out.status.success() {
-        Ok(())
-    } else {
-        Err(format!(
-            "command failed {debug}: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        )
-        .into())
-    }
-}
-
 fn run_capture(cmd: &mut Command) -> DynResult<Vec<u8>> {
     let debug = format!("{:?}", cmd);
     let out = cmd.output()?;
-    if out.status.success() {
-        Ok(out.stdout)
-    } else {
-        Err(format!(
-            "command failed {debug}: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        )
-        .into())
-    }
-}
-
-fn run_stdin(cmd: &mut Command, data: &[u8]) -> DynResult<()> {
-    let debug = format!("{:?}", cmd);
-    let mut child = cmd.stdin(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
-    child
-        .stdin
-        .as_mut()
-        .ok_or("failed to open command stdin")?
-        .write_all(data)?;
-    let out = child.wait_with_output()?;
-    if out.status.success() {
-        Ok(())
-    } else {
-        Err(format!(
-            "command failed {debug}: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        )
-        .into())
-    }
-}
-
-fn run_capture_stdin(cmd: &mut Command, data: &[u8]) -> DynResult<Vec<u8>> {
-    let debug = format!("{:?}", cmd);
-    let mut child = cmd
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    child
-        .stdin
-        .as_mut()
-        .ok_or("failed to open command stdin")?
-        .write_all(data)?;
-    let out = child.wait_with_output()?;
     if out.status.success() {
         Ok(out.stdout)
     } else {
@@ -839,39 +787,28 @@ fn has_cmd(name: &str) -> bool {
     env::split_paths(&paths).any(|dir| dir.join(name).is_file())
 }
 
-fn require_cmd(name: &str, message: &str) -> DynResult<()> {
-    if has_cmd(name) {
-        Ok(())
-    } else {
-        Err(message.into())
-    }
-}
-
 fn print_doctor() {
     let session = env::var("XDG_SESSION_TYPE").unwrap_or_else(|_| "unknown".to_string());
     println!("Boltsnap doctor");
     println!("================");
     println!("Session: {session}");
     println!();
-    println!("Helpers:");
-    for cmd in [
-        "maim", "import", "xclip", "xdotool", "xwininfo", "slurp", "hyprctl",
-    ] {
+    println!("Optional compositor IPC (only used for active-window on Wayland):");
+    for cmd in ["hyprctl"] {
         println!(
             "  {cmd:<10} {}",
             if has_cmd(cmd) { "ok" } else { "missing" }
         );
     }
     println!();
-    println!("Capabilities:");
-    println!("  X11 area:          maim -s or ImageMagick import");
-    println!("  X11 window:        xdotool/xwininfo + maim/import, fallback maim window-click");
+    println!("Capabilities (no external screenshot/clipboard helpers required):");
+    println!("  X11 capture:       in-process via x11rb (root pixmap GetImage)");
+    println!("  X11 area/window:   in-process selection overlay (eframe)");
+    println!("  X11 active win:    in-process via x11rb (_NET_ACTIVE_WINDOW)");
     println!("  Wayland capture:   in-process via libwayshot (wlr-screencopy)");
-    println!("  Wayland area:      slurp for region selection");
-    println!(
-        "  Wayland window:    Hyprland hyprctl geometry; non-Hyprland Wayland needs hyprctl"
-    );
-    println!("  Clipboard:         xclip on X11, in-process wl-clipboard-rs on Wayland");
+    println!("  Wayland area/win:  in-process selection overlay (eframe)");
+    println!("  Wayland active win: hyprctl on Hyprland");
+    println!("  Clipboard:         in-process via arboard (X11) and wl-clipboard-rs (Wayland)");
 }
 
 fn self_test() -> DynResult<()> {
@@ -1724,7 +1661,7 @@ fn run_editor(
         ..Default::default()
     };
 
-    nudge_compositor_to_float();
+    prep_compositor_for("boltsnap-editor", false);
     eframe::run_native(
         "Boltsnap Editor",
         native,
@@ -1738,68 +1675,291 @@ fn run_editor(
     Ok(out_clone)
 }
 
-// X11 has _NET_WM_WINDOW_TYPE_DIALOG; Wayland xdg-shell has no equivalent,
-// so we ask the compositor directly to float us.
-fn nudge_compositor_to_float() {
+// Push windowrules upfront so the window appears already floating with
+// no fade-in. Beats polling after the window opens — no race, no jank,
+// no compositor animation hitting the user before we react.
+fn prep_compositor_for(class: &str, fullscreen: bool) {
     if env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some() && has_cmd("hyprctl") {
-        // Hyprland >=0.45 rejects `hyprctl keyword windowrule float, ...`,
-        // so we poll for the window and dispatch togglefloating.
-        std::thread::spawn(hyprland_float_when_ready);
-        return;
-    }
-    if env::var_os("SWAYSOCK").is_some() && has_cmd("swaymsg") {
-        std::thread::spawn(|| {
-            std::thread::sleep(std::time::Duration::from_millis(350));
-            let _ = Command::new("swaymsg")
-                .args(["[app_id=\"boltsnap-editor\"]", "floating", "enable"])
+        let selector = format!("class:^({class})$");
+        let mut rules: Vec<String> = vec![
+            format!("noanim, {selector}"),
+            format!("noblur, {selector}"),
+            format!("noshadow, {selector}"),
+            format!("float, {selector}"),
+            format!("center, {selector}"),
+            format!("pin, {selector}"),
+        ];
+        if fullscreen {
+            rules.push(format!("fullscreen, {selector}"));
+            rules.push(format!("noborder, {selector}"));
+            rules.push(format!("rounding 0, {selector}"));
+        }
+        for rule in &rules {
+            let _ = Command::new("hyprctl")
+                .args(["keyword", "windowrulev2", rule])
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .status();
-        });
+        }
+    }
+    if env::var_os("SWAYSOCK").is_some() && has_cmd("swaymsg") {
+        let _ = Command::new("swaymsg")
+            .args([
+                "for_window",
+                &format!("[app_id=\"{class}\"]"),
+                if fullscreen {
+                    "floating enable, fullscreen enable, border none"
+                } else {
+                    "floating enable"
+                },
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
     }
 }
 
-fn hyprland_float_when_ready() {
-    for _ in 0..50 {
-        std::thread::sleep(std::time::Duration::from_millis(80));
-        let Ok(out) = Command::new("hyprctl").args(["clients", "-j"]).output() else {
-            continue;
+// boltsnap_select_overlay: hand the just-captured frame to a child
+// boltsnap process running our in-process selector, get back a
+// pixel-space rectangle. We re-exec ourselves so the eframe/winit
+// runtime owned by the parent (or main capture) doesn't collide
+// with the overlay's own runtime.
+fn boltsnap_select_overlay(image: &RgbaImage, mode_label: &str) -> DynResult<String> {
+    if image.width() == 0 || image.height() == 0 {
+        return Err("captured frame is empty".into());
+    }
+    let staged = temp_png(&format!("select-{mode_label}"));
+    image
+        .save(&staged)
+        .map_err(|e| format!("staging select overlay frame failed: {e}"))?;
+    let exe = env::current_exe()?;
+    let out = Command::new(exe)
+        .arg("__select-overlay")
+        .arg(&staged)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()?;
+    let _ = fs::remove_file(&staged);
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        let msg = if stderr.is_empty() {
+            "selection cancelled".to_string()
+        } else {
+            stderr
         };
-        if !out.status.success() {
-            continue;
+        return Err(msg.into());
+    }
+    let geometry = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if geometry.is_empty() {
+        Err("selection cancelled".into())
+    } else {
+        Ok(geometry)
+    }
+}
+
+fn run_select_overlay(image_path: &Path) -> DynResult<()> {
+    let base = image::open(image_path)?.to_rgba8();
+    let result: std::sync::Arc<std::sync::Mutex<Option<String>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(None));
+    let result_clone = result.clone();
+
+    let native = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_title("boltsnap-select")
+            .with_app_id("boltsnap-select")
+            .with_decorations(false)
+            .with_resizable(false)
+            .with_fullscreen(true)
+            .with_active(true)
+            .with_always_on_top()
+            .with_window_type(egui::X11WindowType::Splash),
+        ..Default::default()
+    };
+
+    prep_compositor_for("boltsnap-select", true);
+    eframe::run_native(
+        "boltsnap-select",
+        native,
+        Box::new(move |cc| Ok(Box::new(SelectApp::new(cc, base, result_clone)))),
+    )?;
+
+    match result.lock().unwrap().take() {
+        Some(g) => {
+            print!("{g}");
+            let _ = std::io::stdout().flush();
+            Ok(())
         }
-        let Ok(Value::Array(clients)) = serde_json::from_slice::<Value>(&out.stdout) else {
-            continue;
-        };
-        for c in &clients {
-            let class = c.get("class").and_then(Value::as_str).unwrap_or("");
-            if class != "boltsnap-editor" {
-                continue;
-            }
-            let already_floating =
-                c.get("floating").and_then(Value::as_bool).unwrap_or(false);
-            if !already_floating {
-                let _ = Command::new("hyprctl")
-                    .args([
-                        "dispatch",
-                        "togglefloating",
-                        "class:^(boltsnap-editor)$",
-                    ])
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status();
-            }
-            let _ = Command::new("hyprctl")
-                .args([
-                    "dispatch",
-                    "centerwindow",
-                    "class:^(boltsnap-editor)$",
-                ])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
+        None => {
+            std::process::exit(1);
+        }
+    }
+}
+
+struct SelectApp {
+    base_w: u32,
+    base_h: u32,
+    texture: egui::TextureHandle,
+    drag_start: Option<egui::Pos2>,
+    drag_now: Option<egui::Pos2>,
+    finalized: bool,
+    result: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+}
+
+impl SelectApp {
+    fn new(
+        cc: &eframe::CreationContext<'_>,
+        base: RgbaImage,
+        result: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    ) -> Self {
+        let (w, h) = (base.width(), base.height());
+        let color = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], base.as_raw());
+        let texture =
+            cc.egui_ctx
+                .load_texture("boltsnap-select-bg", color, egui::TextureOptions::LINEAR);
+        Self {
+            base_w: w,
+            base_h: h,
+            texture,
+            drag_start: None,
+            drag_now: None,
+            finalized: false,
+            result,
+        }
+    }
+
+    fn rect_to_image(&self, p: egui::Pos2, rect: egui::Rect) -> (u32, u32) {
+        let nx = ((p.x - rect.left()) / rect.width().max(1.0)).clamp(0.0, 1.0);
+        let ny = ((p.y - rect.top()) / rect.height().max(1.0)).clamp(0.0, 1.0);
+        (
+            (nx * self.base_w as f32).round() as u32,
+            (ny * self.base_h as f32).round() as u32,
+        )
+    }
+}
+
+impl eframe::App for SelectApp {
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        [0.0, 0.0, 0.0, 1.0]
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
+        if self.finalized {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             return;
         }
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape) || i.viewport().close_requested()) {
+            *self.result.lock().unwrap() = None;
+            self.finalized = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            return;
+        }
+
+        let frame = egui::Frame::new()
+            .fill(egui::Color32::BLACK)
+            .inner_margin(0);
+        egui::CentralPanel::default()
+            .frame(frame)
+            .show_inside(ui, |ui| {
+                let rect = ui.max_rect();
+                let response = ui.allocate_rect(rect, egui::Sense::click_and_drag());
+                let painter = ui.painter();
+
+                let uv = egui::Rect::from_min_max(
+                    egui::pos2(0.0, 0.0),
+                    egui::pos2(1.0, 1.0),
+                );
+                painter.image(self.texture.id(), rect, uv, egui::Color32::WHITE);
+
+                if response.drag_started_by(egui::PointerButton::Primary) {
+                    if let Some(p) = response.interact_pointer_pos() {
+                        self.drag_start = Some(p);
+                        self.drag_now = Some(p);
+                    }
+                }
+                if response.dragged_by(egui::PointerButton::Primary) {
+                    if let Some(p) = ctx.pointer_latest_pos() {
+                        self.drag_now = Some(p);
+                    }
+                }
+                if response.drag_stopped_by(egui::PointerButton::Primary) {
+                    if let (Some(a), Some(b)) = (self.drag_start, self.drag_now) {
+                        let (ax, ay) = self.rect_to_image(a, rect);
+                        let (bx, by) = self.rect_to_image(b, rect);
+                        let x = ax.min(bx);
+                        let y = ay.min(by);
+                        let w = ax.max(bx).saturating_sub(x);
+                        let h = ay.max(by).saturating_sub(y);
+                        if w > 1 && h > 1 {
+                            *self.result.lock().unwrap() =
+                                Some(format!("{x},{y} {w}x{h}"));
+                            self.finalized = true;
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        } else {
+                            self.drag_start = None;
+                            self.drag_now = None;
+                        }
+                    }
+                }
+
+                let dim = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 110);
+                match (self.drag_start, self.drag_now) {
+                    (Some(a), Some(b)) => {
+                        let sel = egui::Rect::from_two_pos(a, b);
+                        let outside_top = egui::Rect::from_min_max(
+                            rect.min,
+                            egui::pos2(rect.right(), sel.top()),
+                        );
+                        let outside_bottom = egui::Rect::from_min_max(
+                            egui::pos2(rect.left(), sel.bottom()),
+                            rect.max,
+                        );
+                        let outside_left = egui::Rect::from_min_max(
+                            egui::pos2(rect.left(), sel.top()),
+                            egui::pos2(sel.left(), sel.bottom()),
+                        );
+                        let outside_right = egui::Rect::from_min_max(
+                            egui::pos2(sel.right(), sel.top()),
+                            egui::pos2(rect.right(), sel.bottom()),
+                        );
+                        for r in [outside_top, outside_bottom, outside_left, outside_right]
+                        {
+                            if r.width() > 0.0 && r.height() > 0.0 {
+                                painter.rect_filled(r, 0.0, dim);
+                            }
+                        }
+                        painter.rect_stroke(
+                            sel,
+                            0.0,
+                            egui::Stroke::new(1.5, egui::Color32::WHITE),
+                            egui::StrokeKind::Outside,
+                        );
+                        let label = format!(
+                            "{}x{}",
+                            sel.width().round() as i32,
+                            sel.height().round() as i32
+                        );
+                        painter.text(
+                            sel.left_top() + egui::vec2(6.0, -4.0),
+                            egui::Align2::LEFT_BOTTOM,
+                            label,
+                            egui::FontId::monospace(12.0),
+                            egui::Color32::WHITE,
+                        );
+                    }
+                    _ => {
+                        painter.rect_filled(rect, 0.0, dim);
+                        painter.text(
+                            rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            "drag to select • Esc to cancel",
+                            egui::FontId::proportional(14.0),
+                            egui::Color32::from_white_alpha(220),
+                        );
+                    }
+                }
+            });
     }
 }
 
@@ -2006,12 +2166,11 @@ mod tests {
     }
 
     #[test]
-    fn parse_hypr_client_boxes_list() {
-        let json = r#"[{"at":[1,2],"size":[300,400],"class":"term","title":"shell"}]"#;
-        assert_eq!(
-            parse_hypr_client_boxes(json),
-            vec!["1,2 300x400 term: shell"]
-        );
+    fn parse_image_geometry_round_trip() {
+        let g = parse_image_geometry("12,34 56x78").unwrap();
+        assert_eq!(g, (12, 34, 56, 78));
+        assert!(parse_image_geometry("0,0 0x10").is_err());
+        assert!(parse_image_geometry("garbage").is_err());
     }
 
     #[test]

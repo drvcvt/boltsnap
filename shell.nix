@@ -3,12 +3,16 @@
 { pkgs ? import <nixpkgs> { } }:
 
 let
+  # libgbm was split out of mesa in newer nixpkgs.
+  gbm = pkgs.libgbm or pkgs.mesa;
+
   runtimeLibs = with pkgs; [
     wayland
     libxkbcommon
     vulkan-loader
     libGL
     libdrm
+    gbm
     xorg.libX11
     xorg.libXcursor
     xorg.libXi
@@ -17,6 +21,7 @@ let
     fontconfig
     freetype
   ];
+
 in
 pkgs.mkShell {
   packages = (with pkgs; [
