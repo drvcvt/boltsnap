@@ -1,6 +1,6 @@
 [package]
 name = "boltsnap"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
 description = "In-process Wayland and X11 screenshot tool with built-in annotation editor."
 license = "MIT"
@@ -9,7 +9,11 @@ keywords = ["screenshot", "wayland", "hyprland", "x11", "egui"]
 categories = ["command-line-utilities", "multimedia::images"]
 
 [dependencies]
-eframe = "0.34.1"
+# Glow (OpenGL) backend instead of the wgpu default — wgpu pulls in
+# vulkan/naga and pays a hefty cold-start tax on Vulkan device
+# discovery and shader compilation. Glow boots fast and renders
+# everything boltsnap needs.
+eframe = { version = "0.34.1", default-features = false, features = ["accesskit", "default_fonts", "glow", "wayland", "x11"] }
 egui-phosphor = "0.12"
 image = { version = "0.25.8", default-features = false, features = ["png", "jpeg"] }
 serde_json = "1.0"
