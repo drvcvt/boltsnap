@@ -199,14 +199,10 @@ fn run() -> DynResult<()> {
             return serve_wayland_clipboard(&path);
         }
         "__select-overlay" => {
-            // In-process selection overlay: takes a PNG of the screen
-            // already on disk, opens fullscreen, prints "x,y wxh" in image
-            // pixel coords on stdout. Hidden from --help on purpose.
-            let path = args
-                .image
-                .clone()
-                .ok_or("__select-overlay needs a PNG path")?;
-            return run_select_overlay(&path);
+            // In-process selection overlay. Parent feeds the captured
+            // frame as a "BSRAW001" blob on stdin; we print "x,y wxh"
+            // in image pixel coords on stdout. Hidden from --help.
+            return run_select_overlay();
         }
         "edit" => {
             let image = args.image.clone().unwrap_or(last_screenshot_path()?);
@@ -1661,7 +1657,7 @@ fn run_editor(
         ..Default::default()
     };
 
-    std::thread::spawn(|| prep_compositor_for("boltsnap-editor", false));
+    prep_compositor_for("boltsnap-editor", false);
     eframe::run_native(
         "Boltsnap Editor",
         native,
@@ -1719,9 +1715,12 @@ fn prep_compositor_for(class: &str, fullscreen: bool) {
     }
 }
 
-// Raw RGBA-on-disk handoff: skip PNG encode + decode (~100-500 ms for a
-// 4K screenshot) so the overlay opens as fast as the compositor can
-// composite the new toplevel. Layout:
+// Stdin pipe handoff for the captured frame: no disk write, no PNG
+// encode/decode, and the parent's bytes flow into the child while the
+// child is still booting eframe — so the transfer overlaps with init
+// instead of stacking with it.
+//
+// Wire format on the pipe:
 //   bytes 0..8   magic "BSRAW001"
 //   bytes 8..12  width  (u32 LE)
 //   bytes 12..16 height (u32 LE)
@@ -1729,34 +1728,26 @@ fn prep_compositor_for(class: &str, fullscreen: bool) {
 const SELECT_RAW_MAGIC: &[u8; 8] = b"BSRAW001";
 const SELECT_RAW_HEADER: usize = 16;
 
-fn write_select_raw(path: &Path, image: &RgbaImage) -> DynResult<()> {
+fn write_select_stream<W: Write>(dst: &mut W, image: &RgbaImage) -> DynResult<()> {
     let (w, h) = (image.width(), image.height());
-    let bytes = image.as_raw();
-    let mut out = fs::File::create(path)?;
-    out.write_all(SELECT_RAW_MAGIC)?;
-    out.write_all(&w.to_le_bytes())?;
-    out.write_all(&h.to_le_bytes())?;
-    out.write_all(bytes)?;
+    dst.write_all(SELECT_RAW_MAGIC)?;
+    dst.write_all(&w.to_le_bytes())?;
+    dst.write_all(&h.to_le_bytes())?;
+    dst.write_all(image.as_raw())?;
     Ok(())
 }
 
-fn read_select_raw(path: &Path) -> DynResult<RgbaImage> {
-    let blob = fs::read(path)?;
-    if blob.len() < SELECT_RAW_HEADER || &blob[0..8] != SELECT_RAW_MAGIC {
-        return Err(format!("bad select-raw magic in {}", path.display()).into());
+fn read_select_stream<R: std::io::Read>(src: &mut R) -> DynResult<RgbaImage> {
+    let mut header = [0u8; SELECT_RAW_HEADER];
+    src.read_exact(&mut header)?;
+    if &header[0..8] != SELECT_RAW_MAGIC {
+        return Err("bad select-raw magic on stdin".into());
     }
-    let w = u32::from_le_bytes(blob[8..12].try_into().unwrap());
-    let h = u32::from_le_bytes(blob[12..16].try_into().unwrap());
-    let need = SELECT_RAW_HEADER + (w as usize * h as usize * 4);
-    if blob.len() < need {
-        return Err(format!(
-            "select-raw truncated: have {} bytes, need {} for {w}x{h}",
-            blob.len(),
-            need
-        )
-        .into());
-    }
-    let pixels = blob[SELECT_RAW_HEADER..need].to_vec();
+    let w = u32::from_le_bytes(header[8..12].try_into().unwrap());
+    let h = u32::from_le_bytes(header[12..16].try_into().unwrap());
+    let pixels_len = w as usize * h as usize * 4;
+    let mut pixels = vec![0u8; pixels_len];
+    src.read_exact(&mut pixels)?;
     RgbaImage::from_raw(w, h, pixels)
         .ok_or_else(|| format!("could not build RgbaImage {w}x{h}").into())
 }
@@ -1765,25 +1756,34 @@ fn read_select_raw(path: &Path) -> DynResult<RgbaImage> {
 // boltsnap process running our in-process selector, get back a
 // pixel-space rectangle. We re-exec ourselves so the eframe/winit
 // runtime owned by the parent (or main capture) doesn't collide
-// with the overlay's own runtime.
-fn boltsnap_select_overlay(image: &RgbaImage, mode_label: &str) -> DynResult<String> {
+// with the overlay's own runtime. Bytes flow over the child's stdin.
+fn boltsnap_select_overlay(image: &RgbaImage, _mode_label: &str) -> DynResult<String> {
     if image.width() == 0 || image.height() == 0 {
         return Err("captured frame is empty".into());
     }
-    let staged = cache_dir().join(format!("select-{mode_label}-{}.bsraw", timestamp()));
-    if let Some(parent) = staged.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    write_select_raw(&staged, image)?;
     let exe = env::current_exe()?;
-    let out = Command::new(exe)
+    let mut child = Command::new(exe)
         .arg("__select-overlay")
-        .arg(&staged)
-        .stdin(Stdio::null())
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .output()?;
-    let _ = fs::remove_file(&staged);
+        .spawn()?;
+
+    // Hand the bytes off on a worker so the parent's wait_with_output
+    // can drain stdout without deadlocking against a full pipe buffer.
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or("could not attach to child stdin")?;
+    let payload = image.clone();
+    let writer = std::thread::spawn(move || -> std::io::Result<()> {
+        write_select_stream(&mut stdin, &payload)
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
+        Ok(())
+    });
+
+    let out = child.wait_with_output()?;
+    let _ = writer.join();
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
         let msg = if stderr.is_empty() {
@@ -1801,8 +1801,13 @@ fn boltsnap_select_overlay(image: &RgbaImage, mode_label: &str) -> DynResult<Str
     }
 }
 
-fn run_select_overlay(image_path: &Path) -> DynResult<()> {
-    let base = read_select_raw(image_path)?;
+fn run_select_overlay() -> DynResult<()> {
+    // Drain the parent's RGBA frame while the kernel still has it in the
+    // pipe buffer. This happens BEFORE eframe::run_native so the texture
+    // is ready on the very first frame the compositor maps.
+    let stdin = std::io::stdin();
+    let mut handle = stdin.lock();
+    let base = read_select_stream(&mut handle)?;
     let result: std::sync::Arc<std::sync::Mutex<Option<String>>> =
         std::sync::Arc::new(std::sync::Mutex::new(None));
     let result_clone = result.clone();
@@ -1827,9 +1832,12 @@ fn run_select_overlay(image_path: &Path) -> DynResult<()> {
         ..Default::default()
     };
 
-    // Push compositor rules from a worker thread so we don't block the
-    // eframe init on hyprctl/swaymsg returning.
-    std::thread::spawn(|| prep_compositor_for("boltsnap-select", true));
+    // MUST be synchronous: the hyprctl/swaymsg call is fast (<15 ms) and
+    // the rules need to be in the compositor's table BEFORE eframe maps
+    // the toplevel surface, otherwise the default fade-in plays and the
+    // overlay feels laggy. Off-threading this loses the race against
+    // eframe init.
+    prep_compositor_for("boltsnap-select", true);
     eframe::run_native(
         "boltsnap-select",
         native,
