@@ -198,12 +198,6 @@ fn run() -> DynResult<()> {
                 .ok_or("__serve-clipboard needs a PNG path")?;
             return serve_wayland_clipboard(&path);
         }
-        "__select-overlay" => {
-            // In-process selection overlay. Parent feeds the captured
-            // frame as a "BSRAW001" blob on stdin; we print "x,y wxh"
-            // in image pixel coords on stdout. Hidden from --help.
-            return run_select_overlay();
-        }
         "edit" => {
             let image = args.image.clone().unwrap_or(last_screenshot_path()?);
             ensure_file(&image)?;
@@ -406,15 +400,14 @@ fn capture_x11(mode: CaptureMode, output: &Path) -> DynResult<()> {
     }
 }
 
-// Area selection on X11 uses the same in-process overlay path as Wayland:
-// grab a full-screen frame, hand it to the boltsnap selector, crop to the
-// returned rect.
+// Area selection on X11: kick off the root capture in a worker thread
+// while we boot the eframe overlay in the main thread, then crop in
+// memory once the user confirms a drag rect.
 fn capture_x11_area(output: &Path) -> DynResult<()> {
-    let full = x11_capture_root(None)?;
-    let geometry = boltsnap_select_overlay(&full, "area")?;
-    let region = parse_image_geometry(&geometry)?;
-    let cropped =
-        image::imageops::crop_imm(&full, region.0, region.1, region.2, region.3).to_image();
+    let cropped = run_select_with_parallel_capture(|| -> Result<RgbaImage, String> {
+        x11_capture_root(None).map_err(|e| e.to_string())
+    })?
+    .ok_or("selection cancelled")?;
     cropped.save(output)?;
     Ok(())
 }
@@ -592,62 +585,89 @@ fn x11_pick_window_id() -> DynResult<Option<u32>> {
 }
 
 fn capture_wayland(mode: CaptureMode, output: &Path) -> DynResult<()> {
-    let conn = libwayshot::WayshotConnection::new()
-        .map_err(|e| format!("wayland connection failed: {e}"))?;
-    let image = match mode {
-        CaptureMode::Full => conn
-            .screenshot_all(false)
-            .map_err(|e| format!("wayshot screenshot_all failed: {e}"))?,
+    match mode {
+        CaptureMode::Full => {
+            let conn = libwayshot::WayshotConnection::new()
+                .map_err(|e| format!("wayland connection failed: {e}"))?;
+            let img = conn
+                .screenshot_all(false)
+                .map_err(|e| format!("wayshot screenshot_all failed: {e}"))?;
+            img.to_rgb8()
+                .save(output)
+                .map_err(|e| format!("png encode failed: {e}"))?;
+            Ok(())
+        }
         CaptureMode::ActiveWindow => {
+            let conn = libwayshot::WayshotConnection::new()
+                .map_err(|e| format!("wayland connection failed: {e}"))?;
             let geometry = hyprland_active_window_geometry()?
                 .ok_or("active-window on Wayland requires Hyprland (hyprctl)")?;
             let region = parse_geometry(&geometry)?;
-            conn.screenshot(region, false)
-                .map_err(|e| format!("wayshot screenshot active failed: {e}"))?
+            let img = conn
+                .screenshot(region, false)
+                .map_err(|e| format!("wayshot screenshot active failed: {e}"))?;
+            img.to_rgb8()
+                .save(output)
+                .map_err(|e| format!("png encode failed: {e}"))?;
+            Ok(())
         }
         CaptureMode::Area | CaptureMode::Window => {
-            // Snap the screen, then run our own in-process selector against
-            // that frame so no slurp/hyprctl helper is required.
-            let full = conn
-                .screenshot_all(false)
-                .map_err(|e| format!("wayshot screenshot_all failed: {e}"))?;
-            let rgba = full.to_rgba8();
-            let geometry = boltsnap_select_overlay(&rgba, mode.label())?;
-            let region = parse_image_geometry(&geometry)?;
-            let cropped =
-                image::imageops::crop_imm(&rgba, region.0, region.1, region.2, region.3)
-                    .to_image();
+            // Run libwayshot capture on a worker so it overlaps with
+            // eframe + GL init in the main thread. Capture only the
+            // focused output instead of stitching every monitor.
+            let cropped = run_select_with_parallel_capture(|| -> Result<RgbaImage, String> {
+                let conn = libwayshot::WayshotConnection::new()
+                    .map_err(|e| format!("wayland connection failed: {e}"))?;
+                let out_info = pick_focused_wl_output(&conn)
+                    .map_err(|e| format!("output pick failed: {e}"))?;
+                let img = conn
+                    .screenshot_single_output(&out_info, false)
+                    .map_err(|e| format!("wayshot single-output failed: {e}"))?;
+                Ok(img.to_rgba8())
+            })?
+            .ok_or("selection cancelled")?;
             image::DynamicImage::ImageRgba8(cropped)
+                .to_rgb8()
+                .save(output)
+                .map_err(|e| format!("png encode failed: {e}"))?;
+            Ok(())
         }
-    };
-
-    image
-        .to_rgb8()
-        .save(output)
-        .map_err(|e| format!("png encode failed: {e}"))?;
-    Ok(())
+    }
 }
 
-// Geometry strings for the in-process overlay live in image-pixel space:
-// "x,y wxh" with no compositor scaling involved.
-fn parse_image_geometry(geometry: &str) -> DynResult<(u32, u32, u32, u32)> {
-    let (pos, size) = geometry
-        .split_once(' ')
-        .ok_or_else(|| format!("bad geometry '{geometry}'"))?;
-    let (x, y) = pos
-        .split_once(',')
-        .ok_or_else(|| format!("bad geometry position '{pos}'"))?;
-    let (w, h) = size
-        .split_once('x')
-        .ok_or_else(|| format!("bad geometry size '{size}'"))?;
-    let x: u32 = x.trim().parse()?;
-    let y: u32 = y.trim().parse()?;
-    let w: u32 = w.trim().parse()?;
-    let h: u32 = h.trim().parse()?;
-    if w == 0 || h == 0 {
-        return Err(format!("zero-sized region '{geometry}'").into());
+// Pick the Wayland output the user is actually looking at. On Hyprland
+// we ask hyprctl for the focused monitor; everywhere else we fall back
+// to the first output, which is correct for single-monitor setups and
+// "good enough" for everyone else (still way better than stitching).
+fn pick_focused_wl_output(
+    conn: &libwayshot::WayshotConnection,
+) -> DynResult<libwayshot::output::OutputInfo> {
+    let outputs = conn.get_all_outputs();
+    if outputs.is_empty() {
+        return Err("no Wayland outputs available".into());
     }
-    Ok((x, y, w, h))
+    if outputs.len() == 1 {
+        return Ok(outputs[0].clone());
+    }
+    if env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some() && has_cmd("hyprctl") {
+        if let Ok(out) =
+            run_capture(Command::new("hyprctl").args(["monitors", "-j"]))
+        {
+            let lossy = String::from_utf8_lossy(&out);
+            if let Ok(Value::Array(monitors)) = serde_json::from_str::<Value>(&lossy) {
+                for m in &monitors {
+                    if m.get("focused").and_then(Value::as_bool) == Some(true) {
+                        if let Some(name) = m.get("name").and_then(Value::as_str) {
+                            if let Some(o) = outputs.iter().find(|o| o.name == name) {
+                                return Ok(o.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(outputs[0].clone())
 }
 
 fn parse_geometry(geometry: &str) -> DynResult<libwayshot::region::LogicalRegion> {
@@ -1715,109 +1735,24 @@ fn prep_compositor_for(class: &str, fullscreen: bool) {
     }
 }
 
-// Stdin pipe handoff for the captured frame: no disk write, no PNG
-// encode/decode, and the parent's bytes flow into the child while the
-// child is still booting eframe — so the transfer overlaps with init
-// instead of stacking with it.
+// Single-process selection: spawn the compositor capture on a worker
+// thread so it overlaps with eframe's winit + GL init in the main
+// thread, then run the SelectApp inline. No child process, no PNG/raw
+// handoff over a pipe, no extra Rust cold-start.
 //
-// Wire format on the pipe:
-//   bytes 0..8   magic "BSRAW001"
-//   bytes 8..12  width  (u32 LE)
-//   bytes 12..16 height (u32 LE)
-//   bytes 16..   RGBA8 pixels (width * height * 4)
-const SELECT_RAW_MAGIC: &[u8; 8] = b"BSRAW001";
-const SELECT_RAW_HEADER: usize = 16;
+// Returns the cropped RgbaImage on confirm, or None on Esc/cancel.
+fn run_select_with_parallel_capture<F>(capture: F) -> DynResult<Option<RgbaImage>>
+where
+    F: FnOnce() -> Result<RgbaImage, String> + Send + 'static,
+{
+    let capture_handle = std::thread::spawn(capture);
 
-fn write_select_stream<W: Write>(dst: &mut W, image: &RgbaImage) -> DynResult<()> {
-    let (w, h) = (image.width(), image.height());
-    dst.write_all(SELECT_RAW_MAGIC)?;
-    dst.write_all(&w.to_le_bytes())?;
-    dst.write_all(&h.to_le_bytes())?;
-    dst.write_all(image.as_raw())?;
-    Ok(())
-}
-
-fn read_select_stream<R: std::io::Read>(src: &mut R) -> DynResult<RgbaImage> {
-    let mut header = [0u8; SELECT_RAW_HEADER];
-    src.read_exact(&mut header)?;
-    if &header[0..8] != SELECT_RAW_MAGIC {
-        return Err("bad select-raw magic on stdin".into());
-    }
-    let w = u32::from_le_bytes(header[8..12].try_into().unwrap());
-    let h = u32::from_le_bytes(header[12..16].try_into().unwrap());
-    let pixels_len = w as usize * h as usize * 4;
-    let mut pixels = vec![0u8; pixels_len];
-    src.read_exact(&mut pixels)?;
-    RgbaImage::from_raw(w, h, pixels)
-        .ok_or_else(|| format!("could not build RgbaImage {w}x{h}").into())
-}
-
-// boltsnap_select_overlay: hand the just-captured frame to a child
-// boltsnap process running our in-process selector, get back a
-// pixel-space rectangle. We re-exec ourselves so the eframe/winit
-// runtime owned by the parent (or main capture) doesn't collide
-// with the overlay's own runtime. Bytes flow over the child's stdin.
-fn boltsnap_select_overlay(image: &RgbaImage, _mode_label: &str) -> DynResult<String> {
-    if image.width() == 0 || image.height() == 0 {
-        return Err("captured frame is empty".into());
-    }
-    let exe = env::current_exe()?;
-    let mut child = Command::new(exe)
-        .arg("__select-overlay")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-
-    // Hand the bytes off on a worker so the parent's wait_with_output
-    // can drain stdout without deadlocking against a full pipe buffer.
-    let mut stdin = child
-        .stdin
-        .take()
-        .ok_or("could not attach to child stdin")?;
-    let payload = image.clone();
-    let writer = std::thread::spawn(move || -> std::io::Result<()> {
-        write_select_stream(&mut stdin, &payload)
-            .map_err(|e| std::io::Error::other(e.to_string()))?;
-        Ok(())
-    });
-
-    let out = child.wait_with_output()?;
-    let _ = writer.join();
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        let msg = if stderr.is_empty() {
-            "selection cancelled".to_string()
-        } else {
-            stderr
-        };
-        return Err(msg.into());
-    }
-    let geometry = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if geometry.is_empty() {
-        Err("selection cancelled".into())
-    } else {
-        Ok(geometry)
-    }
-}
-
-fn run_select_overlay() -> DynResult<()> {
-    // Drain the parent's RGBA frame while the kernel still has it in the
-    // pipe buffer. This happens BEFORE eframe::run_native so the texture
-    // is ready on the very first frame the compositor maps.
-    let stdin = std::io::stdin();
-    let mut handle = stdin.lock();
-    let base = read_select_stream(&mut handle)?;
-    let result: std::sync::Arc<std::sync::Mutex<Option<String>>> =
+    let result: std::sync::Arc<std::sync::Mutex<Option<RgbaImage>>> =
         std::sync::Arc::new(std::sync::Mutex::new(None));
     let result_clone = result.clone();
 
     let native = eframe::NativeOptions {
-        // Glow is the lighter-weight backend: no Vulkan/wgpu device
-        // discovery, just GL context creation. Saves real cold-start time
-        // on the overlay path.
         renderer: eframe::Renderer::Glow,
-        // Skip storage / persistence overhead the overlay never needs.
         persist_window: false,
         persistence_path: None,
         viewport: egui::ViewportBuilder::default()
@@ -1832,28 +1767,27 @@ fn run_select_overlay() -> DynResult<()> {
         ..Default::default()
     };
 
-    // MUST be synchronous: the hyprctl/swaymsg call is fast (<15 ms) and
-    // the rules need to be in the compositor's table BEFORE eframe maps
-    // the toplevel surface, otherwise the default fade-in plays and the
-    // overlay feels laggy. Off-threading this loses the race against
-    // eframe init.
+    // Sync: the hyprctl/swaymsg call is fast (<15 ms) and the rule
+    // MUST be in the compositor's table before eframe maps the
+    // toplevel, or the default fade-in plays and the overlay feels
+    // laggy. Off-threading this loses that race.
     prep_compositor_for("boltsnap-select", true);
+
     eframe::run_native(
         "boltsnap-select",
         native,
-        Box::new(move |cc| Ok(Box::new(SelectApp::new(cc, base, result_clone)))),
+        Box::new(move |cc| {
+            // By the time eframe gets here it has spent its winit + GL
+            // setup time; any leftover wait against the capture thread
+            // is the *parallel* overlap we wanted.
+            let image = capture_handle
+                .join()
+                .map_err(|_| "capture worker panicked".to_string())??;
+            Ok(Box::new(SelectApp::new(cc, image, result_clone)))
+        }),
     )?;
 
-    match result.lock().unwrap().take() {
-        Some(g) => {
-            print!("{g}");
-            let _ = std::io::stdout().flush();
-            Ok(())
-        }
-        None => {
-            std::process::exit(1);
-        }
-    }
+    Ok(result.lock().unwrap().take())
 }
 
 struct SelectApp {
@@ -1863,14 +1797,15 @@ struct SelectApp {
     drag_start: Option<egui::Pos2>,
     drag_now: Option<egui::Pos2>,
     finalized: bool,
-    result: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    base: RgbaImage,
+    result: std::sync::Arc<std::sync::Mutex<Option<RgbaImage>>>,
 }
 
 impl SelectApp {
     fn new(
         cc: &eframe::CreationContext<'_>,
         base: RgbaImage,
-        result: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+        result: std::sync::Arc<std::sync::Mutex<Option<RgbaImage>>>,
     ) -> Self {
         let (w, h) = (base.width(), base.height());
         let color = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], base.as_raw());
@@ -1884,6 +1819,7 @@ impl SelectApp {
             drag_start: None,
             drag_now: None,
             finalized: false,
+            base,
             result,
         }
     }
@@ -1952,8 +1888,12 @@ impl eframe::App for SelectApp {
                         let w = ax.max(bx).saturating_sub(x);
                         let h = ay.max(by).saturating_sub(y);
                         if w > 1 && h > 1 {
-                            *self.result.lock().unwrap() =
-                                Some(format!("{x},{y} {w}x{h}"));
+                            // Crop here so the parent doesn't have to keep
+                            // a copy of the full base image around.
+                            let cropped =
+                                image::imageops::crop_imm(&self.base, x, y, w, h)
+                                    .to_image();
+                            *self.result.lock().unwrap() = Some(cropped);
                             self.finalized = true;
                             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                         } else {
@@ -2223,14 +2163,6 @@ mod tests {
             parse_hypr_window_geometry(json).as_deref(),
             Some("100,200 900x700")
         );
-    }
-
-    #[test]
-    fn parse_image_geometry_round_trip() {
-        let g = parse_image_geometry("12,34 56x78").unwrap();
-        assert_eq!(g, (12, 34, 56, 78));
-        assert!(parse_image_geometry("0,0 0x10").is_err());
-        assert!(parse_image_geometry("garbage").is_err());
     }
 
     #[test]
