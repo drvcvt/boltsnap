@@ -1661,7 +1661,7 @@ fn run_editor(
         ..Default::default()
     };
 
-    prep_compositor_for("boltsnap-editor", false);
+    std::thread::spawn(|| prep_compositor_for("boltsnap-editor", false));
     eframe::run_native(
         "Boltsnap Editor",
         native,
@@ -1719,6 +1719,48 @@ fn prep_compositor_for(class: &str, fullscreen: bool) {
     }
 }
 
+// Raw RGBA-on-disk handoff: skip PNG encode + decode (~100-500 ms for a
+// 4K screenshot) so the overlay opens as fast as the compositor can
+// composite the new toplevel. Layout:
+//   bytes 0..8   magic "BSRAW001"
+//   bytes 8..12  width  (u32 LE)
+//   bytes 12..16 height (u32 LE)
+//   bytes 16..   RGBA8 pixels (width * height * 4)
+const SELECT_RAW_MAGIC: &[u8; 8] = b"BSRAW001";
+const SELECT_RAW_HEADER: usize = 16;
+
+fn write_select_raw(path: &Path, image: &RgbaImage) -> DynResult<()> {
+    let (w, h) = (image.width(), image.height());
+    let bytes = image.as_raw();
+    let mut out = fs::File::create(path)?;
+    out.write_all(SELECT_RAW_MAGIC)?;
+    out.write_all(&w.to_le_bytes())?;
+    out.write_all(&h.to_le_bytes())?;
+    out.write_all(bytes)?;
+    Ok(())
+}
+
+fn read_select_raw(path: &Path) -> DynResult<RgbaImage> {
+    let blob = fs::read(path)?;
+    if blob.len() < SELECT_RAW_HEADER || &blob[0..8] != SELECT_RAW_MAGIC {
+        return Err(format!("bad select-raw magic in {}", path.display()).into());
+    }
+    let w = u32::from_le_bytes(blob[8..12].try_into().unwrap());
+    let h = u32::from_le_bytes(blob[12..16].try_into().unwrap());
+    let need = SELECT_RAW_HEADER + (w as usize * h as usize * 4);
+    if blob.len() < need {
+        return Err(format!(
+            "select-raw truncated: have {} bytes, need {} for {w}x{h}",
+            blob.len(),
+            need
+        )
+        .into());
+    }
+    let pixels = blob[SELECT_RAW_HEADER..need].to_vec();
+    RgbaImage::from_raw(w, h, pixels)
+        .ok_or_else(|| format!("could not build RgbaImage {w}x{h}").into())
+}
+
 // boltsnap_select_overlay: hand the just-captured frame to a child
 // boltsnap process running our in-process selector, get back a
 // pixel-space rectangle. We re-exec ourselves so the eframe/winit
@@ -1728,10 +1770,11 @@ fn boltsnap_select_overlay(image: &RgbaImage, mode_label: &str) -> DynResult<Str
     if image.width() == 0 || image.height() == 0 {
         return Err("captured frame is empty".into());
     }
-    let staged = temp_png(&format!("select-{mode_label}"));
-    image
-        .save(&staged)
-        .map_err(|e| format!("staging select overlay frame failed: {e}"))?;
+    let staged = cache_dir().join(format!("select-{mode_label}-{}.bsraw", timestamp()));
+    if let Some(parent) = staged.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    write_select_raw(&staged, image)?;
     let exe = env::current_exe()?;
     let out = Command::new(exe)
         .arg("__select-overlay")
@@ -1759,12 +1802,19 @@ fn boltsnap_select_overlay(image: &RgbaImage, mode_label: &str) -> DynResult<Str
 }
 
 fn run_select_overlay(image_path: &Path) -> DynResult<()> {
-    let base = image::open(image_path)?.to_rgba8();
+    let base = read_select_raw(image_path)?;
     let result: std::sync::Arc<std::sync::Mutex<Option<String>>> =
         std::sync::Arc::new(std::sync::Mutex::new(None));
     let result_clone = result.clone();
 
     let native = eframe::NativeOptions {
+        // Glow is the lighter-weight backend: no Vulkan/wgpu device
+        // discovery, just GL context creation. Saves real cold-start time
+        // on the overlay path.
+        renderer: eframe::Renderer::Glow,
+        // Skip storage / persistence overhead the overlay never needs.
+        persist_window: false,
+        persistence_path: None,
         viewport: egui::ViewportBuilder::default()
             .with_title("boltsnap-select")
             .with_app_id("boltsnap-select")
@@ -1777,7 +1827,9 @@ fn run_select_overlay(image_path: &Path) -> DynResult<()> {
         ..Default::default()
     };
 
-    prep_compositor_for("boltsnap-select", true);
+    // Push compositor rules from a worker thread so we don't block the
+    // eframe init on hyprctl/swaymsg returning.
+    std::thread::spawn(|| prep_compositor_for("boltsnap-select", true));
     eframe::run_native(
         "boltsnap-select",
         native,

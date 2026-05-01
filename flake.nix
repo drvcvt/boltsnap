@@ -20,9 +20,7 @@
           # Wayland
           wayland
           libxkbcommon
-          # GPU / wgpu (these are dlopen'd, must be reachable at runtime —
-          # RPATH alone is not enough)
-          vulkan-loader
+          # GPU (egui_glow path — libGL is dlopen'd at runtime)
           libGL
           libdrm
           gbm
@@ -42,7 +40,7 @@
       {
         packages.default = pkgs.rustPlatform.buildRustPackage {
           pname = "boltsnap";
-          version = "0.4.0";
+          version = "0.4.1";
           src = ./.;
           cargoLock.lockFile = ./Cargo.lock;
 

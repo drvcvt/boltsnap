@@ -9,7 +9,6 @@ let
   runtimeLibs = with pkgs; [
     wayland
     libxkbcommon
-    vulkan-loader
     libGL
     libdrm
     gbm
