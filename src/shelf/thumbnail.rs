@@ -1,6 +1,11 @@
 use image::RgbaImage;
 use image::imageops::FilterType;
 
+/// Maximum thumbnail dimensions in the shelf (the source aspect ratio is kept,
+/// images are never upscaled). Tweak these to resize the shelf tiles.
+pub const MAX_W: u32 = 200;
+pub const MAX_H: u32 = 144;
+
 /// Downscale `src` to fit within (max_w, max_h), preserving aspect ratio.
 /// Never upscales: images already smaller are returned at original size.
 pub fn make_thumbnail(src: &RgbaImage, max_w: u32, max_h: u32) -> RgbaImage {

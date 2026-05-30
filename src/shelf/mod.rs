@@ -52,7 +52,12 @@ pub struct Daemon {
     shm: Shm,
     pool: SlotPool,
     compositor: CompositorState,
-    layer: LayerSurface,
+    layer_shell: LayerShell,
+    /// The shelf surface. Recreated when the focused output changes so each
+    /// capture's thumbnail appears on the monitor the user is actually on.
+    layer: Option<LayerSurface>,
+    /// Name of the output the current `layer` lives on (Hyprland monitor name).
+    output_name: Option<String>,
     pointer: Option<WlPointer>,
 
     ddm: DataDeviceManagerState,
@@ -84,6 +89,84 @@ struct PressState {
     dragging: bool,
 }
 
+/// Name of the focused Hyprland monitor, via `hyprctl monitors -j`. `None` off
+/// Hyprland (then the compositor places the shelf on its default output).
+fn focused_monitor_name() -> Option<String> {
+    use std::process::Command;
+    if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_none() || !crate::paths::has_cmd("hyprctl")
+    {
+        return None;
+    }
+    let out = Command::new("hyprctl").args(["monitors", "-j"]).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
+    for m in v.as_array()? {
+        if m.get("focused").and_then(|f| f.as_bool()) == Some(true) {
+            return m.get("name").and_then(|n| n.as_str()).map(str::to_string);
+        }
+    }
+    None
+}
+
+/// Disable Hyprland's open/close animation for the shelf layer so thumbnails
+/// appear and vanish instantly. Pushed before the surface maps. No-op off Hyprland.
+fn prep_shelf_compositor_rules() {
+    use std::process::{Command, Stdio};
+    if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some() && crate::paths::has_cmd("hyprctl")
+    {
+        let _ = Command::new("hyprctl")
+            .args(["keyword", "layerrule", "noanim, boltsnap"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+}
+
+/// Render the shelf with one sample thumbnail (hovered, so the buttons show) to
+/// a PNG via the exact production draw path. Lets styling be inspected without a
+/// compositor. Converts the premultiplied BGRA canvas back to straight RGBA.
+pub fn debug_render(out: &std::path::Path) -> DynResult<()> {
+    use image::{Rgba, RgbaImage};
+    let (tw, th) = (thumbnail::MAX_W, thumbnail::MAX_H);
+    let mut sample = RgbaImage::new(tw, th);
+    for (x, y, p) in sample.enumerate_pixels_mut() {
+        // a colourful gradient so corners/border are easy to see
+        *p = Rgba([(x * 255 / tw) as u8, (y * 200 / th) as u8, 170, 255]);
+    }
+    let mut model = ShelfModel::new();
+    let id = model.add(std::path::PathBuf::from("/tmp/x.png"), sample, "area".into());
+    let cfg = LayoutConfig::default();
+    let sizes: Vec<(u64, u32, u32)> = model
+        .newest_first()
+        .map(|t| (t.id, t.thumb.width(), t.thumb.height()))
+        .collect();
+    let layout = Layout::compute(&sizes, &cfg);
+    let (w, h) = (layout.width, layout.height);
+    let mut canvas = vec![0u8; (w * h * 4) as usize];
+    paint::draw_shelf(&mut canvas, w, h, &layout, &model, Some(id), &cfg);
+
+    // BGRA premultiplied -> composite over mid-gray so the rounded corners
+    // (transparent) and the white border are clearly visible when inspected.
+    let bg = 64u32;
+    let mut img = RgbaImage::new(w, h);
+    for (i, px) in canvas.chunks_exact(4).enumerate() {
+        let (pb, pg, pr, a) = (px[0] as u32, px[1] as u32, px[2] as u32, px[3] as u32);
+        // premultiplied source over opaque gray: out = src + bg*(1-a)
+        let inv = 255 - a;
+        let r = (pr + bg * inv / 255).min(255) as u8;
+        let g = (pg + bg * inv / 255).min(255) as u8;
+        let b = (pb + bg * inv / 255).min(255) as u8;
+        let x = (i as u32) % w;
+        let y = (i as u32) / w;
+        img.put_pixel(x, y, Rgba([r, g, b, 255]));
+    }
+    img.save(out)?;
+    eprintln!("debug-render: wrote {}x{} to {}", w, h, out.display());
+    Ok(())
+}
+
 pub fn run_daemon() -> DynResult<()> {
     // Single-instance: if a daemon already answers, do nothing.
     if crate::ipc::daemon_alive() {
@@ -93,7 +176,7 @@ pub fn run_daemon() -> DynResult<()> {
     let _ = std::fs::remove_file(&sock); // clear stale socket
 
     let conn = Connection::connect_to_env()?;
-    let (globals, event_queue) = registry_queue_init::<Daemon>(&conn)?;
+    let (globals, mut event_queue) = registry_queue_init::<Daemon>(&conn)?;
     let qh = event_queue.handle();
 
     let compositor = CompositorState::bind(&globals, &qh)?;
@@ -101,16 +184,6 @@ pub fn run_daemon() -> DynResult<()> {
     let layer_shell = LayerShell::bind(&globals, &qh)?;
     let ddm = DataDeviceManagerState::bind(&globals, &qh)?;
     let pool = SlotPool::new(256 * 256 * 4, &shm)?;
-
-    let surface = compositor.create_surface(&qh);
-    let layer =
-        layer_shell.create_layer_surface(&qh, surface, Layer::Overlay, Some("boltsnap"), None);
-    layer.set_anchor(Anchor::BOTTOM | Anchor::LEFT);
-    layer.set_margin(0, 0, 24, 24);
-    layer.set_keyboard_interactivity(KeyboardInteractivity::None);
-    layer.set_exclusive_zone(-1);
-    layer.set_size(1, 1);
-    layer.commit();
 
     let cfg = LayoutConfig::default();
     let mut daemon = Daemon {
@@ -120,7 +193,9 @@ pub fn run_daemon() -> DynResult<()> {
         shm,
         pool,
         compositor,
-        layer,
+        layer_shell,
+        layer: None,
+        output_name: None,
         pointer: None,
         ddm,
         data_device: None,
@@ -138,6 +213,13 @@ pub fn run_daemon() -> DynResult<()> {
         exit: false,
         qh: Some(qh.clone()),
     };
+
+    // Populate output metadata (names) so we can place the shelf on the focused
+    // monitor instead of wherever the compositor defaults to.
+    event_queue.roundtrip(&mut daemon)?;
+    // No-animation layer rule must be in place before the surface maps.
+    prep_shelf_compositor_rules();
+    daemon.place_on_focused_output(&qh);
 
     // Unified event loop: Wayland fd + the unix-socket listener fd.
     use calloop::generic::Generic;
@@ -181,6 +263,37 @@ pub fn run_daemon() -> DynResult<()> {
 }
 
 impl Daemon {
+    /// Ensure the shelf surface lives on the currently focused output. Recreates
+    /// the layer surface (dropping the old one, which unmaps it) when the focused
+    /// monitor changed since last time. Cheap no-op when already correct.
+    fn place_on_focused_output(&mut self, qh: &QueueHandle<Self>) {
+        let name = focused_monitor_name();
+        if self.layer.is_some() && name == self.output_name {
+            return;
+        }
+        let output = name.as_ref().and_then(|n| {
+            self.output_state.outputs().find(|o| {
+                self.output_state.info(o).and_then(|i| i.name).as_deref() == Some(n.as_str())
+            })
+        });
+        let surface = self.compositor.create_surface(qh);
+        let layer = self.layer_shell.create_layer_surface(
+            qh,
+            surface,
+            Layer::Overlay,
+            Some("boltsnap"),
+            output.as_ref(),
+        );
+        layer.set_anchor(Anchor::BOTTOM | Anchor::LEFT);
+        layer.set_margin(0, 0, 24, 24);
+        layer.set_keyboard_interactivity(KeyboardInteractivity::None);
+        layer.set_exclusive_zone(-1);
+        layer.set_size(self.layout.width.max(1), self.layout.height.max(1));
+        layer.commit();
+        self.layer = Some(layer); // old layer dropped here -> unmaps from prior output
+        self.output_name = name;
+    }
+
     /// Recompute layout from the model and resize the layer surface to match.
     fn relayout(&mut self) {
         let sizes: Vec<(u64, u32, u32)> = self
@@ -189,7 +302,9 @@ impl Daemon {
             .map(|t| (t.id, t.thumb.width(), t.thumb.height()))
             .collect();
         self.layout = Layout::compute(&sizes, &self.cfg);
-        self.layer.set_size(self.layout.width, self.layout.height);
+        if let Some(layer) = self.layer.as_ref() {
+            layer.set_size(self.layout.width, self.layout.height);
+        }
     }
 
     /// Handle one client connection: read a single request and act on it.
@@ -227,14 +342,19 @@ impl Daemon {
             None => return,
         };
         if let Ok(img) = image::open(&path) {
-            let thumb = crate::shelf::thumbnail::make_thumbnail(&img.to_rgba8(), 170, 120);
+            let thumb = crate::shelf::thumbnail::make_thumbnail(
+                &img.to_rgba8(),
+                crate::shelf::thumbnail::MAX_W,
+                crate::shelf::thumbnail::MAX_H,
+            );
             self.model.replace_thumb(id, thumb);
             self.relayout();
             self.draw(qh);
         }
     }
 
-    /// Ingest a PNG: persist a daemon-owned temp copy, scale a thumbnail, show it.
+    /// Ingest a PNG: persist a daemon-owned temp copy, scale a thumbnail, show it
+    /// on the currently focused monitor.
     fn add_png(&mut self, png: &[u8], source: &str, qh: &QueueHandle<Self>) {
         let img = match image::load_from_memory(png) {
             Ok(i) => i.to_rgba8(),
@@ -249,9 +369,14 @@ impl Daemon {
             eprintln!("boltsnap daemon: temp write failed: {e}");
             return;
         }
-        let thumb = crate::shelf::thumbnail::make_thumbnail(&img, 170, 120);
+        let thumb = crate::shelf::thumbnail::make_thumbnail(
+            &img,
+            crate::shelf::thumbnail::MAX_W,
+            crate::shelf::thumbnail::MAX_H,
+        );
         self.model.add(path, thumb, source.to_string());
         self.relayout();
+        self.place_on_focused_output(qh); // follow the user to the active monitor
         self.draw(qh);
     }
 
@@ -298,6 +423,10 @@ impl Daemon {
         if self.data_device.is_none() {
             return;
         }
+        let origin = match self.layer.as_ref() {
+            Some(l) => l.wl_surface().clone(),
+            None => return,
+        };
 
         // Build a drag icon surface from the thumbnail so it follows the cursor.
         let icon = self.compositor.create_surface(&qh);
@@ -311,7 +440,7 @@ impl Daemon {
                 wayland_client::protocol::wl_shm::Format::Argb8888,
             ) {
                 crate::shelf::paint::clear(canvas);
-                crate::shelf::paint::blit_rgba(canvas, iw, ih, &t.thumb, 0, 0);
+                crate::shelf::paint::blit_thumb_card(canvas, iw, ih, &t.thumb, 0, 0);
                 let _ = buf.attach_to(&icon);
                 icon.commit();
             }
@@ -321,7 +450,7 @@ impl Daemon {
             self.ddm
                 .create_drag_and_drop_source(&qh, ["image/png", "text/uri-list"], DndAction::Copy);
         let device = self.data_device.as_ref().unwrap();
-        source.start_drag(device, self.layer.wl_surface(), Some(&icon), serial);
+        source.start_drag(device, &origin, Some(&icon), serial);
 
         self.drag_path = Some(path);
         self.drop_ok = false;
@@ -356,10 +485,12 @@ impl Daemon {
     }
 
     fn draw(&mut self, _qh: &QueueHandle<Self>) {
+        let layer = match self.layer.as_ref() {
+            Some(l) => l,
+            None => return,
+        };
         let (w, h) = (self.width.max(1), self.height.max(1));
         let stride = (w * 4) as i32;
-        // Recreate the buffer each draw; SlotPool hands back a fresh slot when the
-        // compositor still holds the previous one, so this is double-buffer safe.
         let (buffer, canvas) = match self.pool.create_buffer(
             w as i32,
             h as i32,
@@ -379,12 +510,11 @@ impl Daemon {
             self.hovered,
             &self.cfg,
         );
-        // canvas's borrow of self.pool ends here; safe to touch self.layer.
 
-        let surface = self.layer.wl_surface();
+        let surface = layer.wl_surface();
         surface.damage_buffer(0, 0, w as i32, h as i32);
         let _ = buffer.attach_to(surface);
-        self.layer.commit();
+        layer.commit();
     }
 }
 
@@ -470,7 +600,13 @@ impl SeatHandler for Daemon {
             self.data_device = Some(self.ddm.get_data_device(qh, &seat));
         }
     }
-    fn remove_capability(&mut self, _: &Connection, _: &QueueHandle<Self>, _: WlSeat, _: Capability) {
+    fn remove_capability(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: WlSeat,
+        _: Capability,
+    ) {
     }
     fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: WlSeat) {}
 }
@@ -483,7 +619,10 @@ impl PointerHandler for Daemon {
         _: &WlPointer,
         events: &[PointerEvent],
     ) {
-        let surface = self.layer.wl_surface().clone();
+        let surface = match self.layer.as_ref() {
+            Some(l) => l.wl_surface().clone(),
+            None => return,
+        };
         let mut redraw = false;
         for ev in events {
             if ev.surface != surface {
@@ -505,7 +644,6 @@ impl PointerHandler for Daemon {
                         self.hovered = now;
                         redraw = true;
                     }
-                    // Drag start: left button held, moved past threshold, began on a body.
                     if let Some(p) = self.press.as_mut() {
                         if !p.dragging {
                             let dx = x - p.x;
@@ -601,11 +739,9 @@ impl DataSourceHandler for Daemon {
                 }
             }
         }
-        // file drops here -> fd closed -> EOF signalled to the reader
     }
 
     fn cancelled(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource) {
-        // No valid target took the drop -> auto-copy fallback so Ctrl+V still works.
         if !self.drop_ok {
             if let Some(path) = self.drag_path.clone() {
                 if let Err(e) = crate::clipboard::copy_to_clipboard(&path, crate::Backend::Wayland) {
@@ -633,7 +769,6 @@ impl DataSourceHandler for Daemon {
     fn action(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource, _: DndAction) {}
 }
 
-// A pure drag SOURCE still needs the companion handlers for delegate_data_device.
 impl DataDeviceHandler for Daemon {
     fn enter(
         &mut self,

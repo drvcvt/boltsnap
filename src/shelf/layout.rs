@@ -9,7 +9,7 @@ pub struct LayoutConfig {
 
 impl Default for LayoutConfig {
     fn default() -> Self {
-        Self { pad: 12, gap: 10, icon: 22, icon_gap: 5, pad_icon: 6 }
+        Self { pad: 12, gap: 10, icon: 15, icon_gap: 5, pad_icon: 7 }
     }
 }
 

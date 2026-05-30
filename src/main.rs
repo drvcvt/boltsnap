@@ -238,6 +238,16 @@ fn run() -> DynResult<()> {
         }
         "self-test" => self_test(),
         "daemon" => crate::shelf::run_daemon(),
+        "__debug-render" => {
+            // Render the shelf (one sample thumbnail, hovered) straight to a PNG
+            // via the real draw path, so styling can be inspected without a
+            // compositor. Usage: boltsnap __debug-render /tmp/out.png
+            let out = args
+                .image
+                .clone()
+                .unwrap_or_else(|| PathBuf::from("/tmp/boltsnap-debug-render.png"));
+            return crate::shelf::debug_render(&out);
+        }
         "__serve-clipboard" => {
             // Detached child kept alive to serve Wayland paste requests.
             let path = args
