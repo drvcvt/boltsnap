@@ -283,37 +283,64 @@ fn capture_flow(args: &Args) -> DynResult<()> {
         return capture_to_stdout(mode, args.backend);
     }
 
-    let raw_is_temp = args.edit;
-    let raw_path = if args.edit {
-        temp_png("raw")
+    // Capture to a file first; for --edit the editor reads then overwrites it.
+    let output = if args.edit {
+        edit_output_path(args).unwrap_or_else(|| temp_png("shot"))
     } else {
         target_path(args)
     };
-    let backend = capture(mode, &raw_path, args.backend)?;
-    let _ = strip_uniform_border(&raw_path);
-    let mut final_path = raw_path.clone();
+    let resolved = capture(mode, &output, args.backend)?;
+    let _ = strip_uniform_border(&output);
 
-    if args.edit {
-        let output = edit_output_path(args);
-        final_path = run_editor(raw_path.clone(), output, args.copy, args.backend)?;
-        remember_last_screenshot(&final_path)?;
-        if raw_is_temp && final_path != raw_path {
-            let _ = fs::remove_file(&raw_path);
+    match decide_post_capture(args, resolved) {
+        PostCapture::Stdout => unreachable!("handled above"),
+        PostCapture::Edit => {
+            let final_path = run_editor(output.clone(), edit_output_path(args), args.copy, resolved)?;
+            remember_last_screenshot(&final_path)?;
+            println!(
+                "Boltsnap edited {} via {}: {}",
+                mode.label(),
+                resolved.as_str(),
+                final_path.display()
+            );
         }
-    } else if args.copy {
-        copy_to_clipboard(&raw_path, args.backend)?;
-        remember_last_screenshot(&raw_path)?;
-    } else {
-        remember_last_screenshot(&raw_path)?;
+        PostCapture::File { copy } => {
+            if copy {
+                copy_to_clipboard(&output, resolved)?;
+            }
+            remember_last_screenshot(&output)?;
+            let verb = if copy { "copied" } else { "captured" };
+            println!(
+                "Boltsnap {verb} {} via {}: {}",
+                mode.label(),
+                resolved.as_str(),
+                output.display()
+            );
+        }
+        PostCapture::CopyOnly => {
+            copy_to_clipboard(&output, resolved)?;
+            remember_last_screenshot(&output)?;
+            println!(
+                "Boltsnap copied {} via {}: {}",
+                mode.label(),
+                resolved.as_str(),
+                output.display()
+            );
+        }
+        PostCapture::Shelf { copy } => {
+            remember_last_screenshot(&output)?;
+            if copy {
+                copy_to_clipboard(&output, resolved)?;
+            }
+            let png = fs::read(&output)?;
+            crate::ipc::send_to_shelf(crate::ipc::Request::Add {
+                source: mode.label().to_string(),
+                png,
+            })?;
+            let suffix = if copy { " (copied)" } else { "" };
+            println!("Boltsnap sent {} to shelf{}", mode.label(), suffix);
+        }
     }
-
-    let verb = if args.copy { "copied" } else { "captured" };
-    println!(
-        "Boltsnap {verb} {} via {}: {}",
-        mode.label(),
-        backend.as_str(),
-        final_path.display()
-    );
     Ok(())
 }
 
