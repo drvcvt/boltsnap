@@ -10,7 +10,15 @@ use eframe::egui;
 use image::{DynamicImage, Rgba, RgbaImage, imageops};
 use serde_json::Value;
 
-type DynResult<T> = Result<T, Box<dyn Error>>;
+mod capture;
+mod clipboard;
+mod editor;
+mod ipc;
+mod paths;
+mod select;
+mod shelf;
+
+pub type DynResult<T> = Result<T, Box<dyn Error>>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Backend {
