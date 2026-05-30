@@ -88,6 +88,9 @@ struct Args {
     image: Option<PathBuf>,
     edit: bool,
     copy: bool,
+    /// True if the user passed --copy or --no-copy explicitly. On Wayland the
+    /// shelf is the default sink, so we only auto-copy when copy was asked for.
+    copy_explicit: bool,
     save: bool,
     output: Option<PathBuf>,
     backend: Backend,
@@ -101,10 +104,40 @@ impl Default for Args {
             image: None,
             edit: false,
             copy: true,
+            copy_explicit: false,
             save: false,
             output: None,
             backend: Backend::Auto,
         }
+    }
+}
+
+/// What to do with a freshly captured screenshot, after backend resolution.
+#[derive(Debug, PartialEq, Eq)]
+enum PostCapture {
+    Stdout,
+    Edit,
+    File { copy: bool },
+    Shelf { copy: bool },
+    CopyOnly,
+}
+
+/// Decide the post-capture sink. `backend` is already resolved (no Auto).
+fn decide_post_capture(args: &Args, backend: Backend) -> PostCapture {
+    if is_stdout_target(args) {
+        return PostCapture::Stdout;
+    }
+    if args.edit {
+        return PostCapture::Edit;
+    }
+    if args.output.is_some() || args.save {
+        return PostCapture::File { copy: args.copy };
+    }
+    match backend {
+        Backend::Wayland => PostCapture::Shelf {
+            copy: args.copy_explicit && args.copy,
+        },
+        _ => PostCapture::CopyOnly,
     }
 }
 
@@ -141,8 +174,14 @@ fn parse_args(raw: &[String]) -> DynResult<Args> {
                 std::process::exit(0);
             }
             "--edit" => args.edit = true,
-            "--copy" => args.copy = true,
-            "--no-copy" => args.copy = false,
+            "--copy" => {
+                args.copy = true;
+                args.copy_explicit = true;
+            }
+            "--no-copy" => {
+                args.copy = false;
+                args.copy_explicit = true;
+            }
             "--save" => args.save = true,
             "-o" | "--output" => {
                 i += 1;
