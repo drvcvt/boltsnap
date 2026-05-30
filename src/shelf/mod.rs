@@ -72,6 +72,7 @@ pub fn run_daemon() -> DynResult<()> {
     let compositor = CompositorState::bind(&globals, &qh)?;
     let shm = Shm::bind(&globals, &qh)?;
     let layer_shell = LayerShell::bind(&globals, &qh)?;
+    let ddm = DataDeviceManagerState::bind(&globals, &qh)?;
     let pool = SlotPool::new(256 * 256 * 4, &shm)?;
 
     let surface = compositor.create_surface(&qh);
@@ -91,8 +92,15 @@ pub fn run_daemon() -> DynResult<()> {
         output_state: OutputState::new(&globals, &qh),
         shm,
         pool,
+        compositor,
         layer,
         pointer: None,
+        ddm,
+        data_device: None,
+        drag_source: None,
+        drag_path: None,
+        drop_ok: false,
+        icon_surface: None,
         model: ShelfModel::new(),
         layout: Layout::compute(&[], &cfg),
         cfg,
@@ -255,6 +263,9 @@ impl SeatHandler for Daemon {
                 self.pointer = Some(p);
             }
         }
+        if self.data_device.is_none() {
+            self.data_device = Some(self.ddm.get_data_device(qh, &seat));
+        }
     }
     fn remove_capability(&mut self, _: &Connection, _: &QueueHandle<Self>, _: WlSeat, _: Capability) {
     }
@@ -279,6 +290,119 @@ impl ShmHandler for Daemon {
     }
 }
 
+impl DataSourceHandler for Daemon {
+    fn accept_mime(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &WlDataSource,
+        _: Option<String>,
+    ) {
+    }
+
+    fn send_request(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        source: &WlDataSource,
+        mime: String,
+        fd: WritePipe,
+    ) {
+        use std::io::Write;
+        use std::os::fd::OwnedFd;
+        let is_ours = self
+            .drag_source
+            .as_ref()
+            .map(|d| d.inner() == source)
+            .unwrap_or(false);
+        if !is_ours {
+            return;
+        }
+        let Some(path) = self.drag_path.clone() else {
+            return;
+        };
+        let mut file = std::fs::File::from(OwnedFd::from(fd));
+        match mime.as_str() {
+            "text/uri-list" => {
+                let abs = std::fs::canonicalize(&path).unwrap_or(path);
+                let uri = format!("file://{}\r\n", abs.display());
+                let _ = file.write_all(uri.as_bytes());
+            }
+            _ => {
+                if let Ok(bytes) = std::fs::read(&path) {
+                    let _ = file.write_all(&bytes);
+                }
+            }
+        }
+        // file drops here -> fd closed -> EOF signalled to the reader
+    }
+
+    fn cancelled(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource) {
+        // No valid target took the drop -> auto-copy fallback so Ctrl+V still works.
+        if !self.drop_ok {
+            if let Some(path) = self.drag_path.clone() {
+                if let Err(e) = crate::clipboard::copy_to_clipboard(&path, crate::Backend::Wayland) {
+                    eprintln!("boltsnap daemon: fallback copy failed: {e}");
+                }
+            }
+        }
+        self.drag_source = None;
+        self.drag_path = None;
+        self.icon_surface = None;
+        self.press = None;
+    }
+
+    fn dnd_dropped(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource) {
+        self.drop_ok = true;
+    }
+
+    fn dnd_finished(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource) {
+        self.drag_source = None;
+        self.drag_path = None;
+        self.icon_surface = None;
+        self.press = None;
+    }
+
+    fn dnd_action(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource, _: DndAction) {}
+}
+
+// A pure drag SOURCE still needs the companion handlers for delegate_data_device.
+impl DataDeviceHandler for Daemon {
+    fn enter(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &WlDataDevice,
+        _x: f64,
+        _y: f64,
+        _: &WlSurface,
+    ) {
+    }
+    fn leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {}
+    fn motion(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice, _x: f64, _y: f64) {}
+    fn selection(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {}
+    fn drop_performed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {}
+}
+
+impl DataOfferHandler for Daemon {
+    fn source_actions(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &mut DragOffer,
+        _: DndAction,
+    ) {
+    }
+    fn selected_action(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &mut DragOffer,
+        _: DndAction,
+    ) {
+    }
+}
+
 impl ProvidesRegistryState for Daemon {
     fn registry(&mut self) -> &mut RegistryState {
         &mut self.registry_state
@@ -286,6 +410,7 @@ impl ProvidesRegistryState for Daemon {
     registry_handlers![OutputState, SeatState];
 }
 
+delegate_data_device!(Daemon);
 delegate_compositor!(Daemon);
 delegate_output!(Daemon);
 delegate_shm!(Daemon);
