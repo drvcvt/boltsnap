@@ -420,6 +420,8 @@ name = "boltsnap"
 version = "0.4.2"
 dependencies = [
  "arboard",
+ "calloop 0.13.0",
+ "calloop-wayland-source 0.3.0",
  "eframe",
  "egui-phosphor",
  "image",

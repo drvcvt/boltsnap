@@ -21,6 +21,10 @@ libwayshot = "0.7"
 wl-clipboard-rs = "0.9"
 smithay-client-toolkit = "0.19"
 wayland-client = "0.31"
+# SCTK 0.19 keeps calloop optional and does not re-export it, so depend on the
+# matching versions directly to drive a unified Wayland + unix-socket event loop.
+calloop = "0.13"
+calloop-wayland-source = "0.3"
 x11rb = "0.13"
 arboard = { version = "3.4", default-features = false, features = ["image-data"] }
 
