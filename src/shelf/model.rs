@@ -6,6 +6,9 @@ pub struct Thumb {
     pub id: u64,
     pub png_path: PathBuf,
     pub thumb: RgbaImage,
+    /// Capture mode label ("area"/"full"/…). Retained with the thumbnail for
+    /// future display/grouping; not surfaced in the UI yet.
+    #[allow(dead_code)]
     pub source: String,
 }
 

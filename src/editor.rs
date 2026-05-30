@@ -764,7 +764,7 @@ pub fn run_editor(
     Ok(out_clone)
 }
 
-pub fn render_annotations(base: &RgbaImage, annotations: &[Annotation]) -> RgbaImage {
+fn render_annotations(base: &RgbaImage, annotations: &[Annotation]) -> RgbaImage {
     let mut out = base.clone();
     for ann in annotations {
         if ann.points.len() < 2 {
