@@ -3,7 +3,7 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
-use image::{DynamicImage, Rgba, RgbaImage, imageops};
+use image::{DynamicImage, RgbaImage, imageops};
 use serde_json::Value;
 
 use crate::paths::has_cmd;
