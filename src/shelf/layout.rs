@@ -55,8 +55,10 @@ impl Layout {
 
     /// Icon strip lives at the thumb's top-right: [edit][copy][close], close rightmost.
     fn icon_rect(&self, r: &ThumbRect, slot_from_right: u32, cfg: &LayoutConfig) -> (u32, u32, u32, u32) {
-        let right = r.x + r.w - cfg.pad_icon;
-        let x = right - (slot_from_right + 1) * cfg.icon - slot_from_right * cfg.icon_gap;
+        let right = (r.x + r.w).saturating_sub(cfg.pad_icon);
+        let x = right
+            .saturating_sub((slot_from_right + 1) * cfg.icon)
+            .saturating_sub(slot_from_right * cfg.icon_gap);
         let y = r.y + cfg.pad_icon;
         (x, y, cfg.icon, cfg.icon)
     }
