@@ -1,6 +1,6 @@
 # boltsnap Screenshot-Shelf — Design (Phase 1)
 
-**Status:** approved (design), pending implementation plan
+**Status:** approved (design); plan written at `docs/superpowers/plans/2026-05-30-screenshot-shelf.md`
 **Datum:** 2026-05-30
 **Branch:** `feat/screenshot-shelf`
 **Scope:** Phase 1 — schwebende Screenshot-Shelf. Phase 2 (Screen-Recording) ist
