@@ -35,6 +35,19 @@ pub fn print_doctor() {
     println!("  Wayland area/win:  in-process selection overlay (eframe)");
     println!("  Wayland active win: hyprctl on Hyprland");
     println!("  Clipboard:         in-process via arboard (X11) and wl-clipboard-rs (Wayland)");
+    println!();
+    println!("Screenshot shelf (Wayland / wlroots):");
+    let on_wayland = env::var_os("WAYLAND_DISPLAY").is_some();
+    println!("  wayland session:   {}", if on_wayland { "yes" } else { "no" });
+    println!(
+        "  shelf daemon:      {}",
+        if crate::ipc::daemon_alive() {
+            "running"
+        } else {
+            "not running (auto-starts on first wayland capture)"
+        }
+    );
+    println!("  shelf socket:      {}", crate::ipc::socket_path().display());
 }
 
 pub fn self_test() -> DynResult<()> {
