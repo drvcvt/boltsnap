@@ -148,6 +148,7 @@ Usage:
   boltsnap --edit                         open last screenshot in editor
   boltsnap [area|window|full] --edit      capture then edit
   boltsnap edit [IMAGE] [-o PATH] [--no-copy]
+  boltsnap daemon                         run the screenshot shelf (auto-started on demand)
   boltsnap doctor
 
 Examples:
@@ -236,6 +237,7 @@ fn run() -> DynResult<()> {
             Ok(())
         }
         "self-test" => self_test(),
+        "daemon" => crate::shelf::run_daemon(),
         "__serve-clipboard" => {
             // Detached child kept alive to serve Wayland paste requests.
             let path = args
