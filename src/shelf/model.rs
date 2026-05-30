@@ -49,10 +49,13 @@ impl ShelfModel {
         }
     }
 
+    /// Used by tests and reserved for shelf-state queries; not yet read by the binary.
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.thumbs.is_empty()
     }
 
+    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.thumbs.len()
     }
