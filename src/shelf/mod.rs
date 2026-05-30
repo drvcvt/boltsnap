@@ -113,8 +113,47 @@ pub fn run_daemon() -> DynResult<()> {
 }
 
 impl Daemon {
+    /// Recompute layout from the model and resize the layer surface to match.
+    fn relayout(&mut self) {
+        let sizes: Vec<(u64, u32, u32)> = self
+            .model
+            .newest_first()
+            .map(|t| (t.id, t.thumb.width(), t.thumb.height()))
+            .collect();
+        self.layout = Layout::compute(&sizes, &self.cfg);
+        self.layer.set_size(self.layout.width, self.layout.height);
+    }
+
     fn draw(&mut self, _qh: &QueueHandle<Self>) {
-        // filled in Task D2
+        let (w, h) = (self.width.max(1), self.height.max(1));
+        let stride = (w * 4) as i32;
+        // Recreate the buffer each draw; SlotPool hands back a fresh slot when
+        // the compositor still holds the previous one, so this is double-buffer safe.
+        let (buffer, canvas) = match self.pool.create_buffer(
+            w as i32,
+            h as i32,
+            stride,
+            wayland_client::protocol::wl_shm::Format::Argb8888,
+        ) {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+
+        crate::shelf::paint::draw_shelf(
+            canvas,
+            w,
+            h,
+            &self.layout,
+            &self.model,
+            self.hovered,
+            &self.cfg,
+        );
+        // canvas's borrow of self.pool ends here; safe to touch self.layer.
+
+        let surface = self.layer.wl_surface();
+        surface.damage_buffer(0, 0, w as i32, h as i32);
+        let _ = buffer.attach_to(surface);
+        self.layer.commit();
     }
 }
 
