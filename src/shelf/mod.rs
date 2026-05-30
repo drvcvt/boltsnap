@@ -124,6 +124,27 @@ impl Daemon {
         self.layer.set_size(self.layout.width, self.layout.height);
     }
 
+    /// Ingest a PNG: persist a daemon-owned temp copy, scale a thumbnail, show it.
+    fn add_png(&mut self, png: &[u8], source: &str, qh: &QueueHandle<Self>) {
+        let img = match image::load_from_memory(png) {
+            Ok(i) => i.to_rgba8(),
+            Err(e) => {
+                eprintln!("boltsnap daemon: bad PNG: {e}");
+                return;
+            }
+        };
+        // daemon-owned temp file for the editor + drag uri-list
+        let path = crate::paths::temp_png("shelf");
+        if let Err(e) = std::fs::write(&path, png) {
+            eprintln!("boltsnap daemon: temp write failed: {e}");
+            return;
+        }
+        let thumb = crate::shelf::thumbnail::make_thumbnail(&img, 170, 120);
+        self.model.add(path, thumb, source.to_string());
+        self.relayout();
+        self.draw(qh);
+    }
+
     fn draw(&mut self, _qh: &QueueHandle<Self>) {
         let (w, h) = (self.width.max(1), self.height.max(1));
         let stride = (w * 4) as i32;
