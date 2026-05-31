@@ -115,6 +115,12 @@ struct SelectApp {
     finalized: bool,
     base: RgbaImage,
     result: std::sync::Arc<std::sync::Mutex<Option<RgbaImage>>>,
+    /// Frames spent waiting for the compositor to make us fullscreen. The
+    /// xdg-toplevel maps at a default size in a corner for a frame or two before
+    /// the fullscreen configure arrives; painting the screenshot then flashes it
+    /// at the wrong size/position. We hold on black until fullscreen (capped so a
+    /// compositor that never reports it can't strand us on a black screen).
+    wait_frames: u32,
 }
 
 impl SelectApp {
@@ -138,6 +144,7 @@ impl SelectApp {
             finalized: false,
             base,
             result,
+            wait_frames: 0,
         }
     }
 
@@ -166,6 +173,25 @@ impl eframe::App for SelectApp {
             *self.result.lock().unwrap() = None;
             self.finalized = true;
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            return;
+        }
+
+        // Don't paint the screenshot until the toplevel actually covers the
+        // monitor. It maps at a default size in a corner for a frame or two
+        // before the fullscreen configure arrives; painting then flashes the
+        // bright image at the wrong size/position. Gate on the real window size
+        // (winit's fullscreen flag can echo our *request* before the compositor
+        // resizes, so it's unreliable here). Until ready the black clear_color
+        // shows; capped so a missing monitor_size can't strand us on black.
+        let monitor = ctx.input(|i| i.viewport().monitor_size);
+        let screen = ctx.content_rect().size();
+        let covers_monitor = match monitor {
+            Some(m) if m.x > 1.0 && m.y > 1.0 => screen.x >= m.x * 0.85 && screen.y >= m.y * 0.85,
+            _ => false,
+        };
+        if !covers_monitor && self.wait_frames < 8 {
+            self.wait_frames += 1;
+            ctx.request_repaint();
             return;
         }
 
