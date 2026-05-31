@@ -1,6 +1,7 @@
 pub mod layout;
 pub mod model;
 pub mod paint;
+pub mod preview;
 pub mod thumbnail;
 
 use std::os::unix::net::UnixListener;
@@ -20,7 +21,7 @@ use smithay_client_toolkit::{
     registry_handlers,
     seat::{
         Capability, SeatHandler, SeatState,
-        pointer::{BTN_LEFT, PointerEvent, PointerEventKind, PointerHandler},
+        pointer::{BTN_LEFT, BTN_RIGHT, PointerEvent, PointerEventKind, PointerHandler},
     },
     shell::{
         WaylandSurface,
@@ -66,6 +67,9 @@ pub struct Daemon {
     drag_path: Option<std::path::PathBuf>,
     drop_ok: bool,
     icon_surface: Option<WlSurface>,
+    /// Dedicated pool kept alive for the whole drag so the shelf's `pool` can't
+    /// reuse the icon's slot and turn it into a "ghost".
+    drag_icon_pool: Option<SlotPool>,
 
     model: ShelfModel,
     layout: Layout,
@@ -209,6 +213,7 @@ pub fn run_daemon() -> DynResult<()> {
         data_device: None,
         drag_source: None,
         drag_path: None,
+        drag_icon_pool: None,
         drop_ok: false,
         icon_surface: None,
         model: ShelfModel::new(),
@@ -388,18 +393,27 @@ impl Daemon {
         self.draw(qh);
     }
 
+    /// Copy the full image of the card under the cursor to the clipboard.
+    fn copy_card(&mut self, id: u64) {
+        if let Some(t) = self.model.get(id) {
+            let path = t.png_path.clone();
+            if let Err(e) = crate::clipboard::copy_to_clipboard(&path, crate::Backend::Wayland) {
+                eprintln!("boltsnap daemon: copy failed: {e}");
+            }
+        }
+    }
+
+    /// Open the enlarge view for thumbnail `id`. (Stub; the overlay surface is
+    /// wired up in the preview task.)
+    fn open_preview(&mut self, id: u64) {
+        eprintln!("boltsnap daemon: preview requested for {id} (not yet implemented)");
+    }
+
     /// Act on a completed (non-drag) left click.
     fn on_click(&mut self, hit: Hit, redraw: &mut bool) {
         match hit {
             Hit::Body(id) => {
-                if let Some(t) = self.model.get(id) {
-                    let path = t.png_path.clone();
-                    if let Err(e) =
-                        crate::clipboard::copy_to_clipboard(&path, crate::Backend::Wayland)
-                    {
-                        eprintln!("boltsnap daemon: copy failed: {e}");
-                    }
-                }
+                self.open_preview(id);
             }
             Hit::Close(id) => {
                 if let Some(t) = self.model.remove(id) {
@@ -436,21 +450,26 @@ impl Daemon {
             None => return,
         };
 
-        // Build a drag icon surface from the thumbnail so it follows the cursor.
+        // Build a drag icon from the thumbnail, in its OWN pool kept alive for the
+        // whole drag — the shelf's `pool` would otherwise reuse the slot mid-drag
+        // and leave a "ghost". Crisp Lanczos scale, ~85% opacity, rounded corners.
         let icon = self.compositor.create_surface(&qh);
         if let Some(t) = self.model.get(id) {
             let (iw, ih) = t.thumb.dimensions();
             let stride = (iw * 4) as i32;
-            if let Ok((buf, canvas)) = self.pool.create_buffer(
-                iw as i32,
-                ih as i32,
-                stride,
-                wayland_client::protocol::wl_shm::Format::Argb8888,
-            ) {
-                crate::shelf::paint::clear(canvas);
-                crate::shelf::paint::blit_thumb_card(canvas, iw, ih, &t.thumb, 0, 0);
-                let _ = buf.attach_to(&icon);
-                icon.commit();
+            let bytes = crate::shelf::paint::build_drag_icon(&t.thumb, iw, ih, 10.0, 0.85);
+            if let Ok(mut pool) = SlotPool::new((iw * ih * 4) as usize, &self.shm) {
+                if let Ok((buf, canvas)) = pool.create_buffer(
+                    iw as i32,
+                    ih as i32,
+                    stride,
+                    wayland_client::protocol::wl_shm::Format::Argb8888,
+                ) {
+                    canvas.copy_from_slice(&bytes);
+                    let _ = buf.attach_to(&icon);
+                    icon.commit();
+                }
+                self.drag_icon_pool = Some(pool);
             }
         }
 
@@ -679,6 +698,14 @@ impl PointerHandler for Daemon {
                         });
                     }
                 }
+                PointerEventKind::Press { button, .. } if button == BTN_RIGHT => {
+                    if let Some(hit) = self.layout.hit(x, y, &self.cfg) {
+                        let id = match hit {
+                            Hit::Body(i) | Hit::Edit(i) | Hit::Close(i) => i,
+                        };
+                        self.copy_card(id);
+                    }
+                }
                 PointerEventKind::Release { button, .. } if button == BTN_LEFT => {
                     if let Some(p) = self.press.take() {
                         if !p.dragging {
@@ -760,6 +787,7 @@ impl DataSourceHandler for Daemon {
         self.drag_source = None;
         self.drag_path = None;
         self.icon_surface = None;
+        self.drag_icon_pool = None;
         self.press = None;
     }
 
@@ -771,6 +799,7 @@ impl DataSourceHandler for Daemon {
         self.drag_source = None;
         self.drag_path = None;
         self.icon_surface = None;
+        self.drag_icon_pool = None;
         self.press = None;
     }
 
