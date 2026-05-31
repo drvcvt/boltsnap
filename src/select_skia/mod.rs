@@ -80,8 +80,10 @@ where
         surf_w: 0,
         surf_h: 0,
         configured: false,
-        drag_start: None,
-        drag_now: None,
+        mode: Mode::Idle,
+        interaction: None,
+        cursor: (0.0, 0.0),
+        alt_held: false,
         result: None,
         done: false,
         qh: qh.clone(),
@@ -144,8 +146,15 @@ struct Selector {
     surf_w: u32,
     surf_h: u32,
     configured: bool,
-    drag_start: Option<(f64, f64)>,
-    drag_now: Option<(f64, f64)>,
+    /// Current interaction phase.
+    mode: Mode,
+    /// Active press interaction while in Editing (resize/move), with whether the
+    /// pointer has moved enough to count as a drag (vs a click-to-confirm).
+    interaction: Option<Interaction>,
+    /// Last pointer position (so the Alt magnifier can follow the cursor).
+    cursor: (f64, f64),
+    /// Alt is held → show the magnifier (consumed in Task 11).
+    alt_held: bool,
     result: Option<RgbaImage>,
     done: bool,
     /// QueueHandle for requesting frame callbacks from `draw`.
@@ -154,10 +163,36 @@ struct Selector {
     frame_pending: bool,
     /// A redraw is owed (selection changed) and runs on the next frame callback.
     needs_redraw: bool,
-    /// Skip the editable phase: release in Drawing confirms immediately. Consumed in Task 8.
-    #[allow(dead_code)]
+    /// Skip the editable phase: release in Drawing confirms immediately.
     instant: bool,
 }
+
+#[derive(Clone, Copy)]
+enum Mode {
+    /// No selection yet; waiting for a press.
+    Idle,
+    /// First drag in progress, from `anchor` to `now`.
+    Drawing { anchor: (f64, f64), now: (f64, f64) },
+    /// Committed, editable selection.
+    Editing { rect: edit::Rect },
+}
+
+#[derive(Clone, Copy)]
+enum Interaction {
+    /// Resizing via a handle.
+    Resize { handle: edit::Handle },
+    /// Moving the whole rect; `grab` is cursor-minus-origin at press time.
+    Move { grab: (f64, f64) },
+    /// Pressed inside with no drag yet — becomes a confirm on release if still no drag.
+    ClickInside,
+}
+
+/// Handle hit radius (px) and minimum selection size (px).
+const HANDLE_R: f64 = 9.0;
+const MIN_SEL: f64 = 4.0;
+/// Pixels of motion before a press counts as a drag rather than a click.
+#[allow(dead_code)] // consumed in a later task
+const DRAG_SLOP: f64 = 3.0;
 
 impl Selector {
     /// Pick a concrete `wl_output` on the focused monitor (Hyprland), falling
@@ -204,15 +239,15 @@ impl Selector {
         // layer overlay is not resized by the compositor, so the buffer below and
         // `base` always agree; if that ever changes, rebuild `base` on resize.
         let (w, h) = (self.surf_w.max(1), self.surf_h.max(1));
-        let sel = match (self.drag_start, self.drag_now) {
-            (Some(a), Some(b)) => {
-                let x = a.0.min(b.0) as f32;
-                let y = a.1.min(b.1) as f32;
-                let sw = (a.0.max(b.0) - a.0.min(b.0)) as f32;
-                let sh = (a.1.max(b.1) - a.1.min(b.1)) as f32;
-                Some((x, y, sw, sh))
+        let sel = match self.mode {
+            Mode::Idle => None,
+            Mode::Drawing { anchor, now } => {
+                let r = edit::Rect::from_corners(anchor, now);
+                Some((r.x as f32, r.y as f32, r.w as f32, r.h as f32))
             }
-            _ => None,
+            Mode::Editing { rect } => {
+                Some((rect.x as f32, rect.y as f32, rect.w as f32, rect.h as f32))
+            }
         };
 
         let mut frame = base.clone();
@@ -242,24 +277,21 @@ impl Selector {
         self.needs_redraw = false;
     }
 
-    /// Confirm the current drag: crop the full-res image and finish, or reset
-    /// the drag if it was sub-pixel.
-    fn confirm(&mut self) {
-        let (Some(a), Some(b)) = (self.drag_start, self.drag_now) else {
-            return;
-        };
+    /// Crop the full-res capture to `rect` (surface px) and finish, or return to
+    /// Idle if the rect is sub-pixel.
+    fn confirm_rect(&mut self, rect: edit::Rect) {
         let Some(img) = self.image.as_ref() else {
+            self.done = true;
             return;
         };
         let (iw, ih) = (img.width(), img.height());
-        match render::rect_to_image(a, b, self.surf_w, self.surf_h, iw, ih) {
+        match render::rect_to_image((rect.x, rect.y), (rect.right(), rect.bottom()), self.surf_w, self.surf_h, iw, ih) {
             Some((x, y, w, h)) => {
                 self.result = Some(image::imageops::crop_imm(img, x, y, w, h).to_image());
                 self.done = true;
             }
             None => {
-                self.drag_start = None;
-                self.drag_now = None;
+                self.mode = Mode::Idle;
                 self.request_redraw();
             }
         }
@@ -360,31 +392,96 @@ impl PointerHandler for Selector {
     fn pointer_frame(&mut self, conn: &Connection, _: &QueueHandle<Self>, _: &WlPointer, events: &[PointerEvent]) {
         let mut redraw = false;
         for ev in events {
-            // Show a crosshair over the overlay instead of inheriting the prior
-            // window's cursor or the compositor's busy "watch" cursor.
             if matches!(ev.kind, PointerEventKind::Enter { .. }) {
                 if let Some(p) = self.pointer.as_ref() {
                     let _ = p.set_cursor(conn, CursorIcon::Crosshair);
                 }
             }
             let (x, y) = ev.position;
+            self.cursor = (x, y);
             match ev.kind {
                 PointerEventKind::Press { button, .. } if button == BTN_LEFT => {
-                    self.drag_start = Some((x, y));
-                    self.drag_now = Some((x, y));
+                    match self.mode {
+                        Mode::Editing { rect } => {
+                            match edit::hit_region(rect, (x, y), HANDLE_R) {
+                                edit::Region::Handle(h) => {
+                                    self.interaction = Some(Interaction::Resize { handle: h });
+                                }
+                                edit::Region::Inside => {
+                                    self.interaction = Some(Interaction::ClickInside);
+                                }
+                                edit::Region::Outside => {
+                                    self.mode = Mode::Drawing { anchor: (x, y), now: (x, y) };
+                                    self.interaction = None;
+                                }
+                            }
+                        }
+                        _ => {
+                            self.mode = Mode::Drawing { anchor: (x, y), now: (x, y) };
+                            self.interaction = None;
+                        }
+                    }
                     redraw = true;
                 }
-                PointerEventKind::Motion { .. } => {
-                    if self.drag_start.is_some() {
-                        self.drag_now = Some((x, y));
+                PointerEventKind::Motion { .. } => match self.mode {
+                    Mode::Drawing { anchor, .. } => {
+                        self.mode = Mode::Drawing { anchor, now: (x, y) };
                         redraw = true;
                     }
-                }
+                    Mode::Editing { rect } => {
+                        match self.interaction {
+                            Some(Interaction::Resize { handle }) => {
+                                let nr = edit::resize_rect(rect, handle, (x, y), MIN_SEL, self.surf_w as f64, self.surf_h as f64);
+                                self.mode = Mode::Editing { rect: nr };
+                                redraw = true;
+                            }
+                            Some(Interaction::Move { grab }) => {
+                                let target = edit::Rect { x: x - grab.0, y: y - grab.1, w: rect.w, h: rect.h };
+                                let nr = edit::move_rect(target, 0.0, 0.0, self.surf_w as f64, self.surf_h as f64);
+                                self.mode = Mode::Editing { rect: nr };
+                                redraw = true;
+                            }
+                            Some(Interaction::ClickInside) => {
+                                // Began moving after pressing inside: promote to a move.
+                                self.interaction = Some(Interaction::Move { grab: (x - rect.x, y - rect.y) });
+                                redraw = true;
+                            }
+                            None => {}
+                        }
+                        if self.alt_held {
+                            redraw = true;
+                        }
+                    }
+                    Mode::Idle => {
+                        if self.alt_held {
+                            redraw = true;
+                        }
+                    }
+                },
                 PointerEventKind::Release { button, .. } if button == BTN_LEFT => {
-                    if self.drag_start.is_some() {
-                        self.drag_now = Some((x, y));
-                        self.confirm();
-                        return; // confirm() may have set done / drawn already
+                    match self.mode {
+                        Mode::Drawing { anchor, now } => {
+                            let rect = edit::Rect::from_corners(anchor, now);
+                            if rect.w < MIN_SEL || rect.h < MIN_SEL {
+                                self.mode = Mode::Idle;
+                            } else if self.instant {
+                                self.confirm_rect(rect);
+                                return;
+                            } else {
+                                self.mode = Mode::Editing { rect };
+                            }
+                            self.interaction = None;
+                            redraw = true;
+                        }
+                        Mode::Editing { rect } => {
+                            // A press-inside with no drag is a confirm click.
+                            if matches!(self.interaction, Some(Interaction::ClickInside)) {
+                                self.confirm_rect(rect);
+                                return;
+                            }
+                            self.interaction = None;
+                        }
+                        Mode::Idle => {}
                     }
                 }
                 _ => {}
@@ -400,13 +497,26 @@ impl KeyboardHandler for Selector {
     fn enter(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlKeyboard, _: &WlSurface, _: u32, _: &[u32], _: &[Keysym]) {}
     fn leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlKeyboard, _: &WlSurface, _: u32) {}
     fn press_key(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlKeyboard, _: u32, event: KeyEvent) {
-        if event.keysym == Keysym::Escape {
-            self.result = None;
-            self.done = true;
+        match event.keysym {
+            Keysym::Escape => {
+                self.result = None;
+                self.done = true;
+            }
+            Keysym::Return | Keysym::KP_Enter => {
+                if let Mode::Editing { rect } = self.mode {
+                    self.confirm_rect(rect);
+                }
+            }
+            _ => {}
         }
     }
     fn release_key(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlKeyboard, _: u32, _: KeyEvent) {}
-    fn update_modifiers(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlKeyboard, _: u32, _: Modifiers, _: u32) {}
+    fn update_modifiers(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlKeyboard, _: u32, modifiers: Modifiers, _: u32) {
+        if self.alt_held != modifiers.alt {
+            self.alt_held = modifiers.alt;
+            self.request_redraw();
+        }
+    }
 }
 
 impl ShmHandler for Selector {
