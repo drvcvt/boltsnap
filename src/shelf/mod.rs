@@ -757,14 +757,15 @@ impl Daemon {
             self.shelf_pending_draw = true;
             return;
         }
-        // Don't commit the origin/shelf surface while a drag is in flight: extra
-        // commits during the drag grab can make wlroots tear the drag down (the
-        // icon vanishes, most reliably when the cursor crosses to another output).
-        // The shelf content doesn't change during a drag; clear_drag() repaints
-        // once when it ends.
-        if self.drag_source.is_some() {
-            return;
-        }
+        // NOTE: we deliberately do NOT skip drawing while a drag is active.
+        // An earlier version early-returned here whenever `drag_source.is_some()`
+        // to avoid origin-surface commits during the grab — but if a drag never
+        // delivers a terminal event (e.g. the compositor rejects start_drag in
+        // some modes and sends neither dnd_finished nor cancelled), `drag_source`
+        // stays Some forever and the shelf is permanently frozen (dead to clicks,
+        // remove, preview). That latch is far worse than the redraw it prevented,
+        // and the real freeze cause (a synchronous pipe write) is fixed by
+        // threading send_request, so this suppression is no longer needed.
         let layer = match self.layer.as_ref() {
             Some(l) => l,
             None => return,
