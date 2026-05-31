@@ -249,11 +249,15 @@ pub fn draw_magnifier(pm: &mut Pixmap, base: &Pixmap, cursor: (f64, f64), surf_w
             pm.data_mut()[di + 3] = 255;
         }
     }
-    // Center-pixel marker: a small white-outlined box at the loupe center.
+    // Cursor-pixel marker: track the cursor's actual pixel WITHIN the (possibly
+    // edge-clamped) sample window, so it follows the cursor instead of sticking at
+    // the loupe centre when the window clamps near a screen edge (~SAMPLE/2 px).
     let mut mark = Paint::default();
     mark.set_color_rgba8(255, 80, 80, 255);
-    let cxp = lx as f32 + (LOUPE as f32 / 2.0) - zoom as f32 / 2.0;
-    let cyp = ly as f32 + (LOUPE as f32 / 2.0) - zoom as f32 / 2.0;
+    let off_x = (cursor.0.round() as i64 - sx as i64).clamp(0, sw as i64 - 1) as f32;
+    let off_y = (cursor.1.round() as i64 - sy as i64).clamp(0, sh as i64 - 1) as f32;
+    let cxp = lx as f32 + off_x * zoom as f32;
+    let cyp = ly as f32 + off_y * zoom as f32;
     if let Some(r) = Rect::from_xywh(cxp, cyp, zoom as f32, zoom as f32) {
         let mut pb = PathBuilder::new();
         pb.push_rect(r);
