@@ -2,7 +2,6 @@
 //! Parallel to `src/select.rs` (egui); same public signature so it is a drop-in.
 
 mod edit;
-mod font;
 mod render;
 
 use std::thread;
