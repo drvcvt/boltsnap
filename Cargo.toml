@@ -33,6 +33,20 @@ lto = "thin"
 codegen-units = 1
 strip = true
 
+# The user runs the debug build (~/.cargo/bin/boltsnap -> target/debug). Image
+# decode/resize is pure CPU and unbearably slow when compiled unoptimized (a
+# Lanczos3/Triangle resize of a multi-megapixel capture took seconds), stalling
+# the shelf preview. Optimize just the imaging dependencies in dev builds — our
+# own crate stays unoptimized for fast incremental compiles + good backtraces.
+[profile.dev.package.image]
+opt-level = 3
+[profile.dev.package.png]
+opt-level = 3
+[profile.dev.package.fdeflate]
+opt-level = 3
+[profile.dev.package.zune-jpeg]
+opt-level = 3
+
 [package.metadata.deb]
 maintainer = "drvcvt <mattihoellige@gmail.com>"
 copyright = "2026, boltsnap contributors"
