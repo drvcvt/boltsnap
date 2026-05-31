@@ -252,7 +252,17 @@ impl Selector {
         };
 
         let mut frame = base.clone();
-        render::render_overlay(&mut frame, sel);
+        render::dim_and_restore(&mut frame, sel);
+        if let Some(s) = sel {
+            render::draw_border(&mut frame, s);
+            if matches!(self.mode, Mode::Editing { .. }) {
+                render::draw_handles(&mut frame, s);
+            }
+            render::draw_badge(&mut frame, s, self.surf_w, self.surf_h);
+        }
+        if self.alt_held {
+            render::draw_magnifier(&mut frame, base, self.cursor, self.surf_w, self.surf_h);
+        }
 
         let stride = (w * 4) as i32;
         let (buffer, canvas) = match self.pool.create_buffer(

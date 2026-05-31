@@ -73,13 +73,10 @@ pub fn pixmap_to_argb8888(pm: &Pixmap, canvas: &mut [u8]) {
 const DIM_ALPHA: u8 = 110;
 /// Selection border width, px. Matches the egui selector.
 const BORDER_W: f32 = 1.5;
-/// Label render scale for the 5x7 font (≈14px tall, close to egui's 12px).
-const LABEL_SCALE: u32 = 2;
-
 /// Draw the selection overlay onto `pm` (which already contains the opaque
 /// screenshot). `sel` is the surface-space selection `(x, y, w, h)`; `None`
 /// means "no selection yet" — dim the whole surface.
-pub fn render_overlay(pm: &mut Pixmap, sel: Option<(f32, f32, f32, f32)>) {
+pub fn dim_and_restore(pm: &mut Pixmap, sel: Option<(f32, f32, f32, f32)>) {
     let w = pm.width();
     let h = pm.height();
 
@@ -120,7 +117,7 @@ pub fn render_overlay(pm: &mut Pixmap, sel: Option<(f32, f32, f32, f32)>) {
         pm.fill_rect(r, &dim, Transform::identity(), None);
     }
 
-    let (Some((x0, y0, x1, y1)), Some(saved), Some((sx, sy, sw, sh))) = (bounds, saved, sel) else {
+    let (Some((x0, y0, x1, y1)), Some(saved)) = (bounds, saved) else {
         return;
     };
 
@@ -132,27 +129,148 @@ pub fn render_overlay(pm: &mut Pixmap, sel: Option<(f32, f32, f32, f32)>) {
         let src = i * span;
         data[start..start + span].copy_from_slice(&saved[src..src + span]);
     }
+}
 
-    // White 1.5px border around the selection, on top of the bright interior.
+/// Stroke the selection border: white, with a 1px darker outline just outside so
+/// it reads on light and dark screenshots.
+pub fn draw_border(pm: &mut Pixmap, sel: (f32, f32, f32, f32)) {
+    let (x, y, w, h) = sel;
+    if w < 1.0 || h < 1.0 {
+        return;
+    }
+    let mut dark = Paint::default();
+    dark.set_color_rgba8(0, 0, 0, 150);
+    dark.anti_alias = true;
     let mut white = Paint::default();
     white.set_color_rgba8(255, 255, 255, 255);
     white.anti_alias = true;
-    if let Some(r) = Rect::from_xywh(sx, sy, sw, sh) {
+    // Dark outline slightly outside, then the white border on top.
+    for (inset, paint, wdt) in [(-1.0_f32, &dark, BORDER_W + 2.0), (0.0, &white, BORDER_W)] {
+        if let Some(r) = Rect::from_xywh(x + inset, y + inset, w - 2.0 * inset, h - 2.0 * inset) {
+            let mut pb = PathBuilder::new();
+            pb.push_rect(r);
+            if let Some(path) = pb.finish() {
+                let stroke = Stroke { width: wdt, ..Default::default() };
+                pm.stroke_path(&path, paint, &stroke, Transform::identity(), None);
+            }
+        }
+    }
+}
+
+/// Draw the 8 resize handles (corners + edge midpoints) as white squares with a
+/// dark outline, centered on the selection's corners/edge-midpoints.
+pub fn draw_handles(pm: &mut Pixmap, sel: (f32, f32, f32, f32)) {
+    let (x, y, w, h) = sel;
+    if w < 1.0 || h < 1.0 {
+        return;
+    }
+    const HS: f32 = 9.0; // handle square side
+    let (l, t, r, b) = (x, y, x + w, y + h);
+    let (cx, cy) = (x + w / 2.0, y + h / 2.0);
+    let centers = [
+        (l, t), (cx, t), (r, t), (r, cy), (r, b), (cx, b), (l, b), (l, cy),
+    ];
+    for (hx, hy) in centers {
+        let mut dark = Paint::default();
+        dark.set_color_rgba8(0, 0, 0, 180);
+        let mut white = Paint::default();
+        white.set_color_rgba8(255, 255, 255, 255);
+        if let Some(r) = Rect::from_xywh(hx - HS / 2.0 - 1.0, hy - HS / 2.0 - 1.0, HS + 2.0, HS + 2.0) {
+            pm.fill_rect(r, &dark, Transform::identity(), None);
+        }
+        if let Some(r) = Rect::from_xywh(hx - HS / 2.0, hy - HS / 2.0, HS, HS) {
+            pm.fill_rect(r, &white, Transform::identity(), None);
+        }
+    }
+}
+
+/// Draw the `W×H` dimension badge: a rounded-ish dark pill with the bitmap label.
+/// Placed by `edit::badge_rect` (above-left of the selection, flipping at edges).
+pub fn draw_badge(pm: &mut Pixmap, sel: (f32, f32, f32, f32), surf_w: u32, surf_h: u32) {
+    let (x, y, w, h) = sel;
+    if w < 1.0 || h < 1.0 {
+        return;
+    }
+    let label = format!("{}×{}", w.round() as i32, h.round() as i32);
+    let scale = 2u32;
+    let pad = 6.0_f64;
+    let text_w = font::label_width(&label, scale) as f64;
+    let text_h = font::glyph_h_px(scale) as f64;
+    let rect = crate::select_skia::edit::Rect { x: x as f64, y: y as f64, w: w as f64, h: h as f64 };
+    let (bx, by, bw, bh) = crate::select_skia::edit::badge_rect(rect, text_w, text_h, pad, 6.0, surf_w as f64, surf_h as f64);
+    let mut pill = Paint::default();
+    pill.set_color_rgba8(12, 12, 16, 200);
+    pill.anti_alias = true;
+    if let Some(r) = Rect::from_xywh(bx as f32, by as f32, bw as f32, bh as f32) {
+        pm.fill_rect(r, &pill, Transform::identity(), None);
+    }
+    // Label inset by the padding.
+    draw_label(pm, &label, (bx + pad) as i32, (by + pad) as i32, scale);
+}
+
+/// Draw the magnifier loupe at the cursor: a `LOUPE`px square sampling an
+/// `SAMPLE`px window of `base` around `cursor`, nearest-neighbor upscaled, with a
+/// pixel grid, a center-pixel marker, and a border. Placed by `magnifier_placement`.
+pub fn draw_magnifier(pm: &mut Pixmap, base: &Pixmap, cursor: (f64, f64), surf_w: u32, surf_h: u32) {
+    use crate::select_skia::edit::{magnifier_placement, magnifier_source};
+    const LOUPE: u32 = 120;
+    const SAMPLE: u32 = 30;
+    let (lx, ly) = magnifier_placement(cursor, LOUPE as f64, 24.0, surf_w as f64, surf_h as f64);
+    let (lx, ly) = (lx.round() as u32, ly.round() as u32);
+    let (sx, sy, sw, sh) = magnifier_source(cursor, SAMPLE, base.width(), base.height());
+    if sw == 0 || sh == 0 {
+        return;
+    }
+    let zoom = LOUPE / sw.max(1); // integer zoom
+    let bd = base.data();
+    let bw = base.width();
+    let pw = pm.width();
+    let ph = pm.height();
+    // Blit nearest-neighbor.
+    for dy in 0..(sh * zoom).min(LOUPE) {
+        let oy = ly + dy;
+        if oy >= ph {
+            break;
+        }
+        let svy = sy + dy / zoom;
+        for dx in 0..(sw * zoom).min(LOUPE) {
+            let ox = lx + dx;
+            if ox >= pw {
+                break;
+            }
+            let svx = sx + dx / zoom;
+            let si = ((svy * bw + svx) * 4) as usize;
+            let di = ((oy * pw + ox) * 4) as usize;
+            // pixel grid: darken the first row/col of each zoomed cell
+            let grid = zoom >= 4 && (dx % zoom == 0 || dy % zoom == 0);
+            for c in 0..3 {
+                pm.data_mut()[di + c] = if grid { bd[si + c] / 2 } else { bd[si + c] };
+            }
+            pm.data_mut()[di + 3] = 255;
+        }
+    }
+    // Center-pixel marker: a small white-outlined box at the loupe center.
+    let mut mark = Paint::default();
+    mark.set_color_rgba8(255, 80, 80, 255);
+    let cxp = lx as f32 + (LOUPE as f32 / 2.0) - zoom as f32 / 2.0;
+    let cyp = ly as f32 + (LOUPE as f32 / 2.0) - zoom as f32 / 2.0;
+    if let Some(r) = Rect::from_xywh(cxp, cyp, zoom as f32, zoom as f32) {
         let mut pb = PathBuilder::new();
         pb.push_rect(r);
         if let Some(path) = pb.finish() {
-            let stroke = Stroke {
-                width: BORDER_W,
-                ..Default::default()
-            };
-            pm.stroke_path(&path, &white, &stroke, Transform::identity(), None);
+            pm.stroke_path(&path, &mark, &Stroke { width: 1.5, ..Default::default() }, Transform::identity(), None);
         }
     }
-
-    // Label just above the selection's top-left, like the egui one.
-    let label = format!("{}×{}", sw.round() as i32, sh.round() as i32);
-    let ly = (sy as i32) - 4 - font::glyph_h_px(LABEL_SCALE) as i32;
-    draw_label(pm, &label, sx as i32 + 6, ly.max(0), LABEL_SCALE);
+    // Loupe border.
+    let mut border = Paint::default();
+    border.set_color_rgba8(240, 240, 240, 255);
+    if let Some(r) = Rect::from_xywh(lx as f32, ly as f32, LOUPE as f32, LOUPE as f32) {
+        let mut pb = PathBuilder::new();
+        pb.push_rect(r);
+        if let Some(path) = pb.finish() {
+            pm.stroke_path(&path, &border, &Stroke { width: 2.0, ..Default::default() }, Transform::identity(), None);
+        }
+    }
 }
 
 /// Blit `text` in opaque white at (`x`, `y`) (top-left, surface pixels) using
@@ -251,7 +369,7 @@ mod tests {
         for px in pm.data_mut().chunks_exact_mut(4) {
             px.copy_from_slice(&[255, 0, 0, 255]);
         }
-        render_overlay(&mut pm, Some((40.0, 30.0, 60.0, 20.0)));
+        dim_and_restore(&mut pm, Some((40.0, 30.0, 60.0, 20.0)));
         let at = |x: u32, y: u32| {
             let i = ((y * pm.width() + x) * 4) as usize;
             pm.data()[i] // red channel
@@ -269,7 +387,7 @@ mod tests {
         for px in pm.data_mut().chunks_exact_mut(4) {
             px.copy_from_slice(&[255, 0, 0, 255]);
         }
-        render_overlay(&mut pm, None);
+        dim_and_restore(&mut pm, None);
         let i = ((10 * pm.width() + 10) * 4) as usize;
         assert!(pm.data()[i] < 200, "whole surface should be dimmed");
     }
@@ -286,10 +404,23 @@ mod tests {
         // and can end up undimmed. x=0 is far left of the selection (sx=40.5),
         // so EVERY row there must be fully dimmed (red ~145). A seam shows up as
         // a bright row.
-        render_overlay(&mut pm, Some((40.5, 30.5, 60.0, 20.0)));
+        dim_and_restore(&mut pm, Some((40.5, 30.5, 60.0, 20.0)));
         for y in 0..100u32 {
             let r = pm.data()[((y * 200) * 4) as usize];
             assert!(r < 160, "left column row {y} not fully dimmed: r={r}");
         }
+    }
+
+    #[test]
+    fn draw_handles_marks_corners_white() {
+        use tiny_skia::Pixmap;
+        let mut pm = Pixmap::new(200, 200).unwrap();
+        for px in pm.data_mut().chunks_exact_mut(4) {
+            px.copy_from_slice(&[0, 0, 0, 255]);
+        }
+        draw_handles(&mut pm, (50.0, 50.0, 100.0, 100.0));
+        // A pixel at the top-left corner handle center should be white.
+        let i = ((50 * pm.width() + 50) * 4) as usize;
+        assert!(pm.data()[i] > 200 && pm.data()[i + 1] > 200, "corner handle should be white");
     }
 }

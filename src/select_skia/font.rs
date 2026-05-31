@@ -38,9 +38,7 @@ pub fn glyph(c: char) -> Option<[u8; GLYPH_H]> {
 }
 
 /// Pixel width of `text` at `scale`, summing the advance of every supported
-/// glyph (unsupported chars are skipped). Reserved for label background/clipping
-/// in a later version; tested but not yet used by the overlay.
-#[allow(dead_code)]
+/// glyph (unsupported chars are skipped).
 pub fn label_width(text: &str, scale: u32) -> u32 {
     text.chars().filter(|c| glyph(*c).is_some()).count() as u32 * advance_px(scale)
 }
