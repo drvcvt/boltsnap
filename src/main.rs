@@ -94,6 +94,9 @@ struct Args {
     save: bool,
     output: Option<PathBuf>,
     backend: Backend,
+    /// Use the new tiny-skia/SCTK region selector instead of the egui one.
+    /// Wayland-only; ignored on X11 (no wlr-layer-shell there).
+    new_selector: bool,
 }
 
 impl Default for Args {
@@ -108,6 +111,7 @@ impl Default for Args {
             save: false,
             output: None,
             backend: Backend::Auto,
+            new_selector: false,
         }
     }
 }
@@ -183,6 +187,7 @@ fn parse_args(raw: &[String]) -> DynResult<Args> {
                 args.copy = false;
                 args.copy_explicit = true;
             }
+            "--new" => args.new_selector = true,
             "--save" => args.save = true,
             "-o" | "--output" => {
                 i += 1;
@@ -437,5 +442,19 @@ mod tests {
         assert_eq!(args.image.unwrap(), PathBuf::from("a.png"));
         assert!(!args.copy);
         assert_eq!(args.output.unwrap(), PathBuf::from("b.png"));
+    }
+
+    #[test]
+    fn parser_handles_new_selector_flag() {
+        let args = parse_args(&[
+            "boltsnap".to_string(),
+            "area".to_string(),
+            "--new".to_string(),
+        ])
+        .unwrap();
+        assert!(args.new_selector);
+
+        let default = parse_args(&["boltsnap".to_string(), "area".to_string()]).unwrap();
+        assert!(!default.new_selector);
     }
 }
