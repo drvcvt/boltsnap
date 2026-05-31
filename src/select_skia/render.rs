@@ -41,26 +41,6 @@ pub fn rect_to_image(
     }
 }
 
-/// The four surface-space rectangles (top, bottom, left, right) that together
-/// cover the whole `(surf_w, surf_h)` surface minus the selection `(sx,sy,sw,sh)`.
-/// No overlaps, no gaps. Negative extents are clamped to 0. Matches the egui
-/// selector's four `outside_*` rects.
-pub fn outside_rects(
-    sx: f32,
-    sy: f32,
-    sw: f32,
-    sh: f32,
-    surf_w: f32,
-    surf_h: f32,
-) -> [(f32, f32, f32, f32); 4] {
-    let nn = |v: f32| v.max(0.0);
-    let top = (0.0, 0.0, surf_w, nn(sy));
-    let bottom = (0.0, sy + sh, surf_w, nn(surf_h - (sy + sh)));
-    let left = (0.0, sy, nn(sx), sh);
-    let right = (sx + sw, sy, nn(surf_w - (sx + sw)), sh);
-    [top, bottom, left, right]
-}
-
 /// Build the opaque screenshot base layer as a `Pixmap` sized to the surface.
 /// The capture is opaque, so straight RGBA == premultiplied RGBA and we can
 /// copy bytes directly; if the surface size differs from the image (shouldn't
@@ -100,45 +80,79 @@ const LABEL_SCALE: u32 = 2;
 /// screenshot). `sel` is the surface-space selection `(x, y, w, h)`; `None`
 /// means "no selection yet" — dim the whole surface.
 pub fn render_overlay(pm: &mut Pixmap, sel: Option<(f32, f32, f32, f32)>) {
-    let (w, h) = (pm.width() as f32, pm.height() as f32);
+    let w = pm.width();
+    let h = pm.height();
+
+    // Integer pixel bounds of the selection interior, clamped to the surface.
+    // floor/ceil so the bright region fully covers the selection. `None` when
+    // there is no selection or it is sub-pixel.
+    let bounds = sel.and_then(|(sx, sy, sw, sh)| {
+        if sw < 1.0 || sh < 1.0 {
+            return None;
+        }
+        let x0 = (sx.max(0.0).floor() as u32).min(w);
+        let y0 = (sy.max(0.0).floor() as u32).min(h);
+        let x1 = ((sx + sw).max(0.0).ceil() as u32).min(w);
+        let y1 = ((sy + sh).max(0.0).ceil() as u32).min(h);
+        (x1 > x0 && y1 > y0).then_some((x0, y0, x1, y1))
+    });
+
+    // Save the selection's bright pixels, then dim with a SINGLE full-surface
+    // fill, then write the bright pixels back. One uniform fill (instead of four
+    // rects around the selection) leaves no non-antialiased fractional-edge
+    // seams — those left 1px undimmed rows at the selection/screen boundary.
+    let rowbytes = (w * 4) as usize;
+    let saved = bounds.map(|(x0, y0, x1, y1)| {
+        let span = ((x1 - x0) * 4) as usize;
+        let mut buf = Vec::with_capacity(((y1 - y0) as usize) * span);
+        let data = pm.data();
+        for y in y0..y1 {
+            let start = y as usize * rowbytes + x0 as usize * 4;
+            buf.extend_from_slice(&data[start..start + span]);
+        }
+        buf
+    });
+
     let mut dim = Paint::default();
     dim.set_color_rgba8(0, 0, 0, DIM_ALPHA);
     dim.anti_alias = false;
+    if let Some(r) = Rect::from_xywh(0.0, 0.0, w as f32, h as f32) {
+        pm.fill_rect(r, &dim, Transform::identity(), None);
+    }
 
-    match sel {
-        None => {
-            if let Some(r) = Rect::from_xywh(0.0, 0.0, w, h) {
-                pm.fill_rect(r, &dim, Transform::identity(), None);
-            }
-        }
-        Some((sx, sy, sw, sh)) => {
-            for (rx, ry, rw, rh) in outside_rects(sx, sy, sw, sh, w, h) {
-                if rw > 0.0 && rh > 0.0 {
-                    if let Some(r) = Rect::from_xywh(rx, ry, rw, rh) {
-                        pm.fill_rect(r, &dim, Transform::identity(), None);
-                    }
-                }
-            }
-            let mut white = Paint::default();
-            white.set_color_rgba8(255, 255, 255, 255);
-            white.anti_alias = true;
-            if let Some(r) = Rect::from_xywh(sx, sy, sw, sh) {
-                let mut pb = PathBuilder::new();
-                pb.push_rect(r);
-                if let Some(path) = pb.finish() {
-                    let stroke = Stroke {
-                        width: BORDER_W,
-                        ..Default::default()
-                    };
-                    pm.stroke_path(&path, &white, &stroke, Transform::identity(), None);
-                }
-            }
-            // Label just above the selection's top-left, like the egui one.
-            let label = format!("{}×{}", sw.round() as i32, sh.round() as i32);
-            let ly = (sy as i32) - 4 - font::glyph_h_px(LABEL_SCALE) as i32;
-            draw_label(pm, &label, sx as i32 + 6, ly.max(0), LABEL_SCALE);
+    let (Some((x0, y0, x1, y1)), Some(saved), Some((sx, sy, sw, sh))) = (bounds, saved, sel) else {
+        return;
+    };
+
+    // Restore the bright selection interior (opaque copy on integer bounds).
+    let span = ((x1 - x0) * 4) as usize;
+    let data = pm.data_mut();
+    for (i, y) in (y0..y1).enumerate() {
+        let start = y as usize * rowbytes + x0 as usize * 4;
+        let src = i * span;
+        data[start..start + span].copy_from_slice(&saved[src..src + span]);
+    }
+
+    // White 1.5px border around the selection, on top of the bright interior.
+    let mut white = Paint::default();
+    white.set_color_rgba8(255, 255, 255, 255);
+    white.anti_alias = true;
+    if let Some(r) = Rect::from_xywh(sx, sy, sw, sh) {
+        let mut pb = PathBuilder::new();
+        pb.push_rect(r);
+        if let Some(path) = pb.finish() {
+            let stroke = Stroke {
+                width: BORDER_W,
+                ..Default::default()
+            };
+            pm.stroke_path(&path, &white, &stroke, Transform::identity(), None);
         }
     }
+
+    // Label just above the selection's top-left, like the egui one.
+    let label = format!("{}×{}", sw.round() as i32, sh.round() as i32);
+    let ly = (sy as i32) - 4 - font::glyph_h_px(LABEL_SCALE) as i32;
+    draw_label(pm, &label, sx as i32 + 6, ly.max(0), LABEL_SCALE);
 }
 
 /// Blit `text` in opaque white at (`x`, `y`) (top-left, surface pixels) using
@@ -205,17 +219,6 @@ mod tests {
     }
 
     #[test]
-    fn outside_rects_cover_complement_without_overlap() {
-        let (sw, sh) = (200.0_f32, 100.0_f32);
-        let sel = (40.0_f32, 30.0_f32, 60.0_f32, 20.0_f32); // x,y,w,h
-        let rects = outside_rects(sel.0, sel.1, sel.2, sel.3, sw, sh);
-        let outside_area: f32 = rects.iter().map(|(_, _, w, h)| w * h).sum();
-        let total = sw * sh;
-        let selection = sel.2 * sel.3;
-        assert!((outside_area - (total - selection)).abs() < 0.01, "got {outside_area}");
-    }
-
-    #[test]
     fn pixmap_to_argb8888_swaps_r_and_b_keeps_premult() {
         use tiny_skia::Pixmap;
         let mut pm = Pixmap::new(1, 1).unwrap();
@@ -269,5 +272,24 @@ mod tests {
         render_overlay(&mut pm, None);
         let i = ((10 * pm.width() + 10) * 4) as usize;
         assert!(pm.data()[i] < 200, "whole surface should be dimmed");
+    }
+
+    #[test]
+    fn render_overlay_dim_has_no_undimmed_row_seam() {
+        use tiny_skia::Pixmap;
+        let mut pm = Pixmap::new(200, 100).unwrap();
+        for px in pm.data_mut().chunks_exact_mut(4) {
+            px.copy_from_slice(&[255, 0, 0, 255]);
+        }
+        // Fractional *.5 edges are the worst case for non-AA rect tiling: the
+        // boundary pixel row gets ~0.5 coverage from each neighbouring dim rect
+        // and can end up undimmed. x=0 is far left of the selection (sx=40.5),
+        // so EVERY row there must be fully dimmed (red ~145). A seam shows up as
+        // a bright row.
+        render_overlay(&mut pm, Some((40.5, 30.5, 60.0, 20.0)));
+        for y in 0..100u32 {
+            let r = pm.data()[((y * 200) * 4) as usize];
+            assert!(r < 160, "left column row {y} not fully dimmed: r={r}");
+        }
     }
 }
