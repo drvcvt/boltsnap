@@ -1,9 +1,10 @@
 //! Pure rendering + geometry for the tiny-skia region selector. No Wayland here.
 
-use image::{RgbaImage, imageops};
-use tiny_skia::{Paint, PathBuilder, Pixmap, Rect, Stroke, Transform};
+use std::sync::OnceLock;
 
-use super::font;
+use ab_glyph::{Font, FontRef, PxScale, ScaleFont, point};
+use image::{RgbaImage, imageops};
+use tiny_skia::{FillRule, Paint, PathBuilder, Pixmap, Rect, Stroke, Transform};
 
 /// Map a drag (two surface-space points) to an image-space crop rectangle.
 /// Per-axis normalize against the surface, scale to image pixels, clamp to the
@@ -164,48 +165,123 @@ pub fn draw_handles(pm: &mut Pixmap, sel: (f32, f32, f32, f32)) {
     if w < 1.0 || h < 1.0 {
         return;
     }
-    const HS: f32 = 9.0; // handle square side
+    const HS: f32 = 10.0; // handle square side
+    const RAD: f32 = 3.5; // corner radius — rounded "squircle" handles
     let (l, t, r, b) = (x, y, x + w, y + h);
     let (cx, cy) = (x + w / 2.0, y + h / 2.0);
     let centers = [
         (l, t), (cx, t), (r, t), (r, cy), (r, b), (cx, b), (l, b), (l, cy),
     ];
+    let mut dark = Paint::default();
+    dark.set_color_rgba8(0, 0, 0, 180);
+    dark.anti_alias = true;
+    let mut white = Paint::default();
+    white.set_color_rgba8(255, 255, 255, 255);
+    white.anti_alias = true;
     for (hx, hy) in centers {
-        let mut dark = Paint::default();
-        dark.set_color_rgba8(0, 0, 0, 180);
-        let mut white = Paint::default();
-        white.set_color_rgba8(255, 255, 255, 255);
-        if let Some(r) = Rect::from_xywh(hx - HS / 2.0 - 1.0, hy - HS / 2.0 - 1.0, HS + 2.0, HS + 2.0) {
-            pm.fill_rect(r, &dark, Transform::identity(), None);
+        if let Some(path) = rounded_rect(hx - HS / 2.0 - 1.0, hy - HS / 2.0 - 1.0, HS + 2.0, HS + 2.0, RAD + 1.0) {
+            pm.fill_path(&path, &dark, FillRule::Winding, Transform::identity(), None);
         }
-        if let Some(r) = Rect::from_xywh(hx - HS / 2.0, hy - HS / 2.0, HS, HS) {
-            pm.fill_rect(r, &white, Transform::identity(), None);
+        if let Some(path) = rounded_rect(hx - HS / 2.0, hy - HS / 2.0, HS, HS, RAD) {
+            pm.fill_path(&path, &white, FillRule::Winding, Transform::identity(), None);
         }
     }
 }
 
-/// Draw the `W×H` dimension badge: a rounded-ish dark pill with the bitmap label.
-/// Placed by `edit::badge_rect` (above-left of the selection, flipping at edges).
+/// The badge font: a tiny embedded DejaVu Sans Bold subset (digits, ×, space).
+/// Parsed once and cached.
+fn badge_font() -> &'static FontRef<'static> {
+    static FONT: OnceLock<FontRef<'static>> = OnceLock::new();
+    FONT.get_or_init(|| {
+        FontRef::try_from_slice(include_bytes!("../../assets/fonts/dejavu-badge.ttf"))
+            .expect("embedded badge font is valid")
+    })
+}
+
+/// Build a rounded-rectangle path (corner radius clamped to half the smaller side).
+fn rounded_rect(x: f32, y: f32, w: f32, h: f32, r: f32) -> Option<tiny_skia::Path> {
+    let r = r.min(w / 2.0).min(h / 2.0).max(0.0);
+    let mut pb = PathBuilder::new();
+    pb.move_to(x + r, y);
+    pb.line_to(x + w - r, y);
+    pb.quad_to(x + w, y, x + w, y + r);
+    pb.line_to(x + w, y + h - r);
+    pb.quad_to(x + w, y + h, x + w - r, y + h);
+    pb.line_to(x + r, y + h);
+    pb.quad_to(x, y + h, x, y + h - r);
+    pb.line_to(x, y + r);
+    pb.quad_to(x, y, x + r, y);
+    pb.close();
+    pb.finish()
+}
+
+/// Draw `text` anti-aliased in `rgb` with its left baseline at (`x`, `baseline`),
+/// compositing premultiplied src-over the pixmap.
+fn draw_text_aa(pm: &mut Pixmap, x: f32, baseline: f32, text: &str, px: f32, rgb: (u8, u8, u8)) {
+    let font = badge_font();
+    let scale = PxScale::from(px);
+    let scaled = font.as_scaled(scale);
+    let w = pm.width() as i32;
+    let h = pm.height() as i32;
+    let (tr, tg, tb) = rgb;
+    let mut caret = x;
+    for ch in text.chars() {
+        let id = font.glyph_id(ch);
+        let glyph = id.with_scale_and_position(scale, point(caret, baseline));
+        if let Some(outlined) = font.outline_glyph(glyph) {
+            let bounds = outlined.px_bounds();
+            let data = pm.data_mut();
+            outlined.draw(|gx, gy, cov| {
+                let px_x = bounds.min.x as i32 + gx as i32;
+                let px_y = bounds.min.y as i32 + gy as i32;
+                if px_x < 0 || px_x >= w || px_y < 0 || px_y >= h {
+                    return;
+                }
+                let a = cov.clamp(0.0, 1.0);
+                let i = ((px_y * w + px_x) * 4) as usize;
+                let blend = |s: u8, d: u8| (s as f32 * a + d as f32 * (1.0 - a)).round() as u8;
+                data[i] = blend(tr, data[i]);
+                data[i + 1] = blend(tg, data[i + 1]);
+                data[i + 2] = blend(tb, data[i + 2]);
+                data[i + 3] = blend(255, data[i + 3]);
+            });
+        }
+        caret += scaled.h_advance(id);
+    }
+}
+
+/// Draw the `W×H` dimension badge: a rounded translucent pill with crisp,
+/// anti-aliased text. Placed by `edit::badge_rect` (above-left, flipping at edges).
 pub fn draw_badge(pm: &mut Pixmap, sel: (f32, f32, f32, f32), surf_w: u32, surf_h: u32) {
     let (x, y, w, h) = sel;
     if w < 1.0 || h < 1.0 {
         return;
     }
     let label = format!("{}×{}", w.round() as i32, h.round() as i32);
-    let scale = 2u32;
-    let pad = 6.0_f64;
-    let text_w = font::label_width(&label, scale) as f64;
-    let text_h = font::glyph_h_px(scale) as f64;
+    let px = 17.0_f32;
+    let pad = 7.0_f64;
+    let font = badge_font();
+    let scaled = font.as_scaled(PxScale::from(px));
+    let text_w: f32 = label.chars().map(|c| scaled.h_advance(font.glyph_id(c))).sum();
+    let text_h = scaled.ascent() - scaled.descent();
     let rect = crate::select_skia::edit::Rect { x: x as f64, y: y as f64, w: w as f64, h: h as f64 };
-    let (bx, by, bw, bh) = crate::select_skia::edit::badge_rect(rect, text_w, text_h, pad, 6.0, surf_w as f64, surf_h as f64);
+    let (bx, by, bw, bh) = crate::select_skia::edit::badge_rect(
+        rect,
+        text_w as f64,
+        text_h as f64,
+        pad,
+        6.0,
+        surf_w as f64,
+        surf_h as f64,
+    );
     let mut pill = Paint::default();
-    pill.set_color_rgba8(12, 12, 16, 200);
+    pill.set_color_rgba8(0x12, 0x12, 0x12, 230); // #121212, matching the quickshell bar
     pill.anti_alias = true;
-    if let Some(r) = Rect::from_xywh(bx as f32, by as f32, bw as f32, bh as f32) {
-        pm.fill_rect(r, &pill, Transform::identity(), None);
+    if let Some(path) = rounded_rect(bx as f32, by as f32, bw as f32, bh as f32, 7.0) {
+        pm.fill_path(&path, &pill, FillRule::Winding, Transform::identity(), None);
     }
-    // Label inset by the padding.
-    draw_label(pm, &label, (bx + pad) as i32, (by + pad) as i32, scale);
+    let baseline = by as f32 + pad as f32 + scaled.ascent();
+    draw_text_aa(pm, bx as f32 + pad as f32, baseline, &label, px, (0xd0, 0xd0, 0xd0));
 }
 
 /// Draw the magnifier loupe at the cursor: a `LOUPE`px square sampling an
@@ -274,43 +350,6 @@ pub fn draw_magnifier(pm: &mut Pixmap, base: &Pixmap, cursor: (f64, f64), surf_w
         if let Some(path) = pb.finish() {
             pm.stroke_path(&path, &border, &Stroke { width: 2.0, ..Default::default() }, Transform::identity(), None);
         }
-    }
-}
-
-/// Blit `text` in opaque white at (`x`, `y`) (top-left, surface pixels) using
-/// the bitmap font, scaled by `scale`. Writes directly into the pixmap's
-/// premultiplied RGBA bytes (white is unaffected by premultiplication).
-pub fn draw_label(pm: &mut Pixmap, text: &str, x: i32, y: i32, scale: u32) {
-    let w = pm.width() as i32;
-    let h = pm.height() as i32;
-    let data = pm.data_mut();
-    let mut cx = x;
-    let s = scale as i32;
-    for ch in text.chars() {
-        if let Some(rows) = font::glyph(ch) {
-            for (ry, bits) in rows.iter().enumerate() {
-                for bx in 0..font::GLYPH_W {
-                    let on = bits & (1 << (font::GLYPH_W - 1 - bx)) != 0;
-                    if !on {
-                        continue;
-                    }
-                    for dy in 0..s {
-                        for dx in 0..s {
-                            let px = cx + bx as i32 * s + dx;
-                            let py = y + ry as i32 * s + dy;
-                            if px >= 0 && px < w && py >= 0 && py < h {
-                                let i = ((py * w + px) * 4) as usize;
-                                data[i] = 255;
-                                data[i + 1] = 255;
-                                data[i + 2] = 255;
-                                data[i + 3] = 255;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        cx += font::advance_px(scale) as i32;
     }
 }
 
