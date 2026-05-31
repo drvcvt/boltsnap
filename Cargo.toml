@@ -27,6 +27,9 @@ calloop = "0.13"
 calloop-wayland-source = "0.3"
 x11rb = "0.13"
 arboard = { version = "3.4", default-features = false, features = ["image-data"] }
+# Pure-CPU 2D rasterizer for the new region-selector overlay (behind --new).
+# No GPU cold-start; unifies on the same wl_shm path the shelf already uses.
+tiny-skia = "0.11"
 
 [profile.release]
 lto = "thin"
