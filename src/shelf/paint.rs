@@ -119,7 +119,16 @@ fn blend_px(canvas: &mut [u8], cw: u32, ch: u32, x: i32, y: i32, r: u8, g: u8, b
 }
 
 /// Anti-aliased filled circle.
-fn fill_circle(canvas: &mut [u8], cw: u32, ch: u32, cx: f32, cy: f32, radius: f32, c: (u8, u8, u8), a: f32) {
+fn fill_circle(
+    canvas: &mut [u8],
+    cw: u32,
+    ch: u32,
+    cx: f32,
+    cy: f32,
+    radius: f32,
+    c: (u8, u8, u8),
+    a: f32,
+) {
     let x0 = (cx - radius - 1.0).floor() as i32;
     let x1 = (cx + radius + 1.0).ceil() as i32;
     let y0 = (cy - radius - 1.0).floor() as i32;
@@ -206,14 +215,27 @@ fn draw_hover_icons(canvas: &mut [u8], cw: u32, ch: u32, r: &ThumbRect, cfg: &La
         let cy = celly as f32 + s / 2.0;
         // translucent circular button
         fill_circle(canvas, cw, ch, cx, cy, s / 2.0 - 0.5, BTN_BG, BTN_BG_A);
-        let glyph_c = if slot == 0 { GLYPH_CLOSE_RGB } else { GLYPH_RGB };
+        let glyph_c = if slot == 0 {
+            GLYPH_CLOSE_RGB
+        } else {
+            GLYPH_RGB
+        };
         draw_glyph(canvas, cw, ch, slot, cellx as f32, celly as f32, s, glyph_c);
     }
 }
 
 /// Minimal anti-aliased glyphs centred in a cell at (x,y) of size s.
 /// 0 = close (X), 1 = edit (pencil).
-fn draw_glyph(canvas: &mut [u8], cw: u32, ch: u32, slot: u32, x: f32, y: f32, s: f32, c: (u8, u8, u8)) {
+fn draw_glyph(
+    canvas: &mut [u8],
+    cw: u32,
+    ch: u32,
+    slot: u32,
+    x: f32,
+    y: f32,
+    s: f32,
+    c: (u8, u8, u8),
+) {
     let hw = GLYPH_HALF_W;
     let inset = s * 0.30;
     let lo = inset;
@@ -258,7 +280,10 @@ mod tests {
         // left-edge midpoint is the IMAGE colour now, NOT a white border
         let e = ((10 * 20 + 0) * 4) as usize;
         assert!(buf[e + 3] > 200, "left edge should be (near) opaque image");
-        assert!(buf[e + 2] < 60, "left edge R should be the image's, not white");
+        assert!(
+            buf[e + 2] < 60,
+            "left edge R should be the image's, not white"
+        );
     }
 
     #[test]
@@ -291,7 +316,11 @@ mod tests {
         fill_circle(&mut buf, 24, 24, 12.0, 12.0, 8.0, (10, 20, 30), 0.5);
         let idx = ((12 * 24 + 12) * 4) as usize;
         // center alpha ~ 0.5*255
-        assert!(buf[idx + 3] > 100 && buf[idx + 3] < 160, "got a={}", buf[idx + 3]);
+        assert!(
+            buf[idx + 3] > 100 && buf[idx + 3] < 160,
+            "got a={}",
+            buf[idx + 3]
+        );
         // corner stays transparent
         assert_eq!(buf[3], 0);
     }
@@ -311,7 +340,15 @@ mod tests {
             .collect();
         let layout = Layout::compute(&sizes, &cfg);
         let mut canvas = vec![0u8; (layout.width * layout.height * 4) as usize];
-        draw_shelf(&mut canvas, layout.width, layout.height, &layout, &model, Some(id), &cfg);
+        draw_shelf(
+            &mut canvas,
+            layout.width,
+            layout.height,
+            &layout,
+            &model,
+            Some(id),
+            &cfg,
+        );
         // thumb body opaque
         let r = &layout.thumbs[0];
         let px = r.x + r.w / 2;
@@ -324,6 +361,10 @@ mod tests {
         let by = r.y + cfg.pad_icon + cfg.icon / 2;
         let bidx = ((by * layout.width + bx) * 4) as usize;
         let plain = canvas[idx + 2]; // R of plain thumb region
-        assert_ne!(canvas[bidx + 2], plain, "button area should not be plain thumb colour");
+        assert_ne!(
+            canvas[bidx + 2],
+            plain,
+            "button area should not be plain thumb colour"
+        );
     }
 }

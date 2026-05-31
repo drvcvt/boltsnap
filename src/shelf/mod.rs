@@ -109,11 +109,15 @@ struct PreviewState {
 /// Hyprland (then the compositor places the shelf on its default output).
 fn focused_monitor_name() -> Option<String> {
     use std::process::Command;
-    if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_none() || !crate::paths::has_cmd("hyprctl")
+    if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_none()
+        || !crate::paths::has_cmd("hyprctl")
     {
         return None;
     }
-    let out = Command::new("hyprctl").args(["monitors", "-j"]).output().ok()?;
+    let out = Command::new("hyprctl")
+        .args(["monitors", "-j"])
+        .output()
+        .ok()?;
     if !out.status.success() {
         return None;
     }
@@ -160,7 +164,11 @@ pub fn debug_render(out: &std::path::Path) -> DynResult<()> {
         *p = Rgba([(x * 255 / tw) as u8, (y * 200 / th) as u8, 170, 255]);
     }
     let mut model = ShelfModel::new();
-    let id = model.add(std::path::PathBuf::from("/tmp/x.png"), sample, "area".into());
+    let id = model.add(
+        std::path::PathBuf::from("/tmp/x.png"),
+        sample,
+        "area".into(),
+    );
     let cfg = LayoutConfig::default();
     let sizes: Vec<(u64, u32, u32)> = model
         .newest_first()
@@ -458,7 +466,11 @@ impl Daemon {
                 return;
             }
         };
-        self.preview = Some(PreviewState { surface: layer, pool, image });
+        self.preview = Some(PreviewState {
+            surface: layer,
+            pool,
+            image,
+        });
     }
 
     /// Close the enlarge view; dropping the surface unmaps it.
@@ -530,9 +542,11 @@ impl Daemon {
             }
         }
 
-        let source =
-            self.ddm
-                .create_drag_and_drop_source(&qh, ["image/png", "text/uri-list"], DndAction::Copy);
+        let source = self.ddm.create_drag_and_drop_source(
+            &qh,
+            ["image/png", "text/uri-list"],
+            DndAction::Copy,
+        );
         let device = self.data_device.as_ref().unwrap();
         source.start_drag(device, &origin, Some(&icon), serial);
 
@@ -603,7 +617,13 @@ impl Daemon {
 }
 
 impl CompositorHandler for Daemon {
-    fn scale_factor_changed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlSurface, _: i32) {
+    fn scale_factor_changed(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &WlSurface,
+        _: i32,
+    ) {
     }
     fn transform_changed(
         &mut self,
@@ -933,7 +953,8 @@ impl DataSourceHandler for Daemon {
     fn cancelled(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource) {
         if !self.drop_ok {
             if let Some(path) = self.drag_path.clone() {
-                if let Err(e) = crate::clipboard::copy_to_clipboard(&path, crate::Backend::Wayland) {
+                if let Err(e) = crate::clipboard::copy_to_clipboard(&path, crate::Backend::Wayland)
+                {
                     eprintln!("boltsnap daemon: fallback copy failed: {e}");
                 }
             }
@@ -972,7 +993,14 @@ impl DataDeviceHandler for Daemon {
     ) {
     }
     fn leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {}
-    fn motion(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice, _x: f64, _y: f64) {
+    fn motion(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &WlDataDevice,
+        _x: f64,
+        _y: f64,
+    ) {
     }
     fn selection(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {}
     fn drop_performed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {}

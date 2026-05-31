@@ -9,7 +9,13 @@ pub struct LayoutConfig {
 
 impl Default for LayoutConfig {
     fn default() -> Self {
-        Self { pad: 12, gap: 10, icon: 15, icon_gap: 5, pad_icon: 7 }
+        Self {
+            pad: 12,
+            gap: 10,
+            icon: 15,
+            icon_gap: 5,
+            pad_icon: 7,
+        }
     }
 }
 
@@ -44,16 +50,35 @@ impl Layout {
             if i > 0 {
                 y += cfg.gap;
             }
-            thumbs.push(ThumbRect { id: *id, x: cfg.pad, y, w: *w, h: *h });
+            thumbs.push(ThumbRect {
+                id: *id,
+                x: cfg.pad,
+                y,
+                w: *w,
+                h: *h,
+            });
             y += *h;
         }
-        let width = if sizes.is_empty() { 1 } else { cfg.pad * 2 + widest };
+        let width = if sizes.is_empty() {
+            1
+        } else {
+            cfg.pad * 2 + widest
+        };
         let height = if sizes.is_empty() { 1 } else { y + cfg.pad };
-        Layout { width, height, thumbs }
+        Layout {
+            width,
+            height,
+            thumbs,
+        }
     }
 
     /// Icon strip lives at the thumb's top-right: [edit][close], close rightmost.
-    fn icon_rect(&self, r: &ThumbRect, slot_from_right: u32, cfg: &LayoutConfig) -> (u32, u32, u32, u32) {
+    fn icon_rect(
+        &self,
+        r: &ThumbRect,
+        slot_from_right: u32,
+        cfg: &LayoutConfig,
+    ) -> (u32, u32, u32, u32) {
         let right = (r.x + r.w).saturating_sub(cfg.pad_icon);
         let x = right
             .saturating_sub((slot_from_right + 1) * cfg.icon)
@@ -74,7 +99,8 @@ impl Layout {
             // icons: slot 0 = close (rightmost), slot 1 = edit
             for (slot, make) in [(0u32, Hit::Close(r.id)), (1, Hit::Edit(r.id))] {
                 let (ix, iy, iw, ih) = self.icon_rect(r, slot, cfg);
-                if x >= ix as f64 && x < (ix + iw) as f64 && y >= iy as f64 && y < (iy + ih) as f64 {
+                if x >= ix as f64 && x < (ix + iw) as f64 && y >= iy as f64 && y < (iy + ih) as f64
+                {
                     return Some(make);
                 }
             }
