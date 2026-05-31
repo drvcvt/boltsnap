@@ -183,15 +183,16 @@ enum Interaction {
     Resize { handle: edit::Handle },
     /// Moving the whole rect; `grab` is cursor-minus-origin at press time.
     Move { grab: (f64, f64) },
-    /// Pressed inside with no drag yet — becomes a confirm on release if still no drag.
-    ClickInside,
+    /// Pressed inside; becomes a Move once the cursor leaves a small slop radius,
+    /// otherwise a confirm on release. `press` is the press position.
+    ClickInside { press: (f64, f64) },
 }
 
 /// Handle hit radius (px) and minimum selection size (px).
 const HANDLE_R: f64 = 9.0;
 const MIN_SEL: f64 = 4.0;
-/// Pixels of motion before a press counts as a drag rather than a click.
-#[allow(dead_code)] // consumed in a later task
+/// Pixels of motion before a press-inside counts as a drag (move) rather than a
+/// click-to-confirm — tolerates pointer jitter on a confirm click.
 const DRAG_SLOP: f64 = 3.0;
 
 impl Selector {
@@ -408,7 +409,7 @@ impl PointerHandler for Selector {
                                     self.interaction = Some(Interaction::Resize { handle: h });
                                 }
                                 edit::Region::Inside => {
-                                    self.interaction = Some(Interaction::ClickInside);
+                                    self.interaction = Some(Interaction::ClickInside { press: (x, y) });
                                 }
                                 edit::Region::Outside => {
                                     self.mode = Mode::Drawing { anchor: (x, y), now: (x, y) };
@@ -441,10 +442,16 @@ impl PointerHandler for Selector {
                                 self.mode = Mode::Editing { rect: nr };
                                 redraw = true;
                             }
-                            Some(Interaction::ClickInside) => {
-                                // Began moving after pressing inside: promote to a move.
-                                self.interaction = Some(Interaction::Move { grab: (x - rect.x, y - rect.y) });
-                                redraw = true;
+                            Some(Interaction::ClickInside { press }) => {
+                                // Promote to a move only once the cursor leaves the
+                                // slop radius, so a jittery click still confirms.
+                                if (x - press.0).powi(2) + (y - press.1).powi(2)
+                                    > DRAG_SLOP * DRAG_SLOP
+                                {
+                                    self.interaction =
+                                        Some(Interaction::Move { grab: (x - rect.x, y - rect.y) });
+                                    redraw = true;
+                                }
                             }
                             None => {}
                         }
@@ -475,7 +482,7 @@ impl PointerHandler for Selector {
                         }
                         Mode::Editing { rect } => {
                             // A press-inside with no drag is a confirm click.
-                            if matches!(self.interaction, Some(Interaction::ClickInside)) {
+                            if matches!(self.interaction, Some(Interaction::ClickInside { .. })) {
                                 self.confirm_rect(rect);
                                 return;
                             }
