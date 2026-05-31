@@ -703,12 +703,20 @@ impl LayerShellHandler for Daemon {
                 return;
             }
         }
-        if configure.new_size.0 != 0 {
-            self.width = configure.new_size.0;
-        }
-        if configure.new_size.1 != 0 {
-            self.height = configure.new_size.1;
-        }
+        // wlr-layer-shell: a configure dimension of 0 means "client, pick your own
+        // size". For our self-sized, bottom-left-anchored shelf, Hyprland replies
+        // to set_size() with new_size=(0,0); keeping the stale value here left the
+        // surface at the startup 1x1 (mapped but invisible). Fall back to layout.
+        self.width = if configure.new_size.0 != 0 {
+            configure.new_size.0
+        } else {
+            self.layout.width.max(1)
+        };
+        self.height = if configure.new_size.1 != 0 {
+            configure.new_size.1
+        } else {
+            self.layout.height.max(1)
+        };
         self.draw(qh);
     }
 }
