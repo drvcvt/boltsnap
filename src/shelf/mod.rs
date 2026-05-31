@@ -345,6 +345,13 @@ impl Daemon {
             .map(|t| (t.id, t.thumb.width(), t.thumb.height()))
             .collect();
         self.layout = Layout::compute(&sizes, &self.cfg);
+        // We are a self-sized layer surface: we dictate our size via set_size and
+        // the compositor echoes it back in configure. Track it directly so draw()
+        // paints at the new size immediately — relying only on the configure
+        // round-trip deadlocked the surface at the startup 1x1 (the post-set_size
+        // commit carried a stale-sized buffer, so Hyprland never reconfigured).
+        self.width = self.layout.width.max(1);
+        self.height = self.layout.height.max(1);
         if let Some(layer) = self.layer.as_ref() {
             layer.set_size(self.layout.width, self.layout.height);
         }
