@@ -3,7 +3,9 @@
 #![allow(dead_code)] // filled in by later tasks
 
 use image::{RgbaImage, imageops};
-use tiny_skia::Pixmap;
+use tiny_skia::{Paint, PathBuilder, Pixmap, Rect, Stroke, Transform};
+
+use super::font;
 
 /// Map a drag (two surface-space points) to an image-space crop rectangle.
 /// Per-axis normalize against the surface, scale to image pixels, clamp to the
@@ -88,6 +90,96 @@ pub fn pixmap_to_argb8888(pm: &Pixmap, canvas: &mut [u8]) {
     }
 }
 
+/// Dim alpha over the screenshot outside the selection (0-255). Matches the
+/// egui selector's `from_rgba_unmultiplied(0, 0, 0, 110)`.
+const DIM_ALPHA: u8 = 110;
+/// Selection border width, px. Matches the egui selector.
+const BORDER_W: f32 = 1.5;
+/// Label render scale for the 5x7 font (≈14px tall, close to egui's 12px).
+const LABEL_SCALE: u32 = 2;
+
+/// Draw the selection overlay onto `pm` (which already contains the opaque
+/// screenshot). `sel` is the surface-space selection `(x, y, w, h)`; `None`
+/// means "no selection yet" — dim the whole surface.
+pub fn render_overlay(pm: &mut Pixmap, sel: Option<(f32, f32, f32, f32)>) {
+    let (w, h) = (pm.width() as f32, pm.height() as f32);
+    let mut dim = Paint::default();
+    dim.set_color_rgba8(0, 0, 0, DIM_ALPHA);
+    dim.anti_alias = false;
+
+    match sel {
+        None => {
+            if let Some(r) = Rect::from_xywh(0.0, 0.0, w, h) {
+                pm.fill_rect(r, &dim, Transform::identity(), None);
+            }
+        }
+        Some((sx, sy, sw, sh)) => {
+            for (rx, ry, rw, rh) in outside_rects(sx, sy, sw, sh, w, h) {
+                if rw > 0.0 && rh > 0.0 {
+                    if let Some(r) = Rect::from_xywh(rx, ry, rw, rh) {
+                        pm.fill_rect(r, &dim, Transform::identity(), None);
+                    }
+                }
+            }
+            let mut white = Paint::default();
+            white.set_color_rgba8(255, 255, 255, 255);
+            white.anti_alias = true;
+            if let Some(r) = Rect::from_xywh(sx, sy, sw, sh) {
+                let mut pb = PathBuilder::new();
+                pb.push_rect(r);
+                if let Some(path) = pb.finish() {
+                    let stroke = Stroke {
+                        width: BORDER_W,
+                        ..Default::default()
+                    };
+                    pm.stroke_path(&path, &white, &stroke, Transform::identity(), None);
+                }
+            }
+            // Label just above the selection's top-left, like the egui one.
+            let label = format!("{}×{}", sw.round() as i32, sh.round() as i32);
+            let ly = (sy as i32) - 4 - font::glyph_h_px(LABEL_SCALE) as i32;
+            draw_label(pm, &label, sx as i32 + 6, ly.max(0), LABEL_SCALE);
+        }
+    }
+}
+
+/// Blit `text` in opaque white at (`x`, `y`) (top-left, surface pixels) using
+/// the bitmap font, scaled by `scale`. Writes directly into the pixmap's
+/// premultiplied RGBA bytes (white is unaffected by premultiplication).
+pub fn draw_label(pm: &mut Pixmap, text: &str, x: i32, y: i32, scale: u32) {
+    let w = pm.width() as i32;
+    let h = pm.height() as i32;
+    let data = pm.data_mut();
+    let mut cx = x;
+    let s = scale as i32;
+    for ch in text.chars() {
+        if let Some(rows) = font::glyph(ch) {
+            for (ry, bits) in rows.iter().enumerate() {
+                for bx in 0..font::GLYPH_W {
+                    let on = bits & (1 << (font::GLYPH_W - 1 - bx)) != 0;
+                    if !on {
+                        continue;
+                    }
+                    for dy in 0..s {
+                        for dx in 0..s {
+                            let px = cx + bx as i32 * s + dx;
+                            let py = y + ry as i32 * s + dy;
+                            if px >= 0 && px < w && py >= 0 && py < h {
+                                let i = ((py * w + px) * 4) as usize;
+                                data[i] = 255;
+                                data[i + 1] = 255;
+                                data[i + 2] = 255;
+                                data[i + 3] = 255;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        cx += font::advance_px(scale) as i32;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -148,5 +240,36 @@ mod tests {
         let pm = base_pixmap_from_image(&img, 2, 2);
         assert_eq!(pm.width(), 2);
         assert_eq!(&pm.data()[0..4], &[10, 20, 30, 255]);
+    }
+
+    #[test]
+    fn render_overlay_dims_outside_keeps_inside_bright() {
+        use tiny_skia::Pixmap;
+        // Opaque red base.
+        let mut pm = Pixmap::new(200, 100).unwrap();
+        for px in pm.data_mut().chunks_exact_mut(4) {
+            px.copy_from_slice(&[255, 0, 0, 255]);
+        }
+        render_overlay(&mut pm, Some((40.0, 30.0, 60.0, 20.0)));
+        let at = |x: u32, y: u32| {
+            let i = ((y * pm.width() + x) * 4) as usize;
+            pm.data()[i] // red channel
+        };
+        // Inside the selection: still bright red.
+        assert!(at(60, 38) > 250, "inside should stay bright, got {}", at(60, 38));
+        // Outside: dimmed by the ~43% black overlay.
+        assert!(at(0, 0) < 200, "outside should be dimmed, got {}", at(0, 0));
+    }
+
+    #[test]
+    fn render_overlay_none_dims_everything() {
+        use tiny_skia::Pixmap;
+        let mut pm = Pixmap::new(20, 20).unwrap();
+        for px in pm.data_mut().chunks_exact_mut(4) {
+            px.copy_from_slice(&[255, 0, 0, 255]);
+        }
+        render_overlay(&mut pm, None);
+        let i = ((10 * pm.width() + 10) * 4) as usize;
+        assert!(pm.data()[i] < 200, "whole surface should be dimmed");
     }
 }
