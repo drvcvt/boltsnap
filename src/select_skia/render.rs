@@ -2,6 +2,9 @@
 
 #![allow(dead_code)] // filled in by later tasks
 
+use image::{RgbaImage, imageops};
+use tiny_skia::Pixmap;
+
 /// Map a drag (two surface-space points) to an image-space crop rectangle.
 /// Per-axis normalize against the surface, scale to image pixels, clamp to the
 /// image, and reject anything <= 1px in either dimension (returns `None`),
@@ -58,6 +61,33 @@ pub fn outside_rects(
     [top, bottom, left, right]
 }
 
+/// Build the opaque screenshot base layer as a `Pixmap` sized to the surface.
+/// The capture is opaque, so straight RGBA == premultiplied RGBA and we can
+/// copy bytes directly; if the surface size differs from the image (shouldn't
+/// at scale 1.0) we resize first as a safety net.
+pub fn base_pixmap_from_image(img: &RgbaImage, w: u32, h: u32) -> Pixmap {
+    let mut pm = Pixmap::new(w.max(1), h.max(1)).expect("pixmap alloc");
+    if img.width() == w && img.height() == h {
+        pm.data_mut().copy_from_slice(img.as_raw());
+    } else {
+        let resized = imageops::resize(img, w.max(1), h.max(1), imageops::FilterType::Triangle);
+        pm.data_mut().copy_from_slice(resized.as_raw());
+    }
+    pm
+}
+
+/// Convert a premultiplied-RGBA `Pixmap` to a premultiplied-BGRA `wl_shm`
+/// Argb8888 (little-endian) buffer: swap R and B, keep A. `canvas` must be the
+/// same pixel count as the pixmap (4 bytes per pixel).
+pub fn pixmap_to_argb8888(pm: &Pixmap, canvas: &mut [u8]) {
+    for (src, dst) in pm.data().chunks_exact(4).zip(canvas.chunks_exact_mut(4)) {
+        dst[0] = src[2]; // B
+        dst[1] = src[1]; // G
+        dst[2] = src[0]; // R
+        dst[3] = src[3]; // A
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -93,5 +123,30 @@ mod tests {
         let total = sw * sh;
         let selection = sel.2 * sel.3;
         assert!((outside_area - (total - selection)).abs() < 0.01, "got {outside_area}");
+    }
+
+    #[test]
+    fn pixmap_to_argb8888_swaps_r_and_b_keeps_premult() {
+        use tiny_skia::Pixmap;
+        let mut pm = Pixmap::new(1, 1).unwrap();
+        // premultiplied RGBA sample with alpha < 255 and channels <= alpha.
+        pm.data_mut().copy_from_slice(&[10, 20, 30, 200]); // R,G,B,A
+        let mut canvas = [0u8; 4];
+        pixmap_to_argb8888(&pm, &mut canvas);
+        assert_eq!(canvas, [30, 20, 10, 200]); // B,G,R,A
+        // premultiplied invariant survives: no colour channel exceeds alpha.
+        assert!(canvas[0] <= canvas[3] && canvas[1] <= canvas[3] && canvas[2] <= canvas[3]);
+    }
+
+    #[test]
+    fn base_pixmap_copies_opaque_image_1to1() {
+        use image::{Rgba, RgbaImage};
+        let mut img = RgbaImage::new(2, 2);
+        for p in img.pixels_mut() {
+            *p = Rgba([10, 20, 30, 255]);
+        }
+        let pm = base_pixmap_from_image(&img, 2, 2);
+        assert_eq!(pm.width(), 2);
+        assert_eq!(&pm.data()[0..4], &[10, 20, 30, 255]);
     }
 }
