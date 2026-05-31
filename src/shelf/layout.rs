@@ -25,7 +25,6 @@ pub struct ThumbRect {
 pub enum Hit {
     Body(u64),
     Edit(u64),
-    Copy(u64),
     Close(u64),
 }
 
@@ -53,7 +52,7 @@ impl Layout {
         Layout { width, height, thumbs }
     }
 
-    /// Icon strip lives at the thumb's top-right: [edit][copy][close], close rightmost.
+    /// Icon strip lives at the thumb's top-right: [edit][close], close rightmost.
     fn icon_rect(&self, r: &ThumbRect, slot_from_right: u32, cfg: &LayoutConfig) -> (u32, u32, u32, u32) {
         let right = (r.x + r.w).saturating_sub(cfg.pad_icon);
         let x = right
@@ -72,12 +71,8 @@ impl Layout {
             if !inside {
                 continue;
             }
-            // icons: slot 0 = close (rightmost), slot 1 = copy, slot 2 = edit
-            for (slot, make) in [
-                (0u32, Hit::Close(r.id)),
-                (1, Hit::Copy(r.id)),
-                (2, Hit::Edit(r.id)),
-            ] {
+            // icons: slot 0 = close (rightmost), slot 1 = edit
+            for (slot, make) in [(0u32, Hit::Close(r.id)), (1, Hit::Edit(r.id))] {
                 let (ix, iy, iw, ih) = self.icon_rect(r, slot, cfg);
                 if x >= ix as f64 && x < (ix + iw) as f64 && y >= iy as f64 && y < (iy + ih) as f64 {
                     return Some(make);
@@ -103,31 +98,30 @@ mod tests {
         // newest-first: id 2 (170x100) on top, id 1 (160x90) below
         let lay = Layout::compute(&[(2, 170, 100), (1, 160, 90)], &c);
         assert_eq!(lay.thumbs.len(), 2);
-        // top thumb at y = pad
         assert_eq!(lay.thumbs[0].id, 2);
         assert_eq!(lay.thumbs[0].y, c.pad);
-        // second thumb below first + gap
         assert_eq!(lay.thumbs[1].id, 1);
         assert_eq!(lay.thumbs[1].y, c.pad + 100 + c.gap);
-        // surface width = pad*2 + widest thumb
         assert_eq!(lay.width, c.pad * 2 + 170);
-        // surface height = pad*2 + 100 + gap + 90
         assert_eq!(lay.height, c.pad * 2 + 100 + c.gap + 90);
     }
 
     #[test]
-    fn hit_body_vs_icons_vs_outside() {
+    fn hit_body_vs_two_icons_vs_outside() {
         let c = cfg();
-        let lay = Layout::compute(&[(7, 170, 100)], &c);
+        let lay = Layout::compute(&[(7, 260, 180)], &c);
         let r = &lay.thumbs[0];
         // center of the thumb -> body
         let cx = (r.x + r.w / 2) as f64;
         let cy = (r.y + r.h / 2) as f64;
         assert_eq!(lay.hit(cx, cy, &c), Some(Hit::Body(7)));
-        // close icon is the rightmost icon in the top-right strip
+        // close icon = rightmost slot
         let close_cx = (r.x + r.w - c.pad_icon - c.icon / 2) as f64;
         let icon_cy = (r.y + c.pad_icon + c.icon / 2) as f64;
         assert_eq!(lay.hit(close_cx, icon_cy, &c), Some(Hit::Close(7)));
+        // edit icon = next slot to the left of close
+        let edit_cx = (r.x + r.w - c.pad_icon - c.icon - c.icon_gap - c.icon / 2) as f64;
+        assert_eq!(lay.hit(edit_cx, icon_cy, &c), Some(Hit::Edit(7)));
         // far outside
         assert_eq!(lay.hit(10_000.0, 10_000.0, &c), None);
     }

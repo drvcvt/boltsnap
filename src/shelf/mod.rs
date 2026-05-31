@@ -391,7 +391,7 @@ impl Daemon {
     /// Act on a completed (non-drag) left click.
     fn on_click(&mut self, hit: Hit, redraw: &mut bool) {
         match hit {
-            Hit::Body(id) | Hit::Copy(id) => {
+            Hit::Body(id) => {
                 if let Some(t) = self.model.get(id) {
                     let path = t.png_path.clone();
                     if let Err(e) =
@@ -646,7 +646,7 @@ impl PointerHandler for Daemon {
                 }
                 PointerEventKind::Enter { .. } | PointerEventKind::Motion { .. } => {
                     let now = self.layout.hit(x, y, &self.cfg).map(|h| match h {
-                        Hit::Body(id) | Hit::Edit(id) | Hit::Copy(id) | Hit::Close(id) => id,
+                        Hit::Body(id) | Hit::Edit(id) | Hit::Close(id) => id,
                     });
                     if now != self.hovered {
                         self.hovered = now;
@@ -667,7 +667,7 @@ impl PointerHandler for Daemon {
                 PointerEventKind::Press { button, serial, .. } if button == BTN_LEFT => {
                     if let Some(hit) = self.layout.hit(x, y, &self.cfg) {
                         let id = match hit {
-                            Hit::Body(i) | Hit::Edit(i) | Hit::Copy(i) | Hit::Close(i) => i,
+                            Hit::Body(i) | Hit::Edit(i) | Hit::Close(i) => i,
                         };
                         self.press = Some(PressState {
                             id,
