@@ -259,14 +259,9 @@ impl eframe::App for SelectApp {
                         );
                     }
                     _ => {
+                        // No instructional text — the dim overlay alone signals
+                        // "select mode"; the hint popup was distracting.
                         painter.rect_filled(rect, 0.0, dim);
-                        painter.text(
-                            rect.center(),
-                            egui::Align2::CENTER_CENTER,
-                            "drag to select • Esc to cancel",
-                            egui::FontId::proportional(14.0),
-                            egui::Color32::from_white_alpha(220),
-                        );
                     }
                 }
             });

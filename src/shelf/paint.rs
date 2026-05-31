@@ -5,6 +5,9 @@ use crate::shelf::model::ShelfModel;
 
 /// Thumbnail card corner radius, in pixels.
 const CARD_RADIUS: f32 = 10.0;
+/// Card opacity: slightly translucent so text/windows behind the shelf stay
+/// readable. 1.0 = fully opaque.
+const CARD_OPACITY: f32 = 0.8;
 
 /// Hover-button styling: a small translucent dark circle with an anti-aliased
 /// glyph. Minimal and unobtrusive over the screenshot.
@@ -43,13 +46,16 @@ pub fn blit_thumb_card(canvas: &mut [u8], cw: u32, ch: u32, img: &RgbaImage, dx:
             if cov <= 0.0 {
                 continue; // transparent corner -> leave the canvas untouched
             }
+            // Fold the global card opacity into the coverage: in premultiplied
+            // BGRA, scaling RGB and alpha together by the same factor keeps the
+            // pixel valid while making the whole card translucent.
+            let a = cov * CARD_OPACITY;
             let p = img.get_pixel(sx, sy).0;
             let idx = ((py * cw + px) * 4) as usize;
-            // premultiplied BGRA, alpha = rounded-rect coverage
-            canvas[idx] = (p[2] as f32 * cov).round().clamp(0.0, 255.0) as u8;
-            canvas[idx + 1] = (p[1] as f32 * cov).round().clamp(0.0, 255.0) as u8;
-            canvas[idx + 2] = (p[0] as f32 * cov).round().clamp(0.0, 255.0) as u8;
-            canvas[idx + 3] = (cov * 255.0).round().clamp(0.0, 255.0) as u8;
+            canvas[idx] = (p[2] as f32 * a).round().clamp(0.0, 255.0) as u8;
+            canvas[idx + 1] = (p[1] as f32 * a).round().clamp(0.0, 255.0) as u8;
+            canvas[idx + 2] = (p[0] as f32 * a).round().clamp(0.0, 255.0) as u8;
+            canvas[idx + 3] = (a * 255.0).round().clamp(0.0, 255.0) as u8;
         }
     }
 }
@@ -273,13 +279,13 @@ mod tests {
         blit_thumb_card(&mut buf, 20, 20, &img, 0, 0);
         // far corner is outside the radius -> transparent
         assert_eq!(buf[3], 0, "corner should be transparent");
-        // centre is opaque, the thumbnail colour (low R), not white
+        // centre carries the card alpha (~0.8*255), the thumbnail colour (low R)
         let c = ((10 * 20 + 10) * 4) as usize;
-        assert!(buf[c + 3] > 250, "centre should be opaque");
+        assert!(buf[c + 3] > 180 && buf[c + 3] < 220, "centre alpha ~0.8, got {}", buf[c + 3]);
         assert!(buf[c + 2] < 60, "centre R should be the thumbnail's");
         // left-edge midpoint is the IMAGE colour now, NOT a white border
         let e = ((10 * 20 + 0) * 4) as usize;
-        assert!(buf[e + 3] > 200, "left edge should be (near) opaque image");
+        assert!(buf[e + 3] > 150, "left edge should carry card alpha, got {}", buf[e + 3]);
         assert!(
             buf[e + 2] < 60,
             "left edge R should be the image's, not white"
