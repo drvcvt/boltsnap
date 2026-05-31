@@ -19,6 +19,12 @@ image = { version = "0.25.8", default-features = false, features = ["png", "jpeg
 serde_json = "1.0"
 libwayshot = "0.7"
 wl-clipboard-rs = "0.9"
+smithay-client-toolkit = "0.19"
+wayland-client = "0.31"
+# SCTK 0.19 keeps calloop optional and does not re-export it, so depend on the
+# matching versions directly to drive a unified Wayland + unix-socket event loop.
+calloop = "0.13"
+calloop-wayland-source = "0.3"
 x11rb = "0.13"
 arboard = { version = "3.4", default-features = false, features = ["image-data"] }
 
@@ -26,6 +32,20 @@ arboard = { version = "3.4", default-features = false, features = ["image-data"]
 lto = "thin"
 codegen-units = 1
 strip = true
+
+# The user runs the debug build (~/.cargo/bin/boltsnap -> target/debug). Image
+# decode/resize is pure CPU and unbearably slow when compiled unoptimized (a
+# Lanczos3/Triangle resize of a multi-megapixel capture took seconds), stalling
+# the shelf preview. Optimize just the imaging dependencies in dev builds — our
+# own crate stays unoptimized for fast incremental compiles + good backtraces.
+[profile.dev.package.image]
+opt-level = 3
+[profile.dev.package.png]
+opt-level = 3
+[profile.dev.package.fdeflate]
+opt-level = 3
+[profile.dev.package.zune-jpeg]
+opt-level = 3
 
 [package.metadata.deb]
 maintainer = "drvcvt <matti@dash.fm>"
