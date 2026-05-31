@@ -24,6 +24,8 @@ screenshot.
    is removed.
 4. **Click to enlarge.** Left-click opens a centered, full-image preview; right-click
    copies; drag still does drag-and-drop.
+5. **A real drag image.** Dragging shows the actual screenshot stuck to the cursor —
+   crisply scaled and slightly translucent — instead of the current "ghost".
 
 ## Non-goals (YAGNI / out of scope)
 
@@ -45,6 +47,9 @@ screenshot.
   closes. X and edit buttons remain visible inside it.
 - The **original screenshot is never modified.** Only the preview thumbnail is
   cropped; copy/drag/edit/enlarge all use the full original from the stored path.
+- **Drag icon:** the real screenshot follows the cursor — high-quality scaling
+  (no blocky pixels), rounded corners, **~85% opacity**, grab point under the
+  cursor (hotspot). No drag animation (just clean scaling).
 
 ## Components & changes
 
@@ -81,6 +86,24 @@ screenshot.
     fallback) — unchanged.
 - Owns the enlarge-view handle (open/close), delegating rendering/input to
   `preview.rs`.
+
+### `src/shelf/mod.rs` — fix the drag icon ("ghost" → real image)
+- **Root cause (to confirm via debugging):** `begin_drag` builds the icon buffer
+  from `self.pool` — the same `SlotPool` the shelf uses for its own rendering — so
+  a shelf redraw during the drag can reuse that slot and clobber the icon, leaving
+  a ghost. The icon is also still drawn with the (now removed) white border.
+- **Fix:** give the drag icon its **own dedicated buffer that stays alive for the
+  whole drag** (retained in `self` next to `icon_surface`, freed in the dnd-finish
+  / cancel cleanup), so the shelf's pool can't overwrite it.
+- Render the icon from the new borderless thumbnail: **high-quality downscale**,
+  rounded corners, **~85% opacity**. Because the buffer is `Argb8888`, the fill
+  must be **premultiplied** (multiply RGB by the per-pixel coverage *and* by the
+  0.85 global opacity) — the current straight-alpha copy only happened to work
+  because the old thumbnail was fully opaque.
+- Set the icon **hotspot** so the grab point sits under the cursor (surface offset
+  relative to the pointer), instead of the icon's top-left corner.
+- Extract the pure pixel work (scale + rounded-corner coverage + premultiplied
+  opacity → BGRA buffer) as a testable helper.
 
 ### `src/shelf/preview.rs` (new) — the enlarge lightbox
 - A **separate, on-demand overlay layer-surface** covering the focused output, so
@@ -120,6 +143,9 @@ Pure/unit-testable pieces, each test written first:
   exactly two hover buttons drawn; no copy glyph.
 - **preview:** fit-to-screen math (scaled size ≤ screen, aspect preserved, centered
   offsets correct) for wide, tall, and small images.
+- **drag icon:** the pure builder produces premultiplied BGRA at the target size,
+  corners transparent, interior RGB scaled by the 0.85 opacity (no channel > alpha,
+  i.e. valid premultiplied pixels).
 
 Wayland surface lifecycle and pointer/keyboard wiring are validated manually on
 Hyprland (see below).
@@ -131,8 +157,9 @@ Hyprland (see below).
 - Hover → only X and pencil; no copy button.
 - Left-click → centered full-image preview; Esc and click-anywhere close it.
 - Right-click → clipboard has the full image.
-- Drag into a native and an XWayland app → drops the full image; failed drop →
-  clipboard fallback.
+- Drag into a native and an XWayland app → the **real screenshot** sticks to the
+  cursor (crisp, slightly translucent, grab point under cursor — no ghost), drops
+  the full image; failed drop → clipboard fallback.
 - Pencil (card and preview) → editor opens, save reloads the thumbnail.
 - X (card and preview) → card and tempfile gone.
 
@@ -144,3 +171,9 @@ Hyprland (see below).
   clean (create/ack-configure/draw, destroy on close) to stay protocol-correct.
 - Keyboard focus for Esc requires the overlay to request keyboard interactivity;
   ensure it releases focus on close.
+- The "ghost" drag cause is a hypothesis (shared `SlotPool` slot reuse); confirm it
+  by debugging before committing to the fix. Some compositors also render drag
+  icons translucent themselves — the ~85% opacity is intentional and should still
+  read as the real image.
+- `Argb8888` is premultiplied; any translucency/rounded corners in the drag icon
+  must premultiply RGB or edges will look wrong.
