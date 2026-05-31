@@ -62,15 +62,11 @@ pub fn strip_uniform_border(path: &Path) -> DynResult<()> {
     let mut peel: u32 = 0;
     while peel < 4 {
         let p = peel;
-        let row_uniform = |y: u32| -> bool {
-            (p..w - p).all(|x| *img.get_pixel(x, y) == edge_pixel)
-        };
-        let col_uniform = |x: u32| -> bool {
-            (p..h - p).all(|y| *img.get_pixel(x, y) == edge_pixel)
-        };
-        if !(row_uniform(p) && row_uniform(h - 1 - p)
-            && col_uniform(p) && col_uniform(w - 1 - p))
-        {
+        let row_uniform =
+            |y: u32| -> bool { (p..w - p).all(|x| *img.get_pixel(x, y) == edge_pixel) };
+        let col_uniform =
+            |x: u32| -> bool { (p..h - p).all(|y| *img.get_pixel(x, y) == edge_pixel) };
+        if !(row_uniform(p) && row_uniform(h - 1 - p) && col_uniform(p) && col_uniform(w - 1 - p)) {
             break;
         }
         peel += 1;
@@ -258,7 +254,17 @@ fn x11_pick_window_id() -> DynResult<Option<u32>> {
         .map_err(|e| format!("generate_id cursor: {e}"))?;
     // 34 = XC_crosshair, 35 = the mask glyph paired with it.
     conn.create_glyph_cursor(
-        cursor, cursor_font, cursor_font, 34, 35, 0, 0, 0, 0xffff, 0xffff, 0xffff,
+        cursor,
+        cursor_font,
+        cursor_font,
+        34,
+        35,
+        0,
+        0,
+        0,
+        0xffff,
+        0xffff,
+        0xffff,
     )
     .map_err(|e| format!("create_glyph_cursor: {e}"))?;
     conn.flush().map_err(|e| format!("flush: {e}"))?;
@@ -362,9 +368,7 @@ fn pick_focused_wl_output(
         return Ok(outputs[0].clone());
     }
     if env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some() && has_cmd("hyprctl") {
-        if let Ok(out) =
-            run_capture(Command::new("hyprctl").args(["monitors", "-j"]))
-        {
+        if let Ok(out) = run_capture(Command::new("hyprctl").args(["monitors", "-j"])) {
             let lossy = String::from_utf8_lossy(&out);
             if let Ok(Value::Array(monitors)) = serde_json::from_str::<Value>(&lossy) {
                 for m in &monitors {

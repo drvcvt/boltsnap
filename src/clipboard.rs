@@ -44,8 +44,8 @@ pub fn copy_to_clipboard(path: &Path, backend: Backend) -> DynResult<Backend> {
             let img = image::open(path)?.to_rgba8();
             let (w, h) = (img.width() as usize, img.height() as usize);
             let bytes = std::borrow::Cow::Owned(img.into_raw());
-            let mut clipboard = arboard::Clipboard::new()
-                .map_err(|e| format!("X11 clipboard open failed: {e}"))?;
+            let mut clipboard =
+                arboard::Clipboard::new().map_err(|e| format!("X11 clipboard open failed: {e}"))?;
             clipboard
                 .set_image(arboard::ImageData {
                     width: w,

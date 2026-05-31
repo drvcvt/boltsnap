@@ -20,14 +20,25 @@ pub struct ShelfModel {
 
 impl ShelfModel {
     pub fn new() -> Self {
-        Self { thumbs: Vec::new(), next_id: 1 }
+        Self {
+            thumbs: Vec::new(),
+            next_id: 1,
+        }
     }
 
     /// Insert a new thumbnail at the top of the shelf; returns its id.
     pub fn add(&mut self, png_path: PathBuf, thumb: RgbaImage, source: String) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
-        self.thumbs.insert(0, Thumb { id, png_path, thumb, source });
+        self.thumbs.insert(
+            0,
+            Thumb {
+                id,
+                png_path,
+                thumb,
+                source,
+            },
+        );
         id
     }
 
@@ -98,7 +109,11 @@ mod tests {
     #[test]
     fn replace_thumb_swaps_image_keeps_id() {
         let mut m = ShelfModel::new();
-        let a = m.add(PathBuf::from("/tmp/a.png"), RgbaImage::new(2, 2), "area".into());
+        let a = m.add(
+            PathBuf::from("/tmp/a.png"),
+            RgbaImage::new(2, 2),
+            "area".into(),
+        );
         assert!(m.replace_thumb(a, RgbaImage::new(4, 4)));
         assert_eq!(m.get(a).unwrap().thumb.dimensions(), (4, 4));
         assert!(!m.replace_thumb(999, RgbaImage::new(1, 1)));

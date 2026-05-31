@@ -1,27 +1,31 @@
-use image::RgbaImage;
 use image::imageops::FilterType;
+use image::{RgbaImage, imageops};
 
 /// Fixed shelf card size in pixels. Every card is exactly this size so the shelf
 /// reads as a uniform column. Tweak these to resize the cards.
 pub const CARD_W: u32 = 260;
 pub const CARD_H: u32 = 180;
 
-/// Scale `src` to *cover* (card_w, card_h) preserving aspect ratio, then
-/// center-crop to exactly (card_w, card_h). May upscale small inputs — that is
-/// the cost of a uniform grid, and it only affects the preview; the original PNG
-/// is never modified. Always returns an image of exactly card_w × card_h.
+/// Center-crop `src` to the card aspect ratio, then resize only that crop to
+/// exactly (card_w, card_h). Cropping before resizing avoids scaling huge full
+/// screenshots down to an oversized intermediate image on the hot shelf path.
 pub fn make_card_thumbnail(src: &RgbaImage, card_w: u32, card_h: u32) -> RgbaImage {
     let (w, h) = src.dimensions();
     if w == 0 || h == 0 || card_w == 0 || card_h == 0 {
         return RgbaImage::new(card_w.max(1), card_h.max(1));
     }
-    let scale = (card_w as f32 / w as f32).max(card_h as f32 / h as f32);
-    let nw = ((w as f32 * scale).round() as u32).max(card_w);
-    let nh = ((h as f32 * scale).round() as u32).max(card_h);
-    let scaled = image::imageops::resize(src, nw, nh, FilterType::Lanczos3);
-    let x0 = (nw - card_w) / 2;
-    let y0 = (nh - card_h) / 2;
-    image::imageops::crop_imm(&scaled, x0, y0, card_w, card_h).to_image()
+
+    let src_aspect = w as f32 / h as f32;
+    let card_aspect = card_w as f32 / card_h as f32;
+    let (x, y, cw, ch) = if src_aspect > card_aspect {
+        let cw = ((h as f32 * card_aspect).round() as u32).clamp(1, w);
+        ((w - cw) / 2, 0, cw, h)
+    } else {
+        let ch = ((w as f32 / card_aspect).round() as u32).clamp(1, h);
+        (0, (h - ch) / 2, w, ch)
+    };
+    let cropped = imageops::crop_imm(src, x, y, cw, ch).to_image();
+    imageops::resize(&cropped, card_w, card_h, FilterType::Triangle)
 }
 
 #[cfg(test)]

@@ -293,19 +293,23 @@ fn capture_flow(args: &Args) -> DynResult<()> {
         return capture_to_stdout(mode, args.backend);
     }
 
-    // Capture to a file first; for --edit the editor reads then overwrites it.
+    // Capture to a temp file for --edit, then let the editor write the final
+    // output. This avoids overwriting `-o PATH` before the user saves.
     let output = if args.edit {
-        edit_output_path(args).unwrap_or_else(|| temp_png("shot"))
+        temp_png("shot")
     } else {
         target_path(args)
     };
     let resolved = capture(mode, &output, args.backend)?;
-    let _ = strip_uniform_border(&output);
+    if matches!(mode, CaptureMode::Window | CaptureMode::ActiveWindow) {
+        let _ = strip_uniform_border(&output);
+    }
 
     match decide_post_capture(args, resolved) {
         PostCapture::Stdout => unreachable!("handled above"),
         PostCapture::Edit => {
-            let final_path = run_editor(output.clone(), edit_output_path(args), args.copy, resolved)?;
+            let final_path =
+                run_editor(output.clone(), edit_output_path(args), args.copy, resolved)?;
             remember_last_screenshot(&final_path)?;
             println!(
                 "Boltsnap edited {} via {}: {}",
@@ -386,7 +390,6 @@ fn detect_backend() -> DynResult<Backend> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use image::ImageBuffer;
 
     #[test]
     fn parser_defaults_to_area_copy() {
@@ -435,5 +438,4 @@ mod tests {
         assert!(!args.copy);
         assert_eq!(args.output.unwrap(), PathBuf::from("b.png"));
     }
-
 }

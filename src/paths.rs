@@ -38,7 +38,10 @@ pub fn print_doctor() {
     println!();
     println!("Screenshot shelf (Wayland / wlroots):");
     let on_wayland = env::var_os("WAYLAND_DISPLAY").is_some();
-    println!("  wayland session:   {}", if on_wayland { "yes" } else { "no" });
+    println!(
+        "  wayland session:   {}",
+        if on_wayland { "yes" } else { "no" }
+    );
     println!(
         "  shelf daemon:      {}",
         if crate::ipc::daemon_alive() {
@@ -47,7 +50,10 @@ pub fn print_doctor() {
             "not running (auto-starts on first wayland capture)"
         }
     );
-    println!("  shelf socket:      {}", crate::ipc::socket_path().display());
+    println!(
+        "  shelf socket:      {}",
+        crate::ipc::socket_path().display()
+    );
 }
 
 pub fn self_test() -> DynResult<()> {

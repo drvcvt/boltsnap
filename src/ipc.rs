@@ -61,7 +61,11 @@ impl Request {
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         match v.get("cmd").and_then(|c| c.as_str()) {
             Some("add") => Ok(Request::Add {
-                source: v.get("source").and_then(|s| s.as_str()).unwrap_or("").to_string(),
+                source: v
+                    .get("source")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("")
+                    .to_string(),
                 png: payload,
             }),
             Some("reload") => Ok(Request::Reload {
@@ -118,7 +122,10 @@ fn ensure_daemon() -> io::Result<UnixStream> {
         }
         std::thread::sleep(Duration::from_millis(10));
     }
-    Err(io::Error::new(io::ErrorKind::TimedOut, "daemon did not start"))
+    Err(io::Error::new(
+        io::ErrorKind::TimedOut,
+        "daemon did not start",
+    ))
 }
 
 /// Send a request to the shelf daemon, starting it if needed.
@@ -146,7 +153,10 @@ mod tests {
 
     #[test]
     fn request_add_roundtrip() {
-        let req = Request::Add { source: "area".into(), png: vec![9, 8, 7] };
+        let req = Request::Add {
+            source: "area".into(),
+            png: vec![9, 8, 7],
+        };
         let bytes = req.encode();
         let mut cur = Cursor::new(bytes);
         match Request::read(&mut cur).unwrap() {
@@ -163,7 +173,10 @@ mod tests {
         let mut cur = Cursor::new(Request::Ping.encode());
         assert!(matches!(Request::read(&mut cur).unwrap(), Request::Ping));
         let mut cur = Cursor::new(Request::Reload { id: 42 }.encode());
-        assert!(matches!(Request::read(&mut cur).unwrap(), Request::Reload { id: 42 }));
+        assert!(matches!(
+            Request::read(&mut cur).unwrap(),
+            Request::Reload { id: 42 }
+        ));
     }
 
     #[test]

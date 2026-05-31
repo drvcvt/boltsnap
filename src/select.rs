@@ -124,7 +124,8 @@ impl SelectApp {
         result: std::sync::Arc<std::sync::Mutex<Option<RgbaImage>>>,
     ) -> Self {
         let (w, h) = (base.width(), base.height());
-        let color = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], base.as_raw());
+        let color =
+            egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], base.as_raw());
         let texture =
             cc.egui_ctx
                 .load_texture("boltsnap-select-bg", color, egui::TextureOptions::LINEAR);
@@ -178,10 +179,7 @@ impl eframe::App for SelectApp {
                 let response = ui.allocate_rect(rect, egui::Sense::click_and_drag());
                 let painter = ui.painter();
 
-                let uv = egui::Rect::from_min_max(
-                    egui::pos2(0.0, 0.0),
-                    egui::pos2(1.0, 1.0),
-                );
+                let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
                 painter.image(self.texture.id(), rect, uv, egui::Color32::WHITE);
 
                 if response.drag_started_by(egui::PointerButton::Primary) {
@@ -207,8 +205,7 @@ impl eframe::App for SelectApp {
                             // Crop here so the parent doesn't have to keep
                             // a copy of the full base image around.
                             let cropped =
-                                image::imageops::crop_imm(&self.base, x, y, w, h)
-                                    .to_image();
+                                image::imageops::crop_imm(&self.base, x, y, w, h).to_image();
                             *self.result.lock().unwrap() = Some(cropped);
                             self.finalized = true;
                             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -223,10 +220,8 @@ impl eframe::App for SelectApp {
                 match (self.drag_start, self.drag_now) {
                     (Some(a), Some(b)) => {
                         let sel = egui::Rect::from_two_pos(a, b);
-                        let outside_top = egui::Rect::from_min_max(
-                            rect.min,
-                            egui::pos2(rect.right(), sel.top()),
-                        );
+                        let outside_top =
+                            egui::Rect::from_min_max(rect.min, egui::pos2(rect.right(), sel.top()));
                         let outside_bottom = egui::Rect::from_min_max(
                             egui::pos2(rect.left(), sel.bottom()),
                             rect.max,
@@ -239,8 +234,7 @@ impl eframe::App for SelectApp {
                             egui::pos2(sel.right(), sel.top()),
                             egui::pos2(rect.right(), sel.bottom()),
                         );
-                        for r in [outside_top, outside_bottom, outside_left, outside_right]
-                        {
+                        for r in [outside_top, outside_bottom, outside_left, outside_right] {
                             if r.width() > 0.0 && r.height() > 0.0 {
                                 painter.rect_filled(r, 0.0, dim);
                             }

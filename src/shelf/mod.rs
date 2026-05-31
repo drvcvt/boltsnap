@@ -60,6 +60,9 @@ pub struct Daemon {
     layer: Option<LayerSurface>,
     /// Name of the output the current `layer` lives on (Hyprland monitor name).
     output_name: Option<String>,
+    /// `wlr-layer-shell` forbids attaching a buffer before the first configure.
+    shelf_configured: bool,
+    shelf_pending_draw: bool,
     pointer: Option<WlPointer>,
     keyboard: Option<WlKeyboard>,
 
@@ -228,6 +231,8 @@ pub fn run_daemon() -> DynResult<()> {
         layer_shell,
         layer: None,
         output_name: None,
+        shelf_configured: false,
+        shelf_pending_draw: false,
         pointer: None,
         keyboard: None,
         ddm,
@@ -298,27 +303,39 @@ pub fn run_daemon() -> DynResult<()> {
 }
 
 impl Daemon {
-    /// Ensure the shelf surface lives on the currently focused output. Recreates
-    /// the layer surface (dropping the old one, which unmaps it) when the focused
-    /// monitor changed since last time. Cheap no-op when already correct.
-    fn place_on_focused_output(&mut self, qh: &QueueHandle<Self>) {
-        let name = focused_monitor_name();
-        if self.layer.is_some() && name == self.output_name {
-            return;
+    fn target_output(&self) -> (Option<String>, Option<wl_output::WlOutput>) {
+        let outputs: Vec<_> = self.output_state.outputs().collect();
+        if outputs.len() <= 1 {
+            return (None, outputs.into_iter().next());
         }
+        let name = focused_monitor_name();
         let output = name
             .as_ref()
             .and_then(|n| {
-                self.output_state.outputs().find(|o| {
-                    self.output_state.info(o).and_then(|i| i.name).as_deref() == Some(n.as_str())
-                })
+                outputs
+                    .iter()
+                    .find(|o| {
+                        self.output_state.info(o).and_then(|i| i.name).as_deref()
+                            == Some(n.as_str())
+                    })
+                    .cloned()
             })
             // Fall back to the first available output when the focused monitor
-            // can't be resolved (e.g. the daemon was started without
-            // HYPRLAND_INSTANCE_SIGNATURE so focused_monitor_name() is None).
-            // Hyprland never maps a layer surface created with a null output, so
-            // the shelf would silently never appear — always pass a concrete one.
-            .or_else(|| self.output_state.outputs().next());
+            // can't be resolved. Hyprland may fail to map a layer surface with a
+            // null output, so always pass a concrete one when we have it.
+            .or_else(|| outputs.into_iter().next());
+        (name, output)
+    }
+
+    /// Ensure the shelf surface lives on the currently focused output. Recreates
+    /// the layer surface (dropping the old one, which unmaps it) when the focused
+    /// monitor changed since last time. Returns true when a fresh surface was
+    /// created and must wait for its initial configure before drawing.
+    fn place_on_focused_output(&mut self, qh: &QueueHandle<Self>) -> bool {
+        let (name, output) = self.target_output();
+        if self.layer.is_some() && name == self.output_name {
+            return false;
+        }
         let surface = self.compositor.create_surface(qh);
         let layer = self.layer_shell.create_layer_surface(
             qh,
@@ -335,6 +352,9 @@ impl Daemon {
         layer.commit();
         self.layer = Some(layer); // old layer dropped here -> unmaps from prior output
         self.output_name = name;
+        self.shelf_configured = false;
+        self.shelf_pending_draw = false;
+        true
     }
 
     /// Recompute layout from the model and resize the layer surface to match.
@@ -461,13 +481,14 @@ impl Daemon {
             Some(q) => q,
             None => return,
         };
+        let (_, output) = self.target_output();
         let surface = self.compositor.create_surface(&qh);
         let layer = self.layer_shell.create_layer_surface(
             &qh,
             surface,
             Layer::Overlay,
             Some("boltsnap-preview"),
-            None,
+            output.as_ref(),
         );
         layer.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
         layer.set_size(0, 0); // fill the output; the real size arrives in configure
@@ -598,6 +619,10 @@ impl Daemon {
     }
 
     fn draw(&mut self, _qh: &QueueHandle<Self>) {
+        if !self.shelf_configured {
+            self.shelf_pending_draw = true;
+            return;
+        }
         let layer = match self.layer.as_ref() {
             Some(l) => l,
             None => return,
@@ -677,8 +702,24 @@ impl OutputHandler for Daemon {
 }
 
 impl LayerShellHandler for Daemon {
-    fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &LayerSurface) {
-        self.exit = true;
+    fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, layer: &LayerSurface) {
+        if self
+            .preview
+            .as_ref()
+            .map(|pv| pv.surface.wl_surface() == layer.wl_surface())
+            .unwrap_or(false)
+        {
+            self.preview = None;
+            return;
+        }
+        if self
+            .layer
+            .as_ref()
+            .map(|shelf| shelf.wl_surface() == layer.wl_surface())
+            .unwrap_or(false)
+        {
+            self.exit = true;
+        }
     }
     fn configure(
         &mut self,
@@ -710,6 +751,14 @@ impl LayerShellHandler for Daemon {
                 return;
             }
         }
+        let is_shelf = self
+            .layer
+            .as_ref()
+            .map(|shelf| shelf.wl_surface() == layer.wl_surface())
+            .unwrap_or(false);
+        if !is_shelf {
+            return;
+        }
         // wlr-layer-shell: a configure dimension of 0 means "client, pick your own
         // size". For our self-sized, bottom-left-anchored shelf, Hyprland replies
         // to set_size() with new_size=(0,0); keeping the stale value here left the
@@ -724,7 +773,12 @@ impl LayerShellHandler for Daemon {
         } else {
             self.layout.height.max(1)
         };
-        self.draw(qh);
+        let should_draw = self.shelf_pending_draw || self.model.newest_first().next().is_some();
+        self.shelf_configured = true;
+        self.shelf_pending_draw = false;
+        if should_draw {
+            self.draw(qh);
+        }
     }
 }
 
