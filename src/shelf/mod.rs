@@ -14,13 +14,14 @@ use smithay_client_toolkit::{
         data_offer::{DataOfferHandler, DragOffer},
         data_source::{DataSourceHandler, DragSource},
     },
-    delegate_compositor, delegate_data_device, delegate_layer, delegate_output, delegate_pointer,
-    delegate_registry, delegate_seat, delegate_shm,
+    delegate_compositor, delegate_data_device, delegate_keyboard, delegate_layer, delegate_output,
+    delegate_pointer, delegate_registry, delegate_seat, delegate_shm,
     output::{OutputHandler, OutputState},
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
     seat::{
         Capability, SeatHandler, SeatState,
+        keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers},
         pointer::{BTN_LEFT, BTN_RIGHT, PointerEvent, PointerEventKind, PointerHandler},
     },
     shell::{
@@ -37,8 +38,8 @@ use wayland_client::{
     globals::registry_queue_init,
     protocol::{
         wl_data_device::WlDataDevice, wl_data_device_manager::DndAction,
-        wl_data_source::WlDataSource, wl_output, wl_pointer::WlPointer, wl_seat::WlSeat,
-        wl_surface::WlSurface,
+        wl_data_source::WlDataSource, wl_keyboard::WlKeyboard, wl_output, wl_pointer::WlPointer,
+        wl_seat::WlSeat, wl_surface::WlSurface,
     },
 };
 
@@ -60,6 +61,7 @@ pub struct Daemon {
     /// Name of the output the current `layer` lives on (Hyprland monitor name).
     output_name: Option<String>,
     pointer: Option<WlPointer>,
+    keyboard: Option<WlKeyboard>,
 
     ddm: DataDeviceManagerState,
     data_device: Option<DataDevice>,
@@ -219,6 +221,7 @@ pub fn run_daemon() -> DynResult<()> {
         layer: None,
         output_name: None,
         pointer: None,
+        keyboard: None,
         ddm,
         data_device: None,
         drag_source: None,
@@ -699,6 +702,11 @@ impl SeatHandler for Daemon {
                 self.pointer = Some(p);
             }
         }
+        if cap == Capability::Keyboard && self.keyboard.is_none() {
+            if let Ok(k) = self.seat_state.get_keyboard(qh, &seat, None) {
+                self.keyboard = Some(k);
+            }
+        }
         if self.data_device.is_none() {
             self.data_device = Some(self.ddm.get_data_device(qh, &seat));
         }
@@ -708,8 +716,11 @@ impl SeatHandler for Daemon {
         _: &Connection,
         _: &QueueHandle<Self>,
         _: WlSeat,
-        _: Capability,
+        cap: Capability,
     ) {
+        if cap == Capability::Keyboard {
+            self.keyboard = None;
+        }
     }
     fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: WlSeat) {}
 }
@@ -809,6 +820,61 @@ impl PointerHandler for Daemon {
                 self.draw(&qh);
             }
         }
+    }
+}
+
+impl KeyboardHandler for Daemon {
+    fn enter(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &WlKeyboard,
+        _: &WlSurface,
+        _: u32,
+        _: &[u32],
+        _: &[Keysym],
+    ) {
+    }
+    fn leave(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &WlKeyboard,
+        _: &WlSurface,
+        _: u32,
+    ) {
+    }
+    fn press_key(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &WlKeyboard,
+        _: u32,
+        event: KeyEvent,
+    ) {
+        // Esc closes the enlarge view.
+        if self.preview.is_some() && event.keysym == Keysym::Escape {
+            self.close_preview();
+        }
+    }
+    fn release_key(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &WlKeyboard,
+        _: u32,
+        _: KeyEvent,
+    ) {
+    }
+    fn update_modifiers(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &WlKeyboard,
+        _: u32,
+        _: Modifiers,
+        _: u32,
+    ) {
     }
 }
 
@@ -942,6 +1008,7 @@ delegate_compositor!(Daemon);
 delegate_output!(Daemon);
 delegate_shm!(Daemon);
 delegate_seat!(Daemon);
+delegate_keyboard!(Daemon);
 delegate_pointer!(Daemon);
 delegate_layer!(Daemon);
 delegate_data_device!(Daemon);
