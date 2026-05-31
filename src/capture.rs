@@ -15,6 +15,7 @@ pub fn capture(
     output: &Path,
     backend: Backend,
     new_selector: bool,
+    instant: bool,
 ) -> DynResult<Backend> {
     let backend = backend.resolved()?;
     if let Some(parent) = output.parent() {
@@ -27,7 +28,7 @@ pub fn capture(
             // some viewers composite onto white and show a halo.
             flatten_to_rgb(output)?;
         }
-        Backend::Wayland => capture_wayland(mode, output, new_selector)?,
+        Backend::Wayland => capture_wayland(mode, output, new_selector, instant)?,
         Backend::Auto => unreachable!(),
     }
     if !output.is_file() || output.metadata()?.len() == 0 {
@@ -307,7 +308,7 @@ fn x11_pick_window_id() -> DynResult<Option<u32>> {
     Ok(target.filter(|w| *w != 0))
 }
 
-fn capture_wayland(mode: CaptureMode, output: &Path, new_selector: bool) -> DynResult<()> {
+fn capture_wayland(mode: CaptureMode, output: &Path, new_selector: bool, instant: bool) -> DynResult<()> {
     match mode {
         CaptureMode::Full => {
             let conn = libwayshot::WayshotConnection::new()
@@ -348,7 +349,7 @@ fn capture_wayland(mode: CaptureMode, output: &Path, new_selector: bool) -> DynR
                 Ok(img.to_rgba8())
             };
             let cropped = if new_selector {
-                crate::select_skia::run_select_with_parallel_capture(grab)?
+                crate::select_skia::run_select_with_parallel_capture(grab, instant)?
             } else {
                 run_select_with_parallel_capture(grab)?
             }

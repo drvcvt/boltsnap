@@ -301,7 +301,7 @@ fn capture_flow(args: &Args) -> DynResult<()> {
     let mode = CaptureMode::parse(&args.command)?;
 
     if is_stdout_target(args) {
-        return capture_to_stdout(mode, args.backend, args.new_selector);
+        return capture_to_stdout(mode, args.backend, args.new_selector, args.instant);
     }
 
     // Capture to a temp file for --edit, then let the editor write the final
@@ -311,7 +311,7 @@ fn capture_flow(args: &Args) -> DynResult<()> {
     } else {
         target_path(args)
     };
-    let resolved = capture(mode, &output, args.backend, args.new_selector)?;
+    let resolved = capture(mode, &output, args.backend, args.new_selector, args.instant)?;
     if matches!(mode, CaptureMode::Window | CaptureMode::ActiveWindow) {
         let _ = strip_uniform_border(&output);
     }
@@ -373,9 +373,9 @@ fn is_stdout_target(args: &Args) -> bool {
     args.output.as_deref().and_then(|p| p.to_str()) == Some("-")
 }
 
-fn capture_to_stdout(mode: CaptureMode, backend: Backend, new_selector: bool) -> DynResult<()> {
+fn capture_to_stdout(mode: CaptureMode, backend: Backend, new_selector: bool, instant: bool) -> DynResult<()> {
     let tmp = temp_png("stdout");
-    capture(mode, &tmp, backend, new_selector)?;
+    capture(mode, &tmp, backend, new_selector, instant)?;
     let bytes = fs::read(&tmp)?;
     let _ = fs::remove_file(&tmp);
     std::io::stdout().lock().write_all(&bytes)?;
