@@ -111,7 +111,15 @@ fn focused_monitor_name() -> Option<String> {
 }
 
 /// Disable Hyprland's open/close animation for the shelf layer so thumbnails
-/// appear and vanish instantly. Pushed before the surface maps. No-op off Hyprland.
+/// appear and vanish instantly.
+///
+/// NOTE: `hyprctl keyword layerrule ...` is a SILENT no-op when Hyprland runs
+/// the non-legacy (hyprlua) parser — it replies "keyword can't work with
+/// non-legacy parsers" but exits 0. So a runtime push can't be relied on. We
+/// best-effort push it here for legacy-parser setups, but the durable fix is a
+/// static rule in the user's config (documented in the README): a windowrule
+/// `noanim` for class `boltsnap-select` and a layerrule `noanim` for namespace
+/// `boltsnap`. No-op off Hyprland.
 fn prep_shelf_compositor_rules() {
     use std::process::{Command, Stdio};
     if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some() && crate::paths::has_cmd("hyprctl")
@@ -129,7 +137,7 @@ fn prep_shelf_compositor_rules() {
 /// compositor. Converts the premultiplied BGRA canvas back to straight RGBA.
 pub fn debug_render(out: &std::path::Path) -> DynResult<()> {
     use image::{Rgba, RgbaImage};
-    let (tw, th) = (thumbnail::MAX_W, thumbnail::MAX_H);
+    let (tw, th) = (thumbnail::CARD_W, thumbnail::CARD_H);
     let mut sample = RgbaImage::new(tw, th);
     for (x, y, p) in sample.enumerate_pixels_mut() {
         // a colourful gradient so corners/border are easy to see
@@ -342,10 +350,10 @@ impl Daemon {
             None => return,
         };
         if let Ok(img) = image::open(&path) {
-            let thumb = crate::shelf::thumbnail::make_thumbnail(
+            let thumb = crate::shelf::thumbnail::make_card_thumbnail(
                 &img.to_rgba8(),
-                crate::shelf::thumbnail::MAX_W,
-                crate::shelf::thumbnail::MAX_H,
+                crate::shelf::thumbnail::CARD_W,
+                crate::shelf::thumbnail::CARD_H,
             );
             self.model.replace_thumb(id, thumb);
             self.relayout();
@@ -369,10 +377,10 @@ impl Daemon {
             eprintln!("boltsnap daemon: temp write failed: {e}");
             return;
         }
-        let thumb = crate::shelf::thumbnail::make_thumbnail(
+        let thumb = crate::shelf::thumbnail::make_card_thumbnail(
             &img,
-            crate::shelf::thumbnail::MAX_W,
-            crate::shelf::thumbnail::MAX_H,
+            crate::shelf::thumbnail::CARD_W,
+            crate::shelf::thumbnail::CARD_H,
         );
         self.model.add(path, thumb, source.to_string());
         self.relayout();
