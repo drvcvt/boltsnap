@@ -158,6 +158,30 @@ pub fn temp_png(prefix: &str) -> PathBuf {
     ))
 }
 
+/// Delete orphaned shelf thumbnail tempfiles (`boltsnap-shelf-*.png` in the temp
+/// dir). Called at daemon startup: with no daemon running the shelf is empty, so
+/// every such file is from a previous run/crash and safe to remove. Without this
+/// the RAM-only shelf still leaks a ~MB PNG per capture to disk forever (only an
+/// explicit card-close deleted them), which filled /tmp over time. Returns the
+/// number of files removed.
+pub fn clean_orphan_shelf_temps() -> usize {
+    let dir = env::temp_dir();
+    let mut removed = 0;
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return 0;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with("boltsnap-shelf-") && name.ends_with(".png")
+            && fs::remove_file(entry.path()).is_ok()
+        {
+            removed += 1;
+        }
+    }
+    removed
+}
+
 pub fn timestamp() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

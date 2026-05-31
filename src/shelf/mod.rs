@@ -22,7 +22,10 @@ use smithay_client_toolkit::{
     seat::{
         Capability, SeatHandler, SeatState,
         keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers},
-        pointer::{BTN_LEFT, BTN_RIGHT, PointerEvent, PointerEventKind, PointerHandler},
+        pointer::{
+            BTN_LEFT, BTN_RIGHT, CursorIcon, PointerEvent, PointerEventKind, PointerHandler,
+            ThemeSpec, ThemedPointer,
+        },
     },
     shell::{
         WaylandSurface,
@@ -66,7 +69,10 @@ pub struct Daemon {
     /// `wlr-layer-shell` forbids attaching a buffer before the first configure.
     shelf_configured: bool,
     shelf_pending_draw: bool,
-    pointer: Option<WlPointer>,
+    /// Themed pointer so we can set an explicit cursor over the shelf instead of
+    /// inheriting whatever shape the previously-focused window left (e.g. a
+    /// terminal's I-beam).
+    pointer: Option<ThemedPointer>,
     keyboard: Option<WlKeyboard>,
 
     ddm: DataDeviceManagerState,
@@ -238,6 +244,14 @@ pub fn run_daemon() -> DynResult<()> {
     }
     let sock = crate::ipc::socket_path();
     let _ = std::fs::remove_file(&sock); // clear stale socket
+
+    // No daemon was running, so the shelf is empty: any leftover shelf tempfiles
+    // are orphans from a previous run/crash. Remove them so the RAM-only shelf
+    // doesn't leak PNGs to disk indefinitely (this is what filled /tmp).
+    let cleaned = crate::paths::clean_orphan_shelf_temps();
+    if cleaned > 0 {
+        eprintln!("boltsnap daemon: cleaned {cleaned} orphaned shelf tempfile(s)");
+    }
 
     let conn = Connection::connect_to_env()?;
     let (globals, mut event_queue) = registry_queue_init::<Daemon>(&conn)?;
@@ -955,8 +969,15 @@ impl SeatHandler for Daemon {
         cap: Capability,
     ) {
         if cap == Capability::Pointer && self.pointer.is_none() {
-            if let Ok(p) = self.seat_state.get_pointer(qh, &seat) {
-                self.pointer = Some(p);
+            let cursor_surface = self.compositor.create_surface(qh);
+            if let Ok(tp) = self.seat_state.get_pointer_with_theme(
+                qh,
+                &seat,
+                self.shm.wl_shm(),
+                cursor_surface,
+                ThemeSpec::default(),
+            ) {
+                self.pointer = Some(tp);
             }
         }
         if cap == Capability::Keyboard && self.keyboard.is_none() {
@@ -985,7 +1006,7 @@ impl SeatHandler for Daemon {
 impl PointerHandler for Daemon {
     fn pointer_frame(
         &mut self,
-        _: &Connection,
+        conn: &Connection,
         _qh: &QueueHandle<Self>,
         _: &WlPointer,
         events: &[PointerEvent],
@@ -1010,6 +1031,13 @@ impl PointerHandler for Daemon {
             }
             if ev.surface != surface {
                 continue;
+            }
+            // Set the normal arrow when the pointer enters the shelf, instead of
+            // inheriting the previously-focused window's cursor (e.g. an I-beam).
+            if matches!(ev.kind, PointerEventKind::Enter { .. }) {
+                if let Some(p) = self.pointer.as_ref() {
+                    let _ = p.set_cursor(conn, CursorIcon::Default);
+                }
             }
             let (x, y) = ev.position;
             match ev.kind {
