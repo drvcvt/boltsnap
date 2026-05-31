@@ -80,6 +80,9 @@ where
         drag_now: None,
         result: None,
         done: false,
+        qh: qh.clone(),
+        frame_pending: false,
+        needs_redraw: false,
     };
 
     // Discover outputs (names) so we can target the focused monitor. This
@@ -140,6 +143,12 @@ struct Selector {
     drag_now: Option<(f64, f64)>,
     result: Option<RgbaImage>,
     done: bool,
+    /// QueueHandle for requesting frame callbacks from `draw`.
+    qh: QueueHandle<Selector>,
+    /// A frame callback is in flight (committed, awaiting the compositor).
+    frame_pending: bool,
+    /// A redraw is owed (selection changed) and runs on the next frame callback.
+    needs_redraw: bool,
 }
 
 impl Selector {
@@ -161,6 +170,16 @@ impl Selector {
                     .cloned()
             })
             .or_else(|| outputs.into_iter().next())
+    }
+
+    /// Request a redraw, throttled to the compositor's frame clock. Draws now if
+    /// no frame callback is pending; otherwise marks a redraw owed so the next
+    /// `frame` callback coalesces it. Keeps a fast drag from flooding commits.
+    fn request_redraw(&mut self) {
+        self.needs_redraw = true;
+        if !self.frame_pending {
+            self.draw();
+        }
     }
 
     /// Render the current frame (screenshot + dim + optional selection) into a
@@ -204,8 +223,15 @@ impl Selector {
         render::pixmap_to_argb8888(&frame, canvas);
         let surface = layer.wl_surface();
         surface.damage_buffer(0, 0, w as i32, h as i32);
+        // Throttle to the compositor's frame clock: request a callback and hold
+        // further redraws until it fires (see `request_redraw` / `frame`). Caps
+        // commits to the refresh rate and lets the SlotPool reuse one buffer
+        // instead of growing unboundedly during a fast drag.
+        surface.frame(&self.qh, surface.clone());
         let _ = buffer.attach_to(surface);
         layer.commit();
+        self.frame_pending = true;
+        self.needs_redraw = false;
     }
 
     /// Confirm the current drag: crop the full-res image and finish, or reset
@@ -226,7 +252,7 @@ impl Selector {
             None => {
                 self.drag_start = None;
                 self.drag_now = None;
-                self.draw();
+                self.request_redraw();
             }
         }
     }
@@ -242,7 +268,14 @@ impl CompositorHandler for Selector {
         _: wl_output::Transform,
     ) {
     }
-    fn frame(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlSurface, _: u32) {}
+    fn frame(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlSurface, _: u32) {
+        // A committed frame was presented; allow the next draw and run any
+        // redraw that was coalesced while we waited for this callback.
+        self.frame_pending = false;
+        if self.needs_redraw {
+            self.draw();
+        }
+    }
     fn surface_enter(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlSurface, _: &wl_output::WlOutput) {}
     fn surface_leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlSurface, _: &wl_output::WlOutput) {}
 }
@@ -336,7 +369,7 @@ impl PointerHandler for Selector {
             }
         }
         if redraw {
-            self.draw();
+            self.request_redraw();
         }
     }
 }
