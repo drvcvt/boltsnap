@@ -45,7 +45,10 @@ pub fn render_lightbox(canvas: &mut [u8], sw: u32, sh: u32, img: &RgbaImage, mar
     if dw == 0 || dh == 0 {
         return;
     }
-    let scaled = image::imageops::resize(img, dw, dh, image::imageops::FilterType::Lanczos3);
+    // Triangle, not Lanczos3: the lightbox shows the screenshot at ~1:1, where
+    // Triangle is visually identical but ~6x cheaper. Lanczos3 here cost ~2s on a
+    // 2MP image in a debug build, stalling the click-to-open.
+    let scaled = image::imageops::resize(img, dw, dh, image::imageops::FilterType::Triangle);
     for sy in 0..dh {
         let py = oy + sy;
         if py >= sh {
