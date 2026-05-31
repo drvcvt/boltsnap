@@ -1,4 +1,4 @@
-use image::RgbaImage;
+use image::{RgbaImage, imageops};
 
 use crate::shelf::layout::{Layout, LayoutConfig, ThumbRect};
 use crate::shelf::model::ShelfModel;
@@ -24,21 +24,48 @@ pub fn clear(canvas: &mut [u8]) {
     }
 }
 
-/// Composite an opaque RGBA thumbnail as a rounded card: rounded corners
-/// (transparent outside the radius), no border. Output is premultiplied BGRA.
-/// The tile occupies exactly `img.dimensions()` at (dx, dy).
-pub fn blit_thumb_card(canvas: &mut [u8], cw: u32, ch: u32, img: &RgbaImage, dx: u32, dy: u32) {
+/// Composite an opaque RGBA thumbnail as a rounded card (rounded corners,
+/// transparent outside the radius, no border) in premultiplied BGRA. The
+/// full-size slot is `img.dimensions()` at (dx, dy); the card is scaled by
+/// `scale` (0..1) and centred in that slot, and `opacity` (0..1) multiplies the
+/// global card opacity. `scale == 1.0 && opacity == 1.0` is the settled look;
+/// other values drive the appear/dismiss animation.
+pub fn blit_thumb_card_anim(
+    canvas: &mut [u8],
+    cw: u32,
+    ch: u32,
+    img: &RgbaImage,
+    dx: u32,
+    dy: u32,
+    scale: f32,
+    opacity: f32,
+) {
     let (iw, ih) = img.dimensions();
-    let w = iw as f32;
-    let h = ih as f32;
+    let scale = scale.clamp(0.0, 1.0);
+    let sw = ((iw as f32 * scale).round() as u32).max(1);
+    let sh = ((ih as f32 * scale).round() as u32).max(1);
+    // Resize only when actually scaling; the card is small so this is cheap.
+    let scaled;
+    let src: &RgbaImage = if sw == iw && sh == ih {
+        img
+    } else {
+        scaled = imageops::resize(img, sw, sh, imageops::FilterType::Triangle);
+        &scaled
+    };
+    // Centre the scaled card in the original iw×ih slot.
+    let ox = dx + (iw - sw) / 2;
+    let oy = dy + (ih - sh) / 2;
+    let w = sw as f32;
+    let h = sh as f32;
     let r = CARD_RADIUS.min(w / 2.0).min(h / 2.0);
-    for sy in 0..ih {
-        let py = dy + sy;
+    let global = CARD_OPACITY * opacity.clamp(0.0, 1.0);
+    for sy in 0..sh {
+        let py = oy + sy;
         if py >= ch {
             break;
         }
-        for sx in 0..iw {
-            let px = dx + sx;
+        for sx in 0..sw {
+            let px = ox + sx;
             if px >= cw {
                 break;
             }
@@ -46,11 +73,10 @@ pub fn blit_thumb_card(canvas: &mut [u8], cw: u32, ch: u32, img: &RgbaImage, dx:
             if cov <= 0.0 {
                 continue; // transparent corner -> leave the canvas untouched
             }
-            // Fold the global card opacity into the coverage: in premultiplied
-            // BGRA, scaling RGB and alpha together by the same factor keeps the
-            // pixel valid while making the whole card translucent.
-            let a = cov * CARD_OPACITY;
-            let p = img.get_pixel(sx, sy).0;
+            // Premultiplied BGRA: scaling RGB and alpha together by the same
+            // factor keeps the pixel valid while making the card translucent.
+            let a = cov * global;
+            let p = src.get_pixel(sx, sy).0;
             let idx = ((py * cw + px) * 4) as usize;
             canvas[idx] = (p[2] as f32 * a).round().clamp(0.0, 255.0) as u8;
             canvas[idx + 1] = (p[1] as f32 * a).round().clamp(0.0, 255.0) as u8;
@@ -195,13 +221,21 @@ pub fn draw_shelf(
     model: &ShelfModel,
     hovered: Option<u64>,
     cfg: &LayoutConfig,
+    anims: &[(u64, f32, f32)],
 ) {
     clear(canvas);
     for r in &layout.thumbs {
         if let Some(thumb) = model.get(r.id) {
-            blit_thumb_card(canvas, cw, ch, &thumb.thumb, r.x, r.y);
+            let (scale, opacity) = anims
+                .iter()
+                .find(|(id, _, _)| *id == r.id)
+                .map(|(_, s, o)| (*s, *o))
+                .unwrap_or((1.0, 1.0));
+            blit_thumb_card_anim(canvas, cw, ch, &thumb.thumb, r.x, r.y, scale, opacity);
         }
-        if hovered == Some(r.id) {
+        // Hide hover icons on a card that is mid-animation (scaling/fading).
+        let animating = anims.iter().any(|(id, _, _)| *id == r.id);
+        if hovered == Some(r.id) && !animating {
             draw_hover_icons(canvas, cw, ch, r, cfg);
         }
     }
@@ -276,7 +310,7 @@ mod tests {
             *p = image::Rgba([10, 120, 240, 255]); // low R so we can tell it from white
         }
         let mut buf = vec![0u8; 20 * 20 * 4];
-        blit_thumb_card(&mut buf, 20, 20, &img, 0, 0);
+        blit_thumb_card_anim(&mut buf, 20, 20, &img, 0, 0, 1.0, 1.0);
         // far corner is outside the radius -> transparent
         assert_eq!(buf[3], 0, "corner should be transparent");
         // centre carries the card alpha (~0.8*255), the thumbnail colour (low R)
@@ -307,6 +341,24 @@ mod tests {
         assert!(buf[c + 3] > 200 && buf[c + 3] < 230, "got a={}", buf[c + 3]);
         // premultiplied: every colour channel <= alpha
         assert!(buf[c] <= buf[c + 3] && buf[c + 1] <= buf[c + 3] && buf[c + 2] <= buf[c + 3]);
+    }
+
+    #[test]
+    fn anim_scale_and_opacity_shrink_and_fade() {
+        let mut img = RgbaImage::new(40, 40);
+        for p in img.pixels_mut() {
+            *p = image::Rgba([10, 120, 240, 255]);
+        }
+        // Half scale, half opacity: card occupies the centre, corners of the slot
+        // are untouched (transparent), centre alpha ~ 0.5 * CARD_OPACITY.
+        let mut buf = vec![0u8; 40 * 40 * 4];
+        blit_thumb_card_anim(&mut buf, 40, 40, &img, 0, 0, 0.5, 0.5);
+        // slot corner (well outside the centred 20x20 card) stays transparent
+        let corner = ((2 * 40 + 2) * 4) as usize;
+        assert_eq!(buf[corner + 3], 0, "slot corner should be untouched");
+        // centre carries ~0.5*0.75*255 ≈ 95
+        let c = ((20 * 40 + 20) * 4) as usize;
+        assert!(buf[c + 3] > 70 && buf[c + 3] < 120, "centre alpha ~0.375, got {}", buf[c + 3]);
     }
 
     #[test]
@@ -354,6 +406,7 @@ mod tests {
             &model,
             Some(id),
             &cfg,
+            &[],
         );
         // thumb body opaque
         let r = &layout.thumbs[0];

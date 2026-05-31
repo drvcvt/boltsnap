@@ -85,6 +85,8 @@ pub struct Daemon {
     press: Option<PressState>,
     /// The open enlarge ("lightbox") view, if any, on its own overlay surface.
     preview: Option<PreviewState>,
+    /// In-flight per-card appear/dismiss animations.
+    anims: Vec<CardAnim>,
     exit: bool,
     /// Queue handle stashed for use inside calloop callbacks (which get only `&mut Daemon`).
     qh: Option<QueueHandle<Daemon>>,
@@ -106,6 +108,25 @@ struct PreviewState {
     surface: LayerSurface,
     pool: SlotPool,
     image: image::RgbaImage,
+}
+
+/// Duration of a card appear/dismiss animation.
+const ANIM_MS: u128 = 150;
+/// Card scale at the far end of the animation (start of appear / end of dismiss).
+const ANIM_SCALE_MIN: f32 = 0.88;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AnimKind {
+    Appear,
+    Disappear,
+}
+
+/// A running per-card animation. `start` is when it began; progress is
+/// `elapsed / ANIM_MS`, eased, until it reaches 1.0 and is retired.
+struct CardAnim {
+    id: u64,
+    kind: AnimKind,
+    start: std::time::Instant,
 }
 
 /// Name of the focused Hyprland monitor, via `hyprctl monitors -j`. `None` off
@@ -180,7 +201,7 @@ pub fn debug_render(out: &std::path::Path) -> DynResult<()> {
     let layout = Layout::compute(&sizes, &cfg);
     let (w, h) = (layout.width, layout.height);
     let mut canvas = vec![0u8; (w * h * 4) as usize];
-    paint::draw_shelf(&mut canvas, w, h, &layout, &model, Some(id), &cfg);
+    paint::draw_shelf(&mut canvas, w, h, &layout, &model, Some(id), &cfg, &[]);
 
     // BGRA premultiplied -> composite over mid-gray so the rounded corners
     // (transparent) and the white border are clearly visible when inspected.
@@ -250,6 +271,7 @@ pub fn run_daemon() -> DynResult<()> {
         hovered: None,
         press: None,
         preview: None,
+        anims: Vec::new(),
         exit: false,
         qh: Some(qh.clone()),
     };
@@ -294,9 +316,19 @@ pub fn run_daemon() -> DynResult<()> {
         .map_err(|e| format!("insert listener source: {e}"))?;
 
     while !daemon.exit {
+        // Tick ~60fps while a card is animating; otherwise idle until the next
+        // Wayland/socket event.
+        let timeout = if daemon.animating() {
+            std::time::Duration::from_millis(16)
+        } else {
+            std::time::Duration::from_millis(250)
+        };
         event_loop
-            .dispatch(std::time::Duration::from_millis(250), &mut daemon)
+            .dispatch(timeout, &mut daemon)
             .map_err(|e| format!("dispatch: {e}"))?;
+        if daemon.animating() {
+            daemon.tick_animations(&qh);
+        }
     }
     let _ = std::fs::remove_file(&sock);
     Ok(())
@@ -444,7 +476,8 @@ impl Daemon {
             crate::shelf::thumbnail::CARD_W,
             crate::shelf::thumbnail::CARD_H,
         );
-        self.model.add(path, thumb, source.to_string());
+        let id = self.model.add(path, thumb, source.to_string());
+        self.start_anim(id, AnimKind::Appear);
         self.relayout();
         self.place_on_focused_output(qh); // follow the user to the active monitor
         self.draw(qh);
@@ -521,14 +554,13 @@ impl Daemon {
                 self.open_preview(id);
             }
             Hit::Close(id) => {
-                if let Some(t) = self.model.remove(id) {
-                    let _ = std::fs::remove_file(&t.png_path);
-                    if self.hovered == Some(id) {
-                        self.hovered = None;
-                    }
-                    self.relayout();
-                    *redraw = true;
+                // Animate the card out; tick_animations removes it (and its temp
+                // file) and relayouts when the dismiss animation completes.
+                if self.hovered == Some(id) {
+                    self.hovered = None;
                 }
+                self.start_anim(id, AnimKind::Disappear);
+                *redraw = true;
             }
             Hit::Edit(id) => {
                 self.spawn_editor(id);
@@ -618,6 +650,68 @@ impl Daemon {
         });
     }
 
+    /// Begin an appear/dismiss animation for card `id`, replacing any existing
+    /// animation on that card.
+    fn start_anim(&mut self, id: u64, kind: AnimKind) {
+        self.anims.retain(|a| a.id != id);
+        self.anims.push(CardAnim {
+            id,
+            kind,
+            start: std::time::Instant::now(),
+        });
+    }
+
+    /// (scale, opacity) for card `id` from its in-flight animation, or (1.0, 1.0)
+    /// when it is settled.
+    fn anim_factor(&self, id: u64) -> (f32, f32) {
+        for a in &self.anims {
+            if a.id != id {
+                continue;
+            }
+            let t = (a.start.elapsed().as_millis() as f32 / ANIM_MS as f32).clamp(0.0, 1.0);
+            let eased = 1.0 - (1.0 - t).powi(3); // ease-out cubic
+            let span = 1.0 - ANIM_SCALE_MIN;
+            return match a.kind {
+                AnimKind::Appear => (ANIM_SCALE_MIN + span * eased, eased),
+                AnimKind::Disappear => (1.0 - span * eased, 1.0 - eased),
+            };
+        }
+        (1.0, 1.0)
+    }
+
+    fn animating(&self) -> bool {
+        !self.anims.is_empty()
+    }
+
+    /// Advance animations one frame: retire finished ones (removing dismissed
+    /// cards + their temp files), relayout if anything changed, and redraw.
+    fn tick_animations(&mut self, qh: &QueueHandle<Self>) {
+        let done: Vec<(u64, AnimKind)> = self
+            .anims
+            .iter()
+            .filter(|a| a.start.elapsed().as_millis() >= ANIM_MS)
+            .map(|a| (a.id, a.kind))
+            .collect();
+        self.anims
+            .retain(|a| a.start.elapsed().as_millis() < ANIM_MS);
+        let mut removed = false;
+        for (id, kind) in done {
+            if kind == AnimKind::Disappear
+                && let Some(t) = self.model.remove(id)
+            {
+                let _ = std::fs::remove_file(&t.png_path);
+                if self.hovered == Some(id) {
+                    self.hovered = None;
+                }
+                removed = true;
+            }
+        }
+        if removed {
+            self.relayout();
+        }
+        self.draw(qh);
+    }
+
     fn draw(&mut self, _qh: &QueueHandle<Self>) {
         if !self.shelf_configured {
             self.shelf_pending_draw = true;
@@ -628,6 +722,22 @@ impl Daemon {
             None => return,
         };
         let (w, h) = (self.width.max(1), self.height.max(1));
+        // Per-card (scale, opacity) for in-flight appear/dismiss animations. Built
+        // before create_buffer because `canvas` mutably borrows self.pool, which
+        // would otherwise block the immutable self borrow anim_factor needs.
+        let anims: Vec<(u64, f32, f32)> = self
+            .layout
+            .thumbs
+            .iter()
+            .filter_map(|r| {
+                let (s, o) = self.anim_factor(r.id);
+                if (s - 1.0).abs() < f32::EPSILON && (o - 1.0).abs() < f32::EPSILON {
+                    None
+                } else {
+                    Some((r.id, s, o))
+                }
+            })
+            .collect();
         let stride = (w * 4) as i32;
         let (buffer, canvas) = match self.pool.create_buffer(
             w as i32,
@@ -647,6 +757,7 @@ impl Daemon {
             &self.model,
             self.hovered,
             &self.cfg,
+            &anims,
         );
 
         let surface = layer.wl_surface();

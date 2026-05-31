@@ -79,6 +79,9 @@ where
             .with_fullscreen(true)
             .with_active(true)
             .with_always_on_top()
+            // Transparent surface so any unpainted teardown frame on close shows
+            // through instead of flashing the default opaque (white) buffer.
+            .with_transparent(true)
             .with_window_type(egui::X11WindowType::Splash),
         ..Default::default()
     };
