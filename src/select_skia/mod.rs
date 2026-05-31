@@ -1,6 +1,7 @@
 //! New region selector on raw SCTK (wlr-layer-shell) + tiny-skia, behind `--new`.
 //! Parallel to `src/select.rs` (egui); same public signature so it is a drop-in.
 
+mod edit;
 mod font;
 mod render;
 
