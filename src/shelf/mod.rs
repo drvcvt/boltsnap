@@ -306,11 +306,19 @@ impl Daemon {
         if self.layer.is_some() && name == self.output_name {
             return;
         }
-        let output = name.as_ref().and_then(|n| {
-            self.output_state.outputs().find(|o| {
-                self.output_state.info(o).and_then(|i| i.name).as_deref() == Some(n.as_str())
+        let output = name
+            .as_ref()
+            .and_then(|n| {
+                self.output_state.outputs().find(|o| {
+                    self.output_state.info(o).and_then(|i| i.name).as_deref() == Some(n.as_str())
+                })
             })
-        });
+            // Fall back to the first available output when the focused monitor
+            // can't be resolved (e.g. the daemon was started without
+            // HYPRLAND_INSTANCE_SIGNATURE so focused_monitor_name() is None).
+            // Hyprland never maps a layer surface created with a null output, so
+            // the shelf would silently never appear — always pass a concrete one.
+            .or_else(|| self.output_state.outputs().next());
         let surface = self.compositor.create_surface(qh);
         let layer = self.layer_shell.create_layer_surface(
             qh,
