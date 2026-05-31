@@ -31,7 +31,10 @@ use smithay_client_toolkit::{
             LayerSurfaceConfigure,
         },
     },
-    shm::{Shm, ShmHandler, slot::SlotPool},
+    shm::{
+        Shm, ShmHandler,
+        slot::{Buffer, SlotPool},
+    },
 };
 use wayland_client::{
     Connection, QueueHandle,
@@ -75,6 +78,11 @@ pub struct Daemon {
     /// Dedicated pool kept alive for the whole drag so the shelf's `pool` can't
     /// reuse the icon's slot and turn it into a "ghost".
     drag_icon_pool: Option<SlotPool>,
+    /// The icon's `Buffer` wrapper, retained for the whole drag. Dropping it lets
+    /// SCTK destroy the underlying `wl_buffer` mid-drag (the icon then vanishes,
+    /// especially when the cursor crosses to another output) — so we hold it
+    /// until the drag ends.
+    drag_icon_buffer: Option<Buffer>,
 
     model: ShelfModel,
     layout: Layout,
@@ -261,6 +269,7 @@ pub fn run_daemon() -> DynResult<()> {
         drag_source: None,
         drag_path: None,
         drag_icon_pool: None,
+        drag_icon_buffer: None,
         drop_ok: false,
         icon_surface: None,
         model: ShelfModel::new(),
@@ -569,28 +578,47 @@ impl Daemon {
     }
 
     /// Start a Wayland drag for thumbnail `id`, offering image/png + a file URI,
-    /// with the thumbnail itself as the drag icon.
-    fn begin_drag(&mut self, id: u64, serial: u32) {
+    /// with the thumbnail itself as the drag icon. Returns true if the drag was
+    /// actually started.
+    fn begin_drag(&mut self, id: u64, serial: u32) -> bool {
         let path = match self.model.get(id) {
             Some(t) => t.png_path.clone(),
-            None => return,
+            None => return false,
         };
         let qh = match self.qh.clone() {
             Some(qh) => qh,
-            None => return,
+            None => return false,
         };
         if self.data_device.is_none() {
-            return;
+            return false;
         }
         let origin = match self.layer.as_ref() {
             Some(l) => l.wl_surface().clone(),
-            None => return,
+            None => return false,
         };
 
-        // Build a drag icon from the thumbnail, in its OWN pool kept alive for the
-        // whole drag — the shelf's `pool` would otherwise reuse the slot mid-drag
-        // and leave a "ghost". Crisp Lanczos scale, ~85% opacity, rounded corners.
+        // wl_data_device assigns the dnd_icon ROLE to the surface inside
+        // start_drag, and a surface must not carry a buffer on its role-assigning
+        // commit. So: create the source + surface, call start_drag FIRST (assigns
+        // the role), and only THEN attach + damage + commit the icon buffer.
+        // Doing it the other way (buffer committed before the role existed) made
+        // the icon flash and then vanish inconsistently — and reliably broke when
+        // the drag crossed to another output, where the compositor re-maps the
+        // icon and found it in a bad state.
+        let source = self.ddm.create_drag_and_drop_source(
+            &qh,
+            ["image/png", "text/uri-list"],
+            DndAction::Copy,
+        );
         let icon = self.compositor.create_surface(&qh);
+        {
+            let device = self.data_device.as_ref().unwrap();
+            source.start_drag(device, &origin, Some(&icon), serial);
+        }
+
+        // Build the icon in its OWN pool, and retain BOTH the pool and the Buffer
+        // for the whole drag (dropping the Buffer destroys the wl_buffer, which is
+        // what made the icon disappear mid-drag / on monitor change).
         if let Some(t) = self.model.get(id) {
             let (iw, ih) = t.thumb.dimensions();
             let stride = (iw * 4) as i32;
@@ -604,24 +632,36 @@ impl Daemon {
                 ) {
                     canvas.copy_from_slice(&bytes);
                     let _ = buf.attach_to(&icon);
+                    icon.damage_buffer(0, 0, iw as i32, ih as i32);
                     icon.commit();
+                    self.drag_icon_buffer = Some(buf);
                 }
                 self.drag_icon_pool = Some(pool);
             }
         }
 
-        let source = self.ddm.create_drag_and_drop_source(
-            &qh,
-            ["image/png", "text/uri-list"],
-            DndAction::Copy,
-        );
-        let device = self.data_device.as_ref().unwrap();
-        source.start_drag(device, &origin, Some(&icon), serial);
-
         self.drag_path = Some(path);
         self.drop_ok = false;
         self.icon_surface = Some(icon);
         self.drag_source = Some(source);
+        true
+    }
+
+    /// Reset all in-flight drag state in one place (kept in sync between the
+    /// `cancelled` and `dnd_finished` paths), then repaint the shelf once.
+    fn clear_drag(&mut self) {
+        self.drag_source = None;
+        self.drag_path = None;
+        self.icon_surface = None;
+        self.drag_icon_buffer = None;
+        self.drag_icon_pool = None;
+        self.drop_ok = false;
+        self.press = None;
+        // draw() is suppressed while a drag is active; now that it's cleared,
+        // repaint once to restore a clean shelf frame.
+        if let Some(qh) = self.qh.clone() {
+            self.draw(&qh);
+        }
     }
 
     /// Open the annotation editor for thumbnail `id` in a child process; when it
@@ -715,6 +755,14 @@ impl Daemon {
     fn draw(&mut self, _qh: &QueueHandle<Self>) {
         if !self.shelf_configured {
             self.shelf_pending_draw = true;
+            return;
+        }
+        // Don't commit the origin/shelf surface while a drag is in flight: extra
+        // commits during the drag grab can make wlroots tear the drag down (the
+        // icon vanishes, most reliably when the cursor crosses to another output).
+        // The shelf content doesn't change during a drag; clear_drag() repaints
+        // once when it ends.
+        if self.drag_source.is_some() {
             return;
         }
         let layer = match self.layer.as_ref() {
@@ -978,14 +1026,26 @@ impl PointerHandler for Daemon {
                         self.hovered = now;
                         redraw = true;
                     }
-                    if let Some(p) = self.press.as_mut() {
-                        if !p.dragging {
-                            let dx = x - p.x;
-                            let dy = y - p.y;
-                            if (dx * dx + dy * dy) > 36.0 && matches!(p.hit, Hit::Body(_)) {
+                    let start_drag = self
+                        .press
+                        .as_ref()
+                        .map(|p| {
+                            !p.dragging
+                                && matches!(p.hit, Hit::Body(_))
+                                && (x - p.x).powi(2) + (y - p.y).powi(2) > 36.0
+                        })
+                        .unwrap_or(false);
+                    if start_drag {
+                        let (id, serial) = {
+                            let p = self.press.as_ref().unwrap();
+                            (p.id, p.serial)
+                        };
+                        // Only mark the press as dragging if the drag actually
+                        // started; otherwise the eventual Release would wrongly be
+                        // swallowed instead of treated as a click.
+                        if self.begin_drag(id, serial) {
+                            if let Some(p) = self.press.as_mut() {
                                 p.dragging = true;
-                                let (id, serial) = (p.id, p.serial);
-                                self.begin_drag(id, serial);
                             }
                         }
                     }
@@ -1139,6 +1199,9 @@ impl DataSourceHandler for Daemon {
     }
 
     fn cancelled(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource) {
+        // A cancel without a successful drop = the user dropped onto nothing (or
+        // the target rejected it): fall back to copying the image to the clipboard
+        // so the drag is never wasted.
         if !self.drop_ok {
             if let Some(path) = self.drag_path.clone() {
                 if let Err(e) = crate::clipboard::copy_to_clipboard(&path, crate::Backend::Wayland)
@@ -1147,11 +1210,7 @@ impl DataSourceHandler for Daemon {
                 }
             }
         }
-        self.drag_source = None;
-        self.drag_path = None;
-        self.icon_surface = None;
-        self.drag_icon_pool = None;
-        self.press = None;
+        self.clear_drag();
     }
 
     fn dnd_dropped(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource) {
@@ -1159,11 +1218,7 @@ impl DataSourceHandler for Daemon {
     }
 
     fn dnd_finished(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource) {
-        self.drag_source = None;
-        self.drag_path = None;
-        self.icon_surface = None;
-        self.drag_icon_pool = None;
-        self.press = None;
+        self.clear_drag();
     }
 
     fn action(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource, _: DndAction) {}
