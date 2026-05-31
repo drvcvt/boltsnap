@@ -17,7 +17,10 @@ use smithay_client_toolkit::{
     seat::{
         Capability, SeatHandler, SeatState,
         keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers},
-        pointer::{BTN_LEFT, PointerEvent, PointerEventKind, PointerHandler},
+        pointer::{
+            BTN_LEFT, CursorIcon, PointerEvent, PointerEventKind, PointerHandler, ThemeSpec,
+            ThemedPointer,
+        },
     },
     shell::{
         WaylandSurface,
@@ -130,7 +133,7 @@ struct Selector {
     compositor: CompositorState,
     layer_shell: LayerShell,
     layer: Option<LayerSurface>,
-    pointer: Option<WlPointer>,
+    pointer: Option<ThemedPointer>,
     keyboard: Option<WlKeyboard>,
     /// Full-resolution captured screenshot (cropped from on confirm).
     image: Option<RgbaImage>,
@@ -323,8 +326,15 @@ impl SeatHandler for Selector {
     fn new_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: WlSeat) {}
     fn new_capability(&mut self, _: &Connection, qh: &QueueHandle<Self>, seat: WlSeat, cap: Capability) {
         if cap == Capability::Pointer && self.pointer.is_none() {
-            if let Ok(p) = self.seat_state.get_pointer(qh, &seat) {
-                self.pointer = Some(p);
+            let cursor_surface = self.compositor.create_surface(qh);
+            if let Ok(tp) = self.seat_state.get_pointer_with_theme(
+                qh,
+                &seat,
+                self.shm.wl_shm(),
+                cursor_surface,
+                ThemeSpec::default(),
+            ) {
+                self.pointer = Some(tp);
             }
         }
         if cap == Capability::Keyboard && self.keyboard.is_none() {
@@ -342,9 +352,16 @@ impl SeatHandler for Selector {
 }
 
 impl PointerHandler for Selector {
-    fn pointer_frame(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlPointer, events: &[PointerEvent]) {
+    fn pointer_frame(&mut self, conn: &Connection, _: &QueueHandle<Self>, _: &WlPointer, events: &[PointerEvent]) {
         let mut redraw = false;
         for ev in events {
+            // Show a crosshair over the overlay instead of inheriting the prior
+            // window's cursor or the compositor's busy "watch" cursor.
+            if matches!(ev.kind, PointerEventKind::Enter { .. }) {
+                if let Some(p) = self.pointer.as_ref() {
+                    let _ = p.set_cursor(conn, CursorIcon::Crosshair);
+                }
+            }
             let (x, y) = ev.position;
             match ev.kind {
                 PointerEventKind::Press { button, .. } if button == BTN_LEFT => {
