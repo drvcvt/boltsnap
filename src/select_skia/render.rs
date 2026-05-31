@@ -38,6 +38,26 @@ pub fn rect_to_image(
     }
 }
 
+/// The four surface-space rectangles (top, bottom, left, right) that together
+/// cover the whole `(surf_w, surf_h)` surface minus the selection `(sx,sy,sw,sh)`.
+/// No overlaps, no gaps. Negative extents are clamped to 0. Matches the egui
+/// selector's four `outside_*` rects.
+pub fn outside_rects(
+    sx: f32,
+    sy: f32,
+    sw: f32,
+    sh: f32,
+    surf_w: f32,
+    surf_h: f32,
+) -> [(f32, f32, f32, f32); 4] {
+    let nn = |v: f32| v.max(0.0);
+    let top = (0.0, 0.0, surf_w, nn(sy));
+    let bottom = (0.0, sy + sh, surf_w, nn(surf_h - (sy + sh)));
+    let left = (0.0, sy, nn(sx), sh);
+    let right = (sx + sw, sy, nn(surf_w - (sx + sw)), sh);
+    [top, bottom, left, right]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -62,5 +82,16 @@ mod tests {
     fn rect_to_image_rejects_subpixel() {
         assert_eq!(rect_to_image((10.0, 10.0), (10.5, 10.5), 200, 400, 200, 400), None);
         assert_eq!(rect_to_image((10.0, 10.0), (10.0, 10.0), 200, 400, 200, 400), None);
+    }
+
+    #[test]
+    fn outside_rects_cover_complement_without_overlap() {
+        let (sw, sh) = (200.0_f32, 100.0_f32);
+        let sel = (40.0_f32, 30.0_f32, 60.0_f32, 20.0_f32); // x,y,w,h
+        let rects = outside_rects(sel.0, sel.1, sel.2, sel.3, sw, sh);
+        let outside_area: f32 = rects.iter().map(|(_, _, w, h)| w * h).sum();
+        let total = sw * sh;
+        let selection = sel.2 * sel.3;
+        assert!((outside_area - (total - selection)).abs() < 0.01, "got {outside_area}");
     }
 }
