@@ -47,7 +47,7 @@ use crate::DynResult;
 /// wlr-layer-shell overlay on the focused output, renders the frozen screenshot
 /// with a draggable selection via tiny-skia, and returns the cropped image on
 /// confirm (or `None` on Esc/cancel).
-pub fn run_select_with_parallel_capture<F>(capture: F) -> DynResult<Option<RgbaImage>>
+pub fn run_select_with_parallel_capture<F>(capture: F, instant: bool) -> DynResult<Option<RgbaImage>>
 where
     F: FnOnce() -> Result<RgbaImage, String> + Send + 'static,
 {
@@ -86,6 +86,7 @@ where
         qh: qh.clone(),
         frame_pending: false,
         needs_redraw: false,
+        instant,
     };
 
     // Discover outputs (names) so we can target the focused monitor. This
@@ -152,6 +153,9 @@ struct Selector {
     frame_pending: bool,
     /// A redraw is owed (selection changed) and runs on the next frame callback.
     needs_redraw: bool,
+    /// Skip the editable phase: release in Drawing confirms immediately. Consumed in Task 8.
+    #[allow(dead_code)]
+    instant: bool,
 }
 
 impl Selector {
