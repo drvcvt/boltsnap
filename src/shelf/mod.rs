@@ -1183,19 +1183,30 @@ impl DataSourceHandler for Daemon {
         let Some(path) = self.drag_path.clone() else {
             return;
         };
-        let mut file = std::fs::File::from(OwnedFd::from(fd));
-        match mime.as_str() {
-            "text/uri-list" => {
-                let abs = std::fs::canonicalize(&path).unwrap_or(path);
-                let uri = format!("file://{}\r\n", abs.display());
-                let _ = file.write_all(uri.as_bytes());
-            }
-            _ => {
-                if let Ok(bytes) = std::fs::read(&path) {
-                    let _ = file.write_all(&bytes);
+        // Write the requested data on a DETACHED THREAD, never on the calloop
+        // event-loop thread. The drop target reads the pipe at its own pace
+        // (Electron apps like Discord request the full multi-MB PNG and drain it
+        // lazily), and the pipe buffer is only ~64 KiB. A synchronous
+        // `write_all` here would block the entire daemon until the reader drains
+        // or the pipe breaks — freezing the shelf ("card is there but dead",
+        // clicks/remove/drag all stop, and the drag never reaches dnd_finished so
+        // it can never recover). Offloading keeps the daemon responsive.
+        let fd = OwnedFd::from(fd);
+        std::thread::spawn(move || {
+            let mut file = std::fs::File::from(fd);
+            match mime.as_str() {
+                "text/uri-list" => {
+                    let abs = std::fs::canonicalize(&path).unwrap_or(path);
+                    let uri = format!("file://{}\r\n", abs.display());
+                    let _ = file.write_all(uri.as_bytes());
+                }
+                _ => {
+                    if let Ok(bytes) = std::fs::read(&path) {
+                        let _ = file.write_all(&bytes);
+                    }
                 }
             }
-        }
+        });
     }
 
     fn cancelled(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource) {
