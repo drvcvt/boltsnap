@@ -135,6 +135,48 @@ cargo build --release
 cargo test
 ```
 
+## Screenshot shelf (Wayland / wlroots, e.g. Hyprland)
+
+On Wayland, an interactive capture no longer copies-and-exits. Instead the
+screenshot lands as a small floating **thumbnail in the bottom-left corner**
+of the screen — a macOS-style shelf — and stays there until you use or dismiss
+it. Multiple screenshots stack, newest on top.
+
+```sh
+boltsnap area        # capture a region -> appears in the shelf
+boltsnap full        # whole screen -> shelf
+boltsnap window      # pick a window -> shelf
+```
+
+Each thumbnail responds to:
+
+- **Click** — copy the PNG to the clipboard (then paste with Ctrl+V).
+- **Drag** — start a drag-and-drop into another app; the drop offers both the
+  image (`image/png`) and a file path (`text/uri-list`) for maximum
+  compatibility, including many XWayland apps. If the drop isn't accepted
+  anywhere, the image is copied to the clipboard as a fallback.
+- **Hover** then the icons: **✎** open in the annotation editor (the result
+  updates the thumbnail), **⧉** copy, **✕** dismiss.
+
+The shelf is served by a small long-lived daemon. It starts automatically on
+the first Wayland capture; you don't need to set anything up. To start it
+explicitly (or autostart it), run:
+
+```sh
+boltsnap daemon
+# Hyprland autostart (optional): add to hyprland.conf
+exec-once = boltsnap daemon
+```
+
+The shelf is **RAM-only**: its contents are cleared if the daemon restarts.
+`boltsnap doctor` reports the Wayland session, whether the daemon is running,
+and the socket path.
+
+Flags still work: `--copy` also copies to the clipboard on capture, `-o PATH`
+/ `--save` write a file (no shelf), and `-o -` streams PNG to stdout. **X11 is
+unchanged** — it keeps the classic copy-to-clipboard one-shot behavior with no
+shelf.
+
 ## License
 
 MIT.
