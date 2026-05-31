@@ -145,7 +145,7 @@ struct CardAnim {
 
 /// Name of the focused Hyprland monitor, via `hyprctl monitors -j`. `None` off
 /// Hyprland (then the compositor places the shelf on its default output).
-fn focused_monitor_name() -> Option<String> {
+pub(crate) fn focused_monitor_name() -> Option<String> {
     use std::process::Command;
     if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_none()
         || !crate::paths::has_cmd("hyprctl")
