@@ -98,6 +98,9 @@ struct Args {
     /// Use the new tiny-skia/SCTK region selector instead of the egui one.
     /// Wayland-only; ignored on X11 (no wlr-layer-shell there).
     new_selector: bool,
+    /// Skip the editable phase of the new selector: release captures immediately.
+    /// Wayland + `--new` only; ignored otherwise.
+    instant: bool,
 }
 
 impl Default for Args {
@@ -113,6 +116,7 @@ impl Default for Args {
             output: None,
             backend: Backend::Auto,
             new_selector: false,
+            instant: false,
         }
     }
 }
@@ -189,6 +193,7 @@ fn parse_args(raw: &[String]) -> DynResult<Args> {
                 args.copy_explicit = true;
             }
             "--new" => args.new_selector = true,
+            "--instant" => args.instant = true,
             "--save" => args.save = true,
             "-o" | "--output" => {
                 i += 1;
@@ -457,5 +462,19 @@ mod tests {
 
         let default = parse_args(&["boltsnap".to_string(), "area".to_string()]).unwrap();
         assert!(!default.new_selector);
+    }
+
+    #[test]
+    fn parser_handles_instant_flag() {
+        let a = parse_args(&[
+            "boltsnap".to_string(),
+            "area".to_string(),
+            "--new".to_string(),
+            "--instant".to_string(),
+        ])
+        .unwrap();
+        assert!(a.new_selector && a.instant);
+        let d = parse_args(&["boltsnap".to_string(), "area".to_string()]).unwrap();
+        assert!(!d.instant);
     }
 }
