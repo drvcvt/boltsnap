@@ -7,7 +7,7 @@ use crate::shelf::model::ShelfModel;
 const CARD_RADIUS: f32 = 10.0;
 /// Card opacity: slightly translucent so text/windows behind the shelf stay
 /// readable. 1.0 = fully opaque.
-const CARD_OPACITY: f32 = 0.75;
+const CARD_OPACITY: f32 = 0.8;
 
 /// Hover-button styling: a small translucent dark circle with an anti-aliased
 /// glyph. Minimal and unobtrusive over the screenshot.
