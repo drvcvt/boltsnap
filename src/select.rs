@@ -163,7 +163,11 @@ impl SelectApp {
 
 impl eframe::App for SelectApp {
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        [0.0, 0.0, 0.0, 1.0]
+        // Transparent, not opaque black: the screenshot covers the whole surface
+        // during normal use, so this is only seen on frames that paint nothing
+        // (notably the teardown frame on close). Transparent there shows the
+        // desktop through instead of flashing a solid buffer.
+        [0.0, 0.0, 0.0, 0.0]
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
