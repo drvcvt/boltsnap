@@ -172,6 +172,10 @@ impl Selector {
         let (Some(layer), Some(base)) = (self.layer.as_ref(), self.base.as_ref()) else {
             return;
         };
+        // `base` is built once from the captured image at the surface size on the
+        // first configure, so base.{width,height} == (surf_w, surf_h). A fullscreen
+        // layer overlay is not resized by the compositor, so the buffer below and
+        // `base` always agree; if that ever changes, rebuild `base` on resize.
         let (w, h) = (self.surf_w.max(1), self.surf_h.max(1));
         let sel = match (self.drag_start, self.drag_now) {
             (Some(a), Some(b)) => {
@@ -210,13 +214,10 @@ impl Selector {
         let (Some(a), Some(b)) = (self.drag_start, self.drag_now) else {
             return;
         };
-        let (Some(img), iw, ih) = (
-            self.image.as_ref(),
-            self.image.as_ref().map(|i| i.width()).unwrap_or(0),
-            self.image.as_ref().map(|i| i.height()).unwrap_or(0),
-        ) else {
+        let Some(img) = self.image.as_ref() else {
             return;
         };
+        let (iw, ih) = (img.width(), img.height());
         match render::rect_to_image(a, b, self.surf_w, self.surf_h, iw, ih) {
             Some((x, y, w, h)) => {
                 self.result = Some(image::imageops::crop_imm(img, x, y, w, h).to_image());
