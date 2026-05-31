@@ -3,9 +3,8 @@ use image::RgbaImage;
 use crate::shelf::layout::{Layout, LayoutConfig, ThumbRect};
 use crate::shelf::model::ShelfModel;
 
-/// Thumbnail card corner radius and white border width, in pixels.
-const CARD_RADIUS: f32 = 8.0;
-const CARD_BORDER: f32 = 1.0;
+/// Thumbnail card corner radius, in pixels.
+const CARD_RADIUS: f32 = 10.0;
 
 /// Hover-button styling: a small translucent dark circle with an anti-aliased
 /// glyph. Minimal and unobtrusive over the screenshot.
@@ -22,16 +21,14 @@ pub fn clear(canvas: &mut [u8]) {
     }
 }
 
-/// Composite an opaque RGBA thumbnail as a rounded "card": rounded corners
-/// (transparent outside the radius) plus a 1px white border, both anti-aliased.
-/// The tile occupies exactly `img.dimensions()` at (dx, dy). Screenshots are
-/// opaque, so only the rounded-rect coverage of each pixel varies.
+/// Composite an opaque RGBA thumbnail as a rounded card: rounded corners
+/// (transparent outside the radius), no border. Output is premultiplied BGRA.
+/// The tile occupies exactly `img.dimensions()` at (dx, dy).
 pub fn blit_thumb_card(canvas: &mut [u8], cw: u32, ch: u32, img: &RgbaImage, dx: u32, dy: u32) {
     let (iw, ih) = img.dimensions();
     let w = iw as f32;
     let h = ih as f32;
     let r = CARD_RADIUS.min(w / 2.0).min(h / 2.0);
-    let b = CARD_BORDER;
     for sy in 0..ih {
         let py = dy + sy;
         if py >= ch {
@@ -42,28 +39,47 @@ pub fn blit_thumb_card(canvas: &mut [u8], cw: u32, ch: u32, img: &RgbaImage, dx:
             if px >= cw {
                 break;
             }
-            let fx = sx as f32 + 0.5;
-            let fy = sy as f32 + 0.5;
-            let outer = rr_coverage(fx, fy, w, h, r);
-            if outer <= 0.0 {
+            let cov = rr_coverage(sx as f32 + 0.5, sy as f32 + 0.5, w, h, r);
+            if cov <= 0.0 {
                 continue; // transparent corner -> leave the canvas untouched
             }
-            let inner = rr_coverage(fx - b, fy - b, w - 2.0 * b, h - 2.0 * b, (r - b).max(0.0));
-            let fill = inner.clamp(0.0, 1.0);
-            let border = (outer - inner).clamp(0.0, 1.0);
             let p = img.get_pixel(sx, sy).0;
-            // Coverage-weighted (already premultiplied) BGRA: the thumbnail in
-            // the fill region, white in the 1px border ring, alpha = outer.
-            let rr = p[0] as f32 * fill + 255.0 * border;
-            let gg = p[1] as f32 * fill + 255.0 * border;
-            let bb = p[2] as f32 * fill + 255.0 * border;
             let idx = ((py * cw + px) * 4) as usize;
-            canvas[idx] = bb.round().clamp(0.0, 255.0) as u8;
-            canvas[idx + 1] = gg.round().clamp(0.0, 255.0) as u8;
-            canvas[idx + 2] = rr.round().clamp(0.0, 255.0) as u8;
-            canvas[idx + 3] = (outer * 255.0).round().clamp(0.0, 255.0) as u8;
+            // premultiplied BGRA, alpha = rounded-rect coverage
+            canvas[idx] = (p[2] as f32 * cov).round().clamp(0.0, 255.0) as u8;
+            canvas[idx + 1] = (p[1] as f32 * cov).round().clamp(0.0, 255.0) as u8;
+            canvas[idx + 2] = (p[0] as f32 * cov).round().clamp(0.0, 255.0) as u8;
+            canvas[idx + 3] = (cov * 255.0).round().clamp(0.0, 255.0) as u8;
         }
     }
+}
+
+/// Build a premultiplied-BGRA drag icon: scale `src` to (w,h) with Lanczos3,
+/// round the corners, and apply a global `opacity` (0..=1). Returns w*h*4 bytes,
+/// ready to copy into a wl_shm Argb8888 buffer.
+pub fn build_drag_icon(src: &RgbaImage, w: u32, h: u32, radius: f32, opacity: f32) -> Vec<u8> {
+    let mut buf = vec![0u8; (w * h * 4) as usize];
+    if w == 0 || h == 0 {
+        return buf;
+    }
+    let scaled = image::imageops::resize(src, w, h, image::imageops::FilterType::Lanczos3);
+    let r = radius.min(w as f32 / 2.0).min(h as f32 / 2.0);
+    for sy in 0..h {
+        for sx in 0..w {
+            let cov =
+                rr_coverage(sx as f32 + 0.5, sy as f32 + 0.5, w as f32, h as f32, r) * opacity;
+            if cov <= 0.0 {
+                continue;
+            }
+            let p = scaled.get_pixel(sx, sy).0;
+            let idx = ((sy * w + sx) * 4) as usize;
+            buf[idx] = (p[2] as f32 * cov).round().clamp(0.0, 255.0) as u8;
+            buf[idx + 1] = (p[1] as f32 * cov).round().clamp(0.0, 255.0) as u8;
+            buf[idx + 2] = (p[0] as f32 * cov).round().clamp(0.0, 255.0) as u8;
+            buf[idx + 3] = (cov * 255.0).round().clamp(0.0, 255.0) as u8;
+        }
+    }
+    buf
 }
 
 /// Coverage of a rounded rectangle (size w×h, corner radius r) at point (px,py):
@@ -155,14 +171,6 @@ fn stroke_line(
     }
 }
 
-/// Anti-aliased square outline (four strokes) for the copy glyph.
-fn stroke_rect(canvas: &mut [u8], cw: u32, ch: u32, x: f32, y: f32, w: f32, h: f32, hw: f32, c: (u8, u8, u8), a: f32) {
-    stroke_line(canvas, cw, ch, x, y, x + w, y, hw, c, a);
-    stroke_line(canvas, cw, ch, x, y + h, x + w, y + h, hw, c, a);
-    stroke_line(canvas, cw, ch, x, y, x, y + h, hw, c, a);
-    stroke_line(canvas, cw, ch, x + w, y, x + w, y + h, hw, c, a);
-}
-
 /// Render the whole shelf: each thumbnail, plus hover icons on the hovered thumb.
 pub fn draw_shelf(
     canvas: &mut [u8],
@@ -185,9 +193,9 @@ pub fn draw_shelf(
 }
 
 fn draw_hover_icons(canvas: &mut [u8], cw: u32, ch: u32, r: &ThumbRect, cfg: &LayoutConfig) {
-    // slot 0 close (rightmost), 1 copy, 2 edit — cell math mirrors Layout::icon_rect
-    // so the visible buttons line up with the hit zones.
-    for slot in 0..3u32 {
+    // slot 0 close (rightmost), 1 edit — cell math mirrors Layout::icon_rect so the
+    // visible buttons line up with the hit zones.
+    for slot in 0..2u32 {
         let right = (r.x + r.w).saturating_sub(cfg.pad_icon);
         let cellx = right
             .saturating_sub((slot + 1) * cfg.icon)
@@ -204,7 +212,7 @@ fn draw_hover_icons(canvas: &mut [u8], cw: u32, ch: u32, r: &ThumbRect, cfg: &La
 }
 
 /// Minimal anti-aliased glyphs centred in a cell at (x,y) of size s.
-/// 0 = close (X), 1 = copy (two offset squares), 2 = edit (pencil).
+/// 0 = close (X), 1 = edit (pencil).
 fn draw_glyph(canvas: &mut [u8], cw: u32, ch: u32, slot: u32, x: f32, y: f32, s: f32, c: (u8, u8, u8)) {
     let hw = GLYPH_HALF_W;
     let inset = s * 0.30;
@@ -215,15 +223,6 @@ fn draw_glyph(canvas: &mut [u8], cw: u32, ch: u32, slot: u32, x: f32, y: f32, s:
             // X
             stroke_line(canvas, cw, ch, x + lo, y + lo, x + hi, y + hi, hw, c, 1.0);
             stroke_line(canvas, cw, ch, x + hi, y + lo, x + lo, y + hi, hw, c, 1.0);
-        }
-        1 => {
-            // copy: two offset rounded-ish squares (outlines)
-            let side = (hi - lo) * 0.74;
-            let off = (hi - lo) * 0.26;
-            // back square (upper-right)
-            stroke_rect(canvas, cw, ch, x + lo + off, y + lo, side, side, hw, c, 1.0);
-            // front square (lower-left), drawn after so it reads on top
-            stroke_rect(canvas, cw, ch, x + lo, y + lo + off, side, side, hw, c, 1.0);
         }
         _ => {
             // edit: a pencil — diagonal body with a small nib corner at the lower-left
@@ -243,25 +242,40 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
-    fn card_rounds_corners_and_draws_white_border() {
+    fn card_rounds_corners_no_border() {
         let mut img = RgbaImage::new(20, 20);
         for p in img.pixels_mut() {
-            *p = image::Rgba([10, 120, 240, 255]); // R=10 so we can tell it from white
+            *p = image::Rgba([10, 120, 240, 255]); // low R so we can tell it from white
         }
         let mut buf = vec![0u8; 20 * 20 * 4];
         blit_thumb_card(&mut buf, 20, 20, &img, 0, 0);
         // far corner is outside the radius -> transparent
         assert_eq!(buf[3], 0, "corner should be transparent");
-        // centre is opaque fill = the thumbnail colour (low R), not white
+        // centre is opaque, the thumbnail colour (low R), not white
         let c = ((10 * 20 + 10) * 4) as usize;
         assert!(buf[c + 3] > 250, "centre should be opaque");
-        assert!(buf[c + 2] < 60, "centre R should be the thumbnail's, not white");
-        // left-edge midpoint is the white border (all channels high)
+        assert!(buf[c + 2] < 60, "centre R should be the thumbnail's");
+        // left-edge midpoint is the IMAGE colour now, NOT a white border
         let e = ((10 * 20 + 0) * 4) as usize;
-        assert!(
-            buf[e + 3] > 250 && buf[e] > 240 && buf[e + 1] > 240 && buf[e + 2] > 240,
-            "left edge should be a white border pixel"
-        );
+        assert!(buf[e + 3] > 200, "left edge should be (near) opaque image");
+        assert!(buf[e + 2] < 60, "left edge R should be the image's, not white");
+    }
+
+    #[test]
+    fn drag_icon_is_premultiplied_and_rounded() {
+        let mut img = RgbaImage::new(40, 40);
+        for p in img.pixels_mut() {
+            *p = image::Rgba([200, 100, 50, 255]);
+        }
+        let buf = build_drag_icon(&img, 40, 40, 8.0, 0.85);
+        assert_eq!(buf.len(), 40 * 40 * 4);
+        // corner transparent
+        assert_eq!(buf[3], 0, "corner alpha should be 0");
+        // centre alpha ~ 0.85*255
+        let c = ((20 * 40 + 20) * 4) as usize;
+        assert!(buf[c + 3] > 200 && buf[c + 3] < 230, "got a={}", buf[c + 3]);
+        // premultiplied: every colour channel <= alpha
+        assert!(buf[c] <= buf[c + 3] && buf[c + 1] <= buf[c + 3] && buf[c + 2] <= buf[c + 3]);
     }
 
     #[test]
@@ -285,7 +299,7 @@ mod tests {
     #[test]
     fn hovered_thumb_draws_icon_pixels() {
         let mut model = ShelfModel::new();
-        let mut t = RgbaImage::new(200, 140);
+        let mut t = RgbaImage::new(260, 180);
         for p in t.pixels_mut() {
             *p = image::Rgba([10, 20, 200, 255]);
         }
@@ -305,7 +319,7 @@ mod tests {
         let idx = ((py * layout.width + px) * 4) as usize;
         assert!(canvas[idx + 3] > 0, "thumb body should be opaque");
         // a glyph pixel near the close-button centre should differ from the
-        // plain thumbnail colour (button bg darkened or white glyph stroke).
+        // plain thumbnail colour (button bg darkened or glyph stroke).
         let bx = r.x + r.w - cfg.pad_icon - cfg.icon / 2;
         let by = r.y + cfg.pad_icon + cfg.icon / 2;
         let bidx = ((by * layout.width + bx) * 4) as usize;
