@@ -244,7 +244,7 @@ fn run() -> DynResult<()> {
             Ok(())
         }
         "self-test" => self_test(),
-        "daemon" => crate::shelf::run_daemon(),
+        "daemon" => crate::shelf::run_daemon(None),
         "__debug-render" => {
             // Render the shelf (one sample thumbnail, hovered) straight to a PNG
             // via the real draw path, so styling can be inspected without a
