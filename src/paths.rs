@@ -196,9 +196,9 @@ pub fn timestamp() -> u128 {
         .as_millis()
 }
 
-/// Saved-screenshot filename from a wall-clock stamp: `boltsnap-<stamp>.png`.
-pub fn boltsnap_filename(stamp: &str) -> String {
-    format!("boltsnap-{stamp}.png")
+/// Saved-file filename from a wall-clock stamp and extension: `boltsnap-<stamp>.<ext>`.
+pub fn boltsnap_filename_ext(stamp: &str, ext: &str) -> String {
+    format!("boltsnap-{stamp}.{ext}")
 }
 
 /// Local wall-clock stamp `YYYY-MM-DD_HH-MM-SS` via `date` (correct local time,
@@ -221,9 +221,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn filename_wraps_stamp() {
+    fn filename_ext_uses_given_extension() {
         assert_eq!(
-            boltsnap_filename("2026-06-01_14-23-05"),
+            boltsnap_filename_ext("2026-06-01_14-23-05", "mp4"),
+            "boltsnap-2026-06-01_14-23-05.mp4"
+        );
+        assert_eq!(
+            boltsnap_filename_ext("2026-06-01_14-23-05", "png"),
             "boltsnap-2026-06-01_14-23-05.png"
         );
     }

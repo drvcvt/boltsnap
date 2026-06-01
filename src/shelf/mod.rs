@@ -558,8 +558,17 @@ impl Daemon {
     }
 
     /// Copy the full image of the card under the cursor to the clipboard.
+    /// For video cards this is a no-op (raw video bytes are not meaningful on the
+    /// clipboard; use drag or Save instead).
     fn copy_card(&mut self, id: u64) {
         if let Some(t) = self.model.get(id) {
+            if t.kind == crate::shelf::model::CardKind::Video {
+                eprintln!(
+                    "boltsnap daemon: right-click copy not supported for video cards \
+                     (use drag or Save)"
+                );
+                return;
+            }
             let path = t.png_path.clone();
             if let Err(e) = crate::clipboard::copy_to_clipboard(&path, crate::Backend::Wayland) {
                 eprintln!("boltsnap daemon: copy failed: {e}");
@@ -567,16 +576,32 @@ impl Daemon {
         }
     }
 
-    /// Save the full-res image of card `id` to `<save_dir>/boltsnap-<timestamp>.png`
-    /// and flash a ✓ on its Save button.
+    /// Save the full-res file of card `id` and flash a ✓ on its Save button.
+    /// Image cards go to `<save_dir>/boltsnap-<ts>.png`; video cards go to
+    /// `<record_dir>/boltsnap-<ts>.<ext>` (ext from the source file, usually mp4).
     fn save_card(&mut self, id: u64) {
-        let src = match self.model.get(id) {
-            Some(t) => t.png_path.clone(),
+        let (src, kind) = match self.model.get(id) {
+            Some(t) => (t.png_path.clone(), t.kind),
             None => return,
         };
-        let name = crate::paths::boltsnap_filename(&crate::paths::local_timestamp());
-        let dest = self.save_dir.join(name);
-        if let Err(e) = std::fs::create_dir_all(&self.save_dir) {
+        let stamp = crate::paths::local_timestamp();
+        let (dir, dest) = match kind {
+            crate::shelf::model::CardKind::Image => {
+                let name = crate::paths::boltsnap_filename_ext(&stamp, "png");
+                (self.save_dir.clone(), self.save_dir.join(name))
+            }
+            crate::shelf::model::CardKind::Video => {
+                let ext = src
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("mp4");
+                let name = crate::paths::boltsnap_filename_ext(&stamp, ext);
+                let rec_dir =
+                    crate::config::resolve_record_dir(&crate::config::Config::load());
+                (rec_dir.clone(), rec_dir.join(name))
+            }
+        };
+        if let Err(e) = std::fs::create_dir_all(&dir) {
             eprintln!("boltsnap daemon: save mkdir failed: {e}");
             return;
         }
@@ -593,6 +618,7 @@ impl Daemon {
     fn on_click(&mut self, hit: Hit, redraw: &mut bool) {
         match hit {
             Hit::Body(id) => {
+                // video cards open in eddy too (eddy gaining video playback)
                 self.open_in_eddy(id);
             }
             Hit::Save(id) => {
@@ -611,12 +637,12 @@ impl Daemon {
         }
     }
 
-    /// Start a Wayland drag for thumbnail `id`, offering image/png + a file URI,
-    /// with the thumbnail itself as the drag icon. Returns true if the drag was
-    /// actually started.
+    /// Start a Wayland drag for thumbnail `id`, offering image/png (or video/mp4)
+    /// + a file URI, with the thumbnail itself as the drag icon. Returns true if
+    /// the drag was actually started.
     fn begin_drag(&mut self, id: u64, serial: u32) -> bool {
-        let path = match self.model.get(id) {
-            Some(t) => t.png_path.clone(),
+        let (path, kind) = match self.model.get(id) {
+            Some(t) => (t.png_path.clone(), t.kind),
             None => return false,
         };
         let qh = match self.qh.clone() {
@@ -639,11 +665,18 @@ impl Daemon {
         // the icon flash and then vanish inconsistently — and reliably broke when
         // the drag crossed to another output, where the compositor re-maps the
         // icon and found it in a bad state.
-        let source = self.ddm.create_drag_and_drop_source(
-            &qh,
-            ["image/png", "text/uri-list"],
-            DndAction::Copy,
-        );
+        let source = match kind {
+            crate::shelf::model::CardKind::Image => self.ddm.create_drag_and_drop_source(
+                &qh,
+                ["image/png", "text/uri-list"],
+                DndAction::Copy,
+            ),
+            crate::shelf::model::CardKind::Video => self.ddm.create_drag_and_drop_source(
+                &qh,
+                ["video/mp4", "text/uri-list"],
+                DndAction::Copy,
+            ),
+        };
         let icon = self.compositor.create_surface(&qh);
         {
             let device = self.data_device.as_ref().unwrap();
@@ -1691,7 +1724,18 @@ impl DataSourceHandler for Daemon {
         // so the drag is never wasted.
         if !self.drop_ok {
             if let Some(path) = self.drag_path.clone() {
-                if let Err(e) = crate::clipboard::copy_to_clipboard(&path, crate::Backend::Wayland)
+                // Only screenshots fall back to a clipboard image copy; a video's
+                // raw bytes aren't meaningful on the clipboard (mirrors copy_card).
+                let is_video = path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .is_some_and(|e| e.eq_ignore_ascii_case("mp4"));
+                if is_video {
+                    eprintln!(
+                        "boltsnap daemon: drag cancelled for a video card; not copying to clipboard (use Save)"
+                    );
+                } else if let Err(e) =
+                    crate::clipboard::copy_to_clipboard(&path, crate::Backend::Wayland)
                 {
                     eprintln!("boltsnap daemon: fallback copy failed: {e}");
                 }
