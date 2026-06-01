@@ -95,6 +95,10 @@ pub struct Daemon {
     width: u32,
     height: u32,
     hovered: Option<u64>,
+    /// Directory the Save button writes to (config/flag/default).
+    save_dir: std::path::PathBuf,
+    /// Card id + start time of the transient ✓ "saved" flash on its Save button.
+    save_flash: Option<(u64, std::time::Instant)>,
     press: Option<PressState>,
     /// In-flight per-card appear/dismiss animations.
     anims: Vec<CardAnim>,
@@ -115,6 +119,8 @@ struct PressState {
 
 /// Duration of a card appear/dismiss animation.
 const ANIM_MS: u128 = 150;
+/// How long the ✓ "saved" flash stays on the Save button.
+const SAVE_FLASH_MS: u128 = 700;
 /// Card scale at the far end of the animation (start of appear / end of dismiss).
 const ANIM_SCALE_MIN: f32 = 0.88;
 
@@ -204,7 +210,7 @@ pub fn debug_render(out: &std::path::Path) -> DynResult<()> {
     let layout = Layout::compute(&sizes, &cfg);
     let (w, h) = (layout.width, layout.height);
     let mut canvas = vec![0u8; (w * h * 4) as usize];
-    paint::draw_shelf(&mut canvas, w, h, &layout, &model, Some(id), &cfg, &[]);
+    paint::draw_shelf(&mut canvas, w, h, &layout, &model, Some(id), &cfg, &[], None);
 
     // BGRA premultiplied -> composite over mid-gray so the rounded corners
     // (transparent) and the white border are clearly visible when inspected.
@@ -226,7 +232,7 @@ pub fn debug_render(out: &std::path::Path) -> DynResult<()> {
     Ok(())
 }
 
-pub fn run_daemon() -> DynResult<()> {
+pub fn run_daemon(save_dir_cli: Option<std::path::PathBuf>) -> DynResult<()> {
     // Single-instance: if a daemon already answers, do nothing.
     if crate::ipc::daemon_alive() {
         return Ok(());
@@ -253,6 +259,8 @@ pub fn run_daemon() -> DynResult<()> {
     let pool = SlotPool::new(256 * 256 * 4, &shm)?;
 
     let cfg = LayoutConfig::default();
+    let config = crate::config::Config::load();
+    let save_dir = crate::config::resolve_save_dir(save_dir_cli.as_deref(), &config);
     let mut daemon = Daemon {
         registry_state: RegistryState::new(&globals),
         seat_state: SeatState::new(&globals, &qh),
@@ -281,6 +289,8 @@ pub fn run_daemon() -> DynResult<()> {
         width: 1,
         height: 1,
         hovered: None,
+        save_dir,
+        save_flash: None,
         press: None,
         anims: Vec::new(),
         exit: false,
@@ -504,11 +514,37 @@ impl Daemon {
         }
     }
 
+    /// Save the full-res image of card `id` to `<save_dir>/boltsnap-<timestamp>.png`
+    /// and flash a ✓ on its Save button.
+    fn save_card(&mut self, id: u64) {
+        let src = match self.model.get(id) {
+            Some(t) => t.png_path.clone(),
+            None => return,
+        };
+        let name = crate::paths::boltsnap_filename(&crate::paths::local_timestamp());
+        let dest = self.save_dir.join(name);
+        if let Err(e) = std::fs::create_dir_all(&self.save_dir) {
+            eprintln!("boltsnap daemon: save mkdir failed: {e}");
+            return;
+        }
+        match std::fs::copy(&src, &dest) {
+            Ok(_) => {
+                eprintln!("boltsnap daemon: saved {}", dest.display());
+                self.save_flash = Some((id, std::time::Instant::now()));
+            }
+            Err(e) => eprintln!("boltsnap daemon: save failed: {e}"),
+        }
+    }
+
     /// Act on a completed (non-drag) left click.
     fn on_click(&mut self, hit: Hit, redraw: &mut bool) {
         match hit {
             Hit::Body(id) => {
                 self.open_in_eddy(id);
+            }
+            Hit::Save(id) => {
+                self.save_card(id);
+                *redraw = true;
             }
             Hit::Close(id) => {
                 // Animate the card out; tick_animations removes it (and its temp
@@ -518,9 +554,6 @@ impl Daemon {
                 }
                 self.start_anim(id, AnimKind::Disappear);
                 *redraw = true;
-            }
-            Hit::Edit(id) => {
-                self.open_in_eddy(id);
             }
         }
     }
@@ -668,7 +701,7 @@ impl Daemon {
     }
 
     fn animating(&self) -> bool {
-        !self.anims.is_empty()
+        !self.anims.is_empty() || self.save_flash.is_some()
     }
 
     /// Advance animations one frame: retire finished ones (removing dismissed
@@ -696,6 +729,11 @@ impl Daemon {
         }
         if removed {
             self.relayout();
+        }
+        if let Some((_, started)) = self.save_flash {
+            if started.elapsed().as_millis() >= SAVE_FLASH_MS {
+                self.save_flash = None;
+            }
         }
         self.draw(qh);
     }
@@ -755,6 +793,7 @@ impl Daemon {
             self.hovered,
             &self.cfg,
             &anims,
+            self.save_flash.map(|(id, _)| id),
         );
 
         let surface = layer.wl_surface();
@@ -940,7 +979,7 @@ impl PointerHandler for Daemon {
                 }
                 PointerEventKind::Enter { .. } | PointerEventKind::Motion { .. } => {
                     let now = self.layout.hit(x, y, &self.cfg).map(|h| match h {
-                        Hit::Body(id) | Hit::Edit(id) | Hit::Close(id) => id,
+                        Hit::Body(id) | Hit::Save(id) | Hit::Close(id) => id,
                     });
                     if now != self.hovered {
                         self.hovered = now;
@@ -973,7 +1012,7 @@ impl PointerHandler for Daemon {
                 PointerEventKind::Press { button, serial, .. } if button == BTN_LEFT => {
                     if let Some(hit) = self.layout.hit(x, y, &self.cfg) {
                         let id = match hit {
-                            Hit::Body(i) | Hit::Edit(i) | Hit::Close(i) => i,
+                            Hit::Body(i) | Hit::Save(i) | Hit::Close(i) => i,
                         };
                         self.press = Some(PressState {
                             id,
@@ -988,7 +1027,7 @@ impl PointerHandler for Daemon {
                 PointerEventKind::Press { button, .. } if button == BTN_RIGHT => {
                     if let Some(hit) = self.layout.hit(x, y, &self.cfg) {
                         let id = match hit {
-                            Hit::Body(i) | Hit::Edit(i) | Hit::Close(i) => i,
+                            Hit::Body(i) | Hit::Save(i) | Hit::Close(i) => i,
                         };
                         self.copy_card(id);
                     }

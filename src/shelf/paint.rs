@@ -15,6 +15,7 @@ const BTN_BG: (u8, u8, u8) = (18, 18, 24);
 const BTN_BG_A: f32 = 0.52;
 const GLYPH_RGB: (u8, u8, u8) = (244, 244, 248);
 const GLYPH_CLOSE_RGB: (u8, u8, u8) = (255, 124, 124);
+const GLYPH_OK_RGB: (u8, u8, u8) = (120, 230, 150);
 const GLYPH_HALF_W: f32 = 0.8; // half stroke width -> ~1.6px strokes
 
 /// Set the whole canvas to transparent (0,0,0,0).
@@ -222,6 +223,7 @@ pub fn draw_shelf(
     hovered: Option<u64>,
     cfg: &LayoutConfig,
     anims: &[(u64, f32, f32)],
+    save_flash: Option<u64>,
 ) {
     clear(canvas);
     for r in &layout.thumbs {
@@ -236,35 +238,37 @@ pub fn draw_shelf(
         // Hide hover icons on a card that is mid-animation (scaling/fading).
         let animating = anims.iter().any(|(id, _, _)| *id == r.id);
         if hovered == Some(r.id) && !animating {
-            draw_hover_icons(canvas, cw, ch, r, cfg);
+            draw_hover_icons(canvas, cw, ch, r, cfg, save_flash == Some(r.id));
         }
     }
 }
 
-fn draw_hover_icons(canvas: &mut [u8], cw: u32, ch: u32, r: &ThumbRect, cfg: &LayoutConfig) {
+fn draw_hover_icons(
+    canvas: &mut [u8],
+    cw: u32,
+    ch: u32,
+    r: &ThumbRect,
+    cfg: &LayoutConfig,
+    save_flashing: bool,
+) {
     let s = cfg.icon as f32;
-    // close — top-right
     let (clx, cly, _, _) = crate::shelf::layout::close_cell(r, cfg);
-    fill_circle(
-        canvas, cw, ch,
-        clx as f32 + s / 2.0, cly as f32 + s / 2.0, s / 2.0 - 0.5,
-        BTN_BG, BTN_BG_A,
-    );
+    fill_circle(canvas, cw, ch, clx as f32 + s / 2.0, cly as f32 + s / 2.0, s / 2.0 - 0.5, BTN_BG, BTN_BG_A);
     draw_glyph(canvas, cw, ch, Glyph::Close, clx as f32, cly as f32, s, GLYPH_CLOSE_RGB);
-    // save — top-left
     let (sx, sy, _, _) = crate::shelf::layout::save_cell(r, cfg);
-    fill_circle(
-        canvas, cw, ch,
-        sx as f32 + s / 2.0, sy as f32 + s / 2.0, s / 2.0 - 0.5,
-        BTN_BG, BTN_BG_A,
-    );
-    draw_glyph(canvas, cw, ch, Glyph::Save, sx as f32, sy as f32, s, GLYPH_RGB);
+    fill_circle(canvas, cw, ch, sx as f32 + s / 2.0, sy as f32 + s / 2.0, s / 2.0 - 0.5, BTN_BG, BTN_BG_A);
+    if save_flashing {
+        draw_glyph(canvas, cw, ch, Glyph::Check, sx as f32, sy as f32, s, GLYPH_OK_RGB);
+    } else {
+        draw_glyph(canvas, cw, ch, Glyph::Save, sx as f32, sy as f32, s, GLYPH_RGB);
+    }
 }
 
 /// Which glyph to stamp in a button cell.
 enum Glyph {
     Close,
     Save,
+    Check,
 }
 
 /// Minimal anti-aliased glyphs centred in a cell at (x,y) of size s.
@@ -295,6 +299,10 @@ fn draw_glyph(
             stroke_line(canvas, cw, ch, mid - head, y + s * 0.40, mid, y + s * 0.58, hw, c, 1.0);
             stroke_line(canvas, cw, ch, mid + head, y + s * 0.40, mid, y + s * 0.58, hw, c, 1.0);
             stroke_line(canvas, cw, ch, x + inset, y + s * 0.74, x + s - inset, y + s * 0.74, hw, c, 1.0);
+        }
+        Glyph::Check => {
+            stroke_line(canvas, cw, ch, x + s * 0.26, y + s * 0.52, x + s * 0.44, y + s * 0.70, hw, c, 1.0);
+            stroke_line(canvas, cw, ch, x + s * 0.44, y + s * 0.70, x + s * 0.76, y + s * 0.30, hw, c, 1.0);
         }
     }
 }
@@ -420,6 +428,7 @@ mod tests {
             Some(id),
             &cfg,
             &[],
+            None,
         );
         // thumb body opaque
         let r = &layout.thumbs[0];
