@@ -521,10 +521,18 @@ pub fn draw_shelf(
     save_flash: Option<u64>,
 ) {
     clear(canvas);
+    // Pass 1: a soft drop shadow behind every settled card — independent of hover
+    // and opacity, so all cards read as lifted. Drawn first so each card blits on
+    // top of ALL shadows (no card edge is darkened by a neighbour's shadow).
+    for r in &layout.thumbs {
+        if !anims.iter().any(|(id, _, _)| *id == r.id) && model.get(r.id).is_some() {
+            draw_card_shadow(canvas, cw, ch, r);
+        }
+    }
+    // Pass 2: cards + overlays on top.
     for r in &layout.thumbs {
         // Hide overlays on a card that is mid-animation (scaling/fading).
         let animating = anims.iter().any(|(id, _, _)| *id == r.id);
-        // Hovered + settled = full opacity: show the lift shadow + hover icons.
         let hovered_now = hovered == Some(r.id) && !animating;
         if let Some(thumb) = model.get(r.id) {
             let (scale, anim_opacity) = anims
@@ -532,11 +540,6 @@ pub fn draw_shelf(
                 .find(|(id, _, _)| *id == r.id)
                 .map(|(_, s, o)| (*s, *o))
                 .unwrap_or((1.0, 1.0));
-            // Soft drop shadow behind the hovered card (the card blits on top) for
-            // a subtle "lift" — only at full opacity, i.e. on hover.
-            if hovered_now {
-                draw_card_shadow(canvas, cw, ch, r);
-            }
             // Hovered card is fully opaque so it's easy to read; others use the
             // translucent base. The appear/dismiss fade still multiplies in.
             let base = if hovered == Some(r.id) {
@@ -568,10 +571,11 @@ pub fn draw_shelf(
     }
 }
 
-/// Soft drop shadow behind a hovered (full-opacity) card, for a subtle "lift".
-/// Rounded-box SDF feathered over `BLUR` px, slightly offset downward; drawn
-/// before the card so the card sits on top. Only the offset/blur fringe shows
-/// (the part under the card is overwritten by the blit).
+/// Soft drop shadow behind a shelf card, for a subtle "lift" (drawn for every
+/// settled card, independent of hover/opacity). Rounded-box SDF feathered over
+/// `BLUR` px, slightly offset downward; drawn before the cards so each card sits
+/// on top. Only the offset/blur fringe shows (the part under the card is
+/// overwritten by the blit).
 fn draw_card_shadow(canvas: &mut [u8], cw: u32, ch: u32, r: &ThumbRect) {
     const DX: f32 = 0.0;
     const DY: f32 = 4.0; // downward offset reads as "lifted"
