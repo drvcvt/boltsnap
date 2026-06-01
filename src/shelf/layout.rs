@@ -110,6 +110,19 @@ impl Layout {
     }
 }
 
+/// Top-right close-button cell `(x, y, w, h)` for a card.
+pub fn close_cell(r: &ThumbRect, cfg: &LayoutConfig) -> (u32, u32, u32, u32) {
+    let x = (r.x + r.w)
+        .saturating_sub(cfg.pad_icon)
+        .saturating_sub(cfg.icon);
+    (x, r.y + cfg.pad_icon, cfg.icon, cfg.icon)
+}
+
+/// Top-left save-button cell `(x, y, w, h)` for a card.
+pub fn save_cell(r: &ThumbRect, cfg: &LayoutConfig) -> (u32, u32, u32, u32) {
+    (r.x + cfg.pad_icon, r.y + cfg.pad_icon, cfg.icon, cfg.icon)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -130,6 +143,28 @@ mod tests {
         assert_eq!(lay.thumbs[1].y, c.pad + 100 + c.gap);
         assert_eq!(lay.width, c.pad * 2 + 170);
         assert_eq!(lay.height, c.pad * 2 + 100 + c.gap + 90);
+    }
+
+    #[test]
+    fn close_cell_is_top_right_inset() {
+        let c = cfg();
+        let lay = Layout::compute(&[(1, 200, 120)], &c);
+        let r = &lay.thumbs[0];
+        assert_eq!(
+            close_cell(r, &c),
+            (r.x + r.w - c.pad_icon - c.icon, r.y + c.pad_icon, c.icon, c.icon)
+        );
+    }
+
+    #[test]
+    fn save_cell_is_top_left_inset() {
+        let c = cfg();
+        let lay = Layout::compute(&[(1, 200, 120)], &c);
+        let r = &lay.thumbs[0];
+        assert_eq!(
+            save_cell(r, &c),
+            (r.x + c.pad_icon, r.y + c.pad_icon, c.icon, c.icon)
+        );
     }
 
     #[test]
