@@ -98,7 +98,7 @@ boltsnap doctor                         # check helpers + capabilities
 The editor is opt-in. If you prefer something else:
 
 ```sh
-boltsnap area --no-copy -o - | swappy -f -
+boltsnap area --no-copy -o - | eddy -f -
 boltsnap area --no-copy -o - | satty --filename -
 ```
 
@@ -176,6 +176,31 @@ Flags still work: `--copy` also copies to the clipboard on capture, `-o PATH`
 / `--save` write a file (no shelf), and `-o -` streams PNG to stdout. **X11 is
 unchanged** — it keeps the classic copy-to-clipboard one-shot behavior with no
 shelf.
+
+## Configuration
+
+Create `~/.config/boltsnap/config.toml` to set persistent defaults:
+
+```toml
+# Directory where the shelf Save button writes timestamped PNGs.
+# Default: ~/Bilder/boltsnap
+save_dir = "~/Bilder/boltsnap"
+
+# Annotation editor launched by the shelf card viewer and the --edit flag.
+# Default: eddy
+editor = "eddy"
+```
+
+Override precedence (highest to lowest):
+
+1. CLI flag — `--save-dir DIR`, `--editor CMD`
+2. Environment variable — `$BOLTSNAP_SAVE_DIR`, `$BOLTSNAP_EDITOR`
+3. Config file — `~/.config/boltsnap/config.toml`
+4. Built-in default
+
+Clicking a shelf card opens the image in eddy (viewer + editor). The **Save**
+button (top-left of a card) writes a timestamped PNG to the configured save
+directory.
 
 ## License
 
