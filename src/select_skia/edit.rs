@@ -134,7 +134,12 @@ pub fn resize_rect(
 pub fn move_rect(rect: Rect, dx: f64, dy: f64, surf_w: f64, surf_h: f64) -> Rect {
     let x = (rect.x + dx).clamp(0.0, (surf_w - rect.w).max(0.0));
     let y = (rect.y + dy).clamp(0.0, (surf_h - rect.h).max(0.0));
-    Rect { x, y, w: rect.w, h: rect.h }
+    Rect {
+        x,
+        y,
+        w: rect.w,
+        h: rect.h,
+    }
 }
 
 /// Pixel rect (x, y, w, h) of the dimension badge pill. `text_w`/`text_h` are the
@@ -168,7 +173,12 @@ pub fn badge_rect(
 
 /// Top-left + size of the source window (in image pixels) to sample for the
 /// magnifier, an `sample`×`sample` box centered on `cursor`, clamped to the image.
-pub fn magnifier_source(cursor: (f64, f64), sample: u32, img_w: u32, img_h: u32) -> (u32, u32, u32, u32) {
+pub fn magnifier_source(
+    cursor: (f64, f64),
+    sample: u32,
+    img_w: u32,
+    img_h: u32,
+) -> (u32, u32, u32, u32) {
     let s = sample.min(img_w).min(img_h);
     let half = s as f64 / 2.0;
     let max_x = (img_w - s) as i64;
@@ -207,20 +217,47 @@ mod tests {
 
     #[test]
     fn hit_region_classifies_corner_edge_inside_outside() {
-        let r = Rect { x: 100.0, y: 100.0, w: 200.0, h: 100.0 }; // corners (100,100)-(300,200)
-        assert_eq!(hit_region(r, (100.0, 100.0), 10.0), Region::Handle(Handle::TopLeft));
-        assert_eq!(hit_region(r, (300.0, 200.0), 10.0), Region::Handle(Handle::BottomRight));
-        assert_eq!(hit_region(r, (200.0, 100.0), 10.0), Region::Handle(Handle::Top));
+        let r = Rect {
+            x: 100.0,
+            y: 100.0,
+            w: 200.0,
+            h: 100.0,
+        }; // corners (100,100)-(300,200)
+        assert_eq!(
+            hit_region(r, (100.0, 100.0), 10.0),
+            Region::Handle(Handle::TopLeft)
+        );
+        assert_eq!(
+            hit_region(r, (300.0, 200.0), 10.0),
+            Region::Handle(Handle::BottomRight)
+        );
+        assert_eq!(
+            hit_region(r, (200.0, 100.0), 10.0),
+            Region::Handle(Handle::Top)
+        );
         assert_eq!(hit_region(r, (200.0, 150.0), 10.0), Region::Inside);
         assert_eq!(hit_region(r, (10.0, 10.0), 10.0), Region::Outside);
     }
 
     #[test]
     fn resize_rect_moves_dragged_edges_and_enforces_min() {
-        let r = Rect { x: 100.0, y: 100.0, w: 200.0, h: 100.0 };
+        let r = Rect {
+            x: 100.0,
+            y: 100.0,
+            w: 200.0,
+            h: 100.0,
+        };
         // Drag BottomRight to (260,260): left/top fixed, right/bottom follow.
         let g = resize_rect(r, Handle::BottomRight, (260.0, 260.0), 10.0, 1920.0, 1080.0);
-        assert_eq!(g, Rect { x: 100.0, y: 100.0, w: 160.0, h: 160.0 });
+        assert_eq!(
+            g,
+            Rect {
+                x: 100.0,
+                y: 100.0,
+                w: 160.0,
+                h: 160.0
+            }
+        );
         // Drag Right handle: only width changes.
         let g2 = resize_rect(r, Handle::Right, (150.0, 999.0), 10.0, 1920.0, 1080.0);
         assert_eq!(g2.x, 100.0);
@@ -233,8 +270,21 @@ mod tests {
 
     #[test]
     fn move_rect_translates_and_clamps_to_surface() {
-        let r = Rect { x: 100.0, y: 100.0, w: 200.0, h: 100.0 };
-        assert_eq!(move_rect(r, 50.0, 25.0, 1920.0, 1080.0), Rect { x: 150.0, y: 125.0, w: 200.0, h: 100.0 });
+        let r = Rect {
+            x: 100.0,
+            y: 100.0,
+            w: 200.0,
+            h: 100.0,
+        };
+        assert_eq!(
+            move_rect(r, 50.0, 25.0, 1920.0, 1080.0),
+            Rect {
+                x: 150.0,
+                y: 125.0,
+                w: 200.0,
+                h: 100.0
+            }
+        );
         // Clamp at the right/bottom: can't push the rect off-surface.
         let c = move_rect(r, 1e9, 1e9, 1920.0, 1080.0);
         assert_eq!(c.right(), 1920.0);
@@ -247,14 +297,24 @@ mod tests {
     #[test]
     fn badge_rect_sits_above_left_then_flips_at_edges() {
         // Roomy: badge sits just above the selection's top-left.
-        let sel = Rect { x: 400.0, y: 400.0, w: 200.0, h: 100.0 };
+        let sel = Rect {
+            x: 400.0,
+            y: 400.0,
+            w: 200.0,
+            h: 100.0,
+        };
         let (x, y, w, h) = badge_rect(sel, 60.0, 14.0, 6.0, 6.0, 1920.0, 1080.0);
         assert_eq!(w, 72.0); // 60 + 2*6
         assert_eq!(h, 26.0); // 14 + 2*6
         assert_eq!(x, 400.0);
         assert_eq!(y, 400.0 - 6.0 - 26.0); // gap + height above
         // Selection hugging the top: badge flips just inside the top.
-        let top = Rect { x: 10.0, y: 0.0, w: 200.0, h: 100.0 };
+        let top = Rect {
+            x: 10.0,
+            y: 0.0,
+            w: 200.0,
+            h: 100.0,
+        };
         let (_, y2, _, _) = badge_rect(top, 60.0, 14.0, 6.0, 6.0, 1920.0, 1080.0);
         assert!(y2 >= 0.0, "badge stays on-screen, got {y2}");
     }
@@ -262,17 +322,26 @@ mod tests {
     #[test]
     fn magnifier_source_centers_and_clamps() {
         // Centered window deep inside the image.
-        assert_eq!(magnifier_source((500.0, 500.0), 30, 1920, 1080), (485, 485, 30, 30));
+        assert_eq!(
+            magnifier_source((500.0, 500.0), 30, 1920, 1080),
+            (485, 485, 30, 30)
+        );
         // Clamped at the top-left corner.
         assert_eq!(magnifier_source((2.0, 2.0), 30, 1920, 1080), (0, 0, 30, 30));
         // Clamped at the bottom-right corner.
-        assert_eq!(magnifier_source((1919.0, 1079.0), 30, 1920, 1080), (1890, 1050, 30, 30));
+        assert_eq!(
+            magnifier_source((1919.0, 1079.0), 30, 1920, 1080),
+            (1890, 1050, 30, 30)
+        );
     }
 
     #[test]
     fn magnifier_placement_offsets_then_flips_at_edges() {
         // Default: up-and-right of the cursor.
-        assert_eq!(magnifier_placement((500.0, 500.0), 120.0, 24.0, 1920.0, 1080.0), (524.0, 356.0));
+        assert_eq!(
+            magnifier_placement((500.0, 500.0), 120.0, 24.0, 1920.0, 1080.0),
+            (524.0, 356.0)
+        );
         // Near the right edge: flips to the left of the cursor.
         let (x, _) = magnifier_placement((1900.0, 500.0), 120.0, 24.0, 1920.0, 1080.0);
         assert!(x + 120.0 <= 1920.0, "loupe stays on-screen, got x={x}");

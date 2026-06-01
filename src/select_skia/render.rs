@@ -151,7 +151,10 @@ pub fn draw_border(pm: &mut Pixmap, sel: (f32, f32, f32, f32)) {
             let mut pb = PathBuilder::new();
             pb.push_rect(r);
             if let Some(path) = pb.finish() {
-                let stroke = Stroke { width: wdt, ..Default::default() };
+                let stroke = Stroke {
+                    width: wdt,
+                    ..Default::default()
+                };
                 pm.stroke_path(&path, paint, &stroke, Transform::identity(), None);
             }
         }
@@ -170,7 +173,14 @@ pub fn draw_handles(pm: &mut Pixmap, sel: (f32, f32, f32, f32)) {
     let (l, t, r, b) = (x, y, x + w, y + h);
     let (cx, cy) = (x + w / 2.0, y + h / 2.0);
     let centers = [
-        (l, t), (cx, t), (r, t), (r, cy), (r, b), (cx, b), (l, b), (l, cy),
+        (l, t),
+        (cx, t),
+        (r, t),
+        (r, cy),
+        (r, b),
+        (cx, b),
+        (l, b),
+        (l, cy),
     ];
     let mut dark = Paint::default();
     dark.set_color_rgba8(0, 0, 0, 180);
@@ -179,11 +189,23 @@ pub fn draw_handles(pm: &mut Pixmap, sel: (f32, f32, f32, f32)) {
     white.set_color_rgba8(255, 255, 255, 255);
     white.anti_alias = true;
     for (hx, hy) in centers {
-        if let Some(path) = rounded_rect(hx - HS / 2.0 - 1.0, hy - HS / 2.0 - 1.0, HS + 2.0, HS + 2.0, RAD + 1.0) {
+        if let Some(path) = rounded_rect(
+            hx - HS / 2.0 - 1.0,
+            hy - HS / 2.0 - 1.0,
+            HS + 2.0,
+            HS + 2.0,
+            RAD + 1.0,
+        ) {
             pm.fill_path(&path, &dark, FillRule::Winding, Transform::identity(), None);
         }
         if let Some(path) = rounded_rect(hx - HS / 2.0, hy - HS / 2.0, HS, HS, RAD) {
-            pm.fill_path(&path, &white, FillRule::Winding, Transform::identity(), None);
+            pm.fill_path(
+                &path,
+                &white,
+                FillRule::Winding,
+                Transform::identity(),
+                None,
+            );
         }
     }
 }
@@ -262,9 +284,17 @@ pub fn draw_badge(pm: &mut Pixmap, sel: (f32, f32, f32, f32), surf_w: u32, surf_
     let pad = 7.0_f64;
     let font = badge_font();
     let scaled = font.as_scaled(PxScale::from(px));
-    let text_w: f32 = label.chars().map(|c| scaled.h_advance(font.glyph_id(c))).sum();
+    let text_w: f32 = label
+        .chars()
+        .map(|c| scaled.h_advance(font.glyph_id(c)))
+        .sum();
     let text_h = scaled.ascent() - scaled.descent();
-    let rect = crate::select_skia::edit::Rect { x: x as f64, y: y as f64, w: w as f64, h: h as f64 };
+    let rect = crate::select_skia::edit::Rect {
+        x: x as f64,
+        y: y as f64,
+        w: w as f64,
+        h: h as f64,
+    };
     let (bx, by, bw, bh) = crate::select_skia::edit::badge_rect(
         rect,
         text_w as f64,
@@ -281,13 +311,26 @@ pub fn draw_badge(pm: &mut Pixmap, sel: (f32, f32, f32, f32), surf_w: u32, surf_
         pm.fill_path(&path, &pill, FillRule::Winding, Transform::identity(), None);
     }
     let baseline = by as f32 + pad as f32 + scaled.ascent();
-    draw_text_aa(pm, bx as f32 + pad as f32, baseline, &label, px, (0xd0, 0xd0, 0xd0));
+    draw_text_aa(
+        pm,
+        bx as f32 + pad as f32,
+        baseline,
+        &label,
+        px,
+        (0xd0, 0xd0, 0xd0),
+    );
 }
 
 /// Draw the magnifier loupe at the cursor: a `LOUPE`px square sampling an
 /// `SAMPLE`px window of `base` around `cursor`, nearest-neighbor upscaled, with a
 /// pixel grid, a center-pixel marker, and a border. Placed by `magnifier_placement`.
-pub fn draw_magnifier(pm: &mut Pixmap, base: &Pixmap, cursor: (f64, f64), surf_w: u32, surf_h: u32) {
+pub fn draw_magnifier(
+    pm: &mut Pixmap,
+    base: &Pixmap,
+    cursor: (f64, f64),
+    surf_w: u32,
+    surf_h: u32,
+) {
     use crate::select_skia::edit::{magnifier_placement, magnifier_source};
     const LOUPE: u32 = 120;
     const SAMPLE: u32 = 30;
@@ -338,7 +381,16 @@ pub fn draw_magnifier(pm: &mut Pixmap, base: &Pixmap, cursor: (f64, f64), surf_w
         let mut pb = PathBuilder::new();
         pb.push_rect(r);
         if let Some(path) = pb.finish() {
-            pm.stroke_path(&path, &mark, &Stroke { width: 1.5, ..Default::default() }, Transform::identity(), None);
+            pm.stroke_path(
+                &path,
+                &mark,
+                &Stroke {
+                    width: 1.5,
+                    ..Default::default()
+                },
+                Transform::identity(),
+                None,
+            );
         }
     }
     // Loupe border.
@@ -348,7 +400,16 @@ pub fn draw_magnifier(pm: &mut Pixmap, base: &Pixmap, cursor: (f64, f64), surf_w
         let mut pb = PathBuilder::new();
         pb.push_rect(r);
         if let Some(path) = pb.finish() {
-            pm.stroke_path(&path, &border, &Stroke { width: 2.0, ..Default::default() }, Transform::identity(), None);
+            pm.stroke_path(
+                &path,
+                &border,
+                &Stroke {
+                    width: 2.0,
+                    ..Default::default()
+                },
+                Transform::identity(),
+                None,
+            );
         }
     }
 }
@@ -375,8 +436,14 @@ mod tests {
 
     #[test]
     fn rect_to_image_rejects_subpixel() {
-        assert_eq!(rect_to_image((10.0, 10.0), (10.5, 10.5), 200, 400, 200, 400), None);
-        assert_eq!(rect_to_image((10.0, 10.0), (10.0, 10.0), 200, 400, 200, 400), None);
+        assert_eq!(
+            rect_to_image((10.0, 10.0), (10.5, 10.5), 200, 400, 200, 400),
+            None
+        );
+        assert_eq!(
+            rect_to_image((10.0, 10.0), (10.0, 10.0), 200, 400, 200, 400),
+            None
+        );
     }
 
     #[test]
@@ -418,7 +485,11 @@ mod tests {
             pm.data()[i] // red channel
         };
         // Inside the selection: still bright red.
-        assert!(at(60, 38) > 250, "inside should stay bright, got {}", at(60, 38));
+        assert!(
+            at(60, 38) > 250,
+            "inside should stay bright, got {}",
+            at(60, 38)
+        );
         // Outside: dimmed by the ~43% black overlay.
         assert!(at(0, 0) < 200, "outside should be dimmed, got {}", at(0, 0));
     }
@@ -464,6 +535,9 @@ mod tests {
         draw_handles(&mut pm, (50.0, 50.0, 100.0, 100.0));
         // A pixel at the top-left corner handle center should be white.
         let i = ((50 * pm.width() + 50) * 4) as usize;
-        assert!(pm.data()[i] > 200 && pm.data()[i + 1] > 200, "corner handle should be white");
+        assert!(
+            pm.data()[i] > 200 && pm.data()[i + 1] > 200,
+            "corner handle should be white"
+        );
     }
 }
