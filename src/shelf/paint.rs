@@ -270,7 +270,15 @@ fn draw_play_badge(canvas: &mut [u8], cw: u32, ch: u32, r: &ThumbRect) {
             if hits > 0 {
                 let cov = hits as f32 * inv;
                 blend_px(
-                    canvas, cw, ch, px, py, GLYPH_RGB.0, GLYPH_RGB.1, GLYPH_RGB.2, cov,
+                    canvas,
+                    cw,
+                    ch,
+                    px,
+                    py,
+                    GLYPH_RGB.0,
+                    GLYPH_RGB.1,
+                    GLYPH_RGB.2,
+                    cov,
                 );
             }
         }
@@ -524,7 +532,16 @@ pub fn draw_shelf(
             } else {
                 CARD_OPACITY
             };
-            blit_thumb_card_anim(canvas, cw, ch, &thumb.thumb, r.x, r.y, scale, base * anim_opacity);
+            blit_thumb_card_anim(
+                canvas,
+                cw,
+                ch,
+                &thumb.thumb,
+                r.x,
+                r.y,
+                scale,
+                base * anim_opacity,
+            );
         }
         // Draw the ▶ play badge on Video cards (always visible, not hover-gated).
         if model.get(r.id).map(|t| t.kind) == Some(crate::shelf::model::CardKind::Video) {

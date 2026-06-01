@@ -668,7 +668,8 @@ mod tests {
     fn rec_pill_rect_is_above_selection_and_hittable() {
         // Selection well clear of the top edge → pill sits above it.
         let sel = (120.0, 150.0, 160.0, 90.0);
-        let (bx, by, bw, bh) = rec_pill_rect(sel, 400, 300).expect("pill rect for a real selection");
+        let (bx, by, bw, bh) =
+            rec_pill_rect(sel, 400, 300).expect("pill rect for a real selection");
         assert!(bw > 0.0 && bh > 0.0, "pill has positive size");
         // Placed above the selection top (badge_rect places above-left here).
         assert!(by + bh <= sel.1 as f64, "pill sits above the selection");
