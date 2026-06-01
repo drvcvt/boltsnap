@@ -465,6 +465,7 @@ impl Daemon {
             crate::ipc::Request::Reload { id } => {
                 self.reload(id, &qh);
             }
+            crate::ipc::Request::StartRecording { .. } => {} // TODO(Rec-T6): handle recording start
         }
     }
 
