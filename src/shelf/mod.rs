@@ -210,7 +210,17 @@ pub fn debug_render(out: &std::path::Path) -> DynResult<()> {
     let layout = Layout::compute(&sizes, &cfg);
     let (w, h) = (layout.width, layout.height);
     let mut canvas = vec![0u8; (w * h * 4) as usize];
-    paint::draw_shelf(&mut canvas, w, h, &layout, &model, Some(id), &cfg, &[], None);
+    paint::draw_shelf(
+        &mut canvas,
+        w,
+        h,
+        &layout,
+        &model,
+        Some(id),
+        &cfg,
+        &[],
+        None,
+    );
 
     // BGRA premultiplied -> composite over mid-gray so the rounded corners
     // (transparent) and the white border are clearly visible when inspected.
