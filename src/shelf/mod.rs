@@ -163,6 +163,34 @@ pub(crate) fn focused_monitor_name() -> Option<String> {
     None
 }
 
+/// Logical layout origin (`x`, `y`) of the focused Hyprland monitor, via
+/// `hyprctl monitors -j`. Used to map a selection rect (overlay-output-local
+/// logical px) into compositor-global coords for recording. `None` off Hyprland.
+pub(crate) fn focused_monitor_origin() -> Option<(i32, i32)> {
+    use std::process::Command;
+    if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_none()
+        || !crate::paths::has_cmd("hyprctl")
+    {
+        return None;
+    }
+    let out = Command::new("hyprctl")
+        .args(["monitors", "-j"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
+    for m in v.as_array()? {
+        if m.get("focused").and_then(|f| f.as_bool()) == Some(true) {
+            let x = m.get("x").and_then(|n| n.as_i64())? as i32;
+            let y = m.get("y").and_then(|n| n.as_i64())? as i32;
+            return Some((x, y));
+        }
+    }
+    None
+}
+
 /// Disable Hyprland's open/close animation for the shelf layer so thumbnails
 /// appear and vanish instantly.
 ///
