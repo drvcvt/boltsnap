@@ -9,7 +9,6 @@ mod clipboard;
 mod editor;
 mod ipc;
 mod paths;
-mod select;
 mod select_skia;
 mod shelf;
 
@@ -95,11 +94,8 @@ struct Args {
     save: bool,
     output: Option<PathBuf>,
     backend: Backend,
-    /// Use the new tiny-skia/SCTK region selector instead of the egui one.
-    /// Wayland-only; ignored on X11 (no wlr-layer-shell there).
-    new_selector: bool,
-    /// Skip the editable phase of the new selector: release captures immediately.
-    /// Wayland + `--new` only; ignored otherwise.
+    /// Skip the selector's editable phase: release captures immediately.
+    /// Wayland-only (the X11 path has no interactive region selector).
     instant: bool,
 }
 
@@ -115,7 +111,6 @@ impl Default for Args {
             save: false,
             output: None,
             backend: Backend::Auto,
-            new_selector: false,
             instant: false,
         }
     }
@@ -153,7 +148,8 @@ fn decide_post_capture(args: &Args, backend: Backend) -> PostCapture {
 fn usage() -> &'static str {
     "\
 Usage:
-  boltsnap [area|full|window|active-window] [-o PATH|-] [--save] [--no-copy] [--backend auto|x11|wayland]
+  boltsnap [area|full|window|active-window] [-o PATH|-] [--save] [--no-copy] [--instant] [--backend auto|x11|wayland]
+  boltsnap area --instant                 select a region, capture on release (no edit handles)
   boltsnap --edit                         open last screenshot in editor
   boltsnap [area|window|full] --edit      capture then edit
   boltsnap edit [IMAGE] [-o PATH] [--no-copy]
@@ -192,7 +188,6 @@ fn parse_args(raw: &[String]) -> DynResult<Args> {
                 args.copy = false;
                 args.copy_explicit = true;
             }
-            "--new" => args.new_selector = true,
             "--instant" => args.instant = true,
             "--save" => args.save = true,
             "-o" | "--output" => {
@@ -301,7 +296,7 @@ fn capture_flow(args: &Args) -> DynResult<()> {
     let mode = CaptureMode::parse(&args.command)?;
 
     if is_stdout_target(args) {
-        return capture_to_stdout(mode, args.backend, args.new_selector, args.instant);
+        return capture_to_stdout(mode, args.backend, args.instant);
     }
 
     // Capture to a temp file for --edit, then let the editor write the final
@@ -311,7 +306,7 @@ fn capture_flow(args: &Args) -> DynResult<()> {
     } else {
         target_path(args)
     };
-    let resolved = capture(mode, &output, args.backend, args.new_selector, args.instant)?;
+    let resolved = capture(mode, &output, args.backend, args.instant)?;
     if matches!(mode, CaptureMode::Window | CaptureMode::ActiveWindow) {
         let _ = strip_uniform_border(&output);
     }
@@ -373,9 +368,9 @@ fn is_stdout_target(args: &Args) -> bool {
     args.output.as_deref().and_then(|p| p.to_str()) == Some("-")
 }
 
-fn capture_to_stdout(mode: CaptureMode, backend: Backend, new_selector: bool, instant: bool) -> DynResult<()> {
+fn capture_to_stdout(mode: CaptureMode, backend: Backend, instant: bool) -> DynResult<()> {
     let tmp = temp_png("stdout");
-    capture(mode, &tmp, backend, new_selector, instant)?;
+    capture(mode, &tmp, backend, instant)?;
     let bytes = fs::read(&tmp)?;
     let _ = fs::remove_file(&tmp);
     std::io::stdout().lock().write_all(&bytes)?;
@@ -451,29 +446,14 @@ mod tests {
     }
 
     #[test]
-    fn parser_handles_new_selector_flag() {
-        let args = parse_args(&[
-            "boltsnap".to_string(),
-            "area".to_string(),
-            "--new".to_string(),
-        ])
-        .unwrap();
-        assert!(args.new_selector);
-
-        let default = parse_args(&["boltsnap".to_string(), "area".to_string()]).unwrap();
-        assert!(!default.new_selector);
-    }
-
-    #[test]
     fn parser_handles_instant_flag() {
         let a = parse_args(&[
             "boltsnap".to_string(),
             "area".to_string(),
-            "--new".to_string(),
             "--instant".to_string(),
         ])
         .unwrap();
-        assert!(a.new_selector && a.instant);
+        assert!(a.instant);
         let d = parse_args(&["boltsnap".to_string(), "area".to_string()]).unwrap();
         assert!(!d.instant);
     }
