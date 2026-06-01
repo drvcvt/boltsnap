@@ -290,6 +290,9 @@ const REC_RGB: (u8, u8, u8) = (235, 64, 64);
 /// Indicator pill background (matches the shelf/quickshell dark).
 const IND_BG: (u8, u8, u8) = (0x12, 0x12, 0x12); // #121212, matching the badge/pill
 const IND_BG_A: f32 = 0.92;
+/// Indicator button chip: a neutral lift of the #121212 surface (no blue tint),
+/// so Stop/Confirm/Cancel read as buttons on the dark pill.
+const IND_BTN_BG: (u8, u8, u8) = (0x26, 0x26, 0x26); // #262626
 
 /// Draw the click-through region marker: a `border`-px red frame on the INNER
 /// edge of a transparent `w`×`h` surface. The surface is inflated past the
@@ -337,7 +340,7 @@ pub fn draw_indicator(
             draw_time(canvas, w, h, 34.0, cy, 18.0, GLYPH_RGB, elapsed);
             // Stop (■): a filled red square button.
             let (bx, by, bw, bh) = crate::shelf::recording::stop_btn_rect();
-            fill_round_rect(canvas, w, h, bx, by, bw, bh, 6.0, BTN_BG, 0.85);
+            fill_round_rect(canvas, w, h, bx, by, bw, bh, 6.0, IND_BTN_BG, 0.95);
             let inset = bw * 0.28;
             fill_round_rect(
                 canvas,
@@ -355,14 +358,14 @@ pub fn draw_indicator(
         RecPhase::Stopped => {
             // Confirm (✓) on the left.
             let (cx, cy, cw, ch) = crate::shelf::recording::confirm_btn_rect();
-            fill_round_rect(canvas, w, h, cx, cy, cw, ch, 8.0, BTN_BG, 0.85);
+            fill_round_rect(canvas, w, h, cx, cy, cw, ch, 8.0, IND_BTN_BG, 0.95);
             let s = ch.min(cw);
             let gx = cx + (cw - s) / 2.0;
             let gy = cy + (ch - s) / 2.0;
             draw_glyph(canvas, w, h, Glyph::Check, gx, gy, s, GLYPH_OK_RGB);
             // Cancel (✕) on the right.
             let (xx, xy, xw, xh) = crate::shelf::recording::cancel_btn_rect();
-            fill_round_rect(canvas, w, h, xx, xy, xw, xh, 8.0, BTN_BG, 0.85);
+            fill_round_rect(canvas, w, h, xx, xy, xw, xh, 8.0, IND_BTN_BG, 0.95);
             let s = xh.min(xw);
             let gx = xx + (xw - s) / 2.0;
             let gy = xy + (xh - s) / 2.0;
