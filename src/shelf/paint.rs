@@ -522,12 +522,21 @@ pub fn draw_shelf(
 ) {
     clear(canvas);
     for r in &layout.thumbs {
+        // Hide overlays on a card that is mid-animation (scaling/fading).
+        let animating = anims.iter().any(|(id, _, _)| *id == r.id);
+        // Hovered + settled = full opacity: show the lift shadow + hover icons.
+        let hovered_now = hovered == Some(r.id) && !animating;
         if let Some(thumb) = model.get(r.id) {
             let (scale, anim_opacity) = anims
                 .iter()
                 .find(|(id, _, _)| *id == r.id)
                 .map(|(_, s, o)| (*s, *o))
                 .unwrap_or((1.0, 1.0));
+            // Soft drop shadow behind the hovered card (the card blits on top) for
+            // a subtle "lift" — only at full opacity, i.e. on hover.
+            if hovered_now {
+                draw_card_shadow(canvas, cw, ch, r);
+            }
             // Hovered card is fully opaque so it's easy to read; others use the
             // translucent base. The appear/dismiss fade still multiplies in.
             let base = if hovered == Some(r.id) {
@@ -546,8 +555,6 @@ pub fn draw_shelf(
                 base * anim_opacity,
             );
         }
-        // Hide overlays on a card that is mid-animation (scaling/fading).
-        let animating = anims.iter().any(|(id, _, _)| *id == r.id);
         // ▶ play badge on Video cards (settled only, so it doesn't sit at full size
         // over a scaling card during the appear/dismiss animation).
         if !animating
@@ -555,8 +562,43 @@ pub fn draw_shelf(
         {
             draw_play_badge(canvas, cw, ch, r);
         }
-        if hovered == Some(r.id) && !animating {
+        if hovered_now {
             draw_hover_icons(canvas, cw, ch, r, cfg, save_flash == Some(r.id));
+        }
+    }
+}
+
+/// Soft drop shadow behind a hovered (full-opacity) card, for a subtle "lift".
+/// Rounded-box SDF feathered over `BLUR` px, slightly offset downward; drawn
+/// before the card so the card sits on top. Only the offset/blur fringe shows
+/// (the part under the card is overwritten by the blit).
+fn draw_card_shadow(canvas: &mut [u8], cw: u32, ch: u32, r: &ThumbRect) {
+    const DX: f32 = 0.0;
+    const DY: f32 = 3.0; // downward offset reads as "lifted"
+    const BLUR: f32 = 9.0;
+    const ALPHA: f32 = 0.30;
+    let (sx, sy) = (r.x as f32 + DX, r.y as f32 + DY);
+    let (w, h) = (r.w as f32, r.h as f32);
+    let rad = CARD_RADIUS;
+    let (cxw, cyh) = (w / 2.0, h / 2.0);
+    let x0 = (sx - BLUR - 1.0).floor() as i32;
+    let x1 = (sx + w + BLUR + 1.0).ceil() as i32;
+    let y0 = (sy - BLUR - 1.0).floor() as i32;
+    let y1 = (sy + h + BLUR + 1.0).ceil() as i32;
+    for py in y0..=y1 {
+        for px in x0..=x1 {
+            let lx = (px as f32 + 0.5) - sx;
+            let ly = (py as f32 + 0.5) - sy;
+            // Signed distance to the rounded card rect (<=0 inside).
+            let dx = (lx - cxw).abs() - (cxw - rad);
+            let dy = (ly - cyh).abs() - (cyh - rad);
+            let outside = (dx.max(0.0).powi(2) + dy.max(0.0).powi(2)).sqrt();
+            let inside = dx.max(dy).min(0.0);
+            let sdf = outside + inside - rad;
+            let cov = (1.0 - sdf / BLUR).clamp(0.0, 1.0);
+            if cov > 0.0 {
+                blend_px(canvas, cw, ch, px, py, 0, 0, 0, ALPHA * cov);
+            }
         }
     }
 }
