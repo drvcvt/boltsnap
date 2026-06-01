@@ -6,6 +6,7 @@ use std::path::PathBuf;
 
 mod capture;
 mod clipboard;
+mod config;
 mod editor;
 mod ipc;
 mod paths;
