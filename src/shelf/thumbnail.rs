@@ -3,8 +3,8 @@ use image::{RgbaImage, imageops};
 
 /// Fixed shelf card size in pixels. Every card is exactly this size so the shelf
 /// reads as a uniform column. Tweak these to resize the cards.
-pub const CARD_W: u32 = 220;
-pub const CARD_H: u32 = 152;
+pub const CARD_W: u32 = 208;
+pub const CARD_H: u32 = 144;
 
 /// Center-crop `src` to the card aspect ratio, then resize only that crop to
 /// exactly (card_w, card_h). Cropping before resizing avoids scaling huge full

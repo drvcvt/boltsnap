@@ -9,7 +9,9 @@ pub struct LayoutConfig {
 impl Default for LayoutConfig {
     fn default() -> Self {
         Self {
-            pad: 12,
+            // pad gives the surface room around cards so the hover drop-shadow
+            // (see draw_card_shadow) isn't clipped at the shelf edge.
+            pad: 18,
             gap: 10,
             icon: 15,
             pad_icon: 7,

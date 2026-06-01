@@ -574,9 +574,9 @@ pub fn draw_shelf(
 /// (the part under the card is overwritten by the blit).
 fn draw_card_shadow(canvas: &mut [u8], cw: u32, ch: u32, r: &ThumbRect) {
     const DX: f32 = 0.0;
-    const DY: f32 = 3.0; // downward offset reads as "lifted"
-    const BLUR: f32 = 9.0;
-    const ALPHA: f32 = 0.30;
+    const DY: f32 = 4.0; // downward offset reads as "lifted"
+    const BLUR: f32 = 14.0; // wider falloff = more diffuse
+    const ALPHA: f32 = 0.42; // a bit stronger
     let (sx, sy) = (r.x as f32 + DX, r.y as f32 + DY);
     let (w, h) = (r.w as f32, r.h as f32);
     let rad = CARD_RADIUS;
