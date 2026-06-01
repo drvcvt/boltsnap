@@ -315,11 +315,19 @@ mod tests {
         assert_eq!(buf[3], 0, "corner should be transparent");
         // centre carries the card alpha (~0.8*255), the thumbnail colour (low R)
         let c = ((10 * 20 + 10) * 4) as usize;
-        assert!(buf[c + 3] > 180 && buf[c + 3] < 220, "centre alpha ~0.8, got {}", buf[c + 3]);
+        assert!(
+            buf[c + 3] > 180 && buf[c + 3] < 220,
+            "centre alpha ~0.8, got {}",
+            buf[c + 3]
+        );
         assert!(buf[c + 2] < 60, "centre R should be the thumbnail's");
         // left-edge midpoint is the IMAGE colour now, NOT a white border
         let e = ((10 * 20 + 0) * 4) as usize;
-        assert!(buf[e + 3] > 150, "left edge should carry card alpha, got {}", buf[e + 3]);
+        assert!(
+            buf[e + 3] > 150,
+            "left edge should carry card alpha, got {}",
+            buf[e + 3]
+        );
         assert!(
             buf[e + 2] < 60,
             "left edge R should be the image's, not white"
@@ -358,7 +366,11 @@ mod tests {
         assert_eq!(buf[corner + 3], 0, "slot corner should be untouched");
         // centre carries ~0.5*0.75*255 ≈ 95
         let c = ((20 * 40 + 20) * 4) as usize;
-        assert!(buf[c + 3] > 70 && buf[c + 3] < 120, "centre alpha ~0.375, got {}", buf[c + 3]);
+        assert!(
+            buf[c + 3] > 70 && buf[c + 3] < 120,
+            "centre alpha ~0.375, got {}",
+            buf[c + 3]
+        );
     }
 
     #[test]

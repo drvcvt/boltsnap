@@ -173,7 +173,8 @@ pub fn clean_orphan_shelf_temps() -> usize {
     for entry in entries.flatten() {
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if name.starts_with("boltsnap-shelf-") && name.ends_with(".png")
+        if name.starts_with("boltsnap-shelf-")
+            && name.ends_with(".png")
             && fs::remove_file(entry.path()).is_ok()
         {
             removed += 1;

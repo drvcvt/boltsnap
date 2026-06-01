@@ -47,7 +47,10 @@ use crate::DynResult;
 /// wlr-layer-shell overlay on the focused output, renders the frozen screenshot
 /// with a draggable selection via tiny-skia, and returns the cropped image on
 /// confirm (or `None` on Esc/cancel).
-pub fn run_select_with_parallel_capture<F>(capture: F, instant: bool) -> DynResult<Option<RgbaImage>>
+pub fn run_select_with_parallel_capture<F>(
+    capture: F,
+    instant: bool,
+) -> DynResult<Option<RgbaImage>>
 where
     F: FnOnce() -> Result<RgbaImage, String> + Send + 'static,
 {
@@ -208,7 +211,8 @@ impl Selector {
                 outputs
                     .iter()
                     .find(|o| {
-                        self.output_state.info(o).and_then(|i| i.name).as_deref() == Some(n.as_str())
+                        self.output_state.info(o).and_then(|i| i.name).as_deref()
+                            == Some(n.as_str())
                     })
                     .cloned()
             })
@@ -295,7 +299,14 @@ impl Selector {
             return;
         };
         let (iw, ih) = (img.width(), img.height());
-        match render::rect_to_image((rect.x, rect.y), (rect.right(), rect.bottom()), self.surf_w, self.surf_h, iw, ih) {
+        match render::rect_to_image(
+            (rect.x, rect.y),
+            (rect.right(), rect.bottom()),
+            self.surf_w,
+            self.surf_h,
+            iw,
+            ih,
+        ) {
             Some((x, y, w, h)) => {
                 self.result = Some(image::imageops::crop_imm(img, x, y, w, h).to_image());
                 self.done = true;
@@ -309,7 +320,14 @@ impl Selector {
 }
 
 impl CompositorHandler for Selector {
-    fn scale_factor_changed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlSurface, _: i32) {}
+    fn scale_factor_changed(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &WlSurface,
+        _: i32,
+    ) {
+    }
     fn transform_changed(
         &mut self,
         _: &Connection,
@@ -326,8 +344,22 @@ impl CompositorHandler for Selector {
             self.draw();
         }
     }
-    fn surface_enter(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlSurface, _: &wl_output::WlOutput) {}
-    fn surface_leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlSurface, _: &wl_output::WlOutput) {}
+    fn surface_enter(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &WlSurface,
+        _: &wl_output::WlOutput,
+    ) {
+    }
+    fn surface_leave(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &WlSurface,
+        _: &wl_output::WlOutput,
+    ) {
+    }
 }
 
 impl OutputHandler for Selector {
@@ -352,8 +384,16 @@ impl LayerShellHandler for Selector {
         configure: LayerSurfaceConfigure,
         _: u32,
     ) {
-        let w = if configure.new_size.0 != 0 { configure.new_size.0 } else { self.surf_w.max(1) };
-        let h = if configure.new_size.1 != 0 { configure.new_size.1 } else { self.surf_h.max(1) };
+        let w = if configure.new_size.0 != 0 {
+            configure.new_size.0
+        } else {
+            self.surf_w.max(1)
+        };
+        let h = if configure.new_size.1 != 0 {
+            configure.new_size.1
+        } else {
+            self.surf_h.max(1)
+        };
         self.surf_w = w;
         self.surf_h = h;
         if self.base.is_none() {
@@ -371,7 +411,13 @@ impl SeatHandler for Selector {
         &mut self.seat_state
     }
     fn new_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: WlSeat) {}
-    fn new_capability(&mut self, _: &Connection, qh: &QueueHandle<Self>, seat: WlSeat, cap: Capability) {
+    fn new_capability(
+        &mut self,
+        _: &Connection,
+        qh: &QueueHandle<Self>,
+        seat: WlSeat,
+        cap: Capability,
+    ) {
         if cap == Capability::Pointer && self.pointer.is_none() {
             let cursor_surface = self.compositor.create_surface(qh);
             if let Ok(tp) = self.seat_state.get_pointer_with_theme(
@@ -390,7 +436,13 @@ impl SeatHandler for Selector {
             }
         }
     }
-    fn remove_capability(&mut self, _: &Connection, _: &QueueHandle<Self>, _: WlSeat, cap: Capability) {
+    fn remove_capability(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: WlSeat,
+        cap: Capability,
+    ) {
         if cap == Capability::Keyboard {
             self.keyboard = None;
         }
@@ -399,7 +451,13 @@ impl SeatHandler for Selector {
 }
 
 impl PointerHandler for Selector {
-    fn pointer_frame(&mut self, conn: &Connection, _: &QueueHandle<Self>, _: &WlPointer, events: &[PointerEvent]) {
+    fn pointer_frame(
+        &mut self,
+        conn: &Connection,
+        _: &QueueHandle<Self>,
+        _: &WlPointer,
+        events: &[PointerEvent],
+    ) {
         let mut redraw = false;
         for ev in events {
             if matches!(ev.kind, PointerEventKind::Enter { .. }) {
@@ -412,22 +470,26 @@ impl PointerHandler for Selector {
             match ev.kind {
                 PointerEventKind::Press { button, .. } if button == BTN_LEFT => {
                     match self.mode {
-                        Mode::Editing { rect } => {
-                            match edit::hit_region(rect, (x, y), HANDLE_R) {
-                                edit::Region::Handle(h) => {
-                                    self.interaction = Some(Interaction::Resize { handle: h });
-                                }
-                                edit::Region::Inside => {
-                                    self.interaction = Some(Interaction::ClickInside { press: (x, y) });
-                                }
-                                edit::Region::Outside => {
-                                    self.mode = Mode::Drawing { anchor: (x, y), now: (x, y) };
-                                    self.interaction = None;
-                                }
+                        Mode::Editing { rect } => match edit::hit_region(rect, (x, y), HANDLE_R) {
+                            edit::Region::Handle(h) => {
+                                self.interaction = Some(Interaction::Resize { handle: h });
                             }
-                        }
+                            edit::Region::Inside => {
+                                self.interaction = Some(Interaction::ClickInside { press: (x, y) });
+                            }
+                            edit::Region::Outside => {
+                                self.mode = Mode::Drawing {
+                                    anchor: (x, y),
+                                    now: (x, y),
+                                };
+                                self.interaction = None;
+                            }
+                        },
                         _ => {
-                            self.mode = Mode::Drawing { anchor: (x, y), now: (x, y) };
+                            self.mode = Mode::Drawing {
+                                anchor: (x, y),
+                                now: (x, y),
+                            };
                             self.interaction = None;
                         }
                     }
@@ -435,19 +497,40 @@ impl PointerHandler for Selector {
                 }
                 PointerEventKind::Motion { .. } => match self.mode {
                     Mode::Drawing { anchor, .. } => {
-                        self.mode = Mode::Drawing { anchor, now: (x, y) };
+                        self.mode = Mode::Drawing {
+                            anchor,
+                            now: (x, y),
+                        };
                         redraw = true;
                     }
                     Mode::Editing { rect } => {
                         match self.interaction {
                             Some(Interaction::Resize { handle }) => {
-                                let nr = edit::resize_rect(rect, handle, (x, y), MIN_SEL, self.surf_w as f64, self.surf_h as f64);
+                                let nr = edit::resize_rect(
+                                    rect,
+                                    handle,
+                                    (x, y),
+                                    MIN_SEL,
+                                    self.surf_w as f64,
+                                    self.surf_h as f64,
+                                );
                                 self.mode = Mode::Editing { rect: nr };
                                 redraw = true;
                             }
                             Some(Interaction::Move { grab }) => {
-                                let target = edit::Rect { x: x - grab.0, y: y - grab.1, w: rect.w, h: rect.h };
-                                let nr = edit::move_rect(target, 0.0, 0.0, self.surf_w as f64, self.surf_h as f64);
+                                let target = edit::Rect {
+                                    x: x - grab.0,
+                                    y: y - grab.1,
+                                    w: rect.w,
+                                    h: rect.h,
+                                };
+                                let nr = edit::move_rect(
+                                    target,
+                                    0.0,
+                                    0.0,
+                                    self.surf_w as f64,
+                                    self.surf_h as f64,
+                                );
                                 self.mode = Mode::Editing { rect: nr };
                                 redraw = true;
                             }
@@ -457,8 +540,9 @@ impl PointerHandler for Selector {
                                 if (x - press.0).powi(2) + (y - press.1).powi(2)
                                     > DRAG_SLOP * DRAG_SLOP
                                 {
-                                    self.interaction =
-                                        Some(Interaction::Move { grab: (x - rect.x, y - rect.y) });
+                                    self.interaction = Some(Interaction::Move {
+                                        grab: (x - rect.x, y - rect.y),
+                                    });
                                     redraw = true;
                                 }
                             }
@@ -510,9 +594,34 @@ impl PointerHandler for Selector {
 }
 
 impl KeyboardHandler for Selector {
-    fn enter(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlKeyboard, _: &WlSurface, _: u32, _: &[u32], _: &[Keysym]) {}
-    fn leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlKeyboard, _: &WlSurface, _: u32) {}
-    fn press_key(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlKeyboard, _: u32, event: KeyEvent) {
+    fn enter(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &WlKeyboard,
+        _: &WlSurface,
+        _: u32,
+        _: &[u32],
+        _: &[Keysym],
+    ) {
+    }
+    fn leave(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &WlKeyboard,
+        _: &WlSurface,
+        _: u32,
+    ) {
+    }
+    fn press_key(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &WlKeyboard,
+        _: u32,
+        event: KeyEvent,
+    ) {
         match event.keysym {
             Keysym::Escape => {
                 self.result = None;
@@ -526,8 +635,24 @@ impl KeyboardHandler for Selector {
             _ => {}
         }
     }
-    fn release_key(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlKeyboard, _: u32, _: KeyEvent) {}
-    fn update_modifiers(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlKeyboard, _: u32, modifiers: Modifiers, _: u32) {
+    fn release_key(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &WlKeyboard,
+        _: u32,
+        _: KeyEvent,
+    ) {
+    }
+    fn update_modifiers(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &WlKeyboard,
+        _: u32,
+        modifiers: Modifiers,
+        _: u32,
+    ) {
         if self.alt_held != modifiers.alt {
             self.alt_held = modifiers.alt;
             self.request_redraw();
