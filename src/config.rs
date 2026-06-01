@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 pub struct Config {
     pub save_dir: Option<String>,
     pub editor: Option<String>,
+    pub record_codec: Option<String>,
+    pub record_dir: Option<String>,
 }
 
 impl Config {
@@ -17,6 +19,8 @@ impl Config {
             Ok(v) => Config {
                 save_dir: v.get("save_dir").and_then(|x| x.as_str()).map(String::from),
                 editor: v.get("editor").and_then(|x| x.as_str()).map(String::from),
+                record_codec: v.get("record_codec").and_then(|x| x.as_str()).map(String::from),
+                record_dir: v.get("record_dir").and_then(|x| x.as_str()).map(String::from),
             },
             Err(e) => {
                 eprintln!("boltsnap: ignoring malformed config: {e}");
@@ -134,6 +138,32 @@ pub fn resolve_editor(cli: Option<&str>, cfg: &Config) -> Option<String> {
     default_editor()
 }
 
+/// The ffmpeg encoder passed to `wf-recorder -c`: CLI flag > $BOLTSNAP_RECORD_CODEC
+/// > config > `h264_nvenc` (NVENC default; users without NVENC set e.g. libx264).
+pub fn resolve_record_codec(cli: Option<&str>, cfg: &Config) -> String {
+    if let Some(c) = cli {
+        return c.to_string();
+    }
+    if let Ok(e) = env::var("BOLTSNAP_RECORD_CODEC") {
+        if !e.is_empty() {
+            return e;
+        }
+    }
+    if let Some(c) = &cfg.record_codec {
+        return c.clone();
+    }
+    "h264_nvenc".to_string()
+}
+
+/// Where confirmed recordings are saved: config `record_dir` (expanded) else the
+/// regular `save_dir`.
+pub fn resolve_record_dir(cfg: &Config) -> PathBuf {
+    if let Some(s) = &cfg.record_dir {
+        return expand_path(s);
+    }
+    resolve_save_dir(None, cfg)
+}
+
 fn default_editor() -> Option<String> {
     if crate::paths::has_cmd("eddy") {
         return Some("eddy".to_string());
@@ -190,7 +220,7 @@ mod tests {
     fn save_dir_precedence_flag_over_config() {
         let cfg = Config {
             save_dir: Some("/from/config".into()),
-            editor: None,
+            ..Config::default()
         };
         let got = resolve_save_dir(Some(Path::new("/from/flag")), &cfg);
         assert_eq!(got, PathBuf::from("/from/flag"));
@@ -206,7 +236,7 @@ mod tests {
         }
         let cfg = Config {
             save_dir: Some("~/cfgshots".into()),
-            editor: None,
+            ..Config::default()
         };
         assert_eq!(
             resolve_save_dir(None, &cfg),
@@ -221,8 +251,8 @@ mod tests {
     #[test]
     fn editor_precedence_flag_then_config() {
         let cfg = Config {
-            save_dir: None,
             editor: Some("cfg-editor".into()),
+            ..Config::default()
         };
         assert_eq!(
             resolve_editor(Some("flag-editor"), &cfg),
@@ -232,5 +262,26 @@ mod tests {
             env::remove_var("BOLTSNAP_EDITOR");
         }
         assert_eq!(resolve_editor(None, &cfg), Some("cfg-editor".to_string()));
+    }
+
+    #[test]
+    fn parse_record_keys() {
+        let c = Config::parse("record_codec = \"libx264\"\nrecord_dir = \"/tmp/rec\"\n");
+        assert_eq!(c.record_codec.as_deref(), Some("libx264"));
+        assert_eq!(c.record_dir.as_deref(), Some("/tmp/rec"));
+    }
+
+    #[test]
+    fn record_codec_defaults_to_nvenc() {
+        // BOLTSNAP_RECORD_CODEC is boltsnap-private (read by nothing else), so
+        // removing it without restore is race-free and keeps the default assertion
+        // self-contained.
+        unsafe {
+            env::remove_var("BOLTSNAP_RECORD_CODEC");
+        }
+        assert_eq!(resolve_record_codec(None, &Config::default()), "h264_nvenc");
+        let cfg = Config { record_codec: Some("libx264".into()), ..Config::default() };
+        assert_eq!(resolve_record_codec(None, &cfg), "libx264");
+        assert_eq!(resolve_record_codec(Some("hevc_nvenc"), &cfg), "hevc_nvenc");
     }
 }
