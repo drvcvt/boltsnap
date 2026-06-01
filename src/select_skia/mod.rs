@@ -627,7 +627,8 @@ impl KeyboardHandler for Selector {
                 self.result = None;
                 self.done = true;
             }
-            Keysym::Return | Keysym::KP_Enter => {
+            // Space or Enter confirms the editable selection (Space by habit).
+            Keysym::space | Keysym::Return | Keysym::KP_Enter => {
                 if let Mode::Editing { rect } = self.mode {
                     self.confirm_rect(rect);
                 }
