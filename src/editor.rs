@@ -9,7 +9,7 @@ use crate::{Backend, DynResult};
 /// Open `image_path` in the annotation editor (eddy) and return the path the
 /// edited image was written to.
 ///
-/// eddy is a drop-in swappy replacement: it reads `-f` and, on save, writes the
+/// eddy reads `-f` for the input path and, on save, writes the
 /// `-o` path. The editor command is resolved via `editor_override` →
 /// `$BOLTSNAP_EDITOR` → config → `eddy` on PATH → `~/projects/eddy/build/eddy`.
 ///

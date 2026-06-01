@@ -98,6 +98,10 @@ struct Args {
     /// Skip the selector's editable phase: release captures immediately.
     /// Wayland-only (the X11 path has no interactive region selector).
     instant: bool,
+    /// Override the shelf save directory (daemon).
+    save_dir: Option<PathBuf>,
+    /// Override the annotation editor command (edit).
+    editor_cmd: Option<String>,
 }
 
 impl Default for Args {
@@ -113,6 +117,8 @@ impl Default for Args {
             output: None,
             backend: Backend::Auto,
             instant: false,
+            save_dir: None,
+            editor_cmd: None,
         }
     }
 }
@@ -154,7 +160,9 @@ Usage:
   boltsnap --edit                         open last screenshot in editor
   boltsnap [area|window|full] --edit      capture then edit
   boltsnap edit [IMAGE] [-o PATH] [--no-copy]
-  boltsnap daemon                         run the screenshot shelf (auto-started on demand)
+  boltsnap daemon [--save-dir DIR]        run the screenshot shelf
+  boltsnap [COMMAND] [--editor CMD]       annotate with a specific editor
+  Config: ~/.config/boltsnap/config.toml  (save_dir, editor)
   boltsnap doctor
 
 Examples:
@@ -162,7 +170,7 @@ Examples:
   boltsnap --edit                         open last screenshot in editor
   boltsnap window                         pick window, copy PNG
   boltsnap full --no-copy -o /tmp/x.png   write file, no clipboard
-  boltsnap area --no-copy -o - | swappy -f -    pipe to external editor
+  boltsnap area --no-copy -o - | eddy -f -      pipe to external editor
 "
 }
 
@@ -205,6 +213,20 @@ fn parse_args(raw: &[String]) -> DynResult<Args> {
                 };
                 args.backend = Backend::parse(value)?;
             }
+            "--save-dir" => {
+                i += 1;
+                let Some(path) = raw.get(i) else {
+                    return Err("--save-dir needs a path".into());
+                };
+                args.save_dir = Some(PathBuf::from(path));
+            }
+            "--editor" => {
+                i += 1;
+                let Some(cmd) = raw.get(i) else {
+                    return Err("--editor needs a command".into());
+                };
+                args.editor_cmd = Some(cmd.clone());
+            }
             value if value.starts_with('-') => {
                 return Err(format!("unknown option '{value}'\n{}", usage()).into());
             }
@@ -244,7 +266,7 @@ fn run() -> DynResult<()> {
             Ok(())
         }
         "self-test" => self_test(),
-        "daemon" => crate::shelf::run_daemon(None),
+        "daemon" => crate::shelf::run_daemon(args.save_dir.clone()),
         "__debug-render" => {
             // Render the shelf (one sample thumbnail, hovered) straight to a PNG
             // via the real draw path, so styling can be inspected without a
@@ -267,7 +289,7 @@ fn run() -> DynResult<()> {
             let image = args.image.clone().unwrap_or(last_screenshot_path()?);
             ensure_file(&image)?;
             let output = edit_output_path(&args);
-            let result = run_editor(normalize_path(&image), output, args.copy, args.backend, None)?;
+            let result = run_editor(normalize_path(&image), output, args.copy, args.backend, args.editor_cmd.clone())?;
             remember_last_screenshot(&result)?;
             println!("Edited image ready: {}", result.display());
             Ok(())
@@ -287,7 +309,7 @@ fn edit_last_screenshot(args: &Args) -> DynResult<()> {
         edit_output_path(args),
         args.copy,
         args.backend,
-        None,
+        args.editor_cmd.clone(),
     )?;
     remember_last_screenshot(&result)?;
     println!("Edited last screenshot: {}", result.display());
@@ -317,7 +339,7 @@ fn capture_flow(args: &Args) -> DynResult<()> {
         PostCapture::Stdout => unreachable!("handled above"),
         PostCapture::Edit => {
             let final_path =
-                run_editor(output.clone(), edit_output_path(args), args.copy, resolved, None)?;
+                run_editor(output.clone(), edit_output_path(args), args.copy, resolved, args.editor_cmd.clone())?;
             remember_last_screenshot(&final_path)?;
             println!(
                 "Boltsnap edited {} via {}: {}",
