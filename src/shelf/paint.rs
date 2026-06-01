@@ -213,6 +213,76 @@ fn stroke_line(
     }
 }
 
+/// Draw a ▶ play badge centered on a card, to mark Video cards as distinct from
+/// screenshots. The badge is always visible (not hover-gated).
+fn draw_play_badge(canvas: &mut [u8], cw: u32, ch: u32, r: &ThumbRect) {
+    let min_dim = r.w.min(r.h) as f32;
+    let radius = min_dim * 0.12;
+    let cx = r.x as f32 + r.w as f32 / 2.0;
+    let cy = r.y as f32 + r.h as f32 / 2.0;
+
+    // Translucent dark circle background (slightly more opaque than hover buttons).
+    fill_circle(canvas, cw, ch, cx, cy, radius, BTN_BG, 0.55);
+
+    // Filled right-pointing triangle (▶) inside the circle.
+    // Triangle dimensions: ~0.9× the circle radius, vertically centred.
+    let tri_half_h = radius * 0.9 * 0.5; // half the triangle height
+    let tri_w = radius * 0.9; // horizontal span (left edge to apex)
+    // Left edge x is slightly left of centre so the triangle is visually centred.
+    // Optically, a play glyph looks centred when the centroid (1/3 from left) is at cx.
+    let left_x = cx - tri_w / 3.0;
+    let top_y = cy - tri_half_h;
+    let bot_y = cy + tri_half_h;
+    let apex_x = left_x + tri_w;
+
+    // Scanline fill: for each integer row y inside [top_y, bot_y], compute the
+    // x-span between the two left diagonal edges and the converging right apex.
+    let y0 = (top_y - 1.0).floor() as i32;
+    let y1 = (bot_y + 1.0).ceil() as i32;
+    for py in y0..=y1 {
+        let yf = py as f32 + 0.5;
+        // How far along the triangle (0 at top, 1 at bottom)?
+        let span = bot_y - top_y;
+        if span <= 0.0 {
+            break;
+        }
+        let t = ((yf - top_y) / span).clamp(0.0, 1.0);
+        // Left edge of the triangle runs from (left_x, top_y) to (left_x, bot_y).
+        // Right edge converges from both corners to the apex.
+        let x_left = left_x;
+        let x_right = if t <= 0.5 {
+            // upper half: from (left_x, top_y) → (apex_x, mid_y)
+            left_x + (apex_x - left_x) * (t * 2.0)
+        } else {
+            // lower half: from (apex_x, mid_y) → (left_x, bot_y)
+            left_x + (apex_x - left_x) * ((1.0 - t) * 2.0)
+        };
+        let xl = x_left.floor() as i32;
+        let xr = x_right.ceil() as i32;
+        for px in xl..=xr {
+            let xf = px as f32 + 0.5;
+            // Sub-pixel coverage on left edge
+            let cov_l = (xf - x_left + 0.5).clamp(0.0, 1.0);
+            // Sub-pixel coverage on right edge
+            let cov_r = (x_right - xf + 0.5).clamp(0.0, 1.0);
+            let cov = cov_l.min(cov_r);
+            if cov > 0.0 {
+                blend_px(
+                    canvas,
+                    cw,
+                    ch,
+                    px,
+                    py,
+                    GLYPH_RGB.0,
+                    GLYPH_RGB.1,
+                    GLYPH_RGB.2,
+                    cov,
+                );
+            }
+        }
+    }
+}
+
 /// Render the whole shelf: each thumbnail, plus hover icons on the hovered thumb.
 pub fn draw_shelf(
     canvas: &mut [u8],
@@ -234,6 +304,10 @@ pub fn draw_shelf(
                 .map(|(_, s, o)| (*s, *o))
                 .unwrap_or((1.0, 1.0));
             blit_thumb_card_anim(canvas, cw, ch, &thumb.thumb, r.x, r.y, scale, opacity);
+        }
+        // Draw the ▶ play badge on Video cards (always visible, not hover-gated).
+        if model.get(r.id).map(|t| t.kind) == Some(crate::shelf::model::CardKind::Video) {
+            draw_play_badge(canvas, cw, ch, r);
         }
         // Hide hover icons on a card that is mid-animation (scaling/fading).
         let animating = anims.iter().any(|(id, _, _)| *id == r.id);
@@ -513,6 +587,53 @@ mod tests {
         );
         // corner stays transparent
         assert_eq!(buf[3], 0);
+    }
+
+    #[test]
+    fn video_card_draws_play_badge() {
+        let mut model = ShelfModel::new();
+        let mut t = RgbaImage::new(260, 180);
+        for p in t.pixels_mut() {
+            *p = image::Rgba([10, 20, 200, 255]);
+        }
+        let _id = model.add_kind(
+            PathBuf::from("/tmp/v.mp4"),
+            t,
+            "record".into(),
+            crate::shelf::model::CardKind::Video,
+        );
+        let cfg = LayoutConfig::default();
+        let sizes: Vec<(u64, u32, u32)> = model
+            .newest_first()
+            .map(|t| (t.id, t.thumb.width(), t.thumb.height()))
+            .collect();
+        let layout = Layout::compute(&sizes, &cfg);
+        let mut canvas = vec![0u8; (layout.width * layout.height * 4) as usize];
+        draw_shelf(
+            &mut canvas,
+            layout.width,
+            layout.height,
+            &layout,
+            &model,
+            None,
+            &cfg,
+            &[],
+            None,
+        );
+        let r = &layout.thumbs[0];
+        // plain thumb color sampled away from center
+        let px = r.x + 8;
+        let py = r.y + 8;
+        let plain = canvas[(((py * layout.width + px) * 4) + 2) as usize];
+        // badge at the card center
+        let cx = r.x + r.w / 2;
+        let cy = r.y + r.h / 2;
+        let cidx = ((cy * layout.width + cx) * 4) as usize;
+        assert_ne!(
+            canvas[cidx + 2],
+            plain,
+            "video card center should carry the play badge"
+        );
     }
 
     #[test]
