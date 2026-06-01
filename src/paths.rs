@@ -189,3 +189,36 @@ pub fn timestamp() -> u128 {
         .unwrap_or_default()
         .as_millis()
 }
+
+/// Saved-screenshot filename from a wall-clock stamp: `boltsnap-<stamp>.png`.
+pub fn boltsnap_filename(stamp: &str) -> String {
+    format!("boltsnap-{stamp}.png")
+}
+
+/// Local wall-clock stamp `YYYY-MM-DD_HH-MM-SS` via `date` (correct local time,
+/// no date-crate dependency — matching how the codebase already shells out to
+/// `hyprctl`). Falls back to epoch millis if `date` is unavailable.
+pub fn local_timestamp() -> String {
+    std::process::Command::new("date")
+        .arg("+%Y-%m-%d_%H-%M-%S")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| timestamp().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn filename_wraps_stamp() {
+        assert_eq!(
+            boltsnap_filename("2026-06-01_14-23-05"),
+            "boltsnap-2026-06-01_14-23-05.png"
+        );
+    }
+}
