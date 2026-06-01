@@ -15,8 +15,8 @@ use smithay_client_toolkit::{
 use crate::record::Geometry;
 
 /// Indicator surface size (logical px). Fixed; both phases draw inside it.
-pub const IND_W: u32 = 172;
-pub const IND_H: u32 = 44;
+pub const IND_W: u32 = 150;
+pub const IND_H: u32 = 38;
 
 /// Thickness of the click-through region marker border, and how far the marker
 /// surface is inflated past the recorded rect on each side (so the border sits

@@ -288,7 +288,7 @@ fn draw_play_badge(canvas: &mut [u8], cw: u32, ch: u32, r: &ThumbRect) {
 /// Recording-overlay accent (red ●, marker border, button glyphs).
 const REC_RGB: (u8, u8, u8) = (235, 64, 64);
 /// Indicator pill background (matches the shelf/quickshell dark).
-const IND_BG: (u8, u8, u8) = (18, 18, 24);
+const IND_BG: (u8, u8, u8) = (0x12, 0x12, 0x12); // #121212, matching the badge/pill
 const IND_BG_A: f32 = 0.92;
 
 /// Draw the click-through region marker: a `border`-px red frame on the INNER
@@ -543,12 +543,15 @@ pub fn draw_shelf(
                 base * anim_opacity,
             );
         }
-        // Draw the ▶ play badge on Video cards (always visible, not hover-gated).
-        if model.get(r.id).map(|t| t.kind) == Some(crate::shelf::model::CardKind::Video) {
+        // Hide overlays on a card that is mid-animation (scaling/fading).
+        let animating = anims.iter().any(|(id, _, _)| *id == r.id);
+        // ▶ play badge on Video cards (settled only, so it doesn't sit at full size
+        // over a scaling card during the appear/dismiss animation).
+        if !animating
+            && model.get(r.id).map(|t| t.kind) == Some(crate::shelf::model::CardKind::Video)
+        {
             draw_play_badge(canvas, cw, ch, r);
         }
-        // Hide hover icons on a card that is mid-animation (scaling/fading).
-        let animating = anims.iter().any(|(id, _, _)| *id == r.id);
         if hovered == Some(r.id) && !animating {
             draw_hover_icons(canvas, cw, ch, r, cfg, save_flash == Some(r.id));
         }
