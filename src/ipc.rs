@@ -11,6 +11,7 @@ pub enum Request {
     Add { source: String, png: Vec<u8> },
     Reload { id: u64 },
     Ping,
+    StartRecording { x: i32, y: i32, w: u32, h: u32 },
 }
 
 /// Frame = [u32 BE header_len][u32 BE payload_len][header bytes][payload bytes].
@@ -51,6 +52,10 @@ impl Request {
                 let header = json!({ "cmd": "ping" });
                 write_frame(&mut buf, header.to_string().as_bytes(), &[]).unwrap();
             }
+            Request::StartRecording { x, y, w, h } => {
+                let header = json!({ "cmd": "record", "x": x, "y": y, "w": w, "h": h });
+                write_frame(&mut buf, header.to_string().as_bytes(), &[]).unwrap();
+            }
         }
         buf
     }
@@ -72,6 +77,12 @@ impl Request {
                 id: v.get("id").and_then(|i| i.as_u64()).unwrap_or(0),
             }),
             Some("ping") => Ok(Request::Ping),
+            Some("record") => Ok(Request::StartRecording {
+                x: v.get("x").and_then(|n| n.as_i64()).unwrap_or(0) as i32,
+                y: v.get("y").and_then(|n| n.as_i64()).unwrap_or(0) as i32,
+                w: v.get("w").and_then(|n| n.as_u64()).unwrap_or(0) as u32,
+                h: v.get("h").and_then(|n| n.as_u64()).unwrap_or(0) as u32,
+            }),
             other => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("unknown cmd: {other:?}"),
@@ -177,6 +188,18 @@ mod tests {
             Request::read(&mut cur).unwrap(),
             Request::Reload { id: 42 }
         ));
+    }
+
+    #[test]
+    fn request_start_recording_roundtrip() {
+        let req = Request::StartRecording { x: -100, y: 40, w: 800, h: 600 };
+        let mut cur = Cursor::new(req.encode());
+        match Request::read(&mut cur).unwrap() {
+            Request::StartRecording { x, y, w, h } => {
+                assert_eq!((x, y, w, h), (-100, 40, 800, 600));
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
     }
 
     #[test]
