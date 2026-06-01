@@ -2,6 +2,12 @@ use std::path::PathBuf;
 
 use image::RgbaImage;
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CardKind {
+    Image,
+    Video,
+}
+
 pub struct Thumb {
     pub id: u64,
     pub png_path: PathBuf,
@@ -10,6 +16,7 @@ pub struct Thumb {
     /// future display/grouping; not surfaced in the UI yet.
     #[allow(dead_code)]
     pub source: String,
+    pub kind: CardKind,
 }
 
 #[derive(Default)]
@@ -26,8 +33,14 @@ impl ShelfModel {
         }
     }
 
-    /// Insert a new thumbnail at the top of the shelf; returns its id.
-    pub fn add(&mut self, png_path: PathBuf, thumb: RgbaImage, source: String) -> u64 {
+    /// Insert a new card of the given kind at the top of the shelf; returns its id.
+    pub fn add_kind(
+        &mut self,
+        png_path: PathBuf,
+        thumb: RgbaImage,
+        source: String,
+        kind: CardKind,
+    ) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
         self.thumbs.insert(
@@ -37,9 +50,15 @@ impl ShelfModel {
                 png_path,
                 thumb,
                 source,
+                kind,
             },
         );
         id
+    }
+
+    /// Insert an image card (screenshot). Convenience over `add_kind`.
+    pub fn add(&mut self, png_path: PathBuf, thumb: RgbaImage, source: String) -> u64 {
+        self.add_kind(png_path, thumb, source, CardKind::Image)
     }
 
     pub fn remove(&mut self, id: u64) -> Option<Thumb> {
@@ -104,6 +123,15 @@ mod tests {
         assert_eq!(removed.png_path, PathBuf::from("/tmp/a.png"));
         assert!(m.is_empty());
         assert!(m.remove(a).is_none());
+    }
+
+    #[test]
+    fn add_carries_kind() {
+        let mut m = ShelfModel::new();
+        let v = m.add_kind(PathBuf::from("/tmp/v.mp4"), img(), "record".into(), CardKind::Video);
+        assert_eq!(m.get(v).unwrap().kind, CardKind::Video);
+        let i = m.add(PathBuf::from("/tmp/i.png"), img(), "area".into());
+        assert_eq!(m.get(i).unwrap().kind, CardKind::Image);
     }
 
     #[test]
