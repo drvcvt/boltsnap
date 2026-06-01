@@ -936,6 +936,12 @@ impl Daemon {
     /// Build the click-through marker layer surface (a `Top` layer with an EMPTY
     /// input region so clicks pass through to the apps being recorded). Returns
     /// the surface, its draw pool, and the region (retained so it isn't destroyed).
+    ///
+    /// The surface is created on the focused output (margins are per-output, so a
+    /// null output would mis-place the marker on a non-origin monitor). The rect
+    /// is in compositor-GLOBAL coords; we convert it to OUTPUT-LOCAL margins by
+    /// subtracting that output's layout origin — the same origin `record_flow`
+    /// added to globalize the selection, so the subtraction is exact.
     fn create_marker(
         &mut self,
         geo: &crate::record::Geometry,
@@ -947,17 +953,22 @@ impl Daemon {
         let mh = geo.h + 2 * MARKER_INFLATE;
 
         let surface = self.compositor.create_surface(qh);
+        let (_name, output) = self.target_output();
         let layer = self.layer_shell.create_layer_surface(
             qh,
             surface,
             Layer::Top,
             Some("boltsnap-recording"),
-            None,
+            output.as_ref(),
         );
         layer.set_anchor(Anchor::TOP | Anchor::LEFT);
-        // The rect is in GLOBAL coords; the marker has no output set, so anchor it
-        // top-left and push it to the rect via margins (inflated by the border).
-        layer.set_margin((geo.y - inflate).max(0), 0, 0, (geo.x - inflate).max(0));
+        // Convert the GLOBAL rect to OUTPUT-LOCAL margins by subtracting the
+        // focused monitor's layout origin (the inverse of record_flow's globalize),
+        // then anchor top-left and push to the rect via margins (inflated by border).
+        let (ox, oy) = focused_monitor_origin().unwrap_or((0, 0));
+        let local_x = geo.x - ox;
+        let local_y = geo.y - oy;
+        layer.set_margin((local_y - inflate).max(0), 0, 0, (local_x - inflate).max(0));
         layer.set_size(mw, mh);
         layer.set_keyboard_interactivity(KeyboardInteractivity::None);
         layer.set_exclusive_zone(-1);
@@ -1167,12 +1178,28 @@ impl Daemon {
         });
     }
 
-    /// Cancel the stopped recording: reap the child off-thread, delete the temp
-    /// mp4, and tear down overlays immediately.
-    fn cancel_recording(&mut self) {
+    /// Tear down the active recording without keeping its output: SIGINT the
+    /// child if we still own it (so a still-LIVE wf-recorder actually finalizes
+    /// rather than being orphaned), then reap it and unlink the temp mp4 on a
+    /// DETACHED thread, and drop both overlays immediately on the calloop thread.
+    ///
+    /// This MUST NOT block the loop: it is reached both from the Cancel button
+    /// and from `LayerShellHandler::closed`, where the recorder may still be live
+    /// (a synchronous `wait()` there would freeze the daemon until it exits on its
+    /// own). The crash-path caller (`tick_recording`) only invokes this AFTER
+    /// `try_wait()` already saw the child dead, so the off-thread `wait()` returns
+    /// at once there.
+    fn cancel_recording_cleanup(&mut self) {
         if let Some(mut rec) = self.recording.take() {
             let child = rec.child.take();
             let path = rec.path.clone();
+            // SIGINT only when we still own the child (don't signal a pid we may
+            // have already waited). Mirror stop_recording: SIGINT, never SIGKILL.
+            if let Some(c) = child.as_ref() {
+                unsafe {
+                    libc::kill(c.id() as i32, libc::SIGINT);
+                }
+            }
             std::thread::spawn(move || {
                 if let Some(mut c) = child {
                     let _ = c.wait();
@@ -1181,17 +1208,6 @@ impl Daemon {
             });
         }
         // `rec` dropped here -> marker + indicator surfaces (and the region) unmap.
-    }
-
-    /// Tear down a recording that exited on its own (crash/error) without user
-    /// action: reap the child, delete the temp mp4, drop overlays.
-    fn cancel_recording_cleanup(&mut self) {
-        if let Some(mut rec) = self.recording.take() {
-            if let Some(mut c) = rec.child.take() {
-                let _ = c.wait();
-            }
-            let _ = std::fs::remove_file(&rec.path);
-        }
     }
 
     /// Ingest a finished recording posted via `RecordingDone`: load the first-frame
@@ -1264,7 +1280,7 @@ impl Daemon {
         match crate::shelf::recording::ind_hit(phase, pos.0, pos.1) {
             Some(IndButton::Stop) => self.stop_recording(),
             Some(IndButton::Confirm) => self.confirm_recording(),
-            Some(IndButton::Cancel) => self.cancel_recording(),
+            Some(IndButton::Cancel) => self.cancel_recording_cleanup(),
             None => {}
         }
     }
