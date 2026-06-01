@@ -242,35 +242,37 @@ pub fn draw_shelf(
 }
 
 fn draw_hover_icons(canvas: &mut [u8], cw: u32, ch: u32, r: &ThumbRect, cfg: &LayoutConfig) {
-    // slot 0 close (rightmost), 1 edit — cell math mirrors Layout::icon_rect so the
-    // visible buttons line up with the hit zones.
-    for slot in 0..2u32 {
-        let right = (r.x + r.w).saturating_sub(cfg.pad_icon);
-        let cellx = right
-            .saturating_sub((slot + 1) * cfg.icon)
-            .saturating_sub(slot * cfg.icon_gap);
-        let celly = r.y + cfg.pad_icon;
-        let s = cfg.icon as f32;
-        let cx = cellx as f32 + s / 2.0;
-        let cy = celly as f32 + s / 2.0;
-        // translucent circular button
-        fill_circle(canvas, cw, ch, cx, cy, s / 2.0 - 0.5, BTN_BG, BTN_BG_A);
-        let glyph_c = if slot == 0 {
-            GLYPH_CLOSE_RGB
-        } else {
-            GLYPH_RGB
-        };
-        draw_glyph(canvas, cw, ch, slot, cellx as f32, celly as f32, s, glyph_c);
-    }
+    let s = cfg.icon as f32;
+    // close — top-right
+    let (clx, cly, _, _) = crate::shelf::layout::close_cell(r, cfg);
+    fill_circle(
+        canvas, cw, ch,
+        clx as f32 + s / 2.0, cly as f32 + s / 2.0, s / 2.0 - 0.5,
+        BTN_BG, BTN_BG_A,
+    );
+    draw_glyph(canvas, cw, ch, Glyph::Close, clx as f32, cly as f32, s, GLYPH_CLOSE_RGB);
+    // save — top-left
+    let (sx, sy, _, _) = crate::shelf::layout::save_cell(r, cfg);
+    fill_circle(
+        canvas, cw, ch,
+        sx as f32 + s / 2.0, sy as f32 + s / 2.0, s / 2.0 - 0.5,
+        BTN_BG, BTN_BG_A,
+    );
+    draw_glyph(canvas, cw, ch, Glyph::Save, sx as f32, sy as f32, s, GLYPH_RGB);
+}
+
+/// Which glyph to stamp in a button cell.
+enum Glyph {
+    Close,
+    Save,
 }
 
 /// Minimal anti-aliased glyphs centred in a cell at (x,y) of size s.
-/// 0 = close (X), 1 = edit (pencil).
 fn draw_glyph(
     canvas: &mut [u8],
     cw: u32,
     ch: u32,
-    slot: u32,
+    glyph: Glyph,
     x: f32,
     y: f32,
     s: f32,
@@ -280,20 +282,19 @@ fn draw_glyph(
     let inset = s * 0.30;
     let lo = inset;
     let hi = s - inset;
-    match slot {
-        0 => {
-            // X
+    match glyph {
+        Glyph::Close => {
             stroke_line(canvas, cw, ch, x + lo, y + lo, x + hi, y + hi, hw, c, 1.0);
             stroke_line(canvas, cw, ch, x + hi, y + lo, x + lo, y + hi, hw, c, 1.0);
         }
-        _ => {
-            // edit: a pencil — diagonal body with a small nib corner at the lower-left
-            let tipx = x + lo;
-            let tipy = y + hi;
-            stroke_line(canvas, cw, ch, tipx, tipy, x + hi, y + lo, hw, c, 1.0);
-            let nib = (hi - lo) * 0.26;
-            stroke_line(canvas, cw, ch, tipx, tipy, tipx + nib, tipy, hw, c, 1.0);
-            stroke_line(canvas, cw, ch, tipx, tipy, tipx, tipy - nib, hw, c, 1.0);
+        Glyph::Save => {
+            // down-arrow into a tray (the modern "save / download" idiom)
+            let mid = x + s / 2.0;
+            let head = s * 0.18;
+            stroke_line(canvas, cw, ch, mid, y + inset, mid, y + s * 0.58, hw, c, 1.0);
+            stroke_line(canvas, cw, ch, mid - head, y + s * 0.40, mid, y + s * 0.58, hw, c, 1.0);
+            stroke_line(canvas, cw, ch, mid + head, y + s * 0.40, mid, y + s * 0.58, hw, c, 1.0);
+            stroke_line(canvas, cw, ch, x + inset, y + s * 0.74, x + s - inset, y + s * 0.74, hw, c, 1.0);
         }
     }
 }
@@ -436,6 +437,16 @@ mod tests {
             canvas[bidx + 2],
             plain,
             "button area should not be plain thumb colour"
+        );
+        // a glyph pixel near the save-button (top-left) centre should differ from
+        // the plain thumbnail colour.
+        let sx = r.x + cfg.pad_icon + cfg.icon / 2;
+        let sy = r.y + cfg.pad_icon + cfg.icon / 2;
+        let sidx = ((sy * layout.width + sx) * 4) as usize;
+        assert_ne!(
+            canvas[sidx + 2],
+            plain,
+            "save button area should not be plain thumb colour"
         );
     }
 }
