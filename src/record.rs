@@ -59,13 +59,26 @@ mod tests {
     #[test]
     fn global_geometry_adds_output_origin() {
         let g = to_global_geometry(10.0, 20.0, 800.4, 600.6, 2560, 0);
-        assert_eq!(g, Geometry { x: 2570, y: 20, w: 800, h: 601 });
+        assert_eq!(
+            g,
+            Geometry {
+                x: 2570,
+                y: 20,
+                w: 800,
+                h: 601
+            }
+        );
         assert_eq!(g.to_arg(), "2570,20 800x601");
     }
 
     #[test]
     fn wf_args_shape() {
-        let g = Geometry { x: 0, y: 0, w: 1280, h: 720 };
+        let g = Geometry {
+            x: 0,
+            y: 0,
+            w: 1280,
+            h: 720,
+        };
         let args = wf_recorder_args(&g, "h264_nvenc", &PathBuf::from("/tmp/r.mp4"));
         assert_eq!(
             args,

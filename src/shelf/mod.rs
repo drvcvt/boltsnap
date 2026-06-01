@@ -591,13 +591,9 @@ impl Daemon {
                 (self.save_dir.clone(), self.save_dir.join(name))
             }
             crate::shelf::model::CardKind::Video => {
-                let ext = src
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .unwrap_or("mp4");
+                let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("mp4");
                 let name = crate::paths::boltsnap_filename_ext(&stamp, ext);
-                let rec_dir =
-                    crate::config::resolve_record_dir(&crate::config::Config::load());
+                let rec_dir = crate::config::resolve_record_dir(&crate::config::Config::load());
                 (rec_dir.clone(), rec_dir.join(name))
             }
         };
