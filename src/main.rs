@@ -10,6 +10,7 @@ mod config;
 mod editor;
 mod ipc;
 mod paths;
+mod record;
 mod select_skia;
 mod shelf;
 
