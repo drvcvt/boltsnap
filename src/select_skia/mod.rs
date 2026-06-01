@@ -527,21 +527,40 @@ impl PointerHandler for Selector {
             match ev.kind {
                 PointerEventKind::Press { button, .. } if button == BTN_LEFT => {
                     match self.mode {
-                        Mode::Editing { rect } => match edit::hit_region(rect, (x, y), HANDLE_R) {
-                            edit::Region::Handle(h) => {
-                                self.interaction = Some(Interaction::Resize { handle: h });
+                        Mode::Editing { rect } => {
+                            // Record mode: the REC pill is a Start button. A press
+                            // inside it confirms the selection (begins recording)
+                            // rather than being treated as a click outside the rect
+                            // (which would reset the selection).
+                            if self.record_mode {
+                                let sel =
+                                    (rect.x as f32, rect.y as f32, rect.w as f32, rect.h as f32);
+                                if let Some((bx, by, bw, bh)) =
+                                    render::rec_pill_rect(sel, self.surf_w, self.surf_h)
+                                {
+                                    if x >= bx && x < bx + bw && y >= by && y < by + bh {
+                                        self.confirm_rect(rect);
+                                        return;
+                                    }
+                                }
                             }
-                            edit::Region::Inside => {
-                                self.interaction = Some(Interaction::ClickInside { press: (x, y) });
+                            match edit::hit_region(rect, (x, y), HANDLE_R) {
+                                edit::Region::Handle(h) => {
+                                    self.interaction = Some(Interaction::Resize { handle: h });
+                                }
+                                edit::Region::Inside => {
+                                    self.interaction =
+                                        Some(Interaction::ClickInside { press: (x, y) });
+                                }
+                                edit::Region::Outside => {
+                                    self.mode = Mode::Drawing {
+                                        anchor: (x, y),
+                                        now: (x, y),
+                                    };
+                                    self.interaction = None;
+                                }
                             }
-                            edit::Region::Outside => {
-                                self.mode = Mode::Drawing {
-                                    anchor: (x, y),
-                                    now: (x, y),
-                                };
-                                self.interaction = None;
-                            }
-                        },
+                        }
                         _ => {
                             self.mode = Mode::Drawing {
                                 anchor: (x, y),

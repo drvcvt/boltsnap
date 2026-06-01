@@ -330,45 +330,64 @@ pub fn draw_badge(pm: &mut Pixmap, sel: (f32, f32, f32, f32), surf_w: u32, surf_
     );
 }
 
-/// Draw the recording affordance: a small pill near the selection with a red
-/// filled dot and the text "REC". Placed like the dimension badge (above-left,
-/// flipping at edges) and reuses the badge font/text rendering. Red accent so it
-/// reads as record. Used by the record-mode selector instead of the W×H badge.
-pub fn draw_rec_pill(pm: &mut Pixmap, sel: (f32, f32, f32, f32), surf_w: u32, surf_h: u32) {
+// REC pill metrics — shared by `rec_pill_rect` (placement/hit-zone) and
+// `draw_rec_pill` (interior), so the clickable area exactly matches the drawn pill.
+const REC_PX: f32 = 17.0;
+const REC_PAD: f64 = 7.0;
+const REC_DOT_R: f64 = 5.0; // red dot radius
+const REC_DOT_GAP: f64 = 6.0; // gap between dot and text
+
+/// On-screen rect `(bx, by, bw, bh)` of the REC pill for selection `sel`, placed
+/// exactly like `draw_rec_pill`. Returned so the record-mode selector can hit-test
+/// the pill as a clickable Start button. `None` for a sub-pixel selection.
+pub fn rec_pill_rect(
+    sel: (f32, f32, f32, f32),
+    surf_w: u32,
+    surf_h: u32,
+) -> Option<(f64, f64, f64, f64)> {
     let (x, y, w, h) = sel;
     if w < 1.0 || h < 1.0 {
-        return;
+        return None;
     }
-    let label = "REC";
-    let px = 17.0_f32;
-    let pad = 7.0_f64;
-    let dot_r = 5.0_f64; // red dot radius
-    let dot_gap = 6.0_f64; // gap between dot and text
     let font = badge_font();
-    let scaled = font.as_scaled(PxScale::from(px));
-    let text_w: f32 = label
+    let scaled = font.as_scaled(PxScale::from(REC_PX));
+    let text_w: f32 = "REC"
         .chars()
         .map(|c| scaled.h_advance(font.glyph_id(c)))
         .sum();
     let text_h = scaled.ascent() - scaled.descent();
     // The pill carries a leading red dot, so widen the content box by the dot
     // diameter plus its gap; badge_rect handles placement + on-screen clamping.
-    let content_w = dot_r * 2.0 + dot_gap + text_w as f64;
+    let content_w = REC_DOT_R * 2.0 + REC_DOT_GAP + text_w as f64;
     let rect = crate::select_skia::edit::Rect {
         x: x as f64,
         y: y as f64,
         w: w as f64,
         h: h as f64,
     };
-    let (bx, by, bw, bh) = crate::select_skia::edit::badge_rect(
+    Some(crate::select_skia::edit::badge_rect(
         rect,
         content_w,
         text_h as f64,
-        pad,
+        REC_PAD,
         6.0,
         surf_w as f64,
         surf_h as f64,
-    );
+    ))
+}
+
+/// Draw the recording affordance: a small pill near the selection with a red
+/// filled dot and the text "REC". Placed like the dimension badge (above-left,
+/// flipping at edges) and reuses the badge font/text rendering. Red accent so it
+/// reads as record. Used by the record-mode selector instead of the W×H badge.
+/// The clickable hit-zone is `rec_pill_rect` (same box).
+pub fn draw_rec_pill(pm: &mut Pixmap, sel: (f32, f32, f32, f32), surf_w: u32, surf_h: u32) {
+    let Some((bx, by, bw, bh)) = rec_pill_rect(sel, surf_w, surf_h) else {
+        return;
+    };
+    let label = "REC";
+    let font = badge_font();
+    let scaled = font.as_scaled(PxScale::from(REC_PX));
     let mut pill = Paint::default();
     pill.set_color_rgba8(0x12, 0x12, 0x12, 230); // #121212, matching the W×H badge
     pill.anti_alias = true;
@@ -379,18 +398,18 @@ pub fn draw_rec_pill(pm: &mut Pixmap, sel: (f32, f32, f32, f32), surf_w: u32, su
     let mut dot = Paint::default();
     dot.set_color_rgba8(0xff, 0x3b, 0x30, 255); // record red
     dot.anti_alias = true;
-    let dot_cx = bx + pad + dot_r;
+    let dot_cx = bx + REC_PAD + REC_DOT_R;
     let dot_cy = by + bh / 2.0;
-    if let Some(path) = circle_path(dot_cx as f32, dot_cy as f32, dot_r as f32) {
+    if let Some(path) = circle_path(dot_cx as f32, dot_cy as f32, REC_DOT_R as f32) {
         pm.fill_path(&path, &dot, FillRule::Winding, Transform::identity(), None);
     }
-    let baseline = by as f32 + pad as f32 + scaled.ascent();
+    let baseline = by as f32 + REC_PAD as f32 + scaled.ascent();
     draw_text_aa(
         pm,
-        (bx + pad + dot_r * 2.0 + dot_gap) as f32,
+        (bx + REC_PAD + REC_DOT_R * 2.0 + REC_DOT_GAP) as f32,
         baseline,
         label,
-        px,
+        REC_PX,
         (0xf0, 0xf0, 0xf0),
     );
 }
@@ -643,6 +662,21 @@ mod tests {
             }
         }
         assert!(found_red, "REC pill should paint a red record dot");
+    }
+
+    #[test]
+    fn rec_pill_rect_is_above_selection_and_hittable() {
+        // Selection well clear of the top edge → pill sits above it.
+        let sel = (120.0, 150.0, 160.0, 90.0);
+        let (bx, by, bw, bh) = rec_pill_rect(sel, 400, 300).expect("pill rect for a real selection");
+        assert!(bw > 0.0 && bh > 0.0, "pill has positive size");
+        // Placed above the selection top (badge_rect places above-left here).
+        assert!(by + bh <= sel.1 as f64, "pill sits above the selection");
+        // Its own centre is inside the rect (so a click there hits the button).
+        let (cx, cy) = (bx + bw / 2.0, by + bh / 2.0);
+        assert!(cx >= bx && cx < bx + bw && cy >= by && cy < by + bh);
+        // Sub-pixel selection → no pill.
+        assert!(rec_pill_rect((10.0, 10.0, 0.0, 0.0), 400, 300).is_none());
     }
 
     #[test]
