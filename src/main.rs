@@ -267,7 +267,7 @@ fn run() -> DynResult<()> {
             let image = args.image.clone().unwrap_or(last_screenshot_path()?);
             ensure_file(&image)?;
             let output = edit_output_path(&args);
-            let result = run_editor(normalize_path(&image), output, args.copy, args.backend)?;
+            let result = run_editor(normalize_path(&image), output, args.copy, args.backend, None)?;
             remember_last_screenshot(&result)?;
             println!("Edited image ready: {}", result.display());
             Ok(())
@@ -287,6 +287,7 @@ fn edit_last_screenshot(args: &Args) -> DynResult<()> {
         edit_output_path(args),
         args.copy,
         args.backend,
+        None,
     )?;
     remember_last_screenshot(&result)?;
     println!("Edited last screenshot: {}", result.display());
@@ -316,7 +317,7 @@ fn capture_flow(args: &Args) -> DynResult<()> {
         PostCapture::Stdout => unreachable!("handled above"),
         PostCapture::Edit => {
             let final_path =
-                run_editor(output.clone(), edit_output_path(args), args.copy, resolved)?;
+                run_editor(output.clone(), edit_output_path(args), args.copy, resolved, None)?;
             remember_last_screenshot(&final_path)?;
             println!(
                 "Boltsnap edited {} via {}: {}",
