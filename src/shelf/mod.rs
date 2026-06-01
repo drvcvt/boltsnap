@@ -1,7 +1,6 @@
 pub mod layout;
 pub mod model;
 pub mod paint;
-pub mod preview;
 pub mod thumbnail;
 
 use std::os::unix::net::UnixListener;
@@ -97,8 +96,6 @@ pub struct Daemon {
     height: u32,
     hovered: Option<u64>,
     press: Option<PressState>,
-    /// The open enlarge ("lightbox") view, if any, on its own overlay surface.
-    preview: Option<PreviewState>,
     /// In-flight per-card appear/dismiss animations.
     anims: Vec<CardAnim>,
     exit: bool,
@@ -114,14 +111,6 @@ struct PressState {
     y: f64,
     serial: u32,
     dragging: bool,
-}
-
-/// The open enlarge view: its own overlay layer-surface + a dedicated pool, plus
-/// the full-resolution image to render. Dropping it unmaps the surface.
-struct PreviewState {
-    surface: LayerSurface,
-    pool: SlotPool,
-    image: image::RgbaImage,
 }
 
 /// Duration of a card appear/dismiss animation.
@@ -293,7 +282,6 @@ pub fn run_daemon() -> DynResult<()> {
         height: 1,
         hovered: None,
         press: None,
-        preview: None,
         anims: Vec::new(),
         exit: false,
         qh: Some(qh.clone()),
@@ -516,65 +504,11 @@ impl Daemon {
         }
     }
 
-    /// Open the centered enlarge ("lightbox") view for thumbnail `id` on its own
-    /// overlay surface, leaving the shelf surface underneath untouched.
-    fn open_preview(&mut self, id: u64) {
-        if self.preview.is_some() {
-            return;
-        }
-        let path = match self.model.get(id) {
-            Some(t) => t.png_path.clone(),
-            None => return,
-        };
-        let image = match image::open(&path) {
-            Ok(i) => i.to_rgba8(),
-            Err(e) => {
-                eprintln!("boltsnap daemon: preview open failed: {e}");
-                return;
-            }
-        };
-        let qh = match self.qh.clone() {
-            Some(q) => q,
-            None => return,
-        };
-        let (_, output) = self.target_output();
-        let surface = self.compositor.create_surface(&qh);
-        let layer = self.layer_shell.create_layer_surface(
-            &qh,
-            surface,
-            Layer::Overlay,
-            Some("boltsnap-preview"),
-            output.as_ref(),
-        );
-        layer.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
-        layer.set_size(0, 0); // fill the output; the real size arrives in configure
-        layer.set_exclusive_zone(-1);
-        layer.set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
-        layer.commit();
-        let pool = match SlotPool::new(256, &self.shm) {
-            Ok(p) => p,
-            Err(e) => {
-                eprintln!("boltsnap daemon: preview pool failed: {e}");
-                return;
-            }
-        };
-        self.preview = Some(PreviewState {
-            surface: layer,
-            pool,
-            image,
-        });
-    }
-
-    /// Close the enlarge view; dropping the surface unmaps it.
-    fn close_preview(&mut self) {
-        self.preview = None;
-    }
-
     /// Act on a completed (non-drag) left click.
     fn on_click(&mut self, hit: Hit, redraw: &mut bool) {
         match hit {
             Hit::Body(id) => {
-                self.open_preview(id);
+                self.open_in_eddy(id);
             }
             Hit::Close(id) => {
                 // Animate the card out; tick_animations removes it (and its temp
@@ -586,7 +520,7 @@ impl Daemon {
                 *redraw = true;
             }
             Hit::Edit(id) => {
-                self.spawn_editor(id);
+                self.open_in_eddy(id);
             }
         }
     }
@@ -678,10 +612,10 @@ impl Daemon {
         }
     }
 
-    /// Open the annotation editor for thumbnail `id` in a child process; when it
-    /// saves (overwriting the temp PNG in place), ask the daemon to reload that
-    /// thumbnail via its own socket.
-    fn spawn_editor(&mut self, id: u64) {
+    /// Open thumbnail `id` in eddy (the viewer + annotation editor) in a child
+    /// process; when it saves (overwriting the temp PNG in place), ask the daemon
+    /// to reload that thumbnail via its own socket.
+    fn open_in_eddy(&mut self, id: u64) {
         let path = match self.model.get(id) {
             Some(t) => t.png_path.clone(),
             None => return,
@@ -878,15 +812,6 @@ impl OutputHandler for Daemon {
 impl LayerShellHandler for Daemon {
     fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, layer: &LayerSurface) {
         if self
-            .preview
-            .as_ref()
-            .map(|pv| pv.surface.wl_surface() == layer.wl_surface())
-            .unwrap_or(false)
-        {
-            self.preview = None;
-            return;
-        }
-        if self
             .layer
             .as_ref()
             .map(|shelf| shelf.wl_surface() == layer.wl_surface())
@@ -903,28 +828,6 @@ impl LayerShellHandler for Daemon {
         configure: LayerSurfaceConfigure,
         _serial: u32,
     ) {
-        // Is this the enlarge-view surface? Render the lightbox into it and stop.
-        if let Some(pv) = self.preview.as_mut() {
-            if pv.surface.wl_surface() == layer.wl_surface() {
-                let w = configure.new_size.0.max(1);
-                let h = configure.new_size.1.max(1);
-                let stride = (w * 4) as i32;
-                let img = pv.image.clone();
-                if let Ok((buffer, canvas)) = pv.pool.create_buffer(
-                    w as i32,
-                    h as i32,
-                    stride,
-                    wayland_client::protocol::wl_shm::Format::Argb8888,
-                ) {
-                    crate::shelf::preview::render_lightbox(canvas, w, h, &img, 48);
-                    let surface = pv.surface.wl_surface();
-                    surface.damage_buffer(0, 0, w as i32, h as i32);
-                    let _ = buffer.attach_to(surface);
-                    surface.commit();
-                }
-                return;
-            }
-        }
         let is_shelf = self
             .layer
             .as_ref()
@@ -1017,18 +920,6 @@ impl PointerHandler for Daemon {
         };
         let mut redraw = false;
         for ev in events {
-            // A click anywhere on the enlarge view closes it.
-            let on_preview = self
-                .preview
-                .as_ref()
-                .map(|pv| ev.surface == *pv.surface.wl_surface())
-                .unwrap_or(false);
-            if on_preview {
-                if matches!(ev.kind, PointerEventKind::Press { .. }) {
-                    self.close_preview();
-                }
-                continue;
-            }
             if ev.surface != surface {
                 continue;
             }
@@ -1147,12 +1038,8 @@ impl KeyboardHandler for Daemon {
         _: &QueueHandle<Self>,
         _: &WlKeyboard,
         _: u32,
-        event: KeyEvent,
+        _: KeyEvent,
     ) {
-        // Esc closes the enlarge view.
-        if self.preview.is_some() && event.keysym == Keysym::Escape {
-            self.close_preview();
-        }
     }
     fn release_key(
         &mut self,
