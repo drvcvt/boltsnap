@@ -7,14 +7,12 @@ use image::{DynamicImage, RgbaImage, imageops};
 use serde_json::Value;
 
 use crate::paths::has_cmd;
-use crate::select::run_select_with_parallel_capture;
 use crate::{Backend, CaptureMode, DynResult};
 
 pub fn capture(
     mode: CaptureMode,
     output: &Path,
     backend: Backend,
-    new_selector: bool,
     instant: bool,
 ) -> DynResult<Backend> {
     let backend = backend.resolved()?;
@@ -28,7 +26,7 @@ pub fn capture(
             // some viewers composite onto white and show a halo.
             flatten_to_rgb(output)?;
         }
-        Backend::Wayland => capture_wayland(mode, output, new_selector, instant)?,
+        Backend::Wayland => capture_wayland(mode, output, instant)?,
         Backend::Auto => unreachable!(),
     }
     if !output.is_file() || output.metadata()?.len() == 0 {
@@ -114,16 +112,12 @@ fn capture_x11(mode: CaptureMode, output: &Path) -> DynResult<()> {
     }
 }
 
-// Area selection on X11: kick off the root capture in a worker thread
-// while we boot the eframe overlay in the main thread, then crop in
-// memory once the user confirms a drag rect.
-fn capture_x11_area(output: &Path) -> DynResult<()> {
-    let cropped = run_select_with_parallel_capture(|| -> Result<RgbaImage, String> {
-        x11_capture_root(None).map_err(|e| e.to_string())
-    })?
-    .ok_or("selection cancelled")?;
-    cropped.save(output)?;
-    Ok(())
+// Interactive region selection is Wayland-only: the overlay uses
+// wlr-layer-shell + tiny-skia (`src/select_skia/`), which X11 can't host. X11
+// full-screen and specific-window captures still work; only the drag-a-region
+// path is unavailable there.
+fn capture_x11_area(_output: &Path) -> DynResult<()> {
+    Err("interactive region selection requires Wayland (wlr-layer-shell); on X11 use `boltsnap full`, capture a window, or force `--backend wayland`".into())
 }
 
 fn capture_x11_window(output: &Path) -> DynResult<()> {
@@ -308,7 +302,7 @@ fn x11_pick_window_id() -> DynResult<Option<u32>> {
     Ok(target.filter(|w| *w != 0))
 }
 
-fn capture_wayland(mode: CaptureMode, output: &Path, new_selector: bool, instant: bool) -> DynResult<()> {
+fn capture_wayland(mode: CaptureMode, output: &Path, instant: bool) -> DynResult<()> {
     match mode {
         CaptureMode::Full => {
             let conn = libwayshot::WayshotConnection::new()
@@ -348,12 +342,8 @@ fn capture_wayland(mode: CaptureMode, output: &Path, new_selector: bool, instant
                     .map_err(|e| format!("wayshot single-output failed: {e}"))?;
                 Ok(img.to_rgba8())
             };
-            let cropped = if new_selector {
-                crate::select_skia::run_select_with_parallel_capture(grab, instant)?
-            } else {
-                run_select_with_parallel_capture(grab)?
-            }
-            .ok_or("selection cancelled")?;
+            let cropped = crate::select_skia::run_select_with_parallel_capture(grab, instant)?
+                .ok_or("selection cancelled")?;
             image::DynamicImage::ImageRgba8(cropped)
                 .to_rgb8()
                 .save(output)
