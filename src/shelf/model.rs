@@ -128,7 +128,12 @@ mod tests {
     #[test]
     fn add_carries_kind() {
         let mut m = ShelfModel::new();
-        let v = m.add_kind(PathBuf::from("/tmp/v.mp4"), img(), "record".into(), CardKind::Video);
+        let v = m.add_kind(
+            PathBuf::from("/tmp/v.mp4"),
+            img(),
+            "record".into(),
+            CardKind::Video,
+        );
         assert_eq!(m.get(v).unwrap().kind, CardKind::Video);
         let i = m.add(PathBuf::from("/tmp/i.png"), img(), "area".into());
         assert_eq!(m.get(i).unwrap().kind, CardKind::Image);

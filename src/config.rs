@@ -19,8 +19,14 @@ impl Config {
             Ok(v) => Config {
                 save_dir: v.get("save_dir").and_then(|x| x.as_str()).map(String::from),
                 editor: v.get("editor").and_then(|x| x.as_str()).map(String::from),
-                record_codec: v.get("record_codec").and_then(|x| x.as_str()).map(String::from),
-                record_dir: v.get("record_dir").and_then(|x| x.as_str()).map(String::from),
+                record_codec: v
+                    .get("record_codec")
+                    .and_then(|x| x.as_str())
+                    .map(String::from),
+                record_dir: v
+                    .get("record_dir")
+                    .and_then(|x| x.as_str())
+                    .map(String::from),
             },
             Err(e) => {
                 eprintln!("boltsnap: ignoring malformed config: {e}");
@@ -280,7 +286,10 @@ mod tests {
             env::remove_var("BOLTSNAP_RECORD_CODEC");
         }
         assert_eq!(resolve_record_codec(None, &Config::default()), "h264_nvenc");
-        let cfg = Config { record_codec: Some("libx264".into()), ..Config::default() };
+        let cfg = Config {
+            record_codec: Some("libx264".into()),
+            ..Config::default()
+        };
         assert_eq!(resolve_record_codec(None, &cfg), "libx264");
         assert_eq!(resolve_record_codec(Some("hevc_nvenc"), &cfg), "hevc_nvenc");
     }
