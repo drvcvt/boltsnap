@@ -15,8 +15,8 @@ use smithay_client_toolkit::{
 use crate::record::Geometry;
 
 /// Indicator surface size (logical px). Fixed; both phases draw inside it.
-pub const IND_W: u32 = 150;
-pub const IND_H: u32 = 38;
+pub const IND_W: u32 = 124;
+pub const IND_H: u32 = 34;
 
 /// Thickness of the click-through region marker border, and how far the marker
 /// surface is inflated past the recorded rect on each side (so the border sits
@@ -105,8 +105,8 @@ pub fn ind_hit(phase: RecPhase, x: f64, y: f64) -> Option<IndButton> {
 
 /// Stop (■) button cell on the Recording-phase indicator: a square on the right.
 pub fn stop_btn_rect() -> (f32, f32, f32, f32) {
-    let s = 26.0;
-    let x = IND_W as f32 - s - 9.0;
+    let s = 22.0;
+    let x = IND_W as f32 - s - 8.0;
     let y = (IND_H as f32 - s) / 2.0;
     (x, y, s, s)
 }
