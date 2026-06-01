@@ -202,6 +202,55 @@ Clicking a shelf card opens the image in eddy (viewer + editor). The **Save**
 button (top-left of a card) writes a timestamped PNG to the configured save
 directory.
 
+## Screen recording
+
+```sh
+boltsnap record
+```
+
+Opens the region selector in record mode. Draw a region, then click the **REC**
+pill to start recording. A thin click-through border frames the captured area
+while you use your PC normally. The shelf tray shows **●** + elapsed time and a
+**Stop** button.
+
+Hit **Stop** → **Confirm** to finish. The resulting `.mp4` appears in the shelf
+as a **video card** (▶ badge); clicking it opens the file in **eddy**.
+
+**Requires `wf-recorder`** (uses `wlr-screencopy` directly — no PipeWire,
+no portal, no permission dialog).
+
+```sh
+# Arch / Manjaro
+pacman -S wf-recorder
+```
+
+### Recording config keys
+
+```toml
+# ~/.config/boltsnap/config.toml
+
+# Video codec passed to wf-recorder.
+# Default: h264_nvenc (NVIDIA hardware encoding)
+# Use libx264 if you have no NVENC GPU.
+record_codec = "libx264"
+
+# Directory where finished .mp4 files are saved.
+# Default: same as save_dir
+record_dir = "~/Videos/boltsnap"
+```
+
+`$BOLTSNAP_RECORD_CODEC` overrides `record_codec` from the environment.
+
+### Suggested keybind
+
+```
+bind = ALT, Print, exec, boltsnap record
+```
+
+`boltsnap record` is a separate command from screenshot — bind it independently.
+
+**v1 limitations:** single-take only (no pause); video only (no audio).
+
 ## License
 
 MIT.
