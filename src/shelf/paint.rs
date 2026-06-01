@@ -253,14 +253,59 @@ fn draw_hover_icons(
 ) {
     let s = cfg.icon as f32;
     let (clx, cly, _, _) = crate::shelf::layout::close_cell(r, cfg);
-    fill_circle(canvas, cw, ch, clx as f32 + s / 2.0, cly as f32 + s / 2.0, s / 2.0 - 0.5, BTN_BG, BTN_BG_A);
-    draw_glyph(canvas, cw, ch, Glyph::Close, clx as f32, cly as f32, s, GLYPH_CLOSE_RGB);
+    fill_circle(
+        canvas,
+        cw,
+        ch,
+        clx as f32 + s / 2.0,
+        cly as f32 + s / 2.0,
+        s / 2.0 - 0.5,
+        BTN_BG,
+        BTN_BG_A,
+    );
+    draw_glyph(
+        canvas,
+        cw,
+        ch,
+        Glyph::Close,
+        clx as f32,
+        cly as f32,
+        s,
+        GLYPH_CLOSE_RGB,
+    );
     let (sx, sy, _, _) = crate::shelf::layout::save_cell(r, cfg);
-    fill_circle(canvas, cw, ch, sx as f32 + s / 2.0, sy as f32 + s / 2.0, s / 2.0 - 0.5, BTN_BG, BTN_BG_A);
+    fill_circle(
+        canvas,
+        cw,
+        ch,
+        sx as f32 + s / 2.0,
+        sy as f32 + s / 2.0,
+        s / 2.0 - 0.5,
+        BTN_BG,
+        BTN_BG_A,
+    );
     if save_flashing {
-        draw_glyph(canvas, cw, ch, Glyph::Check, sx as f32, sy as f32, s, GLYPH_OK_RGB);
+        draw_glyph(
+            canvas,
+            cw,
+            ch,
+            Glyph::Check,
+            sx as f32,
+            sy as f32,
+            s,
+            GLYPH_OK_RGB,
+        );
     } else {
-        draw_glyph(canvas, cw, ch, Glyph::Save, sx as f32, sy as f32, s, GLYPH_RGB);
+        draw_glyph(
+            canvas,
+            cw,
+            ch,
+            Glyph::Save,
+            sx as f32,
+            sy as f32,
+            s,
+            GLYPH_RGB,
+        );
     }
 }
 
@@ -295,14 +340,80 @@ fn draw_glyph(
             // down-arrow into a tray (the modern "save / download" idiom)
             let mid = x + s / 2.0;
             let head = s * 0.18;
-            stroke_line(canvas, cw, ch, mid, y + inset, mid, y + s * 0.58, hw, c, 1.0);
-            stroke_line(canvas, cw, ch, mid - head, y + s * 0.40, mid, y + s * 0.58, hw, c, 1.0);
-            stroke_line(canvas, cw, ch, mid + head, y + s * 0.40, mid, y + s * 0.58, hw, c, 1.0);
-            stroke_line(canvas, cw, ch, x + inset, y + s * 0.74, x + s - inset, y + s * 0.74, hw, c, 1.0);
+            stroke_line(
+                canvas,
+                cw,
+                ch,
+                mid,
+                y + inset,
+                mid,
+                y + s * 0.58,
+                hw,
+                c,
+                1.0,
+            );
+            stroke_line(
+                canvas,
+                cw,
+                ch,
+                mid - head,
+                y + s * 0.40,
+                mid,
+                y + s * 0.58,
+                hw,
+                c,
+                1.0,
+            );
+            stroke_line(
+                canvas,
+                cw,
+                ch,
+                mid + head,
+                y + s * 0.40,
+                mid,
+                y + s * 0.58,
+                hw,
+                c,
+                1.0,
+            );
+            stroke_line(
+                canvas,
+                cw,
+                ch,
+                x + inset,
+                y + s * 0.74,
+                x + s - inset,
+                y + s * 0.74,
+                hw,
+                c,
+                1.0,
+            );
         }
         Glyph::Check => {
-            stroke_line(canvas, cw, ch, x + s * 0.26, y + s * 0.52, x + s * 0.44, y + s * 0.70, hw, c, 1.0);
-            stroke_line(canvas, cw, ch, x + s * 0.44, y + s * 0.70, x + s * 0.76, y + s * 0.30, hw, c, 1.0);
+            stroke_line(
+                canvas,
+                cw,
+                ch,
+                x + s * 0.26,
+                y + s * 0.52,
+                x + s * 0.44,
+                y + s * 0.70,
+                hw,
+                c,
+                1.0,
+            );
+            stroke_line(
+                canvas,
+                cw,
+                ch,
+                x + s * 0.44,
+                y + s * 0.70,
+                x + s * 0.76,
+                y + s * 0.30,
+                hw,
+                c,
+                1.0,
+            );
         }
     }
 }

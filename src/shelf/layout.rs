@@ -134,7 +134,12 @@ mod tests {
         let r = &lay.thumbs[0];
         assert_eq!(
             close_cell(r, &c),
-            (r.x + r.w - c.pad_icon - c.icon, r.y + c.pad_icon, c.icon, c.icon)
+            (
+                r.x + r.w - c.pad_icon - c.icon,
+                r.y + c.pad_icon,
+                c.icon,
+                c.icon
+            )
         );
     }
 
