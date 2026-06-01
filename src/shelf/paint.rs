@@ -28,9 +28,10 @@ pub fn clear(canvas: &mut [u8]) {
 /// Composite an opaque RGBA thumbnail as a rounded card (rounded corners,
 /// transparent outside the radius, no border) in premultiplied BGRA. The
 /// full-size slot is `img.dimensions()` at (dx, dy); the card is scaled by
-/// `scale` (0..1) and centred in that slot, and `opacity` (0..1) multiplies the
-/// global card opacity. `scale == 1.0 && opacity == 1.0` is the settled look;
-/// other values drive the appear/dismiss animation.
+/// `scale` (0..1) and centred in that slot, and `opacity` (0..1) is the card's
+/// final alpha — the caller picks the base translucency (e.g. `CARD_OPACITY`, or
+/// `1.0` for the hovered card) and folds in any appear/dismiss fade. `scale == 1.0
+/// && opacity == 1.0` is a fully-opaque settled card.
 pub fn blit_thumb_card_anim(
     canvas: &mut [u8],
     cw: u32,
@@ -59,7 +60,7 @@ pub fn blit_thumb_card_anim(
     let w = sw as f32;
     let h = sh as f32;
     let r = CARD_RADIUS.min(w / 2.0).min(h / 2.0);
-    let global = CARD_OPACITY * opacity.clamp(0.0, 1.0);
+    let global = opacity.clamp(0.0, 1.0);
     for sy in 0..sh {
         let py = oy + sy;
         if py >= ch {
@@ -217,66 +218,59 @@ fn stroke_line(
 /// screenshots. The badge is always visible (not hover-gated).
 fn draw_play_badge(canvas: &mut [u8], cw: u32, ch: u32, r: &ThumbRect) {
     let min_dim = r.w.min(r.h) as f32;
-    let radius = min_dim * 0.12;
+    let radius = (min_dim * 0.14).max(11.0); // a touch larger; floor for tiny cards
     let cx = r.x as f32 + r.w as f32 / 2.0;
     let cy = r.y as f32 + r.h as f32 / 2.0;
 
-    // Translucent dark circle background (slightly more opaque than hover buttons).
-    fill_circle(canvas, cw, ch, cx, cy, radius, BTN_BG, 0.55);
+    // Soft dark halo (slightly larger, faint) gives the badge a crisp edge against
+    // busy thumbnails; then the translucent disc on top.
+    fill_circle(canvas, cw, ch, cx, cy, radius + 1.5, (0, 0, 0), 0.28);
+    fill_circle(canvas, cw, ch, cx, cy, radius, BTN_BG, 0.6);
 
-    // Filled right-pointing triangle (▶) inside the circle.
-    // Triangle dimensions: ~0.9× the circle radius, vertically centred.
-    let tri_half_h = radius * 0.9 * 0.5; // half the triangle height
-    let tri_w = radius * 0.9; // horizontal span (left edge to apex)
-    // Left edge x is slightly left of centre so the triangle is visually centred.
-    // Optically, a play glyph looks centred when the centroid (1/3 from left) is at cx.
+    // Right-pointing triangle (▶), optically centred (a play glyph looks centred
+    // when its centroid — 1/3 from the flat left edge — sits at the disc centre).
+    let tri_h = radius * 1.04; // triangle height
+    let tri_w = radius * 0.96; // flat left edge → apex
     let left_x = cx - tri_w / 3.0;
-    let top_y = cy - tri_half_h;
-    let bot_y = cy + tri_half_h;
     let apex_x = left_x + tri_w;
+    let top_y = cy - tri_h / 2.0;
+    let bot_y = cy + tri_h / 2.0;
+    let half_h = tri_h / 2.0;
 
-    // Scanline fill: for each integer row y inside [top_y, bot_y], compute the
-    // x-span between the two left diagonal edges and the converging right apex.
-    let y0 = (top_y - 1.0).floor() as i32;
-    let y1 = (bot_y + 1.0).ceil() as i32;
-    for py in y0..=y1 {
-        let yf = py as f32 + 0.5;
-        // How far along the triangle (0 at top, 1 at bottom)?
-        let span = bot_y - top_y;
-        if span <= 0.0 {
-            break;
+    // Inside test: within the y-band, right of the flat left edge, and left of the
+    // boundary that shrinks linearly from the apex (at mid-height) to `left_x` (at
+    // the tips). Sampled 4×4 per pixel for smooth anti-aliased edges on all sides.
+    let inside = |x: f32, y: f32| -> bool {
+        if y < top_y || y > bot_y || x < left_x {
+            return false;
         }
-        let t = ((yf - top_y) / span).clamp(0.0, 1.0);
-        // Left edge of the triangle runs from (left_x, top_y) to (left_x, bot_y).
-        // Right edge converges from both corners to the apex.
-        let x_left = left_x;
-        let x_right = if t <= 0.5 {
-            // upper half: from (left_x, top_y) → (apex_x, mid_y)
-            left_x + (apex_x - left_x) * (t * 2.0)
-        } else {
-            // lower half: from (apex_x, mid_y) → (left_x, bot_y)
-            left_x + (apex_x - left_x) * ((1.0 - t) * 2.0)
-        };
-        let xl = x_left.floor() as i32;
-        let xr = x_right.ceil() as i32;
-        for px in xl..=xr {
-            let xf = px as f32 + 0.5;
-            // Sub-pixel coverage on left edge
-            let cov_l = (xf - x_left + 0.5).clamp(0.0, 1.0);
-            // Sub-pixel coverage on right edge
-            let cov_r = (x_right - xf + 0.5).clamp(0.0, 1.0);
-            let cov = cov_l.min(cov_r);
-            if cov > 0.0 {
+        let dy = (y - cy).abs();
+        let x_right = apex_x - (apex_x - left_x) * (dy / half_h);
+        x <= x_right
+    };
+
+    let x0 = left_x.floor() as i32 - 1;
+    let x1 = apex_x.ceil() as i32 + 1;
+    let y0 = top_y.floor() as i32 - 1;
+    let y1 = bot_y.ceil() as i32 + 1;
+    const SS: i32 = 4; // 4×4 supersampling
+    let inv = 1.0 / (SS * SS) as f32;
+    for py in y0..=y1 {
+        for px in x0..=x1 {
+            let mut hits = 0;
+            for sy in 0..SS {
+                for sx in 0..SS {
+                    let fx = px as f32 + (sx as f32 + 0.5) / SS as f32;
+                    let fy = py as f32 + (sy as f32 + 0.5) / SS as f32;
+                    if inside(fx, fy) {
+                        hits += 1;
+                    }
+                }
+            }
+            if hits > 0 {
+                let cov = hits as f32 * inv;
                 blend_px(
-                    canvas,
-                    cw,
-                    ch,
-                    px,
-                    py,
-                    GLYPH_RGB.0,
-                    GLYPH_RGB.1,
-                    GLYPH_RGB.2,
-                    cov,
+                    canvas, cw, ch, px, py, GLYPH_RGB.0, GLYPH_RGB.1, GLYPH_RGB.2, cov,
                 );
             }
         }
@@ -518,12 +512,19 @@ pub fn draw_shelf(
     clear(canvas);
     for r in &layout.thumbs {
         if let Some(thumb) = model.get(r.id) {
-            let (scale, opacity) = anims
+            let (scale, anim_opacity) = anims
                 .iter()
                 .find(|(id, _, _)| *id == r.id)
                 .map(|(_, s, o)| (*s, *o))
                 .unwrap_or((1.0, 1.0));
-            blit_thumb_card_anim(canvas, cw, ch, &thumb.thumb, r.x, r.y, scale, opacity);
+            // Hovered card is fully opaque so it's easy to read; others use the
+            // translucent base. The appear/dismiss fade still multiplies in.
+            let base = if hovered == Some(r.id) {
+                1.0
+            } else {
+                CARD_OPACITY
+            };
+            blit_thumb_card_anim(canvas, cw, ch, &thumb.thumb, r.x, r.y, scale, base * anim_opacity);
         }
         // Draw the ▶ play badge on Video cards (always visible, not hover-gated).
         if model.get(r.id).map(|t| t.kind) == Some(crate::shelf::model::CardKind::Video) {
@@ -724,7 +725,7 @@ mod tests {
             *p = image::Rgba([10, 120, 240, 255]); // low R so we can tell it from white
         }
         let mut buf = vec![0u8; 20 * 20 * 4];
-        blit_thumb_card_anim(&mut buf, 20, 20, &img, 0, 0, 1.0, 1.0);
+        blit_thumb_card_anim(&mut buf, 20, 20, &img, 0, 0, 1.0, CARD_OPACITY);
         // far corner is outside the radius -> transparent
         assert_eq!(buf[3], 0, "corner should be transparent");
         // centre carries the card alpha (~0.8*255), the thumbnail colour (low R)
@@ -774,7 +775,7 @@ mod tests {
         // Half scale, half opacity: card occupies the centre, corners of the slot
         // are untouched (transparent), centre alpha ~ 0.5 * CARD_OPACITY.
         let mut buf = vec![0u8; 40 * 40 * 4];
-        blit_thumb_card_anim(&mut buf, 40, 40, &img, 0, 0, 0.5, 0.5);
+        blit_thumb_card_anim(&mut buf, 40, 40, &img, 0, 0, 0.5, CARD_OPACITY * 0.5);
         // slot corner (well outside the centred 20x20 card) stays transparent
         let corner = ((2 * 40 + 2) * 4) as usize;
         assert_eq!(buf[corner + 3], 0, "slot corner should be untouched");
