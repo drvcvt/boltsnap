@@ -189,6 +189,44 @@ pub fn clean_orphan_shelf_temps() -> usize {
     removed
 }
 
+/// Disk-backed directory for screen recordings — `$XDG_CACHE_HOME/boltsnap/rec`
+/// (else `~/.cache/boltsnap/rec`). Recordings are many MB, so they must NOT go in
+/// the system temp dir, which on this setup is tmpfs (RAM-backed).
+pub fn rec_dir() -> PathBuf {
+    cache_dir().join("rec")
+}
+
+/// A unique recording path `<rec_dir>/boltsnap-<prefix>-<pid>-<ts>.<ext>`, creating
+/// `rec_dir` if needed. Disk-backed (see `rec_dir`), unlike `temp_file`.
+pub fn rec_file(prefix: &str, ext: &str) -> PathBuf {
+    let dir = rec_dir();
+    let _ = fs::create_dir_all(&dir);
+    dir.join(format!(
+        "boltsnap-{prefix}-{}-{}.{ext}",
+        std::process::id(),
+        timestamp()
+    ))
+}
+
+/// Delete leftover recording files in `rec_dir`. Called at daemon startup: the
+/// shelf is RAM-only, so any recording file present is an orphan from a previous
+/// run/crash. Recordings are large, so cleaning them matters more than shelf temps.
+/// Returns the number of files removed.
+pub fn clean_orphan_rec_files() -> usize {
+    let mut removed = 0;
+    let Ok(entries) = fs::read_dir(rec_dir()) else {
+        return 0;
+    };
+    for entry in entries.flatten() {
+        if entry.file_name().to_string_lossy().starts_with("boltsnap-")
+            && fs::remove_file(entry.path()).is_ok()
+        {
+            removed += 1;
+        }
+    }
+    removed
+}
+
 pub fn timestamp() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

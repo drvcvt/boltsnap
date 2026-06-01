@@ -269,6 +269,14 @@ fn run() -> DynResult<()> {
         }
         "self-test" => self_test(),
         "record" => record_flow(&args),
+        "stop" => {
+            // Stop an in-progress recording (no-op if nothing is recording). Bind
+            // to a key for a keyboard stop alongside the indicator's Stop button.
+            if crate::ipc::daemon_alive() {
+                crate::ipc::send_to_shelf(crate::ipc::Request::StopRecording)?;
+            }
+            Ok(())
+        }
         "daemon" => crate::shelf::run_daemon(args.save_dir.clone()),
         "__debug-render" => {
             // Render the shelf (one sample thumbnail, hovered) straight to a PNG
