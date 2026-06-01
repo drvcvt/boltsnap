@@ -283,6 +283,226 @@ fn draw_play_badge(canvas: &mut [u8], cw: u32, ch: u32, r: &ThumbRect) {
     }
 }
 
+/// Recording-overlay accent (red ●, marker border, button glyphs).
+const REC_RGB: (u8, u8, u8) = (235, 64, 64);
+/// Indicator pill background (matches the shelf/quickshell dark).
+const IND_BG: (u8, u8, u8) = (18, 18, 24);
+const IND_BG_A: f32 = 0.92;
+
+/// Draw the click-through region marker: a `border`-px red frame on the INNER
+/// edge of a transparent `w`×`h` surface. The surface is inflated past the
+/// recorded rect so this border sits just OUTSIDE the recording.
+pub fn draw_marker_border(canvas: &mut [u8], w: u32, h: u32, border: u32) {
+    clear(canvas);
+    if w == 0 || h == 0 {
+        return;
+    }
+    let b = border.min(w / 2).min(h / 2).max(1);
+    let (r, g, bl) = REC_RGB;
+    for y in 0..h {
+        for x in 0..w {
+            let on_edge = x < b || x >= w - b || y < b || y >= h - b;
+            if on_edge {
+                blend_px(canvas, w, h, x as i32, y as i32, r, g, bl, 0.95);
+            }
+        }
+    }
+}
+
+/// Draw the recording control indicator into a premultiplied-BGRA `w`×`h` canvas.
+/// In the `Recording` phase: a red ● + the `MM:SS` `elapsed` text + a Stop (■)
+/// button. In the `Stopped` phase: Confirm (✓) / Cancel (✕) buttons.
+pub fn draw_indicator(
+    canvas: &mut [u8],
+    w: u32,
+    h: u32,
+    phase: crate::shelf::recording::RecPhase,
+    elapsed: &str,
+) {
+    use crate::shelf::recording::RecPhase;
+    clear(canvas);
+    // Rounded translucent pill background spanning the whole surface.
+    fill_round_rect(
+        canvas, w, h, 0.0, 0.0, w as f32, h as f32, 12.0, IND_BG, IND_BG_A,
+    );
+
+    match phase {
+        RecPhase::Recording => {
+            // Red ● on the left, vertically centred.
+            let cy = h as f32 / 2.0;
+            fill_circle(canvas, w, h, 18.0, cy, 6.0, REC_RGB, 1.0);
+            // MM:SS to the right of the dot.
+            draw_time(canvas, w, h, 34.0, cy, 18.0, GLYPH_RGB, elapsed);
+            // Stop (■): a filled red square button.
+            let (bx, by, bw, bh) = crate::shelf::recording::stop_btn_rect();
+            fill_round_rect(canvas, w, h, bx, by, bw, bh, 6.0, BTN_BG, 0.85);
+            let inset = bw * 0.28;
+            fill_round_rect(
+                canvas,
+                w,
+                h,
+                bx + inset,
+                by + inset,
+                bw - 2.0 * inset,
+                bh - 2.0 * inset,
+                2.0,
+                REC_RGB,
+                1.0,
+            );
+        }
+        RecPhase::Stopped => {
+            // Confirm (✓) on the left.
+            let (cx, cy, cw, ch) = crate::shelf::recording::confirm_btn_rect();
+            fill_round_rect(canvas, w, h, cx, cy, cw, ch, 8.0, BTN_BG, 0.85);
+            let s = ch.min(cw);
+            let gx = cx + (cw - s) / 2.0;
+            let gy = cy + (ch - s) / 2.0;
+            draw_glyph(canvas, w, h, Glyph::Check, gx, gy, s, GLYPH_OK_RGB);
+            // Cancel (✕) on the right.
+            let (xx, xy, xw, xh) = crate::shelf::recording::cancel_btn_rect();
+            fill_round_rect(canvas, w, h, xx, xy, xw, xh, 8.0, BTN_BG, 0.85);
+            let s = xh.min(xw);
+            let gx = xx + (xw - s) / 2.0;
+            let gy = xy + (xh - s) / 2.0;
+            draw_glyph(canvas, w, h, Glyph::Close, gx, gy, s, GLYPH_CLOSE_RGB);
+        }
+    }
+}
+
+/// Anti-aliased filled rounded rectangle at (x,y) size (w,h), corner radius `r`,
+/// colour `c`, coverage `a`. Reuses the same SDF as the card corners.
+fn fill_round_rect(
+    canvas: &mut [u8],
+    cw: u32,
+    ch: u32,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    r: f32,
+    c: (u8, u8, u8),
+    a: f32,
+) {
+    let x0 = (x - 1.0).floor() as i32;
+    let y0 = (y - 1.0).floor() as i32;
+    let x1 = (x + w + 1.0).ceil() as i32;
+    let y1 = (y + h + 1.0).ceil() as i32;
+    for py in y0..=y1 {
+        for px in x0..=x1 {
+            let lx = px as f32 + 0.5 - x;
+            let ly = py as f32 + 0.5 - y;
+            let cov = rr_coverage(lx, ly, w, h, r);
+            if cov > 0.0 {
+                blend_px(canvas, cw, ch, px, py, c.0, c.1, c.2, a * cov);
+            }
+        }
+    }
+}
+
+/// Draw a `MM:SS`-style string left-aligned with its vertical centre at `cy`,
+/// using a 7-segment-ish stroked rendering (the embedded badge font has no colon,
+/// and the daemon draws with these BGRA primitives, not tiny-skia). `digit_h` is
+/// the cell height; digits are `digit_h * 0.55` wide.
+fn draw_time(
+    canvas: &mut [u8],
+    cw: u32,
+    ch: u32,
+    x: f32,
+    cy: f32,
+    digit_h: f32,
+    c: (u8, u8, u8),
+    s: &str,
+) {
+    let dw = digit_h * 0.55;
+    let gap = digit_h * 0.18;
+    let top = cy - digit_h / 2.0;
+    let mut caret = x;
+    for ch_ in s.chars() {
+        if ch_ == ':' {
+            // Colon: two small dots at 1/3 and 2/3 height.
+            let colon_w = digit_h * 0.28;
+            let r = digit_h * 0.07;
+            let dx = caret + colon_w / 2.0;
+            fill_circle(canvas, cw, ch, dx, top + digit_h * 0.34, r, c, 1.0);
+            fill_circle(canvas, cw, ch, dx, top + digit_h * 0.66, r, c, 1.0);
+            caret += colon_w + gap;
+        } else if let Some(d) = ch_.to_digit(10) {
+            draw_seg_digit(canvas, cw, ch, caret, top, dw, digit_h, c, d as u8);
+            caret += dw + gap;
+        } else {
+            caret += dw + gap; // unknown char -> advance, draw nothing
+        }
+    }
+}
+
+/// Seven-segment digit at (x, top), cell (w, h). Segments:
+/// ```text
+///  _a_
+/// f   b
+///  _g_
+/// e   c
+///  _d_
+/// ```
+fn draw_seg_digit(
+    canvas: &mut [u8],
+    cw: u32,
+    ch: u32,
+    x: f32,
+    top: f32,
+    w: f32,
+    h: f32,
+    c: (u8, u8, u8),
+    d: u8,
+) {
+    // Segment presence per digit, order [a,b,c,d,e,f,g].
+    const SEGS: [[bool; 7]; 10] = [
+        [true, true, true, true, true, true, false],     // 0
+        [false, true, true, false, false, false, false], // 1
+        [true, true, false, true, true, false, true],    // 2
+        [true, true, true, true, false, false, true],    // 3
+        [false, true, true, false, false, true, true],   // 4
+        [true, false, true, true, false, true, true],    // 5
+        [true, false, true, true, true, true, true],     // 6
+        [true, true, true, false, false, false, false],  // 7
+        [true, true, true, true, true, true, true],      // 8
+        [true, true, true, true, false, true, true],     // 9
+    ];
+    let seg = match SEGS.get(d as usize) {
+        Some(s) => s,
+        None => return,
+    };
+    let hw = (h * 0.045).max(0.9); // half stroke width
+    let l = x + hw;
+    let rr = x + w - hw;
+    let midy = top + h / 2.0;
+    let t = top + hw;
+    let b = top + h - hw;
+    let line = |canvas: &mut [u8], x0: f32, y0: f32, x1: f32, y1: f32| {
+        stroke_line(canvas, cw, ch, x0, y0, x1, y1, hw, c, 1.0);
+    };
+    if seg[0] {
+        line(canvas, l, t, rr, t);
+    } // a (top)
+    if seg[1] {
+        line(canvas, rr, t, rr, midy);
+    } // b (top-right)
+    if seg[2] {
+        line(canvas, rr, midy, rr, b);
+    } // c (bottom-right)
+    if seg[3] {
+        line(canvas, l, b, rr, b);
+    } // d (bottom)
+    if seg[4] {
+        line(canvas, l, midy, l, b);
+    } // e (bottom-left)
+    if seg[5] {
+        line(canvas, l, t, l, midy);
+    } // f (top-left)
+    if seg[6] {
+        line(canvas, l, midy, rr, midy);
+    } // g (middle)
+}
+
 /// Render the whole shelf: each thumbnail, plus hover icons on the hovered thumb.
 pub fn draw_shelf(
     canvas: &mut [u8],
@@ -634,6 +854,48 @@ mod tests {
             plain,
             "video card center should carry the play badge"
         );
+    }
+
+    #[test]
+    fn marker_border_only_paints_the_edge() {
+        let (w, h) = (40u32, 30u32);
+        let mut buf = vec![0u8; (w * h * 4) as usize];
+        draw_marker_border(&mut buf, w, h, 2);
+        // Top-left edge pixel is painted (alpha > 0).
+        let edge = ((0 * w + 0) * 4) as usize;
+        assert!(buf[edge + 3] > 0, "border edge should be painted");
+        // Centre is transparent (interior not captured into the video).
+        let mid = (((h / 2) * w + w / 2) * 4) as usize;
+        assert_eq!(buf[mid + 3], 0, "marker interior must stay transparent");
+    }
+
+    #[test]
+    fn indicator_recording_and_stopped_paint_something() {
+        use crate::shelf::recording::RecPhase;
+        let (w, h) = (
+            crate::shelf::recording::IND_W,
+            crate::shelf::recording::IND_H,
+        );
+        let mut buf = vec![0u8; (w * h * 4) as usize];
+        draw_indicator(&mut buf, w, h, RecPhase::Recording, "01:23");
+        // The pill background makes the whole surface non-transparent.
+        let mid = (((h / 2) * w + w / 2) * 4) as usize;
+        assert!(buf[mid + 3] > 0, "indicator pill should fill the surface");
+        // The Stop button region carries the red accent (R channel dominant).
+        let (bx, by, bw, bh) = crate::shelf::recording::stop_btn_rect();
+        let sx = (bx + bw / 2.0) as u32;
+        let sy = (by + bh / 2.0) as u32;
+        let sidx = ((sy * w + sx) * 4) as usize;
+        assert!(buf[sidx + 3] > 0, "stop button should be drawn");
+
+        // Stopped phase paints the two control buttons.
+        let mut buf2 = vec![0u8; (w * h * 4) as usize];
+        draw_indicator(&mut buf2, w, h, RecPhase::Stopped, "");
+        let (cx, cy, cw, chh) = crate::shelf::recording::confirm_btn_rect();
+        let px = (cx + cw / 2.0) as u32;
+        let py = (cy + chh / 2.0) as u32;
+        let cidx = ((py * w + px) * 4) as usize;
+        assert!(buf2[cidx + 3] > 0, "confirm button should be drawn");
     }
 
     #[test]

@@ -1,12 +1,13 @@
 pub mod layout;
 pub mod model;
 pub mod paint;
+pub mod recording;
 pub mod thumbnail;
 
 use std::os::unix::net::UnixListener;
 
 use smithay_client_toolkit::{
-    compositor::{CompositorHandler, CompositorState},
+    compositor::{CompositorHandler, CompositorState, Region},
     data_device_manager::{
         DataDeviceManagerState, WritePipe,
         data_device::{DataDevice, DataDeviceHandler},
@@ -50,7 +51,8 @@ use wayland_client::{
 
 use crate::DynResult;
 use crate::shelf::layout::{Hit, Layout, LayoutConfig};
-use crate::shelf::model::ShelfModel;
+use crate::shelf::model::{CardKind, ShelfModel};
+use crate::shelf::recording::{IndButton, RecPhase, Recording};
 
 pub struct Daemon {
     registry_state: RegistryState,
@@ -105,6 +107,9 @@ pub struct Daemon {
     exit: bool,
     /// Queue handle stashed for use inside calloop callbacks (which get only `&mut Daemon`).
     qh: Option<QueueHandle<Daemon>>,
+    /// Active area recording (wf-recorder child + overlay surfaces), if any. Only
+    /// one recording at a time.
+    recording: Option<Recording>,
 }
 
 /// In-flight left-button press, used to distinguish a click from a drag.
@@ -333,6 +338,7 @@ pub fn run_daemon(save_dir_cli: Option<std::path::PathBuf>) -> DynResult<()> {
         anims: Vec::new(),
         exit: false,
         qh: Some(qh.clone()),
+        recording: None,
     };
 
     // Populate output metadata (names) so we can place the shelf on the focused
@@ -375,8 +381,9 @@ pub fn run_daemon(save_dir_cli: Option<std::path::PathBuf>) -> DynResult<()> {
         .map_err(|e| format!("insert listener source: {e}"))?;
 
     while !daemon.exit {
-        // Tick ~60fps while a card is animating; otherwise idle until the next
-        // Wayland/socket event.
+        // Tick ~60fps while a card is animating; otherwise a 250ms timeout, which
+        // also lets a counting recording catch whole-second boundaries for its
+        // MM:SS readout without burning CPU for the (possibly long) recording.
         let timeout = if daemon.animating() {
             std::time::Duration::from_millis(16)
         } else {
@@ -388,6 +395,8 @@ pub fn run_daemon(save_dir_cli: Option<std::path::PathBuf>) -> DynResult<()> {
         if daemon.animating() {
             daemon.tick_animations(&qh);
         }
+        // Refresh the recording indicator's MM:SS and reap a finished/failed child.
+        daemon.tick_recording(&qh);
     }
     let _ = std::fs::remove_file(&sock);
     Ok(())
@@ -493,7 +502,12 @@ impl Daemon {
             crate::ipc::Request::Reload { id } => {
                 self.reload(id, &qh);
             }
-            crate::ipc::Request::StartRecording { .. } => {} // TODO(Rec-T6): handle recording start
+            crate::ipc::Request::StartRecording { x, y, w, h } => {
+                self.start_recording(x, y, w, h, &qh);
+            }
+            crate::ipc::Request::RecordingDone { video, thumb } => {
+                self.ingest_recording(video, thumb, &qh);
+            }
         }
     }
 
@@ -840,6 +854,420 @@ impl Daemon {
         let _ = buffer.attach_to(surface);
         layer.commit();
     }
+
+    // ----- Area recording lifecycle --------------------------------------
+
+    /// True while a recording is actively counting up (Recording phase). Drives
+    /// the loop's per-second indicator refresh; the Stopped phase doesn't tick.
+    fn recording_counting(&self) -> bool {
+        matches!(
+            self.recording.as_ref().map(|r| r.phase),
+            Some(RecPhase::Recording)
+        )
+    }
+
+    /// Begin recording the global-coords region (x,y,w,h): spawn wf-recorder,
+    /// raise a click-through marker around the rect and a control indicator near
+    /// the shelf. One recording at a time.
+    fn start_recording(&mut self, x: i32, y: i32, w: u32, h: u32, qh: &QueueHandle<Self>) {
+        if self.recording.is_some() {
+            eprintln!("boltsnap daemon: a recording is already in progress");
+            return;
+        }
+        if !crate::paths::has_cmd("wf-recorder") {
+            eprintln!("boltsnap daemon: wf-recorder not found — cannot record");
+            return;
+        }
+        let geo = crate::record::Geometry { x, y, w, h };
+        let path = crate::paths::temp_file("rec", "mp4");
+        let codec = crate::config::resolve_record_codec(None, &crate::config::Config::load());
+
+        let child = match std::process::Command::new("wf-recorder")
+            .args(crate::record::wf_recorder_args(&geo, &codec, &path))
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("boltsnap daemon: failed to spawn wf-recorder: {e}");
+                return;
+            }
+        };
+
+        // Control indicator near the shelf. If even this tiny pool can't be made,
+        // abort cleanly (SIGINT + reap the just-spawned child) rather than recording
+        // headlessly with no way to stop it.
+        let (indicator, indicator_pool) = match self.create_indicator(qh) {
+            Some(v) => v,
+            None => {
+                eprintln!("boltsnap daemon: could not allocate indicator buffer; aborting record");
+                let mut child = child;
+                unsafe {
+                    libc::kill(child.id() as i32, libc::SIGINT);
+                }
+                let _ = child.wait();
+                let _ = std::fs::remove_file(&path);
+                return;
+            }
+        };
+        // Click-through region marker (border just OUTSIDE the recorded rect).
+        let (marker, marker_pool, marker_region) = self.create_marker(&geo, qh);
+
+        self.recording = Some(Recording {
+            child: Some(child),
+            path,
+            started: std::time::Instant::now(),
+            geo,
+            marker,
+            marker_pool,
+            marker_region,
+            marker_configured: false,
+            indicator,
+            indicator_pool,
+            indicator_configured: false,
+            phase: RecPhase::Recording,
+            last_drawn_secs: None,
+        });
+        eprintln!("boltsnap daemon: recording {} -> {:?}", geo.to_arg(), codec);
+    }
+
+    /// Build the click-through marker layer surface (a `Top` layer with an EMPTY
+    /// input region so clicks pass through to the apps being recorded). Returns
+    /// the surface, its draw pool, and the region (retained so it isn't destroyed).
+    fn create_marker(
+        &mut self,
+        geo: &crate::record::Geometry,
+        qh: &QueueHandle<Self>,
+    ) -> (Option<LayerSurface>, Option<SlotPool>, Option<Region>) {
+        use crate::shelf::recording::MARKER_INFLATE;
+        let inflate = MARKER_INFLATE as i32;
+        let mw = geo.w + 2 * MARKER_INFLATE;
+        let mh = geo.h + 2 * MARKER_INFLATE;
+
+        let surface = self.compositor.create_surface(qh);
+        let layer = self.layer_shell.create_layer_surface(
+            qh,
+            surface,
+            Layer::Top,
+            Some("boltsnap-recording"),
+            None,
+        );
+        layer.set_anchor(Anchor::TOP | Anchor::LEFT);
+        // The rect is in GLOBAL coords; the marker has no output set, so anchor it
+        // top-left and push it to the rect via margins (inflated by the border).
+        layer.set_margin((geo.y - inflate).max(0), 0, 0, (geo.x - inflate).max(0));
+        layer.set_size(mw, mh);
+        layer.set_keyboard_interactivity(KeyboardInteractivity::None);
+        layer.set_exclusive_zone(-1);
+
+        // EMPTY input region == clicks pass through. `Region::new` with no `add`
+        // produces an empty region; retain it (it self-destroys on drop).
+        let region = Region::new(&self.compositor).ok();
+        if let Some(reg) = region.as_ref() {
+            layer.set_input_region(Some(reg.wl_region()));
+        } else {
+            eprintln!("boltsnap daemon: could not create empty input region for marker");
+        }
+        layer.commit();
+
+        let pool = SlotPool::new((mw * mh * 4) as usize, &self.shm).ok();
+        (Some(layer), pool, region)
+    }
+
+    /// Build the recording control indicator layer surface, anchored bottom-left
+    /// above the shelf. `None` if its (tiny) draw pool can't be allocated.
+    fn create_indicator(&mut self, qh: &QueueHandle<Self>) -> Option<(LayerSurface, SlotPool)> {
+        use crate::shelf::recording::{IND_H, IND_W};
+        let pool = SlotPool::new((IND_W * IND_H * 4) as usize, &self.shm).ok()?;
+        let surface = self.compositor.create_surface(qh);
+        let (_name, output) = self.target_output();
+        let layer = self.layer_shell.create_layer_surface(
+            qh,
+            surface,
+            Layer::Top,
+            Some("boltsnap-recording"),
+            output.as_ref(),
+        );
+        layer.set_anchor(Anchor::BOTTOM | Anchor::LEFT);
+        // Sit above the shelf (shelf is at bottom-left margin 24 with its own
+        // height). Offset by an estimate so the two don't overlap.
+        let above = (self.height as i32).max(60) + 48;
+        layer.set_margin(0, 0, above, 24);
+        layer.set_size(IND_W, IND_H);
+        layer.set_keyboard_interactivity(KeyboardInteractivity::None);
+        layer.set_exclusive_zone(-1);
+        layer.commit();
+        Some((layer, pool))
+    }
+
+    /// Draw the click-through marker border into its surface.
+    fn draw_marker(&mut self) {
+        let rec = match self.recording.as_mut() {
+            Some(r) => r,
+            None => return,
+        };
+        if !rec.marker_configured {
+            return;
+        }
+        let (layer, pool) = match (rec.marker.as_ref(), rec.marker_pool.as_mut()) {
+            (Some(l), Some(p)) => (l, p),
+            _ => return,
+        };
+        use crate::shelf::recording::MARKER_INFLATE;
+        let mw = rec.geo.w + 2 * MARKER_INFLATE;
+        let mh = rec.geo.h + 2 * MARKER_INFLATE;
+        let stride = (mw * 4) as i32;
+        let (buffer, canvas) = match pool.create_buffer(
+            mw as i32,
+            mh as i32,
+            stride,
+            wayland_client::protocol::wl_shm::Format::Argb8888,
+        ) {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+        crate::shelf::paint::draw_marker_border(
+            canvas,
+            mw,
+            mh,
+            crate::shelf::recording::MARKER_BORDER,
+        );
+        let surface = layer.wl_surface();
+        surface.damage_buffer(0, 0, mw as i32, mh as i32);
+        let _ = buffer.attach_to(surface);
+        layer.commit();
+    }
+
+    /// Draw the indicator (●+MM:SS+Stop, or Confirm/Cancel) into its surface.
+    fn draw_indicator(&mut self) {
+        use crate::shelf::recording::{IND_H, IND_W};
+        let rec = match self.recording.as_mut() {
+            Some(r) => r,
+            None => return,
+        };
+        if !rec.indicator_configured {
+            return;
+        }
+        let phase = rec.phase;
+        let elapsed = crate::shelf::recording::fmt_elapsed(rec.started.elapsed().as_secs());
+        let stride = (IND_W * 4) as i32;
+        let (buffer, canvas) = match rec.indicator_pool.create_buffer(
+            IND_W as i32,
+            IND_H as i32,
+            stride,
+            wayland_client::protocol::wl_shm::Format::Argb8888,
+        ) {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+        crate::shelf::paint::draw_indicator(canvas, IND_W, IND_H, phase, &elapsed);
+        let surface = rec.indicator.wl_surface();
+        surface.damage_buffer(0, 0, IND_W as i32, IND_H as i32);
+        let _ = buffer.attach_to(surface);
+        rec.indicator.commit();
+    }
+
+    /// Per-loop recording housekeeping: refresh the MM:SS readout on whole-second
+    /// boundaries, and detect a wf-recorder that died/exited on its own.
+    fn tick_recording(&mut self, _qh: &QueueHandle<Self>) {
+        let teardown = {
+            let rec = match self.recording.as_mut() {
+                Some(r) => r,
+                None => return,
+            };
+            // While recording, did the child exit unexpectedly (crash/error)?
+            let mut dead = false;
+            if rec.phase == RecPhase::Recording {
+                if let Some(child) = rec.child.as_mut() {
+                    if let Ok(Some(status)) = child.try_wait() {
+                        eprintln!("boltsnap daemon: wf-recorder exited early: {status}");
+                        dead = true;
+                    }
+                }
+            }
+            dead
+        };
+        if teardown {
+            self.cancel_recording_cleanup();
+            return;
+        }
+        // Repaint the elapsed time only when the whole second changed.
+        if self.recording_counting() {
+            let secs = self
+                .recording
+                .as_ref()
+                .map(|r| r.started.elapsed().as_secs());
+            let changed = self
+                .recording
+                .as_ref()
+                .map(|r| r.last_drawn_secs != secs)
+                .unwrap_or(false);
+            if changed {
+                if let Some(r) = self.recording.as_mut() {
+                    r.last_drawn_secs = secs;
+                }
+                self.draw_indicator();
+            }
+        }
+    }
+
+    /// Stop the active recording: SIGINT wf-recorder (so it FINALIZES the mp4 —
+    /// `Child::kill` only sends SIGKILL, which would truncate/corrupt it), drop
+    /// the marker, and switch the indicator to Confirm/Cancel. The child is NOT
+    /// reaped here; Confirm/Cancel `wait()`s it off-thread once the user decides
+    /// (so Confirm's ffmpeg sees the fully-finalized file).
+    fn stop_recording(&mut self) {
+        let rec = match self.recording.as_mut() {
+            Some(r) if r.phase == RecPhase::Recording => r,
+            _ => return,
+        };
+        if let Some(child) = rec.child.as_ref() {
+            unsafe {
+                libc::kill(child.id() as i32, libc::SIGINT);
+            }
+        }
+        // Drop the click-through marker frame; a finished recording needn't be framed.
+        rec.marker = None;
+        rec.marker_pool = None;
+        rec.marker_region = None;
+        rec.phase = RecPhase::Stopped;
+        self.draw_indicator();
+    }
+
+    /// Confirm the stopped recording: on a DETACHED thread, `wait()` for
+    /// wf-recorder to finish finalizing the mp4, extract a first-frame thumbnail
+    /// with ffmpeg, then post `RecordingDone` back to our own socket. Nothing here
+    /// blocks the calloop loop. The indicator stays up until `ingest_recording`.
+    fn confirm_recording(&mut self) {
+        let rec = match self.recording.as_mut() {
+            Some(r) if r.phase == RecPhase::Stopped => r,
+            _ => return,
+        };
+        let child = rec.child.take();
+        let video = rec.path.clone();
+        let thumb = crate::paths::temp_file("rec-thumb", "png");
+        std::thread::spawn(move || {
+            // Wait for wf-recorder to finish writing the mp4 (SIGINT already sent).
+            if let Some(mut c) = child {
+                let _ = c.wait();
+            }
+            // First-frame thumbnail (best-effort; ingest tolerates a missing png).
+            let _ = std::process::Command::new("ffmpeg")
+                .args(["-y", "-i"])
+                .arg(&video)
+                .args(["-frames:v", "1", "-update", "1"])
+                .arg(&thumb)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+            let _ = crate::ipc::send_to_shelf(crate::ipc::Request::RecordingDone { video, thumb });
+        });
+    }
+
+    /// Cancel the stopped recording: reap the child off-thread, delete the temp
+    /// mp4, and tear down overlays immediately.
+    fn cancel_recording(&mut self) {
+        if let Some(mut rec) = self.recording.take() {
+            let child = rec.child.take();
+            let path = rec.path.clone();
+            std::thread::spawn(move || {
+                if let Some(mut c) = child {
+                    let _ = c.wait();
+                }
+                let _ = std::fs::remove_file(&path);
+            });
+        }
+        // `rec` dropped here -> marker + indicator surfaces (and the region) unmap.
+    }
+
+    /// Tear down a recording that exited on its own (crash/error) without user
+    /// action: reap the child, delete the temp mp4, drop overlays.
+    fn cancel_recording_cleanup(&mut self) {
+        if let Some(mut rec) = self.recording.take() {
+            if let Some(mut c) = rec.child.take() {
+                let _ = c.wait();
+            }
+            let _ = std::fs::remove_file(&rec.path);
+        }
+    }
+
+    /// Ingest a finished recording posted via `RecordingDone`: load the first-frame
+    /// thumbnail (placeholder if missing), add a Video card, tear down the
+    /// indicator. The temp mp4 path becomes the card's file.
+    fn ingest_recording(
+        &mut self,
+        video: std::path::PathBuf,
+        thumb: std::path::PathBuf,
+        qh: &QueueHandle<Self>,
+    ) {
+        // Build the card thumbnail from the extracted first frame; fall back to a
+        // neutral placeholder so a missing/unreadable png never loses the video.
+        let frame = match image::open(&thumb) {
+            Ok(img) => img.to_rgba8(),
+            Err(_) => {
+                let mut ph = image::RgbaImage::new(
+                    crate::shelf::thumbnail::CARD_W,
+                    crate::shelf::thumbnail::CARD_H,
+                );
+                for p in ph.pixels_mut() {
+                    *p = image::Rgba([32, 32, 40, 255]);
+                }
+                ph
+            }
+        };
+        // The first-frame png was only needed to build the thumbnail.
+        let _ = std::fs::remove_file(&thumb);
+
+        let card_thumb = crate::shelf::thumbnail::make_card_thumbnail(
+            &frame,
+            crate::shelf::thumbnail::CARD_W,
+            crate::shelf::thumbnail::CARD_H,
+        );
+        let id = self
+            .model
+            .add_kind(video, card_thumb, "record".into(), CardKind::Video);
+        // Tear down the indicator + any remaining overlay; recording is done.
+        self.recording = None;
+        self.start_anim(id, AnimKind::Appear);
+        self.relayout();
+        self.place_on_focused_output(qh);
+        self.draw(qh);
+    }
+
+    /// True if `surface` is the active recording's indicator surface.
+    fn is_indicator_surface(&self, surface: &WlSurface) -> bool {
+        self.recording
+            .as_ref()
+            .map(|r| r.indicator.wl_surface() == surface)
+            .unwrap_or(false)
+    }
+
+    /// True if `surface` is the active recording's click-through marker surface.
+    fn is_marker_surface(&self, surface: &WlSurface) -> bool {
+        self.recording
+            .as_ref()
+            .and_then(|r| r.marker.as_ref())
+            .map(|m| m.wl_surface() == surface)
+            .unwrap_or(false)
+    }
+
+    /// Handle a left-click at indicator-local `pos`: hit-test the current phase's
+    /// buttons and act (Stop / Confirm / Cancel).
+    fn on_indicator_click(&mut self, pos: (f64, f64)) {
+        let phase = match self.recording.as_ref() {
+            Some(r) => r.phase,
+            None => return,
+        };
+        match crate::shelf::recording::ind_hit(phase, pos.0, pos.1) {
+            Some(IndButton::Stop) => self.stop_recording(),
+            Some(IndButton::Confirm) => self.confirm_recording(),
+            Some(IndButton::Cancel) => self.cancel_recording(),
+            None => {}
+        }
+    }
 }
 
 impl CompositorHandler for Daemon {
@@ -889,6 +1317,14 @@ impl OutputHandler for Daemon {
 
 impl LayerShellHandler for Daemon {
     fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, layer: &LayerSurface) {
+        // A recording overlay being closed by the compositor: tear the recording
+        // down (reap the child, drop overlays) instead of exiting the daemon.
+        if self.is_indicator_surface(layer.wl_surface())
+            || self.is_marker_surface(layer.wl_surface())
+        {
+            self.cancel_recording_cleanup();
+            return;
+        }
         if self
             .layer
             .as_ref()
@@ -906,6 +1342,22 @@ impl LayerShellHandler for Daemon {
         configure: LayerSurfaceConfigure,
         _serial: u32,
     ) {
+        // Route recording overlays first: they are self-sized like the shelf, so
+        // mark them configured and draw their (fixed-size) content.
+        if self.is_indicator_surface(layer.wl_surface()) {
+            if let Some(r) = self.recording.as_mut() {
+                r.indicator_configured = true;
+            }
+            self.draw_indicator();
+            return;
+        }
+        if self.is_marker_surface(layer.wl_surface()) {
+            if let Some(r) = self.recording.as_mut() {
+                r.marker_configured = true;
+            }
+            self.draw_marker();
+            return;
+        }
         let is_shelf = self
             .layer
             .as_ref()
@@ -992,13 +1444,27 @@ impl PointerHandler for Daemon {
         _: &WlPointer,
         events: &[PointerEvent],
     ) {
-        let surface = match self.layer.as_ref() {
-            Some(l) => l.wl_surface().clone(),
-            None => return,
-        };
+        let shelf_surface = self.layer.as_ref().map(|l| l.wl_surface().clone());
         let mut redraw = false;
         for ev in events {
-            if ev.surface != surface {
+            // Route clicks on the recording indicator to its Stop/Confirm/Cancel
+            // buttons. (The marker has an empty input region, so it never gets
+            // pointer events.)
+            if self.is_indicator_surface(&ev.surface) {
+                if matches!(ev.kind, PointerEventKind::Enter { .. }) {
+                    if let Some(p) = self.pointer.as_ref() {
+                        let _ = p.set_cursor(conn, CursorIcon::Default);
+                    }
+                }
+                if let PointerEventKind::Press { button, .. } = ev.kind {
+                    if button == BTN_LEFT {
+                        self.on_indicator_click(ev.position);
+                    }
+                }
+                continue;
+            }
+            // Everything else is shelf input.
+            if shelf_surface.as_ref() != Some(&ev.surface) {
                 continue;
             }
             // Set the normal arrow when the pointer enters the shelf, instead of

@@ -151,8 +151,14 @@ pub fn default_save_path() -> PathBuf {
 }
 
 pub fn temp_png(prefix: &str) -> PathBuf {
+    temp_file(prefix, "png")
+}
+
+/// A unique temp path `boltsnap-<prefix>-<pid>-<ts>.<ext>` in the system temp
+/// dir. Generalizes `temp_png` for recordings (`mp4`) and their thumbnails.
+pub fn temp_file(prefix: &str, ext: &str) -> PathBuf {
     env::temp_dir().join(format!(
-        "boltsnap-{prefix}-{}-{}.png",
+        "boltsnap-{prefix}-{}-{}.{ext}",
         std::process::id(),
         timestamp()
     ))

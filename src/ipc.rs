@@ -8,10 +8,27 @@ use serde_json::{Value, json};
 
 #[derive(Debug)]
 pub enum Request {
-    Add { source: String, png: Vec<u8> },
-    Reload { id: u64 },
+    Add {
+        source: String,
+        png: Vec<u8>,
+    },
+    Reload {
+        id: u64,
+    },
     Ping,
-    StartRecording { x: i32, y: i32, w: u32, h: u32 },
+    StartRecording {
+        x: i32,
+        y: i32,
+        w: u32,
+        h: u32,
+    },
+    /// A finished recording is ready to ingest: the temp `.mp4` and a first-frame
+    /// `.png` thumbnail (both as paths; the daemon owns/reads them). Posted by the
+    /// daemon's off-thread Confirm worker back to its own socket.
+    RecordingDone {
+        video: PathBuf,
+        thumb: PathBuf,
+    },
 }
 
 /// Frame = [u32 BE header_len][u32 BE payload_len][header bytes][payload bytes].
@@ -56,6 +73,14 @@ impl Request {
                 let header = json!({ "cmd": "record", "x": x, "y": y, "w": w, "h": h });
                 write_frame(&mut buf, header.to_string().as_bytes(), &[]).unwrap();
             }
+            Request::RecordingDone { video, thumb } => {
+                let header = json!({
+                    "cmd": "recording_done",
+                    "video": video.to_string_lossy(),
+                    "thumb": thumb.to_string_lossy(),
+                });
+                write_frame(&mut buf, header.to_string().as_bytes(), &[]).unwrap();
+            }
         }
         buf
     }
@@ -82,6 +107,10 @@ impl Request {
                 y: v.get("y").and_then(|n| n.as_i64()).unwrap_or(0) as i32,
                 w: v.get("w").and_then(|n| n.as_u64()).unwrap_or(0) as u32,
                 h: v.get("h").and_then(|n| n.as_u64()).unwrap_or(0) as u32,
+            }),
+            Some("recording_done") => Ok(Request::RecordingDone {
+                video: PathBuf::from(v.get("video").and_then(|s| s.as_str()).unwrap_or("")),
+                thumb: PathBuf::from(v.get("thumb").and_then(|s| s.as_str()).unwrap_or("")),
             }),
             other => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -192,11 +221,32 @@ mod tests {
 
     #[test]
     fn request_start_recording_roundtrip() {
-        let req = Request::StartRecording { x: -100, y: 40, w: 800, h: 600 };
+        let req = Request::StartRecording {
+            x: -100,
+            y: 40,
+            w: 800,
+            h: 600,
+        };
         let mut cur = Cursor::new(req.encode());
         match Request::read(&mut cur).unwrap() {
             Request::StartRecording { x, y, w, h } => {
                 assert_eq!((x, y, w, h), (-100, 40, 800, 600));
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn request_recording_done_roundtrip() {
+        let req = Request::RecordingDone {
+            video: PathBuf::from("/tmp/boltsnap-rec-1.mp4"),
+            thumb: PathBuf::from("/tmp/boltsnap-rec-1.png"),
+        };
+        let mut cur = Cursor::new(req.encode());
+        match Request::read(&mut cur).unwrap() {
+            Request::RecordingDone { video, thumb } => {
+                assert_eq!(video, PathBuf::from("/tmp/boltsnap-rec-1.mp4"));
+                assert_eq!(thumb, PathBuf::from("/tmp/boltsnap-rec-1.png"));
             }
             other => panic!("wrong variant: {other:?}"),
         }

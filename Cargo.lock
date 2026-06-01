@@ -83,6 +83,7 @@ dependencies = [
  "calloop",
  "calloop-wayland-source",
  "image",
+ "libc",
  "libwayshot",
  "serde_json",
  "smithay-client-toolkit",
