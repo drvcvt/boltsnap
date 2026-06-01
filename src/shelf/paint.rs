@@ -862,7 +862,7 @@ mod tests {
         let mut buf = vec![0u8; (w * h * 4) as usize];
         draw_marker_border(&mut buf, w, h, 2);
         // Top-left edge pixel is painted (alpha > 0).
-        let edge = ((0 * w + 0) * 4) as usize;
+        let edge = 0usize;
         assert!(buf[edge + 3] > 0, "border edge should be painted");
         // Centre is transparent (interior not captured into the video).
         let mid = (((h / 2) * w + w / 2) * 4) as usize;
