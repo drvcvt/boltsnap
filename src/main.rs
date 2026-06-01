@@ -162,8 +162,9 @@ Usage:
   boltsnap [area|window|full] --edit      capture then edit
   boltsnap edit [IMAGE] [-o PATH] [--no-copy]
   boltsnap daemon [--save-dir DIR]        run the screenshot shelf
+  boltsnap record [--editor CMD]          select an area and screen-record it (Wayland)
   boltsnap [COMMAND] [--editor CMD]       annotate with a specific editor
-  Config: ~/.config/boltsnap/config.toml  (save_dir, editor)
+  Config: ~/.config/boltsnap/config.toml  (save_dir, editor, record_codec, record_dir)
   boltsnap doctor
 
 Examples:
