@@ -27,6 +27,9 @@ tiny-skia = "0.11"
 # Anti-aliased glyph rasterization for the selector's W×H dimension badge, from a
 # tiny embedded DejaVu Sans Bold subset (assets/fonts/, digits + ×).
 ab_glyph = "0.2"
+# Parse ~/.config/boltsnap/config.toml (save_dir + editor). Read via toml::Value,
+# so no serde-derive is needed in this crate.
+toml = "0.8"
 
 [profile.release]
 lto = "thin"
