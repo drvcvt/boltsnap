@@ -16,6 +16,9 @@ pub enum Request {
         id: u64,
     },
     Ping,
+    /// Stop an in-progress recording (same as the indicator's Stop button). Sent by
+    /// `boltsnap stop` for a keyboard stop.
+    StopRecording,
     StartRecording {
         x: i32,
         y: i32,
@@ -69,6 +72,10 @@ impl Request {
                 let header = json!({ "cmd": "ping" });
                 write_frame(&mut buf, header.to_string().as_bytes(), &[]).unwrap();
             }
+            Request::StopRecording => {
+                let header = json!({ "cmd": "stop" });
+                write_frame(&mut buf, header.to_string().as_bytes(), &[]).unwrap();
+            }
             Request::StartRecording { x, y, w, h } => {
                 let header = json!({ "cmd": "record", "x": x, "y": y, "w": w, "h": h });
                 write_frame(&mut buf, header.to_string().as_bytes(), &[]).unwrap();
@@ -102,6 +109,7 @@ impl Request {
                 id: v.get("id").and_then(|i| i.as_u64()).unwrap_or(0),
             }),
             Some("ping") => Ok(Request::Ping),
+            Some("stop") => Ok(Request::StopRecording),
             Some("record") => Ok(Request::StartRecording {
                 x: v.get("x").and_then(|n| n.as_i64()).unwrap_or(0) as i32,
                 y: v.get("y").and_then(|n| n.as_i64()).unwrap_or(0) as i32,
@@ -212,6 +220,11 @@ mod tests {
     fn request_ping_and_reload_roundtrip() {
         let mut cur = Cursor::new(Request::Ping.encode());
         assert!(matches!(Request::read(&mut cur).unwrap(), Request::Ping));
+        let mut cur = Cursor::new(Request::StopRecording.encode());
+        assert!(matches!(
+            Request::read(&mut cur).unwrap(),
+            Request::StopRecording
+        ));
         let mut cur = Cursor::new(Request::Reload { id: 42 }.encode());
         assert!(matches!(
             Request::read(&mut cur).unwrap(),

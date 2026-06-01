@@ -143,6 +143,20 @@ struct CardAnim {
     start: std::time::Instant,
 }
 
+/// Best-effort desktop notification (no-op if `notify-send` is missing). Spawned
+/// detached so it never blocks the daemon's event loop. Used to surface recording
+/// failures that would otherwise only appear in the journal.
+fn notify(body: &str) {
+    if crate::paths::has_cmd("notify-send") {
+        let _ = std::process::Command::new("notify-send")
+            .arg("boltsnap")
+            .arg(body)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+    }
+}
+
 /// Name of the focused Hyprland monitor, via `hyprctl monitors -j`. `None` off
 /// Hyprland (then the compositor places the shelf on its default output).
 pub(crate) fn focused_monitor_name() -> Option<String> {
@@ -289,6 +303,10 @@ pub fn run_daemon(save_dir_cli: Option<std::path::PathBuf>) -> DynResult<()> {
     let cleaned = crate::paths::clean_orphan_shelf_temps();
     if cleaned > 0 {
         eprintln!("boltsnap daemon: cleaned {cleaned} orphaned shelf tempfile(s)");
+    }
+    let cleaned_rec = crate::paths::clean_orphan_rec_files();
+    if cleaned_rec > 0 {
+        eprintln!("boltsnap daemon: cleaned {cleaned_rec} orphaned recording file(s)");
     }
 
     let conn = Connection::connect_to_env()?;
@@ -507,6 +525,10 @@ impl Daemon {
             }
             crate::ipc::Request::RecordingDone { video, thumb } => {
                 self.ingest_recording(video, thumb, &qh);
+            }
+            crate::ipc::Request::StopRecording => {
+                // Same as clicking Stop in the indicator (no-op if not recording).
+                self.stop_recording();
             }
         }
     }
@@ -905,10 +927,13 @@ impl Daemon {
         }
         if !crate::paths::has_cmd("wf-recorder") {
             eprintln!("boltsnap daemon: wf-recorder not found — cannot record");
+            notify("Recording needs wf-recorder — install it (e.g. pacman -S wf-recorder)");
             return;
         }
         let geo = crate::record::Geometry { x, y, w, h };
-        let path = crate::paths::temp_file("rec", "mp4");
+        // Disk-backed (~/.cache/boltsnap/rec), NOT the RAM-backed temp dir — an
+        // mp4 is many MB and tmpfs is precious RAM on this machine.
+        let path = crate::paths::rec_file("rec", "mp4");
         let codec = crate::config::resolve_record_codec(None, &crate::config::Config::load());
 
         let child = match std::process::Command::new("wf-recorder")
@@ -921,6 +946,7 @@ impl Daemon {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("boltsnap daemon: failed to spawn wf-recorder: {e}");
+                notify(&format!("Recording failed to start: {e}"));
                 return;
             }
         };
@@ -1123,6 +1149,7 @@ impl Daemon {
                 if let Some(child) = rec.child.as_mut() {
                     if let Ok(Some(status)) = child.try_wait() {
                         eprintln!("boltsnap daemon: wf-recorder exited early: {status}");
+                        notify("Recording stopped — wf-recorder exited unexpectedly");
                         dead = true;
                     }
                 }
@@ -1187,7 +1214,7 @@ impl Daemon {
         };
         let child = rec.child.take();
         let video = rec.path.clone();
-        let thumb = crate::paths::temp_file("rec-thumb", "png");
+        let thumb = crate::paths::rec_file("rec-thumb", "png");
         std::thread::spawn(move || {
             // Wait for wf-recorder to finish writing the mp4 (SIGINT already sent).
             if let Some(mut c) = child {
