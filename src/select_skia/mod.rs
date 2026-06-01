@@ -56,7 +56,31 @@ where
 {
     // Start the screenshot grab so it overlaps with Wayland init below.
     let capture_handle = thread::spawn(capture);
+    let mut sel = run_selector(instant, false, Some(capture_handle))?;
+    Ok(sel.result.take())
+}
 
+/// Record-mode selector: opens the SAME overlay with the same draw/resize/move
+/// editing, but does NOT capture a screenshot. It shows a translucent dim
+/// backdrop (the live screen reads through the selection) and a red REC pill, and
+/// on confirm returns the selection `Rect` (logical surface px) instead of an
+/// image. `None` on Esc/cancel. The caller maps the rect to compositor-global
+/// coords and starts the recording.
+pub fn run_select_record() -> DynResult<Option<edit::Rect>> {
+    let mut sel = run_selector(false, true, None)?;
+    Ok(sel.result_rect.take())
+}
+
+/// Shared driver for both selector modes. Binds the Wayland globals, builds the
+/// fullscreen layer overlay on the focused output, and runs the event loop until
+/// confirm/cancel. `capture_handle`, when `Some`, is joined to obtain the frozen
+/// screenshot (screenshot mode); when `None` (record mode) the backdrop is a
+/// plain translucent dim instead of a frozen frame.
+fn run_selector(
+    instant: bool,
+    record_mode: bool,
+    capture_handle: Option<thread::JoinHandle<Result<RgbaImage, String>>>,
+) -> DynResult<Selector> {
     let conn = Connection::connect_to_env()?;
     let (globals, mut event_queue) = registry_queue_init::<Selector>(&conn)?;
     let qh = event_queue.handle();
@@ -92,17 +116,23 @@ where
         frame_pending: false,
         needs_redraw: false,
         instant,
+        record_mode,
+        result_rect: None,
     };
 
     // Discover outputs (names) so we can target the focused monitor. This
-    // roundtrip overlaps with the capture thread.
+    // roundtrip overlaps with the capture thread (screenshot mode).
     event_queue.roundtrip(&mut sel)?;
 
-    // Now block on the capture result; the grab ran during setup.
-    let image = capture_handle
-        .join()
-        .map_err(|_| "capture worker panicked".to_string())??;
-    sel.image = Some(image);
+    // Screenshot mode: block on the capture result; the grab ran during setup.
+    // Record mode: nothing to join — the backdrop is built from a transparent
+    // base on the first configure.
+    if let Some(handle) = capture_handle {
+        let image = handle
+            .join()
+            .map_err(|_| "capture worker panicked".to_string())??;
+        sel.image = Some(image);
+    }
 
     // Create the fullscreen overlay on the focused output. Always pass a
     // concrete output: Hyprland may fail to map a layer surface with a null
@@ -127,7 +157,7 @@ where
         event_queue.blocking_dispatch(&mut sel)?;
     }
 
-    Ok(sel.result.take())
+    Ok(sel)
 }
 
 struct Selector {
@@ -167,6 +197,12 @@ struct Selector {
     needs_redraw: bool,
     /// Skip the editable phase: release in Drawing confirms immediately.
     instant: bool,
+    /// Record mode: no screenshot capture, a translucent dim backdrop, a red REC
+    /// pill, and confirm yields the selection rect (into `result_rect`) instead
+    /// of cropping an image.
+    record_mode: bool,
+    /// The confirmed selection rect (surface px), set on confirm in record mode.
+    result_rect: Option<edit::Rect>,
 }
 
 #[derive(Clone, Copy)]
@@ -261,9 +297,15 @@ impl Selector {
             if matches!(self.mode, Mode::Editing { .. }) {
                 render::draw_handles(&mut frame, s);
             }
-            render::draw_badge(&mut frame, s, self.surf_w, self.surf_h);
+            if self.record_mode {
+                render::draw_rec_pill(&mut frame, s, self.surf_w, self.surf_h);
+            } else {
+                render::draw_badge(&mut frame, s, self.surf_w, self.surf_h);
+            }
         }
-        if self.alt_held {
+        // The magnifier samples the frozen screenshot; there is none in record
+        // mode (transparent base), so it is only useful for screenshots.
+        if self.alt_held && !self.record_mode {
             render::draw_magnifier(&mut frame, base, self.cursor, self.surf_w, self.surf_h);
         }
 
@@ -291,9 +333,21 @@ impl Selector {
         self.needs_redraw = false;
     }
 
-    /// Crop the full-res capture to `rect` (surface px) and finish, or return to
-    /// Idle if the rect is sub-pixel.
+    /// Confirm the selection. In record mode, store the rect (surface px) and
+    /// finish. Otherwise crop the full-res capture to `rect`, or return to Idle
+    /// if the rect is sub-pixel.
     fn confirm_rect(&mut self, rect: edit::Rect) {
+        if self.record_mode {
+            // Reject a sub-pixel selection rather than confirming an empty rect.
+            if rect.w < MIN_SEL || rect.h < MIN_SEL {
+                self.mode = Mode::Idle;
+                self.request_redraw();
+                return;
+            }
+            self.result_rect = Some(rect);
+            self.done = true;
+            return;
+        }
         let Some(img) = self.image.as_ref() else {
             self.done = true;
             return;
@@ -397,9 +451,12 @@ impl LayerShellHandler for Selector {
         self.surf_w = w;
         self.surf_h = h;
         if self.base.is_none() {
-            if let Some(img) = self.image.as_ref() {
-                self.base = Some(render::base_pixmap_from_image(img, w, h));
-            }
+            self.base = Some(match self.image.as_ref() {
+                Some(img) => render::base_pixmap_from_image(img, w, h),
+                // Record mode (no screenshot): a transparent base so the dim
+                // overlay shows a translucent backdrop with a clear selection.
+                None => render::transparent_base(w, h),
+            });
         }
         self.configured = true;
         self.draw();

@@ -57,6 +57,15 @@ pub fn base_pixmap_from_image(img: &RgbaImage, w: u32, h: u32) -> Pixmap {
     pm
 }
 
+/// Build a fully transparent base layer sized to the surface, for record mode
+/// (no screenshot to freeze). `dim_and_restore` then dims the whole surface to a
+/// translucent backdrop and restores the transparent selection interior, so the
+/// live screen shows through the selection while the rest is dimmed.
+pub fn transparent_base(w: u32, h: u32) -> Pixmap {
+    // `Pixmap::new` zero-fills, i.e. premultiplied transparent black.
+    Pixmap::new(w.max(1), h.max(1)).expect("pixmap alloc")
+}
+
 /// Convert a premultiplied-RGBA `Pixmap` to a premultiplied-BGRA `wl_shm`
 /// Argb8888 (little-endian) buffer: swap R and B, keep A. `canvas` must be the
 /// same pixel count as the pixmap (4 bytes per pixel).
@@ -321,6 +330,89 @@ pub fn draw_badge(pm: &mut Pixmap, sel: (f32, f32, f32, f32), surf_w: u32, surf_
     );
 }
 
+/// Draw the recording affordance: a small pill near the selection with a red
+/// filled dot and the text "REC". Placed like the dimension badge (above-left,
+/// flipping at edges) and reuses the badge font/text rendering. Red accent so it
+/// reads as record. Used by the record-mode selector instead of the W×H badge.
+pub fn draw_rec_pill(pm: &mut Pixmap, sel: (f32, f32, f32, f32), surf_w: u32, surf_h: u32) {
+    let (x, y, w, h) = sel;
+    if w < 1.0 || h < 1.0 {
+        return;
+    }
+    let label = "REC";
+    let px = 17.0_f32;
+    let pad = 7.0_f64;
+    let dot_r = 5.0_f64; // red dot radius
+    let dot_gap = 6.0_f64; // gap between dot and text
+    let font = badge_font();
+    let scaled = font.as_scaled(PxScale::from(px));
+    let text_w: f32 = label
+        .chars()
+        .map(|c| scaled.h_advance(font.glyph_id(c)))
+        .sum();
+    let text_h = scaled.ascent() - scaled.descent();
+    // The pill carries a leading red dot, so widen the content box by the dot
+    // diameter plus its gap; badge_rect handles placement + on-screen clamping.
+    let content_w = dot_r * 2.0 + dot_gap + text_w as f64;
+    let rect = crate::select_skia::edit::Rect {
+        x: x as f64,
+        y: y as f64,
+        w: w as f64,
+        h: h as f64,
+    };
+    let (bx, by, bw, bh) = crate::select_skia::edit::badge_rect(
+        rect,
+        content_w,
+        text_h as f64,
+        pad,
+        6.0,
+        surf_w as f64,
+        surf_h as f64,
+    );
+    let mut pill = Paint::default();
+    pill.set_color_rgba8(0x12, 0x12, 0x12, 230); // #121212, matching the W×H badge
+    pill.anti_alias = true;
+    if let Some(path) = rounded_rect(bx as f32, by as f32, bw as f32, bh as f32, 7.0) {
+        pm.fill_path(&path, &pill, FillRule::Winding, Transform::identity(), None);
+    }
+    // Red record dot, vertically centered in the pill.
+    let mut dot = Paint::default();
+    dot.set_color_rgba8(0xff, 0x3b, 0x30, 255); // record red
+    dot.anti_alias = true;
+    let dot_cx = bx + pad + dot_r;
+    let dot_cy = by + bh / 2.0;
+    if let Some(path) = circle_path(dot_cx as f32, dot_cy as f32, dot_r as f32) {
+        pm.fill_path(&path, &dot, FillRule::Winding, Transform::identity(), None);
+    }
+    let baseline = by as f32 + pad as f32 + scaled.ascent();
+    draw_text_aa(
+        pm,
+        (bx + pad + dot_r * 2.0 + dot_gap) as f32,
+        baseline,
+        label,
+        px,
+        (0xf0, 0xf0, 0xf0),
+    );
+}
+
+/// Build a circle path centered at (`cx`, `cy`) with radius `r`, as four quad
+/// arcs (good enough visually for a tiny dot).
+fn circle_path(cx: f32, cy: f32, r: f32) -> Option<tiny_skia::Path> {
+    if r <= 0.0 {
+        return None;
+    }
+    // kappa for a quad approximation of a quarter circle control offset.
+    let k = r * 0.5522847;
+    let mut pb = PathBuilder::new();
+    pb.move_to(cx, cy - r);
+    pb.cubic_to(cx + k, cy - r, cx + r, cy - k, cx + r, cy);
+    pb.cubic_to(cx + r, cy + k, cx + k, cy + r, cx, cy + r);
+    pb.cubic_to(cx - k, cy + r, cx - r, cy + k, cx - r, cy);
+    pb.cubic_to(cx - r, cy - k, cx - k, cy - r, cx, cy - r);
+    pb.close();
+    pb.finish()
+}
+
 /// Draw the magnifier loupe at the cursor: a `LOUPE`px square sampling an
 /// `SAMPLE`px window of `base` around `cursor`, nearest-neighbor upscaled, with a
 /// pixel grid, a center-pixel marker, and a border. Placed by `magnifier_placement`.
@@ -523,6 +615,34 @@ mod tests {
             let r = pm.data()[((y * 200) * 4) as usize];
             assert!(r < 160, "left column row {y} not fully dimmed: r={r}");
         }
+    }
+
+    #[test]
+    fn draw_rec_pill_paints_red_dot_and_pill() {
+        use tiny_skia::Pixmap;
+        let mut pm = Pixmap::new(400, 300).unwrap();
+        for px in pm.data_mut().chunks_exact_mut(4) {
+            px.copy_from_slice(&[0, 0, 0, 255]); // opaque black backdrop
+        }
+        // Selection well clear of the top so the pill sits above it on-screen.
+        let sel = (120.0, 150.0, 160.0, 90.0);
+        draw_rec_pill(&mut pm, sel, 400, 300);
+        // Somewhere in the pill band above the selection there must be a strongly
+        // red pixel (the record dot). Scan the rows just above the selection top.
+        let at = |x: u32, y: u32| {
+            let i = ((y * pm.width() + x) * 4) as usize;
+            (pm.data()[i], pm.data()[i + 1], pm.data()[i + 2])
+        };
+        let mut found_red = false;
+        for y in 110..150u32 {
+            for x in 120..280u32 {
+                let (r, g, b) = at(x, y);
+                if r > 180 && g < 100 && b < 100 {
+                    found_red = true;
+                }
+            }
+        }
+        assert!(found_red, "REC pill should paint a red record dot");
     }
 
     #[test]

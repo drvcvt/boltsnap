@@ -267,6 +267,7 @@ fn run() -> DynResult<()> {
             Ok(())
         }
         "self-test" => self_test(),
+        "record" => record_flow(&args),
         "daemon" => crate::shelf::run_daemon(args.save_dir.clone()),
         "__debug-render" => {
             // Render the shelf (one sample thumbnail, hovered) straight to a PNG
@@ -320,6 +321,32 @@ fn edit_last_screenshot(args: &Args) -> DynResult<()> {
     )?;
     remember_last_screenshot(&result)?;
     println!("Edited last screenshot: {}", result.display());
+    Ok(())
+}
+
+/// `boltsnap record`: open the region selector in record mode (translucent dim,
+/// REC pill, no still capture), then hand the confirmed rect to the daemon as a
+/// `StartRecording` request. Esc cancels (no-op). Maps the selection (overlay
+/// output-local logical px) to compositor-global coords via the focused
+/// monitor's layout origin.
+fn record_flow(args: &Args) -> DynResult<()> {
+    let _ = args; // (reserved for future flags)
+    if !crate::paths::has_cmd("wf-recorder") {
+        return Err(
+            "wf-recorder not found — install it to record (e.g. pacman -S wf-recorder)".into(),
+        );
+    }
+    let Some(rect) = crate::select_skia::run_select_record()? else {
+        return Ok(()); // cancelled
+    };
+    let (ox, oy) = crate::shelf::focused_monitor_origin().unwrap_or((0, 0));
+    let geo = crate::record::to_global_geometry(rect.x, rect.y, rect.w, rect.h, ox, oy);
+    crate::ipc::send_to_shelf(crate::ipc::Request::StartRecording {
+        x: geo.x,
+        y: geo.y,
+        w: geo.w,
+        h: geo.h,
+    })?;
     Ok(())
 }
 
