@@ -51,6 +51,19 @@ pub fn wf_recorder_args(geo: &Geometry, codec: &str, out: &Path) -> Vec<String> 
     ]
 }
 
+/// Build the wf-recorder argv (excluding the program name) to record an entire
+/// output (monitor) by name — used for fullscreen recording.
+pub fn wf_recorder_output_args(output: &str, codec: &str, out: &Path) -> Vec<String> {
+    vec![
+        "-o".into(),
+        output.into(),
+        "-c".into(),
+        codec.into(),
+        "-f".into(),
+        out.to_string_lossy().into_owned(),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -83,6 +96,15 @@ mod tests {
         assert_eq!(
             args,
             vec!["-g", "0,0 1280x720", "-c", "h264_nvenc", "-f", "/tmp/r.mp4"]
+        );
+    }
+
+    #[test]
+    fn wf_output_args_shape() {
+        let args = wf_recorder_output_args("DP-1", "h264_nvenc", &PathBuf::from("/tmp/r.mp4"));
+        assert_eq!(
+            args,
+            vec!["-o", "DP-1", "-c", "h264_nvenc", "-f", "/tmp/r.mp4"]
         );
     }
 }
