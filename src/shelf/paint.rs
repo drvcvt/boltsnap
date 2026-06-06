@@ -285,8 +285,11 @@ fn draw_play_badge(canvas: &mut [u8], cw: u32, ch: u32, r: &ThumbRect) {
     }
 }
 
-/// Recording-overlay accent (red ●, marker border, button glyphs).
+/// Recording-overlay accent (red ●, button glyphs).
 const REC_RGB: (u8, u8, u8) = (235, 64, 64);
+/// Region marker frame: black, for a clean, unobtrusive recording outline.
+const MARKER_RGB: (u8, u8, u8) = (0, 0, 0);
+const MARKER_A: f32 = 0.95;
 /// Indicator pill background (matches the shelf/quickshell dark).
 const IND_BG: (u8, u8, u8) = (0x12, 0x12, 0x12); // #121212, matching the badge/pill
 const IND_BG_A: f32 = 0.92;
@@ -294,21 +297,32 @@ const IND_BG_A: f32 = 0.92;
 /// so Stop/Confirm/Cancel read as buttons on the dark pill.
 const IND_BTN_BG: (u8, u8, u8) = (0x26, 0x26, 0x26); // #262626
 
-/// Draw the click-through region marker: a `border`-px red frame on the INNER
-/// edge of a transparent `w`×`h` surface. The surface is inflated past the
-/// recorded rect so this border sits just OUTSIDE the recording.
-pub fn draw_marker_border(canvas: &mut [u8], w: u32, h: u32, border: u32) {
+/// Draw the click-through region marker: a rounded, anti-aliased `border`-px black
+/// frame on a transparent `w`×`h` surface. The surface is inflated past the
+/// recorded rect by `radius` so the rounded corners sit fully OUTSIDE the recording
+/// and are never captured. The frame is the ring between an outer rounded rect
+/// (the whole surface, radius `radius`) and an inner one inset by `border`.
+pub fn draw_marker_border(canvas: &mut [u8], w: u32, h: u32, border: u32, radius: u32) {
     clear(canvas);
     if w == 0 || h == 0 {
         return;
     }
-    let b = border.min(w / 2).min(h / 2).max(1);
-    let (r, g, bl) = REC_RGB;
+    let half = (w.min(h) as f32) / 2.0;
+    let b = (border as f32).clamp(1.0, half);
+    let r_out = (radius as f32).clamp(b, half);
+    let r_in = (r_out - b).max(0.0);
+    let (cr, cg, cb) = MARKER_RGB;
+    let iw = w as f32 - 2.0 * b;
+    let ih = h as f32 - 2.0 * b;
     for y in 0..h {
         for x in 0..w {
-            let on_edge = x < b || x >= w - b || y < b || y >= h - b;
-            if on_edge {
-                blend_px(canvas, w, h, x as i32, y as i32, r, g, bl, 0.95);
+            let px = x as f32 + 0.5;
+            let py = y as f32 + 0.5;
+            let outer = rr_coverage(px, py, w as f32, h as f32, r_out);
+            let inner = rr_coverage(px - b, py - b, iw, ih, r_in);
+            let cov = (outer - inner).clamp(0.0, 1.0);
+            if cov > 0.0 {
+                blend_px(canvas, w, h, x as i32, y as i32, cr, cg, cb, cov * MARKER_A);
             }
         }
     }
