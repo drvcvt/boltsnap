@@ -579,19 +579,19 @@ impl Daemon {
         self.draw(qh);
     }
 
-    /// Copy the full image of the card under the cursor to the clipboard.
-    /// For video cards this is a no-op (raw video bytes are not meaningful on the
-    /// clipboard; use drag or Save instead).
+    /// Copy the card under the cursor to the clipboard: an image as `image/png`,
+    /// a video as a `text/uri-list` file reference (path only, never bytes).
     fn copy_card(&mut self, id: u64) {
         if let Some(t) = self.model.get(id) {
+            let path = t.png_path.clone();
             if t.kind == crate::shelf::model::CardKind::Video {
-                eprintln!(
-                    "boltsnap daemon: right-click copy not supported for video cards \
-                     (use drag or Save)"
-                );
+                // Video: copy a file REFERENCE (path), not bytes — instant for any
+                // clip length and pasteable as a file. No auto-clipboard elsewhere.
+                if let Err(e) = crate::clipboard::copy_uri_to_clipboard(&path) {
+                    eprintln!("boltsnap daemon: video copy failed: {e}");
+                }
                 return;
             }
-            let path = t.png_path.clone();
             if let Err(e) = crate::clipboard::copy_to_clipboard(&path, crate::Backend::Wayland) {
                 eprintln!("boltsnap daemon: copy failed: {e}");
             }

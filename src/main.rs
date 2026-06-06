@@ -15,7 +15,7 @@ mod select_skia;
 mod shelf;
 
 use crate::capture::{capture, strip_uniform_border};
-use crate::clipboard::{copy_to_clipboard, serve_wayland_clipboard};
+use crate::clipboard::{copy_to_clipboard, serve_wayland_clipboard, serve_wayland_uri_list};
 use crate::editor::run_editor;
 use crate::paths::*;
 
@@ -295,6 +295,14 @@ fn run() -> DynResult<()> {
                 .clone()
                 .ok_or("__serve-clipboard needs a PNG path")?;
             return serve_wayland_clipboard(&path);
+        }
+        "__serve-clipboard-uri" => {
+            // Detached child kept alive to serve Wayland file-reference paste.
+            let path = args
+                .image
+                .clone()
+                .ok_or("__serve-clipboard-uri needs a path")?;
+            return serve_wayland_uri_list(&path);
         }
         "edit" => {
             let image = args.image.clone().unwrap_or(last_screenshot_path()?);
