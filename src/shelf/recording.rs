@@ -4,7 +4,7 @@
 //! the indicator (●+MM:SS+Stop, then Confirm/Cancel).
 //!
 //! The live lifecycle (spawning the child, SIGINT, off-thread `wait()`/ffmpeg,
-//! ingesting the finished mp4) is driven from `shelf/mod.rs`; this module keeps
+//! finalizing the finished mp4 into a card) is driven from `shelf/mod.rs`; this module keeps
 //! the deterministic, testable pieces (indicator geometry, hit-testing, drawing
 //! into a premultiplied-BGRA canvas) separate.
 

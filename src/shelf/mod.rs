@@ -523,6 +523,9 @@ impl Daemon {
             crate::ipc::Request::StartRecording { x, y, w, h } => {
                 self.start_recording(x, y, w, h, &qh);
             }
+            crate::ipc::Request::StartRecordingOutput { name } => {
+                self.start_recording_output(name);
+            }
             crate::ipc::Request::RecordingThumb { id, thumb } => {
                 self.update_recording_thumb(id, thumb, &qh);
             }
@@ -989,6 +992,61 @@ impl Daemon {
         eprintln!("boltsnap daemon: recording {} -> {:?}", geo.to_arg(), codec);
     }
 
+    /// Begin a fullscreen recording of `output` (a Hyprland monitor name) via
+    /// `wf-recorder -o`. No marker, no indicator — an overlay would be captured
+    /// into the fullscreen video — so stop is keyboard-only (`boltsnap stop`,
+    /// already bound) and finalizes straight into a card. One recording at a time.
+    fn start_recording_output(&mut self, name: String) {
+        if self.recording.is_some() {
+            eprintln!("boltsnap daemon: a recording is already in progress");
+            return;
+        }
+        if !crate::paths::has_cmd("wf-recorder") {
+            eprintln!("boltsnap daemon: wf-recorder not found — cannot record");
+            notify("Recording needs wf-recorder — install it (e.g. pacman -S wf-recorder)");
+            return;
+        }
+        let path = crate::paths::rec_file("rec", "mp4");
+        let codec = crate::config::resolve_record_codec(None, &crate::config::Config::load());
+        let child = match std::process::Command::new("wf-recorder")
+            .args(crate::record::wf_recorder_output_args(&name, &codec, &path))
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("boltsnap daemon: failed to spawn wf-recorder: {e}");
+                notify(&format!("Recording failed to start: {e}"));
+                return;
+            }
+        };
+        self.recording = Some(Recording {
+            child: Some(child),
+            path,
+            started: std::time::Instant::now(),
+            geo: crate::record::Geometry {
+                x: 0,
+                y: 0,
+                w: 0,
+                h: 0,
+            },
+            marker: None,
+            marker_pool: None,
+            marker_region: None,
+            marker_configured: false,
+            indicator: None,
+            indicator_pool: None,
+            indicator_configured: false,
+            phase: RecPhase::Recording,
+            last_drawn_secs: None,
+            auto_confirm: true,
+        });
+        notify("Recording full screen — Super+Alt+Print to stop");
+        eprintln!("boltsnap daemon: recording output {name} -> {codec:?}");
+    }
+
     /// Build the click-through marker layer surface (a `Top` layer with an EMPTY
     /// input region so clicks pass through to the apps being recorded). Returns
     /// the surface, its draw pool, and the region (retained so it isn't destroyed).
@@ -1188,25 +1246,31 @@ impl Daemon {
     }
 
     /// Stop the active recording: SIGINT wf-recorder (so it FINALIZES the mp4 —
-    /// `Child::kill` only sends SIGKILL, which would truncate/corrupt it), drop
-    /// the marker, and switch the indicator to Confirm/Cancel. The child is NOT
-    /// reaped here; Confirm/Cancel `wait()`s it off-thread once the user decides
-    /// (so Confirm's ffmpeg sees the fully-finalized file).
+    /// SIGKILL would truncate it). For a region recording, drop the marker and
+    /// switch the indicator to Confirm/Cancel. For a fullscreen recording
+    /// (`auto_confirm`), there is no Confirm/Cancel overlay, so finalize straight
+    /// into a card.
     fn stop_recording(&mut self) {
-        let rec = match self.recording.as_mut() {
-            Some(r) if r.phase == RecPhase::Recording => r,
+        let auto = match self.recording.as_ref() {
+            Some(r) if r.phase == RecPhase::Recording => r.auto_confirm,
             _ => return,
         };
-        if let Some(child) = rec.child.as_ref() {
+        if let Some(child) = self.recording.as_ref().and_then(|r| r.child.as_ref()) {
             unsafe {
                 libc::kill(child.id() as i32, libc::SIGINT);
             }
         }
-        // Drop the click-through marker frame; a finished recording needn't be framed.
-        rec.marker = None;
-        rec.marker_pool = None;
-        rec.marker_region = None;
-        rec.phase = RecPhase::Stopped;
+        if auto {
+            self.finalize_into_card();
+            return;
+        }
+        if let Some(rec) = self.recording.as_mut() {
+            // Drop the click-through marker; a finished recording needn't be framed.
+            rec.marker = None;
+            rec.marker_pool = None;
+            rec.marker_region = None;
+            rec.phase = RecPhase::Stopped;
+        }
         self.draw_indicator();
     }
 
