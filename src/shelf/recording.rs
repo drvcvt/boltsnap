@@ -18,11 +18,14 @@ use crate::record::Geometry;
 pub const IND_W: u32 = 124;
 pub const IND_H: u32 = 34;
 
-/// Thickness of the click-through region marker border, and how far the marker
-/// surface is inflated past the recorded rect on each side (so the border sits
-/// just OUTSIDE the recording and is never captured).
+/// Thickness of the click-through region marker frame, its corner radius, and how
+/// far the marker surface is inflated past the recorded rect on each side. The
+/// inflate is the radius (not the border) so the rounded corners sit fully OUTSIDE
+/// the recording and are never captured; on the straight edges the frame floats a
+/// small `radius - border` gap off the rect.
 pub const MARKER_BORDER: u32 = 2;
-pub const MARKER_INFLATE: u32 = MARKER_BORDER;
+pub const MARKER_RADIUS: u32 = 6;
+pub const MARKER_INFLATE: u32 = MARKER_RADIUS;
 
 /// Which controls the indicator currently shows.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

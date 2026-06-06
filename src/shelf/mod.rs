@@ -1099,6 +1099,7 @@ impl Daemon {
             mw,
             mh,
             crate::shelf::recording::MARKER_BORDER,
+            crate::shelf::recording::MARKER_RADIUS,
         );
         let surface = layer.wl_surface();
         surface.damage_buffer(0, 0, mw as i32, mh as i32);
