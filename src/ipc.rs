@@ -25,11 +25,11 @@ pub enum Request {
         w: u32,
         h: u32,
     },
-    /// A finished recording is ready to ingest: the temp `.mp4` and a first-frame
-    /// `.png` thumbnail (both as paths; the daemon owns/reads them). Posted by the
-    /// daemon's off-thread Confirm worker back to its own socket.
-    RecordingDone {
-        video: PathBuf,
+    /// A finished recording's first-frame thumbnail is ready: replace card `id`'s
+    /// placeholder with the png at `thumb`. Posted by the off-thread finalize
+    /// worker back to the daemon's own socket.
+    RecordingThumb {
+        id: u64,
         thumb: PathBuf,
     },
 }
@@ -80,10 +80,10 @@ impl Request {
                 let header = json!({ "cmd": "record", "x": x, "y": y, "w": w, "h": h });
                 write_frame(&mut buf, header.to_string().as_bytes(), &[]).unwrap();
             }
-            Request::RecordingDone { video, thumb } => {
+            Request::RecordingThumb { id, thumb } => {
                 let header = json!({
-                    "cmd": "recording_done",
-                    "video": video.to_string_lossy(),
+                    "cmd": "recording_thumb",
+                    "id": id,
                     "thumb": thumb.to_string_lossy(),
                 });
                 write_frame(&mut buf, header.to_string().as_bytes(), &[]).unwrap();
@@ -116,8 +116,8 @@ impl Request {
                 w: v.get("w").and_then(|n| n.as_u64()).unwrap_or(0) as u32,
                 h: v.get("h").and_then(|n| n.as_u64()).unwrap_or(0) as u32,
             }),
-            Some("recording_done") => Ok(Request::RecordingDone {
-                video: PathBuf::from(v.get("video").and_then(|s| s.as_str()).unwrap_or("")),
+            Some("recording_thumb") => Ok(Request::RecordingThumb {
+                id: v.get("id").and_then(|n| n.as_u64()).unwrap_or(0),
                 thumb: PathBuf::from(v.get("thumb").and_then(|s| s.as_str()).unwrap_or("")),
             }),
             other => Err(io::Error::new(
@@ -250,15 +250,15 @@ mod tests {
     }
 
     #[test]
-    fn request_recording_done_roundtrip() {
-        let req = Request::RecordingDone {
-            video: PathBuf::from("/tmp/boltsnap-rec-1.mp4"),
+    fn request_recording_thumb_roundtrip() {
+        let req = Request::RecordingThumb {
+            id: 7,
             thumb: PathBuf::from("/tmp/boltsnap-rec-1.png"),
         };
         let mut cur = Cursor::new(req.encode());
         match Request::read(&mut cur).unwrap() {
-            Request::RecordingDone { video, thumb } => {
-                assert_eq!(video, PathBuf::from("/tmp/boltsnap-rec-1.mp4"));
+            Request::RecordingThumb { id, thumb } => {
+                assert_eq!(id, 7);
                 assert_eq!(thumb, PathBuf::from("/tmp/boltsnap-rec-1.png"));
             }
             other => panic!("wrong variant: {other:?}"),

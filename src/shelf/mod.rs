@@ -523,8 +523,8 @@ impl Daemon {
             crate::ipc::Request::StartRecording { x, y, w, h } => {
                 self.start_recording(x, y, w, h, &qh);
             }
-            crate::ipc::Request::RecordingDone { video, thumb } => {
-                self.ingest_recording(video, thumb, &qh);
+            crate::ipc::Request::RecordingThumb { id, thumb } => {
+                self.update_recording_thumb(id, thumb, &qh);
             }
             crate::ipc::Request::StopRecording => {
                 // Same as clicking Stop in the indicator (no-op if not recording).
@@ -1210,24 +1210,63 @@ impl Daemon {
         self.draw_indicator();
     }
 
-    /// Confirm the stopped recording: on a DETACHED thread, `wait()` for
-    /// wf-recorder to finish finalizing the mp4, extract a first-frame thumbnail
-    /// with ffmpeg, then post `RecordingDone` back to our own socket. Nothing here
-    /// blocks the calloop loop. The indicator stays up until `ingest_recording`.
+    /// Confirm the stopped recording (region flow): finalize it into a card now.
     fn confirm_recording(&mut self) {
-        let rec = match self.recording.as_mut() {
-            Some(r) if r.phase == RecPhase::Stopped => r,
-            _ => return,
+        if !matches!(
+            self.recording.as_ref().map(|r| r.phase),
+            Some(RecPhase::Stopped)
+        ) {
+            return;
+        }
+        self.finalize_into_card();
+    }
+
+    /// Turn the active (already SIGINT'd) recording into a shelf card IMMEDIATELY
+    /// with a placeholder thumbnail, then fill in the real first frame off-thread.
+    /// Shared by the region Confirm button and the fullscreen keyboard-stop (which
+    /// has no Confirm step). Nothing length-dependent blocks the loop: `wait()` and
+    /// ffmpeg run on a detached thread and post `RecordingThumb` when done.
+    fn finalize_into_card(&mut self) {
+        let qh = match self.qh.clone() {
+            Some(q) => q,
+            None => return,
         };
-        let child = rec.child.take();
-        let video = rec.path.clone();
+        // Take the child + path, ending the &mut borrow before touching the model.
+        let (child, video) = match self.recording.as_mut() {
+            Some(r) => (r.child.take(), r.path.clone()),
+            None => return,
+        };
+        // Neutral placeholder so the card shows instantly (same look as the old
+        // missing-thumbnail fallback); the real first frame replaces it shortly.
+        let mut ph = image::RgbaImage::new(
+            crate::shelf::thumbnail::CARD_W,
+            crate::shelf::thumbnail::CARD_H,
+        );
+        for p in ph.pixels_mut() {
+            *p = image::Rgba([32, 32, 40, 255]);
+        }
+        let placeholder = crate::shelf::thumbnail::make_card_thumbnail(
+            &ph,
+            crate::shelf::thumbnail::CARD_W,
+            crate::shelf::thumbnail::CARD_H,
+        );
+        let id = self
+            .model
+            .add_kind(video.clone(), placeholder, "record".into(), CardKind::Video);
+        // Tear down overlays (indicator/marker drop with the Recording) and show.
+        self.recording = None;
+        self.start_anim(id, AnimKind::Appear);
+        self.relayout();
+        self.place_on_focused_output(&qh);
+        self.draw(&qh);
+
+        // Off-thread: wait for finalize (usually already done — SIGINT was sent at
+        // Stop) + extract a first-frame thumbnail, then post it back for swap-in.
         let thumb = crate::paths::rec_file("rec-thumb", "png");
         std::thread::spawn(move || {
-            // Wait for wf-recorder to finish writing the mp4 (SIGINT already sent).
             if let Some(mut c) = child {
                 let _ = c.wait();
             }
-            // First-frame thumbnail (best-effort; ingest tolerates a missing png).
             let _ = std::process::Command::new("ffmpeg")
                 .args(["-y", "-i"])
                 .arg(&video)
@@ -1237,7 +1276,7 @@ impl Daemon {
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
                 .status();
-            let _ = crate::ipc::send_to_shelf(crate::ipc::Request::RecordingDone { video, thumb });
+            let _ = crate::ipc::send_to_shelf(crate::ipc::Request::RecordingThumb { id, thumb });
         });
     }
 
@@ -1273,47 +1312,26 @@ impl Daemon {
         // `rec` dropped here -> marker + indicator surfaces (and the region) unmap.
     }
 
-    /// Ingest a finished recording posted via `RecordingDone`: load the first-frame
-    /// thumbnail (placeholder if missing), add a Video card, tear down the
-    /// indicator. The temp mp4 path becomes the card's file.
-    fn ingest_recording(
+    /// Swap a recording card's placeholder for its real first-frame thumbnail,
+    /// posted via `RecordingThumb`. Missing/unreadable png → keep the placeholder.
+    fn update_recording_thumb(
         &mut self,
-        video: std::path::PathBuf,
+        id: u64,
         thumb: std::path::PathBuf,
         qh: &QueueHandle<Self>,
     ) {
-        // Build the card thumbnail from the extracted first frame; fall back to a
-        // neutral placeholder so a missing/unreadable png never loses the video.
-        let frame = match image::open(&thumb) {
-            Ok(img) => img.to_rgba8(),
-            Err(_) => {
-                let mut ph = image::RgbaImage::new(
-                    crate::shelf::thumbnail::CARD_W,
-                    crate::shelf::thumbnail::CARD_H,
-                );
-                for p in ph.pixels_mut() {
-                    *p = image::Rgba([32, 32, 40, 255]);
-                }
-                ph
+        if let Ok(img) = image::open(&thumb) {
+            let card = crate::shelf::thumbnail::make_card_thumbnail(
+                &img.to_rgba8(),
+                crate::shelf::thumbnail::CARD_W,
+                crate::shelf::thumbnail::CARD_H,
+            );
+            if self.model.replace_thumb(id, card) {
+                self.draw(qh);
             }
-        };
+        }
         // The first-frame png was only needed to build the thumbnail.
         let _ = std::fs::remove_file(&thumb);
-
-        let card_thumb = crate::shelf::thumbnail::make_card_thumbnail(
-            &frame,
-            crate::shelf::thumbnail::CARD_W,
-            crate::shelf::thumbnail::CARD_H,
-        );
-        let id = self
-            .model
-            .add_kind(video, card_thumb, "record".into(), CardKind::Video);
-        // Tear down the indicator + any remaining overlay; recording is done.
-        self.recording = None;
-        self.start_anim(id, AnimKind::Appear);
-        self.relayout();
-        self.place_on_focused_output(qh);
-        self.draw(qh);
     }
 
     /// True if `surface` is the active recording's indicator surface.
