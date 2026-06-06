@@ -979,11 +979,12 @@ impl Daemon {
             marker_pool,
             marker_region,
             marker_configured: false,
-            indicator,
-            indicator_pool,
+            indicator: Some(indicator),
+            indicator_pool: Some(indicator_pool),
             indicator_configured: false,
             phase: RecPhase::Recording,
             last_drawn_secs: None,
+            auto_confirm: false,
         });
         eprintln!("boltsnap daemon: recording {} -> {:?}", geo.to_arg(), codec);
     }
@@ -1108,6 +1109,7 @@ impl Daemon {
     }
 
     /// Draw the indicator (●+MM:SS+Stop, or Confirm/Cancel) into its surface.
+    /// No-op when there is no indicator (fullscreen recording).
     fn draw_indicator(&mut self) {
         use crate::shelf::recording::{IND_H, IND_W};
         let rec = match self.recording.as_mut() {
@@ -1117,10 +1119,14 @@ impl Daemon {
         if !rec.indicator_configured {
             return;
         }
+        let (layer, pool) = match (rec.indicator.as_ref(), rec.indicator_pool.as_mut()) {
+            (Some(l), Some(p)) => (l, p),
+            _ => return,
+        };
         let phase = rec.phase;
         let elapsed = crate::shelf::recording::fmt_elapsed(rec.started.elapsed().as_secs());
         let stride = (IND_W * 4) as i32;
-        let (buffer, canvas) = match rec.indicator_pool.create_buffer(
+        let (buffer, canvas) = match pool.create_buffer(
             IND_W as i32,
             IND_H as i32,
             stride,
@@ -1130,10 +1136,10 @@ impl Daemon {
             Err(_) => return,
         };
         crate::shelf::paint::draw_indicator(canvas, IND_W, IND_H, phase, &elapsed);
-        let surface = rec.indicator.wl_surface();
+        let surface = layer.wl_surface();
         surface.damage_buffer(0, 0, IND_W as i32, IND_H as i32);
         let _ = buffer.attach_to(surface);
-        rec.indicator.commit();
+        layer.commit();
     }
 
     /// Per-loop recording housekeeping: refresh the MM:SS readout on whole-second
@@ -1314,7 +1320,8 @@ impl Daemon {
     fn is_indicator_surface(&self, surface: &WlSurface) -> bool {
         self.recording
             .as_ref()
-            .map(|r| r.indicator.wl_surface() == surface)
+            .and_then(|r| r.indicator.as_ref())
+            .map(|i| i.wl_surface() == surface)
             .unwrap_or(false)
     }
 

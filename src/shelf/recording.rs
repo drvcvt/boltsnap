@@ -68,14 +68,18 @@ pub struct Recording {
     pub marker_region: Option<Region>,
     pub marker_configured: bool,
 
-    /// Control indicator surface.
-    pub indicator: LayerSurface,
-    pub indicator_pool: SlotPool,
+    /// Control indicator surface. `None` for fullscreen recordings, which show no
+    /// overlay (it would be captured into the full-screen video).
+    pub indicator: Option<LayerSurface>,
+    pub indicator_pool: Option<SlotPool>,
     pub indicator_configured: bool,
 
     pub phase: RecPhase,
     /// Last whole-second value drawn, so the 1s tick only repaints on change.
     pub last_drawn_secs: Option<u64>,
+    /// True for fullscreen recordings: there is no Confirm/Cancel step, so a Stop
+    /// (keyboard) finalizes straight into a card.
+    pub auto_confirm: bool,
 }
 
 /// `(secs) -> "MM:SS"`, clamped sensibly (caps at 99:59 for layout sanity).
