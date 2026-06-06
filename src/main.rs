@@ -163,6 +163,7 @@ Usage:
   boltsnap edit [IMAGE] [-o PATH] [--no-copy]
   boltsnap daemon [--save-dir DIR]        run the screenshot shelf
   boltsnap record [--editor CMD]          select an area and screen-record it (Wayland)
+  boltsnap record full                    record the whole focused monitor (no selector)
   boltsnap [COMMAND] [--editor CMD]       annotate with a specific editor
   Config: ~/.config/boltsnap/config.toml  (save_dir, editor, record_codec, record_dir)
   boltsnap doctor
@@ -341,17 +342,28 @@ fn edit_last_screenshot(args: &Args) -> DynResult<()> {
     Ok(())
 }
 
-/// `boltsnap record`: open the region selector in record mode (translucent dim,
-/// REC pill, no still capture), then hand the confirmed rect to the daemon as a
-/// `StartRecording` request. Esc cancels (no-op). Maps the selection (overlay
-/// output-local logical px) to compositor-global coords via the focused
-/// monitor's layout origin.
 fn record_flow(args: &Args) -> DynResult<()> {
-    let _ = args; // (reserved for future flags)
     if !crate::paths::has_cmd("wf-recorder") {
         return Err(
             "wf-recorder not found — install it to record (e.g. pacman -S wf-recorder)".into(),
         );
+    }
+    // Optional target: `boltsnap record full` records the whole focused monitor
+    // (instant, no selector); absent or `area` opens the region selector.
+    let target = args
+        .image
+        .as_deref()
+        .and_then(|p| p.to_str())
+        .unwrap_or("area");
+    if matches!(target, "full" | "screen" | "fullscreen") {
+        let Some(name) = crate::shelf::focused_monitor_name() else {
+            return Err(
+                "could not determine the focused monitor (needs Hyprland) for fullscreen record"
+                    .into(),
+            );
+        };
+        crate::ipc::send_to_shelf(crate::ipc::Request::StartRecordingOutput { name })?;
+        return Ok(());
     }
     let Some(rect) = crate::select_skia::run_select_record()? else {
         return Ok(()); // cancelled

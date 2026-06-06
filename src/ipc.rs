@@ -25,6 +25,11 @@ pub enum Request {
         w: u32,
         h: u32,
     },
+    /// Start a fullscreen recording of a whole output (Hyprland monitor name) via
+    /// `wf-recorder -o`. No overlay; stop is keyboard-only and auto-finalizes.
+    StartRecordingOutput {
+        name: String,
+    },
     /// A finished recording's first-frame thumbnail is ready: replace card `id`'s
     /// placeholder with the png at `thumb`. Posted by the off-thread finalize
     /// worker back to the daemon's own socket.
@@ -80,6 +85,10 @@ impl Request {
                 let header = json!({ "cmd": "record", "x": x, "y": y, "w": w, "h": h });
                 write_frame(&mut buf, header.to_string().as_bytes(), &[]).unwrap();
             }
+            Request::StartRecordingOutput { name } => {
+                let header = json!({ "cmd": "record_output", "name": name });
+                write_frame(&mut buf, header.to_string().as_bytes(), &[]).unwrap();
+            }
             Request::RecordingThumb { id, thumb } => {
                 let header = json!({
                     "cmd": "recording_thumb",
@@ -115,6 +124,13 @@ impl Request {
                 y: v.get("y").and_then(|n| n.as_i64()).unwrap_or(0) as i32,
                 w: v.get("w").and_then(|n| n.as_u64()).unwrap_or(0) as u32,
                 h: v.get("h").and_then(|n| n.as_u64()).unwrap_or(0) as u32,
+            }),
+            Some("record_output") => Ok(Request::StartRecordingOutput {
+                name: v
+                    .get("name")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("")
+                    .to_string(),
             }),
             Some("recording_thumb") => Ok(Request::RecordingThumb {
                 id: v.get("id").and_then(|n| n.as_u64()).unwrap_or(0),
@@ -245,6 +261,18 @@ mod tests {
             Request::StartRecording { x, y, w, h } => {
                 assert_eq!((x, y, w, h), (-100, 40, 800, 600));
             }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn request_start_recording_output_roundtrip() {
+        let req = Request::StartRecordingOutput {
+            name: "DP-1".into(),
+        };
+        let mut cur = Cursor::new(req.encode());
+        match Request::read(&mut cur).unwrap() {
+            Request::StartRecordingOutput { name } => assert_eq!(name, "DP-1"),
             other => panic!("wrong variant: {other:?}"),
         }
     }
