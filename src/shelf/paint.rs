@@ -944,7 +944,7 @@ mod tests {
     fn marker_border_only_paints_the_edge() {
         let (w, h) = (40u32, 30u32);
         let mut buf = vec![0u8; (w * h * 4) as usize];
-        draw_marker_border(&mut buf, w, h, 2);
+        draw_marker_border(&mut buf, w, h, 2, 0);
         // Top-left edge pixel is painted (alpha > 0).
         let edge = 0usize;
         assert!(buf[edge + 3] > 0, "border edge should be painted");
