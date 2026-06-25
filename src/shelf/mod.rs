@@ -50,7 +50,7 @@ use wayland_client::{
 };
 
 use crate::DynResult;
-use crate::shelf::layout::{Hit, Layout, LayoutConfig};
+use crate::shelf::layout::{Hit, Layout, LayoutConfig, ThumbRect};
 use crate::shelf::model::{CardKind, ShelfModel};
 use crate::shelf::recording::{IndButton, RecPhase, Recording};
 
@@ -122,11 +122,9 @@ struct PressState {
     dragging: bool,
 }
 
-/// Duration of a card appear/dismiss animation.
-const ANIM_MS: u128 = 150;
 /// How long the ✓ "saved" flash stays on the Save button.
 const SAVE_FLASH_MS: u128 = 700;
-/// Card scale at the far end of the animation (start of appear / end of dismiss).
+/// Card scale at the far end of the appear/dismiss animation.
 const ANIM_SCALE_MIN: f32 = 0.88;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -135,8 +133,19 @@ enum AnimKind {
     Disappear,
 }
 
+impl AnimKind {
+    /// Per-kind duration in ms. The dismiss runs a touch longer than the appear
+    /// so it reads as smooth rather than snappy.
+    fn dur(self) -> u128 {
+        match self {
+            AnimKind::Appear => 150,
+            AnimKind::Disappear => 240,
+        }
+    }
+}
+
 /// A running per-card animation. `start` is when it began; progress is
-/// `elapsed / ANIM_MS`, eased, until it reaches 1.0 and is retired.
+/// `elapsed / kind.dur()`, eased, until it reaches 1.0 and is retired.
 struct CardAnim {
     id: u64,
     kind: AnimKind,
@@ -796,12 +805,14 @@ impl Daemon {
             if a.id != id {
                 continue;
             }
-            let t = (a.start.elapsed().as_millis() as f32 / ANIM_MS as f32).clamp(0.0, 1.0);
+            let t = (a.start.elapsed().as_millis() as f32 / a.kind.dur() as f32).clamp(0.0, 1.0);
             let eased = 1.0 - (1.0 - t).powi(3); // ease-out cubic
             let span = 1.0 - ANIM_SCALE_MIN;
             return match a.kind {
                 AnimKind::Appear => (ANIM_SCALE_MIN + span * eased, eased),
-                AnimKind::Disappear => (1.0 - span * eased, 1.0 - eased),
+                // Shrink toward nothing in step with the collapsing slot (so the
+                // leaving card doesn't overlap the cards sliding up), and fade.
+                AnimKind::Disappear => (1.0 - eased, 1.0 - eased),
             };
         }
         (1.0, 1.0)
@@ -817,11 +828,11 @@ impl Daemon {
         let done: Vec<(u64, AnimKind)> = self
             .anims
             .iter()
-            .filter(|a| a.start.elapsed().as_millis() >= ANIM_MS)
+            .filter(|a| a.start.elapsed().as_millis() >= a.kind.dur())
             .map(|a| (a.id, a.kind))
             .collect();
         self.anims
-            .retain(|a| a.start.elapsed().as_millis() < ANIM_MS);
+            .retain(|a| a.start.elapsed().as_millis() < a.kind.dur());
         let mut removed = false;
         for (id, kind) in done {
             if kind == AnimKind::Disappear
@@ -845,6 +856,61 @@ impl Daemon {
         self.draw(qh);
     }
 
+    /// Layout for the current frame: like the settled layout, but each card with
+    /// an in-flight Disappear animation has its slot (height + the gap it owns)
+    /// collapsed by its eased progress. The shelf is bottom-anchored, so shrinking
+    /// the surface in lockstep makes the cards above slide down smoothly into the
+    /// freed space instead of snapping the instant the card is removed.
+    fn animated_layout(&self) -> Layout {
+        let cfg = &self.cfg;
+        let items: Vec<(u64, u32, u32, f32)> = self
+            .model
+            .newest_first()
+            .map(|t| {
+                let collapse = self
+                    .anims
+                    .iter()
+                    .find(|a| a.id == t.id && a.kind == AnimKind::Disappear)
+                    .map(|a| {
+                        let p = (a.start.elapsed().as_millis() as f32 / a.kind.dur() as f32)
+                            .clamp(0.0, 1.0);
+                        1.0 - (1.0 - p).powi(3) // ease-out cubic, matches anim_factor
+                    })
+                    .unwrap_or(0.0);
+                (t.id, t.thumb.width(), t.thumb.height(), collapse)
+            })
+            .collect();
+        if items.is_empty() {
+            return Layout::compute(&[], cfg);
+        }
+        let widest = items.iter().map(|(_, w, ..)| *w).max().unwrap_or(0);
+        let mut thumbs = Vec::with_capacity(items.len());
+        let mut y = cfg.pad;
+        for (i, (id, w, h, c)) in items.iter().enumerate() {
+            if i > 0 {
+                // The gap before card i collapses with card i (it leads the dead
+                // slot); when the newest card is the one leaving, the gap after it
+                // (before card 1) collapses with it instead.
+                let g = c.max(if i == 1 { items[0].3 } else { 0.0 });
+                y += (cfg.gap as f32 * (1.0 - g)).round() as u32;
+            }
+            let he = (*h as f32 * (1.0 - c)).round() as u32;
+            thumbs.push(ThumbRect {
+                id: *id,
+                x: cfg.pad,
+                y,
+                w: *w,
+                h: he,
+            });
+            y += he;
+        }
+        Layout {
+            width: cfg.pad * 2 + widest,
+            height: y + cfg.pad,
+            thumbs,
+        }
+    }
+
     fn draw(&mut self, _qh: &QueueHandle<Self>) {
         if !self.shelf_configured {
             self.shelf_pending_draw = true;
@@ -859,16 +925,19 @@ impl Daemon {
         // remove, preview). That latch is far worse than the redraw it prevented,
         // and the real freeze cause (a synchronous pipe write) is fixed by
         // threading send_request, so this suppression is no longer needed.
-        let layer = match self.layer.as_ref() {
-            Some(l) => l,
-            None => return,
-        };
-        let (w, h) = (self.width.max(1), self.height.max(1));
+        // Render against an animated layout that collapses any disappearing card's
+        // slot, and resize the (bottom-anchored) surface to match so the cards
+        // above slide down smoothly during the dismiss instead of snapping at the
+        // end. When nothing is animating this equals the settled layout.
+        let render = self.animated_layout();
+        let (w, h) = (render.width.max(1), render.height.max(1));
+        let size_changed = w != self.width || h != self.height;
+        self.width = w;
+        self.height = h;
         // Per-card (scale, opacity) for in-flight appear/dismiss animations. Built
         // before create_buffer because `canvas` mutably borrows self.pool, which
         // would otherwise block the immutable self borrow anim_factor needs.
-        let anims: Vec<(u64, f32, f32)> = self
-            .layout
+        let anims: Vec<(u64, f32, f32)> = render
             .thumbs
             .iter()
             .filter_map(|r| {
@@ -880,6 +949,13 @@ impl Daemon {
                 }
             })
             .collect();
+        let layer = match self.layer.as_ref() {
+            Some(l) => l,
+            None => return,
+        };
+        if size_changed {
+            layer.set_size(w, h);
+        }
         let stride = (w * 4) as i32;
         let (buffer, canvas) = match self.pool.create_buffer(
             w as i32,
@@ -895,7 +971,7 @@ impl Daemon {
             canvas,
             w,
             h,
-            &self.layout,
+            &render,
             &self.model,
             self.hovered,
             &self.cfg,
