@@ -727,7 +727,12 @@ impl Daemon {
                     stride,
                     wayland_client::protocol::wl_shm::Format::Argb8888,
                 ) {
-                    canvas.copy_from_slice(&bytes);
+                    // SlotPool rounds the canvas length up to a 64-byte boundary,
+                    // so `canvas` can be a few bytes longer than the tightly-packed
+                    // icon (`iw*ih*4`). The wl_buffer uses our exact stride, so the
+                    // trailing slack is unused — copy only the real bytes (a plain
+                    // copy_from_slice panics on the length mismatch).
+                    canvas[..bytes.len()].copy_from_slice(&bytes);
                     let _ = buf.attach_to(&icon);
                     icon.damage_buffer(0, 0, iw as i32, ih as i32);
                     icon.commit();
