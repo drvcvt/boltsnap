@@ -7,3 +7,7 @@
 .DS_Store
 .superpowers/
 .claude/
+# internal agent/dev artifacts — not for the public repo
+/docs/handoffs/
+/docs/reviews/
+/docs/superpowers/

@@ -102,6 +102,10 @@ boltsnap area --no-copy -o - | eddy -f -
 boltsnap area --no-copy -o - | satty --filename -
 ```
 
+[**eddy**](https://github.com/drvcvt/eddy) is boltsnap's companion annotation
+editor (separate repo). The shelf card viewer and the `editor` / `--editor`
+setting default to it — install eddy to get the full click-to-annotate flow.
+
 ## Suggested keybinds
 
 ```
