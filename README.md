@@ -40,6 +40,28 @@ sudo install -m755 boltsnap-*/boltsnap /usr/local/bin/
 cargo install --path .
 ```
 
+### Arch Linux
+
+The tagged release binaries can lag behind `main` — for the current shelf and
+screen-recording features, build from source:
+
+```sh
+sudo pacman -S --needed rust wayland libxkbcommon pkgconf base-devel wf-recorder
+git clone https://github.com/drvcvt/boltsnap
+cd boltsnap
+cargo install --path .        # -> ~/.cargo/bin/boltsnap
+```
+
+For the annotation editor (shelf cards open in it), also build
+[eddy](https://github.com/drvcvt/eddy):
+
+```sh
+sudo pacman -S --needed cmake qt6-base qt6-svg qt6-multimedia base-devel
+git clone https://github.com/drvcvt/eddy
+cd eddy && cmake -S . -B build && cmake --build build
+sudo install -m755 build/eddy /usr/local/bin/   # or put it on your PATH
+```
+
 ### NixOS
 
 A `flake.nix` is included.
