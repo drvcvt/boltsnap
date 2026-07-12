@@ -50,6 +50,17 @@ struct TrayMenuModel {
     settings_enabled: bool,
 }
 
+fn monitor_label(monitor: &Monitor) -> String {
+    let description = monitor.description.trim();
+    if description.is_empty() {
+        monitor.name.clone()
+    } else if description == monitor.name || description.contains(&format!("({})", monitor.name)) {
+        description.to_owned()
+    } else {
+        format!("{description} ({})", monitor.name)
+    }
+}
+
 fn menu_model(snapshot: &TraySnapshot) -> TrayMenuModel {
     let focused_selected = snapshot
         .monitors
@@ -71,7 +82,7 @@ fn menu_model(snapshot: &TraySnapshot) -> TrayMenuModel {
         default_labels: snapshot
             .monitors
             .iter()
-            .map(|monitor| format!("{} ({})", monitor.description, monitor.name))
+            .map(monitor_label)
             .chain(std::iter::once("Both displays".into()))
             .collect(),
         default_selected,
@@ -331,6 +342,22 @@ mod tests {
         assert!(!model.show_frame);
         assert!(model.disk_add_to_shelf);
         assert!(model.settings_enabled);
+    }
+
+    #[test]
+    fn monitor_label_does_not_duplicate_an_embedded_connector() {
+        let monitor = Monitor {
+            name: "DP-1".into(),
+            description: "AOC 27G4HRE (DP-1)".into(),
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1080,
+            scale: 1.0,
+            focused: true,
+        };
+
+        assert_eq!(monitor_label(&monitor), "AOC 27G4HRE (DP-1)");
     }
 
     #[test]
