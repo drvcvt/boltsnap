@@ -167,7 +167,7 @@ Usage:
   boltsnap edit [IMAGE] [-o PATH] [--no-copy]
   boltsnap daemon [--save-dir DIR]        run the screenshot shelf
   boltsnap record [--editor CMD]          select an area and screen-record it (Wayland)
-  boltsnap record full                    record the whole focused monitor (no selector)
+  boltsnap record full                    record the configured fullscreen target (no selector)
   boltsnap recording status --json
   boltsnap recording watch --json
   boltsnap recording show-controls
@@ -369,21 +369,15 @@ fn record_flow(args: &Args) -> DynResult<()> {
             "wf-recorder not found — install it to record (e.g. pacman -S wf-recorder)".into(),
         );
     }
-    // Optional target: `boltsnap record full` records the whole focused monitor
-    // (instant, no selector); absent or `area` opens the region selector.
+    // Optional target: `boltsnap record full` uses the daemon's configured
+    // fullscreen target; absent or `area` opens the region selector.
     let target = args
         .image
         .as_deref()
         .and_then(|p| p.to_str())
         .unwrap_or("area");
     if matches!(target, "full" | "screen" | "fullscreen") {
-        let Some(name) = crate::shelf::focused_monitor_name() else {
-            return Err(
-                "could not determine the focused monitor (needs Hyprland) for fullscreen record"
-                    .into(),
-            );
-        };
-        crate::ipc::send_to_shelf(crate::ipc::Request::StartRecordingOutput { name })?;
+        checked_recording_call(crate::ipc::Request::StartDefaultRecording)?;
         return Ok(());
     }
     let mut prefs = crate::config::Config::load().recording_prefs();

@@ -1,5 +1,5 @@
-use super::{Geometry, Monitor, wf_recorder_args, wf_recorder_output_args};
-use crate::config::RecordBothMode;
+use super::{Geometry, Monitor, resolve_record_outputs, wf_recorder_args, wf_recorder_output_args};
+use crate::config::{RecordBothMode, RecordingPrefs};
 use std::collections::BTreeMap;
 use std::fs;
 use std::io;
@@ -38,6 +38,22 @@ pub enum SessionPhase {
 pub enum CaptureScope {
     Area(Geometry),
     Outputs(Vec<String>),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct StartPlan {
+    pub outputs: Vec<Monitor>,
+    pub both_mode: RecordBothMode,
+    pub notice: Option<String>,
+}
+
+pub fn start_plan(prefs: &RecordingPrefs, monitors: &[Monitor]) -> Result<StartPlan, String> {
+    let (outputs, notice) = resolve_record_outputs(&prefs.default_target, monitors)?;
+    Ok(StartPlan {
+        outputs,
+        both_mode: prefs.both_mode,
+        notice,
+    })
 }
 
 #[derive(Debug)]
@@ -689,6 +705,7 @@ while :; do sleep 1; done
         let scope = CaptureScope::Outputs(vec!["DP-3".into(), "DP-1".into()]);
         let t0 = Instant::now();
         let active = spawn_segment(&scope, "h264_nvenc", &tools).unwrap();
+        assert_eq!(active.len(), 2);
         let mut session = RecordingSession::new(
             scope,
             Vec::new(),
@@ -892,5 +909,105 @@ while :; do sleep 1; done
         ));
         assert_eq!(fs::read(&path).unwrap(), b"recoverable");
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn two_monitors() -> Vec<Monitor> {
+        vec![
+            Monitor {
+                name: "DP-3".into(),
+                description: "BenQ".into(),
+                x: 0,
+                y: 0,
+                width: 2560,
+                height: 1440,
+                scale: 1.0,
+                focused: true,
+            },
+            Monitor {
+                name: "DP-1".into(),
+                description: "AOC".into(),
+                x: 2560,
+                y: 0,
+                width: 1920,
+                height: 1080,
+                scale: 1.0,
+                focused: false,
+            },
+        ]
+    }
+
+    #[test]
+    fn focused_start_plan_has_one_recorder_child() {
+        let plan = start_plan(&crate::config::RecordingPrefs::default(), &two_monitors()).unwrap();
+        assert_eq!(plan.outputs[0].name, "DP-3");
+        assert_eq!(plan.outputs.len(), 1);
+        assert_eq!(plan.notice, None);
+    }
+
+    #[test]
+    fn named_start_plan_selects_the_configured_output() {
+        let prefs = crate::config::RecordingPrefs {
+            default_target: crate::config::RecordDefaultTarget::Output("DP-1".into()),
+            ..crate::config::RecordingPrefs::default()
+        };
+        let plan = start_plan(&prefs, &two_monitors()).unwrap();
+        assert_eq!(plan.outputs[0].name, "DP-1");
+        assert_eq!(plan.outputs.len(), 1);
+        assert_eq!(plan.notice, None);
+    }
+
+    #[test]
+    fn disconnected_start_plan_falls_back_to_focused_output() {
+        let prefs = crate::config::RecordingPrefs {
+            default_target: crate::config::RecordDefaultTarget::Output("HDMI-A-9".into()),
+            ..crate::config::RecordingPrefs::default()
+        };
+        let plan = start_plan(&prefs, &two_monitors()).unwrap();
+        assert_eq!(plan.outputs[0].name, "DP-3");
+        assert!(plan.notice.unwrap().contains("HDMI-A-9"));
+    }
+
+    #[test]
+    fn both_separate_start_plan_has_one_recorder_child_per_output() {
+        let prefs = crate::config::RecordingPrefs {
+            default_target: crate::config::RecordDefaultTarget::Both,
+            both_mode: RecordBothMode::Separate,
+            ..crate::config::RecordingPrefs::default()
+        };
+        let plan = start_plan(&prefs, &two_monitors()).unwrap();
+        assert_eq!(plan.outputs.len(), 2);
+        assert_eq!(plan.both_mode, RecordBothMode::Separate);
+    }
+
+    #[test]
+    fn both_combined_start_plan_keeps_two_outputs_in_one_session() {
+        let prefs = crate::config::RecordingPrefs {
+            default_target: crate::config::RecordDefaultTarget::Both,
+            both_mode: RecordBothMode::Combined,
+            ..crate::config::RecordingPrefs::default()
+        };
+        let plan = start_plan(&prefs, &two_monitors()).unwrap();
+        assert_eq!(
+            plan.outputs
+                .iter()
+                .map(|monitor| monitor.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["DP-3", "DP-1"]
+        );
+        assert_eq!(plan.outputs.len(), 2);
+        assert_eq!(plan.both_mode, RecordBothMode::Combined);
+        assert_eq!(plan.notice, None);
+    }
+
+    #[test]
+    fn both_with_one_output_reports_fallback() {
+        let prefs = crate::config::RecordingPrefs {
+            default_target: crate::config::RecordDefaultTarget::Both,
+            ..crate::config::RecordingPrefs::default()
+        };
+        let monitors = two_monitors();
+        let plan = start_plan(&prefs, &monitors[..1]).unwrap();
+        assert_eq!(plan.outputs.len(), 1);
+        assert!(plan.notice.unwrap().contains("one"));
     }
 }
