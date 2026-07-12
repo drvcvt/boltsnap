@@ -134,6 +134,7 @@ setting default to it — install eddy to get the full click-to-annotate flow.
 bind = , Print, exec, boltsnap area
 bind = SHIFT, Print, exec, boltsnap area --edit
 bind = CTRL, Print, exec, boltsnap full
+bind = ALT, Print, exec, boltsnap record
 bind = $mod, Print, exec, boltsnap --edit
 ```
 
@@ -231,16 +232,46 @@ directory.
 ## Screen recording
 
 ```sh
-boltsnap record
+boltsnap record                         # select a region, or show controls when active
+boltsnap record full                    # record the configured fullscreen target
+boltsnap recording status --json       # one machine-readable state snapshot
+boltsnap recording watch --json        # newline-delimited state stream
 ```
 
-Opens the region selector in record mode. Draw a region, then click the **REC**
-pill to start recording. A thin click-through border frames the captured area
-while you use your PC normally. The shelf tray shows **●** + elapsed time and a
-**Stop** button.
+When idle, `boltsnap record` opens the region selector. Draw a region and click
+**REC** to start. The checkbox beside **REC** controls whether a thin,
+click-through frame remains around the captured area; that choice is saved.
+When a recording is already running, paused, or being saved, the same command
+opens the centered recording controls instead of starting another recording.
+This makes an `Alt+Print` binding a state-aware recording toggle.
 
-Hit **Stop** → **Confirm** to finish. The resulting `.mp4` appears in the shelf
-as a **video card** (▶ badge); clicking it opens the file in **eddy**.
+The native tray icon is available whenever the daemon is running. Its
+right-click menu can start a region or fullscreen recording and stores the
+default monitor, **Both displays**, separate/combined output mode, frame
+visibility, and whether permanent Disk Saves should also appear in the shelf.
+
+The recording controls offer:
+
+- **Pause / Resume** — pause closes the current segment; resume starts the next.
+  At save time compatible segments are joined with FFmpeg stream copy, so the
+  normal pause path does not re-encode or reduce quality. Paused time is not
+  included in the displayed duration.
+- **Shelf Save** — finalize into Boltsnap's disk-backed cache and add a temporary
+  video card. Dismissing the card deletes that cached recording.
+- **Disk Save** — finalize permanently in `record_dir`. With the tray toggle
+  enabled, the shelf card references that same permanent file; it does not make
+  a second copy, and dismissing the card never deletes the disk file.
+- **Discard** — stop the recorder, remove its cache segments, and create no card
+  or permanent file.
+
+A single uninterrupted recording is moved directly and skips FFmpeg at save
+time. Separate dual-monitor mode creates one native-resolution clip per output.
+Combined mode arranges both outputs like the Hyprland layout and is the only
+ordinary path that re-encodes; it uses high-quality settings intended to be
+visually lossless. Failed saves keep their source segments so they can be
+retried or discarded instead of losing the recording.
+
+Video cards carry a **▶** badge; clicking one opens the file in **eddy**.
 
 **Requires `wf-recorder`** (uses `wlr-screencopy` directly — no PipeWire,
 no portal, no permission dialog).
@@ -249,6 +280,25 @@ no portal, no permission dialog).
 # Arch / Manjaro
 pacman -S wf-recorder
 ```
+
+### Recording controls and shell integration
+
+The public control commands are suitable for scripts and shell widgets:
+
+```sh
+boltsnap recording show-controls
+boltsnap recording pause
+boltsnap recording resume
+boltsnap recording save-shelf
+boltsnap recording save-disk
+boltsnap recording discard
+```
+
+`boltsnap stop` remains a compatibility alias for `recording save-shelf`.
+Quickshell can consume the long-lived `recording watch --json` stream to show a
+red running timer, an amber paused timer, and `Saving…` while finalizing. It calls
+the public commands above for controls; Boltsnap does not depend on Quickshell,
+and no video data or paths are sent through IPC.
 
 ### Recording config keys
 
@@ -281,15 +331,8 @@ record_disk_add_to_shelf = true
 
 `$BOLTSNAP_RECORD_CODEC` overrides `record_codec` from the environment.
 
-### Suggested keybind
-
-```
-bind = ALT, Print, exec, boltsnap record
-```
-
-`boltsnap record` is a separate command from screenshot — bind it independently.
-
-**v1 limitations:** single-take only (no pause); video only (no audio).
+Recording currently captures video only; audio capture is not part of this
+workflow.
 
 ## License
 
