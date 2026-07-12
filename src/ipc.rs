@@ -24,6 +24,7 @@ pub enum Request {
     RecordingControl {
         action: RecordingAction,
     },
+    StartDefaultRecording,
     /// Stop an in-progress recording (same as the indicator's Stop button). Sent by
     /// `boltsnap stop` for a keyboard stop.
     StopRecording,
@@ -307,6 +308,10 @@ impl Request {
                 });
                 write_frame(&mut buf, header.to_string().as_bytes(), &[]).unwrap();
             }
+            Request::StartDefaultRecording => {
+                let header = json!({ "cmd": "record_default" });
+                write_frame(&mut buf, header.to_string().as_bytes(), &[]).unwrap();
+            }
             Request::StopRecording => {
                 let header = json!({ "cmd": "stop" });
                 write_frame(&mut buf, header.to_string().as_bytes(), &[]).unwrap();
@@ -379,6 +384,7 @@ impl Request {
                         .ok_or_else(|| invalid_data("recording action must be a string"))?,
                 )?,
             }),
+            Some("record_default") => Ok(Request::StartDefaultRecording),
             Some("stop") => Ok(Request::StopRecording),
             Some("record") => Ok(Request::StartRecording {
                 x: v.get("x").and_then(|n| n.as_i64()).unwrap_or(0) as i32,
@@ -532,6 +538,7 @@ mod tests {
             Request::RecordingStatus,
             Request::RecordingWatch,
             Request::ShowRecordingControls,
+            Request::StartDefaultRecording,
         ] {
             let encoded = request.encode();
             let decoded = Request::read(&mut Cursor::new(encoded)).unwrap();

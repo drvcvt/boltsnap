@@ -55,7 +55,7 @@ use crate::record::finalize::{
 };
 use crate::record::session::{
     CaptureScope, PublicRecordingState, RecorderTools, RecordingAction, RecordingSession,
-    SessionPhase, StopChildrenJob, StopChildrenResult, StoppedSegment, spawn_segment,
+    SessionPhase, StopChildrenJob, StopChildrenResult, StoppedSegment, spawn_segment, start_plan,
 };
 use crate::shelf::layout::{Hit, Layout, LayoutConfig, ThumbRect};
 use crate::shelf::model::{CardKind, FileLifetime, ShelfModel};
@@ -128,6 +128,7 @@ pub struct Daemon {
     focused_output: Option<String>,
     focus_query_pending: bool,
     pending_controls: Vec<UnixStream>,
+    pending_default_recordings: Vec<UnixStream>,
 }
 
 enum AfterStop {
@@ -147,7 +148,7 @@ enum DaemonEvent {
         result: StopChildrenResult,
     },
     Finalized(Result<Vec<FinalizedClip>, FinalizeFailure>),
-    FocusResolved(Option<String>),
+    FocusResolved(Result<Vec<crate::record::Monitor>, String>),
 }
 
 /// In-flight left-button press, used to distinguish a click from a drag.
@@ -234,20 +235,24 @@ fn spawn_client_writer(mut stream: UnixStream, bytes: Vec<u8>) {
     });
 }
 
-fn focused_output_from_hyprland_json(json: &[u8]) -> Option<String> {
+fn parse_focus_snapshot(json: &[u8]) -> Result<Vec<crate::record::Monitor>, String> {
     crate::record::parse_hyprland_monitors(json)
+}
+
+fn focused_output_from_hyprland_json(json: &[u8]) -> Option<String> {
+    parse_focus_snapshot(json)
         .ok()?
         .into_iter()
         .find(|monitor| monitor.focused)
         .map(|monitor| monitor.name)
 }
 
-fn query_focused_output() -> Option<String> {
+fn query_focus_snapshot() -> Result<Vec<crate::record::Monitor>, String> {
     use std::process::{Command, Stdio};
     if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_none()
         || !crate::paths::has_cmd("hyprctl")
     {
-        return None;
+        return Err("Hyprland monitor query is unavailable".into());
     }
     let mut child = Command::new("hyprctl")
         .args(["monitors", "-j"])
@@ -255,16 +260,18 @@ fn query_focused_output() -> Option<String> {
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
-        .ok()?;
+        .map_err(|error| format!("start Hyprland monitor query: {error}"))?;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
-                let output = child.wait_with_output().ok()?;
-                return status
-                    .success()
-                    .then(|| focused_output_from_hyprland_json(&output.stdout))
-                    .flatten();
+                let output = child
+                    .wait_with_output()
+                    .map_err(|error| format!("read Hyprland monitor query: {error}"))?;
+                if !status.success() {
+                    return Err(format!("Hyprland monitor query exited with {status}"));
+                }
+                return parse_focus_snapshot(&output.stdout);
             }
             Ok(None) if std::time::Instant::now() < deadline => {
                 std::thread::sleep(std::time::Duration::from_millis(10));
@@ -272,7 +279,7 @@ fn query_focused_output() -> Option<String> {
             Ok(None) | Err(_) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return None;
+                return Err("Hyprland monitor query timed out".into());
             }
         }
     }
@@ -280,8 +287,34 @@ fn query_focused_output() -> Option<String> {
 
 fn spawn_focus_query(tx: calloop::channel::Sender<DaemonEvent>) {
     std::thread::spawn(move || {
-        let _ = tx.send(DaemonEvent::FocusResolved(query_focused_output()));
+        let _ = tx.send(DaemonEvent::FocusResolved(query_focus_snapshot()));
     });
+}
+
+fn default_start_plan(
+    prefs: &crate::config::RecordingPrefs,
+    query: &Result<Vec<crate::record::Monitor>, String>,
+    wayland: &[crate::record::Monitor],
+) -> Result<crate::record::session::StartPlan, String> {
+    let monitors: Vec<_> = match query {
+        Ok(fresh) => fresh
+            .iter()
+            .filter(|monitor| wayland.iter().any(|output| output.name == monitor.name))
+            .cloned()
+            .collect(),
+        Err(_) => wayland
+            .iter()
+            .cloned()
+            .map(|mut monitor| {
+                monitor.focused = false;
+                monitor
+            })
+            .collect(),
+    };
+    start_plan(prefs, &monitors).map_err(|error| match query {
+        Ok(_) => error,
+        Err(query_error) => format!("{query_error}: {error}"),
+    })
 }
 
 fn resolve_output_name<'a>(requested: Option<&str>, available: &'a [String]) -> Option<&'a str> {
@@ -556,6 +589,7 @@ pub fn run_daemon(save_dir_cli: Option<std::path::PathBuf>) -> DynResult<()> {
         focused_output: None,
         focus_query_pending: false,
         pending_controls: Vec::new(),
+        pending_default_recordings: Vec::new(),
     };
 
     // Populate output metadata (names) so we can place the shelf on the focused
@@ -811,6 +845,17 @@ impl Daemon {
                 };
                 self.write_response(stream, response);
             }
+            crate::ipc::Request::StartDefaultRecording => {
+                if self.recording.is_some() {
+                    self.write_response(
+                        stream,
+                        crate::ipc::Response::error("a recording is already in progress"),
+                    );
+                } else {
+                    self.pending_default_recordings.push(stream);
+                    self.refresh_focus();
+                }
+            }
             crate::ipc::Request::StartRecording {
                 x,
                 y,
@@ -825,14 +870,24 @@ impl Daemon {
                 self.write_response(stream, response);
             }
             crate::ipc::Request::StartRecordingOutput { name } => {
-                let response = match self.start_recording_outputs(vec![name], false) {
+                let response = match self.start_named_recording_outputs(
+                    vec![name],
+                    crate::config::RecordBothMode::Separate,
+                ) {
                     Ok(()) => crate::ipc::Response::ok(Some(self.recording_snapshot())),
                     Err(error) => crate::ipc::Response::error(error),
                 };
                 self.write_response(stream, response);
             }
             crate::ipc::Request::StartRecordingOutputs { names, combined } => {
-                let response = match self.start_recording_outputs(names, combined) {
+                let response = match self.start_named_recording_outputs(
+                    names,
+                    if combined {
+                        crate::config::RecordBothMode::Combined
+                    } else {
+                        crate::config::RecordBothMode::Separate
+                    },
+                ) {
                     Ok(()) => crate::ipc::Response::ok(Some(self.recording_snapshot())),
                     Err(error) => crate::ipc::Response::error(error),
                 };
@@ -1350,10 +1405,43 @@ impl Daemon {
         Ok(())
     }
 
-    fn start_recording_outputs(
+    fn start_default_recording(
+        &mut self,
+        focus_snapshot: &Result<Vec<crate::record::Monitor>, String>,
+    ) -> Result<(), String> {
+        let prefs = crate::config::Config::load().recording_prefs();
+        let plan = default_start_plan(&prefs, focus_snapshot, &self.cached_monitors())?;
+        let notice = plan.notice.clone();
+        self.start_recording_outputs(plan.outputs, plan.both_mode)?;
+        if let Some(notice) = notice {
+            notify(&notice);
+        }
+        Ok(())
+    }
+
+    fn start_named_recording_outputs(
         &mut self,
         names: Vec<String>,
-        combined: bool,
+        both_mode: crate::config::RecordBothMode,
+    ) -> Result<(), String> {
+        let connected = self.cached_monitors();
+        let monitors = names
+            .iter()
+            .map(|name| {
+                connected
+                    .iter()
+                    .find(|monitor| monitor.name == *name)
+                    .cloned()
+                    .ok_or_else(|| format!("recording output {name} is disconnected"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        self.start_recording_outputs(monitors, both_mode)
+    }
+
+    fn start_recording_outputs(
+        &mut self,
+        monitors: Vec<crate::record::Monitor>,
+        both_mode: crate::config::RecordBothMode,
     ) -> Result<(), String> {
         if self.recording.is_some() {
             return Err("a recording is already in progress".into());
@@ -1361,30 +1449,22 @@ impl Daemon {
         if !crate::paths::has_cmd("wf-recorder") {
             return Err("wf-recorder is not installed".into());
         }
-        if names.is_empty() {
+        if monitors.is_empty() {
             return Err("no recording output was selected".into());
         }
+        let names = monitors
+            .iter()
+            .map(|monitor| monitor.name.clone())
+            .collect::<Vec<_>>();
         let scope = CaptureScope::Outputs(names.clone());
         let codec = crate::config::resolve_record_codec(None, &crate::config::Config::load());
         let tools = RecorderTools::default();
-        let monitors: Vec<_> = self
-            .cached_monitors()
-            .into_iter()
-            .filter(|monitor| names.contains(&monitor.name))
-            .collect();
-        if combined && monitors.len() != names.len() {
-            return Err("combined recording output layout is unavailable".into());
-        }
         let active = spawn_segment(&scope, &codec, &tools)?;
         self.recording = Some(RecordingSession::new(
             scope,
             monitors,
             codec,
-            if combined {
-                crate::config::RecordBothMode::Combined
-            } else {
-                crate::config::RecordBothMode::Separate
-            },
+            both_mode,
             false,
             active,
             std::time::Instant::now(),
@@ -1610,6 +1690,19 @@ impl Daemon {
         }
     }
 
+    fn finish_pending_default_recordings(
+        &mut self,
+        focus_snapshot: &Result<Vec<crate::record::Monitor>, String>,
+    ) {
+        for stream in std::mem::take(&mut self.pending_default_recordings) {
+            let response = match self.start_default_recording(focus_snapshot) {
+                Ok(()) => crate::ipc::Response::ok(Some(self.recording_snapshot())),
+                Err(error) => crate::ipc::Response::error(error),
+            };
+            self.write_response(stream, response);
+        }
+    }
+
     fn reject_pending_controls(&mut self, error: &str) {
         let encoded = crate::ipc::Response::error(error).encode();
         for stream in std::mem::take(&mut self.pending_controls) {
@@ -1823,11 +1916,21 @@ impl Daemon {
                 ));
                 self.draw_popup();
             }
-            DaemonEvent::FocusResolved(output) => {
-                if output.is_some() {
-                    self.focused_output = output;
+            DaemonEvent::FocusResolved(snapshot) => {
+                let connected = self.cached_monitors();
+                if let Some(output) = snapshot.as_ref().ok().and_then(|monitors| {
+                    monitors
+                        .iter()
+                        .find(|monitor| monitor.focused)
+                        .filter(|monitor| {
+                            connected.iter().any(|output| output.name == monitor.name)
+                        })
+                        .map(|monitor| monitor.name.clone())
+                }) {
+                    self.focused_output = Some(output);
                 }
                 self.focus_query_pending = false;
+                self.finish_pending_default_recordings(&snapshot);
                 self.finish_pending_controls();
             }
         }
@@ -2680,6 +2783,102 @@ mod tests {
             resolve_output_name(Some("disconnected"), &available),
             Some("DP-1")
         );
+    }
+
+    fn monitor(name: &str, focused: bool) -> crate::record::Monitor {
+        crate::record::Monitor {
+            name: name.into(),
+            description: name.into(),
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1080,
+            scale: 1.0,
+            focused,
+        }
+    }
+
+    #[test]
+    fn focus_query_snapshot_keeps_current_order_and_focus() {
+        let json = br#"[
+            {"name":"DP-1","description":"AOC","x":1920,"y":0,"width":1920,"height":1080,"scale":1.0,"focused":false},
+            {"name":"DP-3","description":"Main","x":0,"y":0,"width":2560,"height":1440,"scale":1.0,"focused":true}
+        ]"#;
+        let snapshot = parse_focus_snapshot(json).unwrap();
+        assert_eq!(
+            snapshot
+                .iter()
+                .map(|monitor| (monitor.name.as_str(), monitor.focused))
+                .collect::<Vec<_>>(),
+            vec![("DP-1", false), ("DP-3", true)]
+        );
+    }
+
+    #[test]
+    fn failed_focus_query_never_reuses_stale_focus_for_default_start() {
+        let prefs = crate::config::RecordingPrefs::default();
+        let stale_wayland = vec![monitor("DP-3", true), monitor("DP-1", false)];
+        let error =
+            default_start_plan(&prefs, &Err("query timed out".into()), &stale_wayland).unwrap_err();
+        assert!(error.contains("query timed out"));
+
+        let disconnected = crate::config::RecordingPrefs {
+            default_target: crate::config::RecordDefaultTarget::Output("DP-OLD".into()),
+            ..prefs
+        };
+        let error = default_start_plan(
+            &disconnected,
+            &Err("query timed out".into()),
+            &stale_wayland,
+        )
+        .unwrap_err();
+        assert!(error.contains("query timed out"));
+    }
+
+    #[test]
+    fn default_start_uses_fresh_snapshot_order_instead_of_wayland_order() {
+        let prefs = crate::config::RecordingPrefs {
+            default_target: crate::config::RecordDefaultTarget::Both,
+            ..crate::config::RecordingPrefs::default()
+        };
+        let wayland = vec![monitor("DP-3", true), monitor("DP-1", false)];
+        let fresh = Ok(vec![monitor("DP-1", false), monitor("DP-3", true)]);
+        let plan = default_start_plan(&prefs, &fresh, &wayland).unwrap();
+        assert_eq!(
+            plan.outputs
+                .iter()
+                .map(|monitor| monitor.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["DP-1", "DP-3"]
+        );
+    }
+
+    #[test]
+    fn hotplug_mismatch_cannot_focus_a_disconnected_output() {
+        let prefs = crate::config::RecordingPrefs::default();
+        let wayland = vec![monitor("DP-1", true)];
+        let fresh = Ok(vec![monitor("DP-OLD", true), monitor("DP-1", false)]);
+        assert!(default_start_plan(&prefs, &fresh, &wayland).is_err());
+
+        let named = crate::config::RecordingPrefs {
+            default_target: crate::config::RecordDefaultTarget::Output("DP-1".into()),
+            ..prefs
+        };
+        let plan = default_start_plan(&named, &fresh, &wayland).unwrap();
+        assert_eq!(plan.outputs[0].name, "DP-1");
+        assert!(!plan.outputs[0].focused);
+    }
+
+    #[test]
+    fn failed_focus_query_can_still_start_both_connected_wayland_outputs() {
+        let prefs = crate::config::RecordingPrefs {
+            default_target: crate::config::RecordDefaultTarget::Both,
+            ..crate::config::RecordingPrefs::default()
+        };
+        let stale_wayland = vec![monitor("DP-3", true), monitor("DP-1", false)];
+        let plan = default_start_plan(&prefs, &Err("query failed".into()), &stale_wayland).unwrap();
+        assert_eq!(plan.outputs.len(), 2);
+        assert!(plan.outputs.iter().all(|monitor| !monitor.focused));
     }
 
     #[test]
