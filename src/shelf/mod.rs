@@ -129,16 +129,23 @@ pub struct Daemon {
     focus_query_pending: bool,
     pending_controls: Vec<UnixStream>,
     pending_default_recordings: Vec<UnixStream>,
+    pending_tray_default_recording: bool,
+    recording_prefs: crate::config::RecordingPrefs,
+    persisted_recording_prefs: crate::config::RecordingPrefs,
+    prefs_generation: u64,
+    persisted_prefs_generation: u64,
+    prefs_writer: PrefsWriter,
+    tray: Option<crate::tray::TrayPublisher>,
 }
 
-enum AfterStop {
+pub(crate) enum AfterStop {
     Pause,
     Recover(String),
     Save(SaveDestination),
     Discard,
 }
 
-enum DaemonEvent {
+pub(crate) enum DaemonEvent {
     ClientRequest {
         request: crate::ipc::Request,
         stream: UnixStream,
@@ -149,6 +156,78 @@ enum DaemonEvent {
     },
     Finalized(Result<Vec<FinalizedClip>, FinalizeFailure>),
     FocusResolved(Result<Vec<crate::record::Monitor>, String>),
+    Tray(crate::tray::TrayAction),
+    PrefsPersisted {
+        generation: u64,
+        prefs: crate::config::RecordingPrefs,
+        error: Option<String>,
+    },
+}
+
+#[derive(Clone)]
+struct PrefsWrite {
+    generation: u64,
+    prefs: crate::config::RecordingPrefs,
+}
+
+struct PrefsWriter {
+    latest: std::sync::Arc<crate::tray::LatestValue<PrefsWrite>>,
+    wake: std::sync::mpsc::SyncSender<()>,
+}
+
+impl PrefsWriter {
+    fn spawn(event_tx: calloop::channel::Sender<DaemonEvent>) -> Self {
+        let latest = std::sync::Arc::new(crate::tray::LatestValue::<PrefsWrite>::new());
+        let worker_latest = std::sync::Arc::clone(&latest);
+        let (wake, wake_rx) = std::sync::mpsc::sync_channel(1);
+        std::thread::spawn(move || {
+            while wake_rx.recv().is_ok() {
+                let Some(write) = worker_latest.take() else {
+                    continue;
+                };
+                let error = crate::config::save_recording_prefs(&write.prefs)
+                    .err()
+                    .map(|error| error.to_string());
+                let _ = event_tx.send(DaemonEvent::PrefsPersisted {
+                    generation: write.generation,
+                    prefs: write.prefs,
+                    error,
+                });
+            }
+        });
+        Self { latest, wake }
+    }
+
+    fn submit(&self, write: PrefsWrite) {
+        self.latest.replace(write);
+        let _ = self.wake.try_send(());
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum PrefsCompletion {
+    Persisted,
+    Stale,
+    Rollback,
+}
+
+fn prefs_completion(
+    current_generation: u64,
+    persisted_generation: u64,
+    completed_generation: u64,
+    failed: bool,
+) -> PrefsCompletion {
+    if failed {
+        if completed_generation == current_generation {
+            PrefsCompletion::Rollback
+        } else {
+            PrefsCompletion::Stale
+        }
+    } else if completed_generation > persisted_generation {
+        PrefsCompletion::Persisted
+    } else {
+        PrefsCompletion::Stale
+    }
 }
 
 /// In-flight left-button press, used to distinguish a click from a drag.
@@ -540,7 +619,9 @@ pub fn run_daemon(save_dir_cli: Option<std::path::PathBuf>) -> DynResult<()> {
     let cfg = LayoutConfig::default();
     let config = crate::config::Config::load();
     let save_dir = crate::config::resolve_save_dir(save_dir_cli.as_deref(), &config);
+    let recording_prefs = config.recording_prefs();
     let (event_tx, event_rx) = calloop::channel::channel::<DaemonEvent>();
+    let prefs_writer = PrefsWriter::spawn(event_tx.clone());
     let mut daemon = Daemon {
         registry_state: RegistryState::new(&globals),
         seat_state: SeatState::new(&globals, &qh),
@@ -590,6 +671,13 @@ pub fn run_daemon(save_dir_cli: Option<std::path::PathBuf>) -> DynResult<()> {
         focus_query_pending: false,
         pending_controls: Vec::new(),
         pending_default_recordings: Vec::new(),
+        pending_tray_default_recording: false,
+        persisted_recording_prefs: recording_prefs.clone(),
+        recording_prefs,
+        prefs_generation: 0,
+        persisted_prefs_generation: 0,
+        prefs_writer,
+        tray: None,
     };
 
     // Populate output metadata (names) so we can place the shelf on the focused
@@ -707,6 +795,117 @@ impl Daemon {
                 })
             })
             .collect()
+    }
+
+    fn tray_snapshot(&self) -> crate::tray::TraySnapshot {
+        crate::tray::TraySnapshot {
+            prefs: self.recording_prefs.clone(),
+            monitors: self.cached_monitors(),
+            state: self.recording_snapshot().state,
+        }
+    }
+
+    fn start_tray(&mut self) {
+        self.tray = Some(crate::tray::TrayPublisher::spawn(
+            self.tray_snapshot(),
+            self.event_tx.clone(),
+        ));
+    }
+
+    fn publish_tray_snapshot(&self) {
+        let snapshot = self.tray_snapshot();
+        if let Some(tray) = &self.tray {
+            tray.publish(snapshot);
+        }
+    }
+
+    fn apply_show_frame_pref(&mut self, show: bool) {
+        if let Some(session) = self.recording.as_mut() {
+            session.show_frame = show;
+        }
+        if !show {
+            self.remove_marker();
+        } else if let Some(geo) = self.recording.as_ref().and_then(|session| {
+            (session.phase == SessionPhase::Recording)
+                .then_some(&session.scope)
+                .and_then(|scope| match scope {
+                    CaptureScope::Area(geo) => Some(*geo),
+                    CaptureScope::Outputs(_) => None,
+                })
+        }) && let Some(qh) = self.qh.clone()
+        {
+            self.create_marker(&geo, &qh);
+        }
+    }
+
+    fn persist_tray_prefs(&mut self, prefs: crate::config::RecordingPrefs) {
+        let show_frame_changed = self.recording_prefs.show_frame != prefs.show_frame;
+        self.recording_prefs = prefs.clone();
+        self.prefs_generation += 1;
+        if show_frame_changed {
+            self.apply_show_frame_pref(prefs.show_frame);
+        }
+        self.prefs_writer.submit(PrefsWrite {
+            generation: self.prefs_generation,
+            prefs,
+        });
+        self.publish_tray_snapshot();
+    }
+
+    fn handle_tray_action(&mut self, action: crate::tray::TrayAction) {
+        use crate::tray::TrayAction;
+
+        match action {
+            TrayAction::StartRegion => {
+                if self.recording.is_some() {
+                    notify("A recording is already in progress");
+                } else {
+                    let result = std::env::current_exe()
+                        .map_err(|error| format!("find boltsnap executable: {error}"))
+                        .and_then(|exe| {
+                            std::process::Command::new(exe)
+                                .arg("record")
+                                .stdin(std::process::Stdio::null())
+                                .stdout(std::process::Stdio::null())
+                                .stderr(std::process::Stdio::null())
+                                .spawn()
+                                .map(|_| ())
+                                .map_err(|error| format!("start region selector: {error}"))
+                        });
+                    if let Err(error) = result {
+                        notify(&error);
+                    }
+                }
+            }
+            TrayAction::StartDefault => {
+                if self.recording.is_some() {
+                    notify("A recording is already in progress");
+                } else {
+                    self.pending_tray_default_recording = true;
+                    self.refresh_focus();
+                }
+            }
+            TrayAction::SetDefaultTarget(target) => {
+                let mut prefs = self.recording_prefs.clone();
+                prefs.default_target = target;
+                self.persist_tray_prefs(prefs);
+            }
+            TrayAction::SetBothMode(mode) => {
+                let mut prefs = self.recording_prefs.clone();
+                prefs.both_mode = mode;
+                self.persist_tray_prefs(prefs);
+            }
+            TrayAction::SetShowFrame(show) => {
+                let mut prefs = self.recording_prefs.clone();
+                prefs.show_frame = show;
+                self.persist_tray_prefs(prefs);
+            }
+            TrayAction::SetDiskAddToShelf(add) => {
+                let mut prefs = self.recording_prefs.clone();
+                prefs.disk_add_to_shelf = add;
+                self.persist_tray_prefs(prefs);
+            }
+        }
     }
 
     fn target_output(
@@ -863,6 +1062,13 @@ impl Daemon {
                 h,
                 show_frame,
             } => {
+                // The selector already persisted this value in its process. Feed it
+                // through the ordered writer too so an older in-flight tray write
+                // cannot restore a stale frame preference afterward.
+                self.persisted_recording_prefs.show_frame = show_frame;
+                let mut prefs = self.recording_prefs.clone();
+                prefs.show_frame = show_frame;
+                self.persist_tray_prefs(prefs);
                 let response = match self.start_recording(x, y, w, h, show_frame, &qh) {
                     Ok(()) => crate::ipc::Response::ok(Some(self.recording_snapshot())),
                     Err(error) => crate::ipc::Response::error(error),
@@ -1409,8 +1615,11 @@ impl Daemon {
         &mut self,
         focus_snapshot: &Result<Vec<crate::record::Monitor>, String>,
     ) -> Result<(), String> {
-        let prefs = crate::config::Config::load().recording_prefs();
-        let plan = default_start_plan(&prefs, focus_snapshot, &self.cached_monitors())?;
+        let plan = default_start_plan(
+            &self.recording_prefs,
+            focus_snapshot,
+            &self.cached_monitors(),
+        )?;
         let notice = plan.notice.clone();
         self.start_recording_outputs(plan.outputs, plan.both_mode)?;
         if let Some(notice) = notice {
@@ -1931,8 +2140,48 @@ impl Daemon {
                 }
                 self.focus_query_pending = false;
                 self.finish_pending_default_recordings(&snapshot);
+                if std::mem::take(&mut self.pending_tray_default_recording)
+                    && let Err(error) = self.start_default_recording(&snapshot)
+                {
+                    notify(&error);
+                }
                 self.finish_pending_controls();
+                if self.tray.is_none() {
+                    self.start_tray();
+                } else {
+                    self.publish_tray_snapshot();
+                }
             }
+            DaemonEvent::Tray(action) => self.handle_tray_action(action),
+            DaemonEvent::PrefsPersisted {
+                generation,
+                prefs,
+                error,
+            } => match prefs_completion(
+                self.prefs_generation,
+                self.persisted_prefs_generation,
+                generation,
+                error.is_some(),
+            ) {
+                PrefsCompletion::Persisted => {
+                    self.persisted_prefs_generation = generation;
+                    self.persisted_recording_prefs = prefs;
+                }
+                PrefsCompletion::Rollback => {
+                    let show_frame_changed = self.recording_prefs.show_frame
+                        != self.persisted_recording_prefs.show_frame;
+                    self.recording_prefs = self.persisted_recording_prefs.clone();
+                    if show_frame_changed {
+                        self.apply_show_frame_pref(self.recording_prefs.show_frame);
+                    }
+                    notify(&format!(
+                        "Recording settings could not be saved: {}",
+                        error.unwrap_or_else(|| "unknown error".into())
+                    ));
+                    self.publish_tray_snapshot();
+                }
+                PrefsCompletion::Stale => {}
+            },
         }
         self.publish_recording_snapshot();
     }
@@ -1978,13 +2227,12 @@ impl Daemon {
     }
 
     fn add_finalized_cards(&mut self, clips: Vec<FinalizedClip>) {
-        let prefs = crate::config::Config::load().recording_prefs();
         let Some(qh) = self.qh.clone() else {
             return;
         };
         let mut added = false;
         for clip in clips {
-            if clip.permanent && !prefs.disk_add_to_shelf {
+            if clip.permanent && !self.recording_prefs.disk_add_to_shelf {
                 continue;
             }
             let mut image = image::RgbaImage::new(
@@ -2061,11 +2309,15 @@ impl Daemon {
         if snapshot == self.last_recording_snapshot {
             return;
         }
+        let state_changed = snapshot.state != self.last_recording_snapshot.state;
         let line = snapshot.to_json_line();
         self.watchers.retain_mut(
             |watcher| matches!(watcher.write(line.as_bytes()), Ok(n) if n == line.len()),
         );
         self.last_recording_snapshot = snapshot;
+        if state_changed {
+            self.publish_tray_snapshot();
+        }
     }
 
     fn remove_marker(&mut self) {
@@ -2185,9 +2437,15 @@ impl OutputHandler for Daemon {
     fn output_state(&mut self) -> &mut OutputState {
         &mut self.output_state
     }
-    fn new_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
-    fn update_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
-    fn output_destroyed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
+    fn new_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {
+        self.publish_tray_snapshot();
+    }
+    fn update_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {
+        self.publish_tray_snapshot();
+    }
+    fn output_destroyed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {
+        self.publish_tray_snapshot();
+    }
 }
 
 impl LayerShellHandler for Daemon {
@@ -2912,5 +3170,33 @@ mod tests {
     fn delayed_focus_cannot_reopen_discarding_controls_but_finalizing_stays_visible() {
         assert!(!recording_controls_visible(SessionPhase::Discarding));
         assert!(recording_controls_visible(SessionPhase::Finalizing));
+    }
+
+    #[test]
+    fn preference_completions_never_rollback_a_newer_request() {
+        assert_eq!(prefs_completion(2, 0, 1, false), PrefsCompletion::Persisted);
+        assert_eq!(prefs_completion(2, 1, 1, true), PrefsCompletion::Stale);
+        assert_eq!(prefs_completion(2, 1, 2, true), PrefsCompletion::Rollback);
+        assert_eq!(prefs_completion(2, 2, 1, false), PrefsCompletion::Stale);
+    }
+
+    #[test]
+    fn preference_writer_mailbox_coalesces_to_the_latest_generation() {
+        let latest = crate::tray::LatestValue::new();
+        latest.replace(PrefsWrite {
+            generation: 1,
+            prefs: crate::config::RecordingPrefs::default(),
+        });
+        let mut newest = crate::config::RecordingPrefs::default();
+        newest.show_frame = false;
+        latest.replace(PrefsWrite {
+            generation: 2,
+            prefs: newest,
+        });
+
+        let write = latest.take().unwrap();
+        assert_eq!(write.generation, 2);
+        assert!(!write.prefs.show_frame);
+        assert!(latest.take().is_none());
     }
 }

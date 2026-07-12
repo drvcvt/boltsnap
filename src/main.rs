@@ -13,6 +13,7 @@ mod paths;
 mod record;
 mod select_skia;
 mod shelf;
+mod tray;
 
 use crate::capture::{capture, strip_uniform_border};
 use crate::clipboard::{copy_to_clipboard, serve_wayland_clipboard, serve_wayland_uri_list};
