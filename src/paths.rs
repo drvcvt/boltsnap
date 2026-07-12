@@ -239,6 +239,46 @@ pub fn boltsnap_filename_ext(stamp: &str, ext: &str) -> String {
     format!("boltsnap-{stamp}.{ext}")
 }
 
+pub fn sanitize_recording_output(output: &str) -> String {
+    output
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string()
+}
+
+/// Pick a non-existing permanent recording path without overwriting an older clip.
+pub fn unique_recording_path(dir: &Path, output: Option<&str>) -> PathBuf {
+    unique_recording_path_at(dir, output, &local_timestamp())
+}
+
+fn unique_recording_path_at(dir: &Path, output: Option<&str>, stamp: &str) -> PathBuf {
+    let output = output
+        .map(sanitize_recording_output)
+        .filter(|name| !name.is_empty())
+        .map(|name| format!("-{name}"))
+        .unwrap_or_default();
+    for suffix in 0_u32.. {
+        let suffix = if suffix == 0 {
+            String::new()
+        } else {
+            format!("-{suffix}")
+        };
+        let path = dir.join(format!("boltsnap-{stamp}{output}{suffix}.mp4"));
+        if !path.exists() {
+            return path;
+        }
+    }
+    unreachable!()
+}
+
 /// Local wall-clock stamp `YYYY-MM-DD_HH-MM-SS` via `date` (correct local time,
 /// no date-crate dependency — matching how the codebase already shells out to
 /// `hyprctl`). Falls back to epoch millis if `date` is unavailable.
@@ -268,5 +308,36 @@ mod tests {
             boltsnap_filename_ext("2026-06-01_14-23-05", "png"),
             "boltsnap-2026-06-01_14-23-05.png"
         );
+    }
+
+    #[test]
+    fn permanent_recording_names_are_sanitized_and_never_overwrite() {
+        let dir = (0_u32..)
+            .map(|n| env::temp_dir().join(format!("boltsnap-path-test-{}-{n}", std::process::id())))
+            .find_map(|path| match fs::create_dir(&path) {
+                Ok(()) => Some(path),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => None,
+                Err(error) => panic!("create unique test directory: {error}"),
+            })
+            .unwrap();
+        let first = unique_recording_path_at(&dir, Some("DP 1/left"), "2026-07-12_12-00-00");
+        assert!(
+            first
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .contains("-DP-1-left.mp4")
+        );
+        fs::write(&first, b"existing").unwrap();
+        let second = unique_recording_path_at(&dir, Some("DP 1/left"), "2026-07-12_12-00-00");
+        assert_ne!(first, second);
+        assert!(
+            second
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .ends_with("-1.mp4")
+        );
+        let _ = fs::remove_dir_all(dir);
     }
 }
