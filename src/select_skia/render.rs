@@ -336,6 +336,7 @@ const REC_PX: f32 = 17.0;
 const REC_PAD: f64 = 7.0;
 const REC_DOT_R: f64 = 5.0; // red dot radius
 const REC_DOT_GAP: f64 = 6.0; // gap between dot and text
+const FRAME_CHECK_GAP: f64 = 6.0;
 
 /// On-screen rect `(bx, by, bw, bh)` of the REC pill for selection `sel`, placed
 /// exactly like `draw_rec_pill`. Returned so the record-mode selector can hit-test
@@ -374,6 +375,87 @@ pub fn rec_pill_rect(
         surf_w as f64,
         surf_h as f64,
     ))
+}
+
+/// On-screen hit box for the frame checkbox beside the REC pill.
+pub fn record_frame_checkbox_rect(
+    sel: (f32, f32, f32, f32),
+    surf_w: u32,
+    surf_h: u32,
+) -> Option<(f64, f64, f64, f64)> {
+    let (rx, ry, rw, rh) = rec_pill_rect(sel, surf_w, surf_h)?;
+    let size = rh;
+    let right = rx + rw + FRAME_CHECK_GAP;
+    if right + size <= surf_w as f64 {
+        return Some((right, ry, size, size));
+    }
+    let left = rx - FRAME_CHECK_GAP - size;
+    (left >= 0.0 && ry >= 0.0 && ry + size <= surf_h as f64).then_some((left, ry, size, size))
+}
+
+pub fn draw_record_frame_checkbox(
+    pm: &mut Pixmap,
+    sel: (f32, f32, f32, f32),
+    surf_w: u32,
+    surf_h: u32,
+    checked: bool,
+) {
+    let Some((x, y, w, h)) = record_frame_checkbox_rect(sel, surf_w, surf_h) else {
+        return;
+    };
+    let mut background = Paint::default();
+    background.set_color_rgba8(0x12, 0x12, 0x12, 230);
+    background.anti_alias = true;
+    if let Some(path) = rounded_rect(x as f32, y as f32, w as f32, h as f32, 7.0) {
+        pm.fill_path(
+            &path,
+            &background,
+            FillRule::Winding,
+            Transform::identity(),
+            None,
+        );
+    }
+
+    let inset = 7.0;
+    let Some(box_rect) = Rect::from_xywh(
+        (x + inset) as f32,
+        (y + inset) as f32,
+        (w - inset * 2.0) as f32,
+        (h - inset * 2.0) as f32,
+    ) else {
+        return;
+    };
+    let mut box_paint = Paint::default();
+    box_paint.set_color_rgba8(
+        if checked { 0xff } else { 0xe0 },
+        if checked { 0x3b } else { 0xe0 },
+        if checked { 0x30 } else { 0xe0 },
+        255,
+    );
+    box_paint.anti_alias = true;
+    let mut path = PathBuilder::new();
+    path.push_rect(box_rect);
+    let Some(path) = path.finish() else { return };
+    if checked {
+        pm.fill_path(
+            &path,
+            &box_paint,
+            FillRule::Winding,
+            Transform::identity(),
+            None,
+        );
+    } else {
+        pm.stroke_path(
+            &path,
+            &box_paint,
+            &Stroke {
+                width: 1.5,
+                ..Default::default()
+            },
+            Transform::identity(),
+            None,
+        );
+    }
 }
 
 /// Draw the recording affordance: a small pill near the selection with a red
@@ -678,6 +760,55 @@ mod tests {
         assert!(cx >= bx && cx < bx + bw && cy >= by && cy < by + bh);
         // Sub-pixel selection → no pill.
         assert!(rec_pill_rect((10.0, 10.0, 0.0, 0.0), 400, 300).is_none());
+    }
+
+    #[test]
+    fn frame_checkbox_sits_beside_rec_without_overlap() {
+        let sel = (100.0, 100.0, 800.0, 500.0);
+        let rec = rec_pill_rect(sel, 1920, 1080).unwrap();
+        let check = record_frame_checkbox_rect(sel, 1920, 1080).unwrap();
+        assert!(check.0 >= rec.0 + rec.2);
+        assert!(check.0 + check.2 <= 1920.0);
+        assert!(check.1 >= 0.0 && check.1 + check.3 <= 1080.0);
+    }
+
+    #[test]
+    fn frame_checkbox_stays_on_screen_at_selection_edges() {
+        for sel in [
+            (0.0, 0.0, 120.0, 80.0),
+            (280.0, 0.0, 120.0, 80.0),
+            (0.0, 220.0, 120.0, 80.0),
+            (280.0, 220.0, 120.0, 80.0),
+        ] {
+            let rec = rec_pill_rect(sel, 400, 300).unwrap();
+            let check = record_frame_checkbox_rect(sel, 400, 300).unwrap();
+            assert!(check.0 >= 0.0 && check.0 + check.2 <= 400.0);
+            assert!(check.1 >= 0.0 && check.1 + check.3 <= 300.0);
+            assert!(
+                check.0 + check.2 <= rec.0
+                    || rec.0 + rec.2 <= check.0
+                    || check.1 + check.3 <= rec.1
+                    || rec.1 + rec.3 <= check.1
+            );
+        }
+    }
+
+    #[test]
+    fn frame_checkbox_draws_checked_and_unchecked_states() {
+        use tiny_skia::Pixmap;
+        let sel = (100.0, 100.0, 200.0, 100.0);
+        let rect = record_frame_checkbox_rect(sel, 400, 300).unwrap();
+        let center = |pm: &Pixmap| {
+            let x = (rect.0 + rect.2 / 2.0) as u32;
+            let y = (rect.1 + rect.3 / 2.0) as u32;
+            let i = ((y * pm.width() + x) * 4) as usize;
+            pm.data()[i..i + 4].to_vec()
+        };
+        let mut unchecked = Pixmap::new(400, 300).unwrap();
+        draw_record_frame_checkbox(&mut unchecked, sel, 400, 300, false);
+        let mut checked = Pixmap::new(400, 300).unwrap();
+        draw_record_frame_checkbox(&mut checked, sel, 400, 300, true);
+        assert_ne!(center(&unchecked), center(&checked));
     }
 
     #[test]

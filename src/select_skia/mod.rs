@@ -56,7 +56,7 @@ where
 {
     // Start the screenshot grab so it overlaps with Wayland init below.
     let capture_handle = thread::spawn(capture);
-    let mut sel = run_selector(instant, false, Some(capture_handle))?;
+    let mut sel = run_selector(instant, false, true, Some(capture_handle))?;
     Ok(sel.result.take())
 }
 
@@ -66,9 +66,17 @@ where
 /// on confirm returns the selection `Rect` (logical surface px) instead of an
 /// image. `None` on Esc/cancel. The caller maps the rect to compositor-global
 /// coords and starts the recording.
-pub fn run_select_record() -> DynResult<Option<edit::Rect>> {
-    let mut sel = run_selector(false, true, None)?;
-    Ok(sel.result_rect.take())
+pub struct RecordSelectionResult {
+    pub rect: Option<edit::Rect>,
+    pub show_frame: bool,
+}
+
+pub fn run_select_record(initial_show_frame: bool) -> DynResult<RecordSelectionResult> {
+    let mut sel = run_selector(false, true, initial_show_frame, None)?;
+    Ok(RecordSelectionResult {
+        rect: sel.result_rect.take(),
+        show_frame: sel.show_frame,
+    })
 }
 
 /// Shared driver for both selector modes. Binds the Wayland globals, builds the
@@ -79,6 +87,7 @@ pub fn run_select_record() -> DynResult<Option<edit::Rect>> {
 fn run_selector(
     instant: bool,
     record_mode: bool,
+    show_frame: bool,
     capture_handle: Option<thread::JoinHandle<Result<RgbaImage, String>>>,
 ) -> DynResult<Selector> {
     let conn = Connection::connect_to_env()?;
@@ -117,6 +126,7 @@ fn run_selector(
         needs_redraw: false,
         instant,
         record_mode,
+        show_frame,
         result_rect: None,
     };
 
@@ -201,6 +211,8 @@ struct Selector {
     /// pill, and confirm yields the selection rect (into `result_rect`) instead
     /// of cropping an image.
     record_mode: bool,
+    /// Whether the recording-area border should remain visible while recording.
+    show_frame: bool,
     /// The confirmed selection rect (surface px), set on confirm in record mode.
     result_rect: Option<edit::Rect>,
 }
@@ -299,6 +311,13 @@ impl Selector {
             }
             if self.record_mode {
                 render::draw_rec_pill(&mut frame, s, self.surf_w, self.surf_h);
+                render::draw_record_frame_checkbox(
+                    &mut frame,
+                    s,
+                    self.surf_w,
+                    self.surf_h,
+                    self.show_frame,
+                );
             } else {
                 render::draw_badge(&mut frame, s, self.surf_w, self.surf_h);
             }
@@ -535,6 +554,18 @@ impl PointerHandler for Selector {
                             if self.record_mode {
                                 let sel =
                                     (rect.x as f32, rect.y as f32, rect.w as f32, rect.h as f32);
+                                if let Some((bx, by, bw, bh)) = render::record_frame_checkbox_rect(
+                                    sel,
+                                    self.surf_w,
+                                    self.surf_h,
+                                ) {
+                                    if x >= bx && x < bx + bw && y >= by && y < by + bh {
+                                        self.show_frame = !self.show_frame;
+                                        self.interaction = None;
+                                        self.request_redraw();
+                                        return;
+                                    }
+                                }
                                 if let Some((bx, by, bw, bh)) =
                                     render::rec_pill_rect(sel, self.surf_w, self.surf_h)
                                 {

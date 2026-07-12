@@ -24,6 +24,7 @@ pub enum Request {
         y: i32,
         w: u32,
         h: u32,
+        show_frame: bool,
     },
     /// Start a fullscreen recording of a whole output (Hyprland monitor name) via
     /// `wf-recorder -o`. No overlay; stop is keyboard-only and auto-finalizes.
@@ -81,8 +82,21 @@ impl Request {
                 let header = json!({ "cmd": "stop" });
                 write_frame(&mut buf, header.to_string().as_bytes(), &[]).unwrap();
             }
-            Request::StartRecording { x, y, w, h } => {
-                let header = json!({ "cmd": "record", "x": x, "y": y, "w": w, "h": h });
+            Request::StartRecording {
+                x,
+                y,
+                w,
+                h,
+                show_frame,
+            } => {
+                let header = json!({
+                    "cmd": "record",
+                    "x": x,
+                    "y": y,
+                    "w": w,
+                    "h": h,
+                    "show_frame": show_frame,
+                });
                 write_frame(&mut buf, header.to_string().as_bytes(), &[]).unwrap();
             }
             Request::StartRecordingOutput { name } => {
@@ -124,6 +138,10 @@ impl Request {
                 y: v.get("y").and_then(|n| n.as_i64()).unwrap_or(0) as i32,
                 w: v.get("w").and_then(|n| n.as_u64()).unwrap_or(0) as u32,
                 h: v.get("h").and_then(|n| n.as_u64()).unwrap_or(0) as u32,
+                show_frame: v
+                    .get("show_frame")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(true),
             }),
             Some("record_output") => Ok(Request::StartRecordingOutput {
                 name: v
@@ -255,14 +273,40 @@ mod tests {
             y: 40,
             w: 800,
             h: 600,
+            show_frame: false,
         };
         let mut cur = Cursor::new(req.encode());
         match Request::read(&mut cur).unwrap() {
-            Request::StartRecording { x, y, w, h } => {
+            Request::StartRecording {
+                x,
+                y,
+                w,
+                h,
+                show_frame,
+            } => {
                 assert_eq!((x, y, w, h), (-100, 40, 800, 600));
+                assert!(!show_frame);
             }
             other => panic!("wrong variant: {other:?}"),
         }
+    }
+
+    #[test]
+    fn start_recording_missing_frame_field_defaults_true() {
+        let mut bytes = Vec::new();
+        write_frame(
+            &mut bytes,
+            br#"{"cmd":"record","x":1,"y":2,"w":3,"h":4}"#,
+            &[],
+        )
+        .unwrap();
+        assert!(matches!(
+            Request::read(&mut Cursor::new(bytes)).unwrap(),
+            Request::StartRecording {
+                show_frame: true,
+                ..
+            }
+        ));
     }
 
     #[test]
