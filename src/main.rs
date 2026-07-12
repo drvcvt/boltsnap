@@ -350,10 +350,7 @@ fn edit_last_screenshot(args: &Args) -> DynResult<()> {
 
 fn record_flow(args: &Args) -> DynResult<()> {
     let state = match crate::ipc::call_daemon(crate::ipc::Request::RecordingStatus) {
-        Ok(response) => match recording_state_from_status(response) {
-            Ok(state) => state,
-            Err(error) => return Err(error.into()),
-        },
+        Ok(response) => recording_state_from_status(response)?,
         // Compatibility with the Task-4 daemon, which closes unknown requests.
         Err(error) if is_legacy_recording_status_eof(&error) => {
             crate::record::session::PublicRecordingState::Idle

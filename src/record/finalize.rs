@@ -388,7 +388,7 @@ fn ensure_free_space(dir: &Path, source_bytes: u64) -> Result<(), String> {
         ));
     }
     let stat = unsafe { stat.assume_init() };
-    let free = (stat.f_bavail as u64).saturating_mul(stat.f_frsize as u64);
+    let free = stat.f_bavail.saturating_mul(stat.f_frsize);
     let margin = (64 * 1024 * 1024_u64).max(source_bytes / 20);
     let required = source_bytes.saturating_add(margin);
     if free > required {

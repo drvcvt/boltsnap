@@ -3187,8 +3187,10 @@ mod tests {
             generation: 1,
             prefs: crate::config::RecordingPrefs::default(),
         });
-        let mut newest = crate::config::RecordingPrefs::default();
-        newest.show_frame = false;
+        let newest = crate::config::RecordingPrefs {
+            show_frame: false,
+            ..Default::default()
+        };
         latest.replace(PrefsWrite {
             generation: 2,
             prefs: newest,
