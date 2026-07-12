@@ -1,7 +1,7 @@
 use std::env;
 use std::error::Error;
 use std::fs;
-use std::io::Write;
+use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 
 mod capture;
@@ -103,6 +103,8 @@ struct Args {
     save_dir: Option<PathBuf>,
     /// Override the annotation editor command (edit).
     editor_cmd: Option<String>,
+    tail: Vec<String>,
+    json: bool,
 }
 
 impl Default for Args {
@@ -120,6 +122,8 @@ impl Default for Args {
             instant: false,
             save_dir: None,
             editor_cmd: None,
+            tail: Vec::new(),
+            json: false,
         }
     }
 }
@@ -164,6 +168,11 @@ Usage:
   boltsnap daemon [--save-dir DIR]        run the screenshot shelf
   boltsnap record [--editor CMD]          select an area and screen-record it (Wayland)
   boltsnap record full                    record the whole focused monitor (no selector)
+  boltsnap recording status --json
+  boltsnap recording watch --json
+  boltsnap recording show-controls
+  boltsnap recording pause|resume|save-shelf|save-disk|discard
+  boltsnap stop                           compatibility alias for recording save-shelf
   boltsnap [COMMAND] [--editor CMD]       annotate with a specific editor
   Config: ~/.config/boltsnap/config.toml  (save_dir, editor, record_codec, record_dir)
   boltsnap doctor
@@ -202,6 +211,7 @@ fn parse_args(raw: &[String]) -> DynResult<Args> {
             }
             "--instant" => args.instant = true,
             "--save" => args.save = true,
+            "--json" => args.json = true,
             "-o" | "--output" => {
                 i += 1;
                 let Some(path) = raw.get(i) else {
@@ -245,6 +255,7 @@ fn parse_args(raw: &[String]) -> DynResult<Args> {
     if positional.len() > 1 {
         args.image = Some(PathBuf::from(&positional[1]));
     }
+    args.tail = positional.into_iter().skip(1).collect();
     Ok(args)
 }
 
@@ -270,14 +281,8 @@ fn run() -> DynResult<()> {
         }
         "self-test" => self_test(),
         "record" => record_flow(&args),
-        "stop" => {
-            // Stop an in-progress recording (no-op if nothing is recording). Bind
-            // to a key for a keyboard stop alongside the indicator's Stop button.
-            if crate::ipc::daemon_alive() {
-                crate::ipc::send_to_shelf(crate::ipc::Request::StopRecording)?;
-            }
-            Ok(())
-        }
+        "recording" => recording_command(&args),
+        "stop" => recording_control(crate::record::session::RecordingAction::SaveShelf),
         "daemon" => crate::shelf::run_daemon(args.save_dir.clone()),
         "__debug-render" => {
             // Render the shelf (one sample thumbnail, hovered) straight to a PNG
@@ -343,6 +348,22 @@ fn edit_last_screenshot(args: &Args) -> DynResult<()> {
 }
 
 fn record_flow(args: &Args) -> DynResult<()> {
+    let state = match crate::ipc::call_daemon(crate::ipc::Request::RecordingStatus) {
+        Ok(response) => match recording_state_from_status(response) {
+            Ok(state) => state,
+            Err(error) => return Err(error.into()),
+        },
+        // Compatibility with the Task-4 daemon, which closes unknown requests.
+        Err(error) if is_legacy_recording_status_eof(&error) => {
+            crate::record::session::PublicRecordingState::Idle
+        }
+        Err(error) => return Err(format!("recording daemon unavailable: {error}").into()),
+    };
+    if state != crate::record::session::PublicRecordingState::Idle {
+        checked_recording_call(crate::ipc::Request::ShowRecordingControls)?;
+        return Ok(());
+    }
+
     if !crate::paths::has_cmd("wf-recorder") {
         return Err(
             "wf-recorder not found — install it to record (e.g. pacman -S wf-recorder)".into(),
@@ -384,6 +405,84 @@ fn record_flow(args: &Args) -> DynResult<()> {
         show_frame: prefs.show_frame,
     })?;
     Ok(())
+}
+
+fn is_legacy_recording_status_eof(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::UnexpectedEof
+}
+
+fn recording_state_from_status(
+    response: crate::ipc::Response,
+) -> Result<crate::record::session::PublicRecordingState, String> {
+    if !response.ok {
+        return Err(response
+            .error
+            .unwrap_or_else(|| "recording status failed".into()));
+    }
+    response
+        .snapshot
+        .map(|snapshot| snapshot.state)
+        .ok_or_else(|| "daemon returned no recording status".into())
+}
+
+fn recording_command(args: &Args) -> DynResult<()> {
+    use crate::record::session::RecordingAction;
+
+    match (args.tail.as_slice(), args.json) {
+        ([command], true) if command == "status" => {
+            let response = checked_recording_call(crate::ipc::Request::RecordingStatus)?;
+            let snapshot = response
+                .snapshot
+                .ok_or("daemon returned no recording status")?;
+            print!("{}", snapshot.to_json_line());
+            std::io::stdout().flush()?;
+            Ok(())
+        }
+        ([command], true) if command == "watch" => {
+            let stream = crate::ipc::watch_recording()
+                .map_err(|error| format!("recording daemon unavailable: {error}"))?;
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            while reader.read_line(&mut line)? != 0 {
+                print!("{line}");
+                std::io::stdout().flush()?;
+                line.clear();
+            }
+            Ok(())
+        }
+        ([command], false) if command == "show-controls" => {
+            checked_recording_call(crate::ipc::Request::ShowRecordingControls)?;
+            Ok(())
+        }
+        ([command], false) if command == "pause" => recording_control(RecordingAction::Pause),
+        ([command], false) if command == "resume" => recording_control(RecordingAction::Resume),
+        ([command], false) if command == "save-shelf" => {
+            recording_control(RecordingAction::SaveShelf)
+        }
+        ([command], false) if command == "save-disk" => {
+            recording_control(RecordingAction::SaveDisk)
+        }
+        ([command], false) if command == "discard" => recording_control(RecordingAction::Discard),
+        _ => Err(format!("invalid recording command\n{}", usage()).into()),
+    }
+}
+
+fn recording_control(action: crate::record::session::RecordingAction) -> DynResult<()> {
+    checked_recording_call(crate::ipc::Request::RecordingControl { action })?;
+    Ok(())
+}
+
+fn checked_recording_call(request: crate::ipc::Request) -> DynResult<crate::ipc::Response> {
+    let response = crate::ipc::call_daemon(request)
+        .map_err(|error| format!("recording daemon unavailable: {error}"))?;
+    if response.ok {
+        Ok(response)
+    } else {
+        Err(response
+            .error
+            .unwrap_or_else(|| "recording command failed".into())
+            .into())
+    }
 }
 
 fn capture_flow(args: &Args) -> DynResult<()> {
@@ -495,6 +594,66 @@ fn detect_backend() -> DynResult<Backend> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_recording_status_fallback_accepts_only_eof() {
+        assert!(is_legacy_recording_status_eof(&std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "old daemon closed the connection",
+        )));
+        assert!(!is_legacy_recording_status_eof(&std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "daemon stalled",
+        )));
+        assert!(!is_legacy_recording_status_eof(&std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "malformed response",
+        )));
+    }
+
+    #[test]
+    fn successful_recording_status_requires_snapshot() {
+        let error = recording_state_from_status(crate::ipc::Response::ok(None)).unwrap_err();
+        assert_eq!(error, "daemon returned no recording status");
+
+        let state = recording_state_from_status(crate::ipc::Response::ok(Some(
+            crate::ipc::RecordingSnapshot::idle(),
+        )))
+        .unwrap();
+        assert_eq!(state, crate::record::session::PublicRecordingState::Idle);
+    }
+
+    #[test]
+    fn parser_recording_cli_forms() {
+        for action in [
+            "show-controls",
+            "pause",
+            "resume",
+            "save-shelf",
+            "save-disk",
+            "discard",
+        ] {
+            let args = parse_args(&["boltsnap".into(), "recording".into(), action.into()]).unwrap();
+            assert_eq!(args.command, "recording");
+            assert_eq!(args.tail, [action]);
+            assert!(!args.json);
+        }
+    }
+
+    #[test]
+    fn parser_recording_status_and_watch_require_json_flag_data() {
+        for action in ["status", "watch"] {
+            let args = parse_args(&[
+                "boltsnap".into(),
+                "recording".into(),
+                action.into(),
+                "--json".into(),
+            ])
+            .unwrap();
+            assert_eq!(args.tail, [action]);
+            assert!(args.json);
+        }
+    }
 
     #[test]
     fn parser_defaults_to_area_copy() {
