@@ -292,7 +292,6 @@ const MARKER_RGB: (u8, u8, u8) = (0, 0, 0);
 const MARKER_A: f32 = 0.95;
 /// Indicator pill background (matches the shelf/quickshell dark).
 const IND_BG: (u8, u8, u8) = (0x12, 0x12, 0x12); // #121212, matching the badge/pill
-const IND_BG_A: f32 = 0.92;
 /// Indicator button chip: a neutral lift of the #121212 surface (no blue tint),
 /// so Stop/Confirm/Cancel read as buttons on the dark pill.
 const IND_BTN_BG: (u8, u8, u8) = (0x26, 0x26, 0x26); // #262626
@@ -328,63 +327,134 @@ pub fn draw_marker_border(canvas: &mut [u8], w: u32, h: u32, border: u32, radius
     }
 }
 
-/// Draw the recording control indicator into a premultiplied-BGRA `w`×`h` canvas.
-/// In the `Recording` phase: a red ● + the `MM:SS` `elapsed` text + a Stop (■)
-/// button. In the `Stopped` phase: Confirm (✓) / Cancel (✕) buttons.
-pub fn draw_indicator(
+pub fn draw_recording_popup(
     canvas: &mut [u8],
     w: u32,
     h: u32,
-    phase: crate::shelf::recording::RecPhase,
+    state: crate::record::session::PublicRecordingState,
+    enabled: bool,
     elapsed: &str,
 ) {
-    use crate::shelf::recording::RecPhase;
-    clear(canvas);
-    // Rounded translucent pill background spanning the whole surface.
-    fill_round_rect(
-        canvas, w, h, 0.0, 0.0, w as f32, h as f32, 12.0, IND_BG, IND_BG_A,
-    );
+    use crate::record::session::PublicRecordingState;
+    use crate::shelf::recording::{
+        discard_rect, pause_resume_rect, save_disk_rect, save_shelf_rect,
+    };
 
-    match phase {
-        RecPhase::Recording => {
-            // Red ● on the left, vertically centred.
-            let cy = h as f32 / 2.0;
-            fill_circle(canvas, w, h, 18.0, cy, 6.0, REC_RGB, 1.0);
-            // MM:SS to the right of the dot.
-            draw_time(canvas, w, h, 34.0, cy, 18.0, GLYPH_RGB, elapsed);
-            // Stop (■): a filled red square button.
-            let (bx, by, bw, bh) = crate::shelf::recording::stop_btn_rect();
-            fill_round_rect(canvas, w, h, bx, by, bw, bh, 6.0, IND_BTN_BG, 0.95);
-            let inset = bw * 0.28;
-            fill_round_rect(
-                canvas,
-                w,
-                h,
-                bx + inset,
-                by + inset,
-                bw - 2.0 * inset,
-                bh - 2.0 * inset,
-                2.0,
-                REC_RGB,
-                1.0,
-            );
+    clear(canvas);
+    fill_round_rect(
+        canvas, w, h, 0.0, 0.0, w as f32, h as f32, 16.0, IND_BG, 0.96,
+    );
+    let title = match state {
+        PublicRecordingState::Idle => "IDLE",
+        PublicRecordingState::Recording => "RECORDING",
+        PublicRecordingState::Paused => "PAUSED",
+        PublicRecordingState::Finalizing => "SAVING...",
+    };
+    fill_circle(canvas, w, h, 22.0, 28.0, 5.0, REC_RGB, 1.0);
+    draw_pixel_text(canvas, w, h, 36, 20, title, 2, GLYPH_RGB);
+    draw_time(canvas, w, h, 326.0, 28.0, 18.0, GLYPH_RGB, elapsed);
+
+    let button_alpha = if enabled && state != PublicRecordingState::Finalizing {
+        0.95
+    } else {
+        0.45
+    };
+    for ((x, y, bw, bh), label, destructive) in [
+        (
+            pause_resume_rect(),
+            if state == PublicRecordingState::Paused {
+                "RESUME"
+            } else {
+                "PAUSE"
+            },
+            false,
+        ),
+        (save_shelf_rect(), "SHELF SAVE", false),
+        (save_disk_rect(), "DISK SAVE", false),
+        (discard_rect(), "DISCARD", true),
+    ] {
+        fill_round_rect(canvas, w, h, x, y, bw, bh, 10.0, IND_BTN_BG, button_alpha);
+        let color = if destructive {
+            GLYPH_CLOSE_RGB
+        } else {
+            GLYPH_RGB
+        };
+        let text_w = (label.chars().count() as i32 * 8 - 2).max(0);
+        draw_pixel_text(
+            canvas,
+            w,
+            h,
+            x as i32 + (bw as i32 - text_w) / 2,
+            y as i32 + (bh as i32 - 10) / 2,
+            label,
+            2,
+            color,
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_pixel_text(
+    canvas: &mut [u8],
+    w: u32,
+    h: u32,
+    x: i32,
+    y: i32,
+    text: &str,
+    scale: i32,
+    color: (u8, u8, u8),
+) {
+    let mut caret = x;
+    for ch in text.chars() {
+        let rows = pixel_glyph(ch);
+        for (row, bits) in rows.into_iter().enumerate() {
+            for col in 0..3 {
+                if bits & (1 << (2 - col)) == 0 {
+                    continue;
+                }
+                for dy in 0..scale {
+                    for dx in 0..scale {
+                        blend_px(
+                            canvas,
+                            w,
+                            h,
+                            caret + col * scale + dx,
+                            y + row as i32 * scale + dy,
+                            color.0,
+                            color.1,
+                            color.2,
+                            1.0,
+                        );
+                    }
+                }
+            }
         }
-        RecPhase::Stopped => {
-            // Confirm (✓) on the left.
-            let (cx, cy, cw, ch) = crate::shelf::recording::confirm_btn_rect();
-            fill_round_rect(canvas, w, h, cx, cy, cw, ch, 8.0, IND_BTN_BG, 0.95);
-            let s = ch.min(cw);
-            let gx = cx + (cw - s) / 2.0;
-            let gy = cy + (ch - s) / 2.0;
-            draw_glyph(canvas, w, h, Glyph::Check, gx, gy, s, GLYPH_OK_RGB);
-            // Cancel (✕) on the right.
-            let (xx, xy, xw, xh) = crate::shelf::recording::cancel_btn_rect();
-            fill_round_rect(canvas, w, h, xx, xy, xw, xh, 8.0, IND_BTN_BG, 0.95);
-            let s = xh.min(xw);
-            let gx = xx + (xw - s) / 2.0;
-            let gy = xy + (xh - s) / 2.0;
-            draw_glyph(canvas, w, h, Glyph::Close, gx, gy, s, GLYPH_CLOSE_RGB);
-        }
+        caret += 4 * scale;
+    }
+}
+
+fn pixel_glyph(ch: char) -> [u8; 5] {
+    match ch {
+        'A' => [2, 5, 7, 5, 5],
+        'C' => [3, 4, 4, 4, 3],
+        'D' => [6, 5, 5, 5, 6],
+        'E' => [7, 4, 6, 4, 7],
+        'F' => [7, 4, 6, 4, 4],
+        'G' => [3, 4, 5, 5, 3],
+        'H' => [5, 5, 7, 5, 5],
+        'I' => [7, 2, 2, 2, 7],
+        'K' => [5, 5, 6, 5, 5],
+        'L' => [4, 4, 4, 4, 7],
+        'M' => [5, 7, 7, 5, 5],
+        'N' => [5, 7, 7, 7, 5],
+        'O' => [2, 5, 5, 5, 2],
+        'P' => [6, 5, 6, 4, 4],
+        'R' => [6, 5, 6, 5, 5],
+        'S' => [3, 4, 2, 1, 6],
+        'U' => [5, 5, 5, 5, 7],
+        'V' => [5, 5, 5, 5, 2],
+        '.' => [0, 0, 0, 0, 2],
+        _ => [0; 5],
     }
 }
 
@@ -954,32 +1024,32 @@ mod tests {
     }
 
     #[test]
-    fn indicator_recording_and_stopped_paint_something() {
-        use crate::shelf::recording::RecPhase;
-        let (w, h) = (
-            crate::shelf::recording::IND_W,
-            crate::shelf::recording::IND_H,
-        );
-        let mut buf = vec![0u8; (w * h * 4) as usize];
-        draw_indicator(&mut buf, w, h, RecPhase::Recording, "01:23");
-        // The pill background makes the whole surface non-transparent.
-        let mid = (((h / 2) * w + w / 2) * 4) as usize;
-        assert!(buf[mid + 3] > 0, "indicator pill should fill the surface");
-        // The Stop button region carries the red accent (R channel dominant).
-        let (bx, by, bw, bh) = crate::shelf::recording::stop_btn_rect();
-        let sx = (bx + bw / 2.0) as u32;
-        let sy = (by + bh / 2.0) as u32;
-        let sidx = ((sy * w + sx) * 4) as usize;
-        assert!(buf[sidx + 3] > 0, "stop button should be drawn");
+    fn popup_paints_background_and_all_control_cells() {
+        use crate::record::session::PublicRecordingState;
+        use crate::shelf::recording::{
+            POPUP_H, POPUP_W, discard_rect, pause_resume_rect, save_disk_rect, save_shelf_rect,
+        };
 
-        // Stopped phase paints the two control buttons.
-        let mut buf2 = vec![0u8; (w * h * 4) as usize];
-        draw_indicator(&mut buf2, w, h, RecPhase::Stopped, "");
-        let (cx, cy, cw, chh) = crate::shelf::recording::confirm_btn_rect();
-        let px = (cx + cw / 2.0) as u32;
-        let py = (cy + chh / 2.0) as u32;
-        let cidx = ((py * w + px) * 4) as usize;
-        assert!(buf2[cidx + 3] > 0, "confirm button should be drawn");
+        let mut buf = vec![0u8; (POPUP_W * POPUP_H * 4) as usize];
+        draw_recording_popup(
+            &mut buf,
+            POPUP_W,
+            POPUP_H,
+            PublicRecordingState::Recording,
+            true,
+            "01:23",
+        );
+        assert!(buf[((POPUP_H / 2 * POPUP_W + POPUP_W / 2) * 4 + 3) as usize] > 0);
+        for (x, y, w, h) in [
+            pause_resume_rect(),
+            save_shelf_rect(),
+            save_disk_rect(),
+            discard_rect(),
+        ] {
+            let px = (x + w / 2.0) as u32;
+            let py = (y + h / 2.0) as u32;
+            assert!(buf[((py * POPUP_W + px) * 4 + 3) as usize] > 0);
+        }
     }
 
     #[test]

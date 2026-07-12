@@ -4,7 +4,7 @@ pub mod paint;
 pub mod recording;
 pub mod thumbnail;
 
-use std::os::unix::net::UnixListener;
+use std::os::unix::net::{UnixListener, UnixStream};
 
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState, Region},
@@ -50,9 +50,16 @@ use wayland_client::{
 };
 
 use crate::DynResult;
+use crate::record::finalize::{
+    FinalizeFailure, FinalizeRequest, FinalizedClip, SaveDestination, finalize_recording,
+};
+use crate::record::session::{
+    CaptureScope, PublicRecordingState, RecorderTools, RecordingAction, RecordingSession,
+    SessionPhase, StopChildrenJob, StopChildrenResult, StoppedSegment, spawn_segment,
+};
 use crate::shelf::layout::{Hit, Layout, LayoutConfig, ThumbRect};
 use crate::shelf::model::{CardKind, FileLifetime, ShelfModel};
-use crate::shelf::recording::{IndButton, RecPhase, Recording};
+use crate::shelf::recording::{POPUP_H, POPUP_W, PopupButton};
 
 pub struct Daemon {
     registry_state: RegistryState,
@@ -107,9 +114,40 @@ pub struct Daemon {
     exit: bool,
     /// Queue handle stashed for use inside calloop callbacks (which get only `&mut Daemon`).
     qh: Option<QueueHandle<Daemon>>,
-    /// Active area recording (wf-recorder child + overlay surfaces), if any. Only
-    /// one recording at a time.
-    recording: Option<Recording>,
+    recording: Option<RecordingSession>,
+    marker: Option<LayerSurface>,
+    marker_pool: Option<SlotPool>,
+    marker_region: Option<Region>,
+    marker_configured: bool,
+    popup: Option<LayerSurface>,
+    popup_pool: Option<SlotPool>,
+    popup_configured: bool,
+    watchers: Vec<UnixStream>,
+    last_recording_snapshot: crate::ipc::RecordingSnapshot,
+    event_tx: calloop::channel::Sender<DaemonEvent>,
+    focused_output: Option<String>,
+    focus_query_pending: bool,
+    pending_controls: Vec<UnixStream>,
+}
+
+enum AfterStop {
+    Pause,
+    Recover(String),
+    Save(SaveDestination),
+    Discard,
+}
+
+enum DaemonEvent {
+    ClientRequest {
+        request: crate::ipc::Request,
+        stream: UnixStream,
+    },
+    ChildrenStopped {
+        after: AfterStop,
+        result: StopChildrenResult,
+    },
+    Finalized(Result<Vec<FinalizedClip>, FinalizeFailure>),
+    FocusResolved(Option<String>),
 }
 
 /// In-flight left-button press, used to distinguish a click from a drag.
@@ -166,6 +204,150 @@ fn notify(body: &str) {
     }
 }
 
+fn recording_action_label(action: RecordingAction) -> &'static str {
+    match action {
+        RecordingAction::Pause => "pause",
+        RecordingAction::Resume => "resume",
+        RecordingAction::SaveShelf => "save to shelf",
+        RecordingAction::SaveDisk => "save to disk",
+        RecordingAction::Discard => "discard",
+    }
+}
+
+fn spawn_client_reader(mut stream: UnixStream, tx: calloop::channel::Sender<DaemonEvent>) {
+    std::thread::spawn(move || {
+        let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+        match crate::ipc::Request::read(&mut stream) {
+            Ok(request) => {
+                let _ = tx.send(DaemonEvent::ClientRequest { request, stream });
+            }
+            Err(error) => eprintln!("boltsnap daemon: bad request: {error}"),
+        }
+    });
+}
+
+fn spawn_client_writer(mut stream: UnixStream, bytes: Vec<u8>) {
+    std::thread::spawn(move || {
+        use std::io::Write;
+        let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(5)));
+        let _ = stream.write_all(&bytes);
+    });
+}
+
+fn focused_output_from_hyprland_json(json: &[u8]) -> Option<String> {
+    crate::record::parse_hyprland_monitors(json)
+        .ok()?
+        .into_iter()
+        .find(|monitor| monitor.focused)
+        .map(|monitor| monitor.name)
+}
+
+fn query_focused_output() -> Option<String> {
+    use std::process::{Command, Stdio};
+    if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_none()
+        || !crate::paths::has_cmd("hyprctl")
+    {
+        return None;
+    }
+    let mut child = Command::new("hyprctl")
+        .args(["monitors", "-j"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let output = child.wait_with_output().ok()?;
+                return status
+                    .success()
+                    .then(|| focused_output_from_hyprland_json(&output.stdout))
+                    .flatten();
+            }
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Ok(None) | Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+}
+
+fn spawn_focus_query(tx: calloop::channel::Sender<DaemonEvent>) {
+    std::thread::spawn(move || {
+        let _ = tx.send(DaemonEvent::FocusResolved(query_focused_output()));
+    });
+}
+
+fn resolve_output_name<'a>(requested: Option<&str>, available: &'a [String]) -> Option<&'a str> {
+    requested
+        .and_then(|requested| {
+            available
+                .iter()
+                .find(|name| name.as_str() == requested)
+                .map(String::as_str)
+        })
+        .or_else(|| available.first().map(String::as_str))
+}
+
+fn transformed_mode_size(
+    (width, height): (i32, i32),
+    transform: wl_output::Transform,
+) -> (i32, i32) {
+    if matches!(
+        transform,
+        wl_output::Transform::_90
+            | wl_output::Transform::_270
+            | wl_output::Transform::Flipped90
+            | wl_output::Transform::Flipped270
+    ) {
+        (height, width)
+    } else {
+        (width, height)
+    }
+}
+
+fn recording_controls_visible(phase: SessionPhase) -> bool {
+    phase != SessionPhase::Discarding
+}
+
+fn monitor_for_geometry<'a>(
+    monitors: &'a [crate::record::Monitor],
+    geo: &crate::record::Geometry,
+) -> Option<&'a crate::record::Monitor> {
+    let x = i64::from(geo.x) + i64::from(geo.w / 2);
+    let y = i64::from(geo.y) + i64::from(geo.h / 2);
+    monitors.iter().find(|monitor| {
+        let scale = monitor.scale.max(1.0);
+        let width = (f64::from(monitor.width) / scale).round() as i64;
+        let height = (f64::from(monitor.height) / scale).round() as i64;
+        let left = i64::from(monitor.x);
+        let top = i64::from(monitor.y);
+        x >= left && x < left + width && y >= top && y < top + height
+    })
+}
+
+fn spawn_recording_thumbnail(id: u64, video: std::path::PathBuf) {
+    let thumb = crate::paths::rec_file("rec-thumb", "png");
+    std::thread::spawn(move || {
+        let _ = std::process::Command::new("ffmpeg")
+            .args(["-y", "-i"])
+            .arg(&video)
+            .args(["-frames:v", "1", "-update", "1"])
+            .arg(&thumb)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+        let _ = crate::ipc::send_to_shelf(crate::ipc::Request::RecordingThumb { id, thumb });
+    });
+}
+
 /// Name of the focused Hyprland monitor, via `hyprctl monitors -j`. `None` off
 /// Hyprland (then the compositor places the shelf on its default output).
 pub(crate) fn focused_monitor_name() -> Option<String> {
@@ -182,13 +364,7 @@ pub(crate) fn focused_monitor_name() -> Option<String> {
     if !out.status.success() {
         return None;
     }
-    let v: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
-    for m in v.as_array()? {
-        if m.get("focused").and_then(|f| f.as_bool()) == Some(true) {
-            return m.get("name").and_then(|n| n.as_str()).map(str::to_string);
-        }
-    }
-    None
+    focused_output_from_hyprland_json(&out.stdout)
 }
 
 /// Logical layout origin (`x`, `y`) of the focused Hyprland monitor, via
@@ -331,6 +507,7 @@ pub fn run_daemon(save_dir_cli: Option<std::path::PathBuf>) -> DynResult<()> {
     let cfg = LayoutConfig::default();
     let config = crate::config::Config::load();
     let save_dir = crate::config::resolve_save_dir(save_dir_cli.as_deref(), &config);
+    let (event_tx, event_rx) = calloop::channel::channel::<DaemonEvent>();
     let mut daemon = Daemon {
         registry_state: RegistryState::new(&globals),
         seat_state: SeatState::new(&globals, &qh),
@@ -366,6 +543,19 @@ pub fn run_daemon(save_dir_cli: Option<std::path::PathBuf>) -> DynResult<()> {
         exit: false,
         qh: Some(qh.clone()),
         recording: None,
+        marker: None,
+        marker_pool: None,
+        marker_region: None,
+        marker_configured: false,
+        popup: None,
+        popup_pool: None,
+        popup_configured: false,
+        watchers: Vec::new(),
+        last_recording_snapshot: crate::ipc::RecordingSnapshot::idle(),
+        event_tx,
+        focused_output: None,
+        focus_query_pending: false,
+        pending_controls: Vec::new(),
     };
 
     // Populate output metadata (names) so we can place the shelf on the focused
@@ -390,12 +580,20 @@ pub fn run_daemon(save_dir_cli: Option<std::path::PathBuf>) -> DynResult<()> {
         .insert(handle.clone())
         .map_err(|e| format!("insert wayland source: {e}"))?;
 
+    handle
+        .insert_source(event_rx, |event, _, daemon: &mut Daemon| {
+            if let calloop::channel::Event::Msg(event) = event {
+                daemon.handle_daemon_event(event);
+            }
+        })
+        .map_err(|e| format!("insert recording worker source: {e}"))?;
+
     let source = Generic::new(listener, Interest::READ, Mode::Level);
     handle
         .insert_source(source, |_readiness, listener, daemon: &mut Daemon| {
             loop {
                 match listener.accept() {
-                    Ok((stream, _)) => daemon.handle_client(stream),
+                    Ok((stream, _)) => spawn_client_reader(stream, daemon.event_tx.clone()),
                     Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
                     Err(e) => {
                         eprintln!("boltsnap daemon: accept error: {e}");
@@ -406,6 +604,8 @@ pub fn run_daemon(save_dir_cli: Option<std::path::PathBuf>) -> DynResult<()> {
             Ok(PostAction::Continue)
         })
         .map_err(|e| format!("insert listener source: {e}"))?;
+
+    daemon.refresh_focus();
 
     while !daemon.exit {
         // Tick ~60fps while a card is animating; otherwise a 250ms timeout, which
@@ -422,7 +622,7 @@ pub fn run_daemon(save_dir_cli: Option<std::path::PathBuf>) -> DynResult<()> {
         if daemon.animating() {
             daemon.tick_animations(&qh);
         }
-        // Refresh the recording indicator's MM:SS and reap a finished/failed child.
+        // Publish whole-second progress and notice an unexpected recorder exit.
         daemon.tick_recording(&qh);
     }
     let _ = std::fs::remove_file(&sock);
@@ -430,27 +630,76 @@ pub fn run_daemon(save_dir_cli: Option<std::path::PathBuf>) -> DynResult<()> {
 }
 
 impl Daemon {
-    fn target_output(&self) -> (Option<String>, Option<wl_output::WlOutput>) {
+    fn cached_monitors(&self) -> Vec<crate::record::Monitor> {
+        self.output_state
+            .outputs()
+            .filter_map(|output| self.output_state.info(&output))
+            .filter_map(|info| {
+                let name = info.name?;
+                let (x, y) = info.logical_position.unwrap_or(info.location);
+                let logical_size = info.logical_size.filter(|(w, h)| *w > 0 && *h > 0);
+                let mode_size = info
+                    .modes
+                    .iter()
+                    .find(|mode| mode.current)
+                    .map(|mode| transformed_mode_size(mode.dimensions, info.transform))
+                    .filter(|(w, h)| *w > 0 && *h > 0);
+                let fallback_scale = f64::from(info.scale_factor.max(1));
+                let scale = match (mode_size, logical_size) {
+                    (Some((width, _)), Some((logical_width, _))) => {
+                        f64::from(width) / f64::from(logical_width)
+                    }
+                    _ => fallback_scale,
+                };
+                let (width, height) = mode_size.or_else(|| {
+                    logical_size.map(|(width, height)| {
+                        (
+                            (f64::from(width) * scale).round() as i32,
+                            (f64::from(height) * scale).round() as i32,
+                        )
+                    })
+                })?;
+                Some(crate::record::Monitor {
+                    focused: self.focused_output.as_deref() == Some(name.as_str()),
+                    description: info
+                        .description
+                        .unwrap_or_else(|| format!("{} {}", info.make, info.model)),
+                    name,
+                    x,
+                    y,
+                    width: width as u32,
+                    height: height as u32,
+                    scale,
+                })
+            })
+            .collect()
+    }
+
+    fn target_output(
+        &self,
+        requested: Option<&str>,
+    ) -> (Option<String>, Option<wl_output::WlOutput>) {
         let outputs: Vec<_> = self.output_state.outputs().collect();
-        if outputs.len() <= 1 {
-            return (None, outputs.into_iter().next());
-        }
-        let name = focused_monitor_name();
-        let output = name
-            .as_ref()
+        let available: Vec<_> = outputs
+            .iter()
+            .filter_map(|output| self.output_state.info(output).and_then(|info| info.name))
+            .collect();
+        let requested = resolve_output_name(requested, &available);
+        let output = requested
             .and_then(|n| {
                 outputs
                     .iter()
-                    .find(|o| {
-                        self.output_state.info(o).and_then(|i| i.name).as_deref()
-                            == Some(n.as_str())
-                    })
+                    .find(|o| self.output_state.info(o).and_then(|i| i.name).as_deref() == Some(n))
                     .cloned()
             })
             // Fall back to the first available output when the focused monitor
             // can't be resolved. Hyprland may fail to map a layer surface with a
             // null output, so always pass a concrete one when we have it.
             .or_else(|| outputs.into_iter().next());
+        let name = output
+            .as_ref()
+            .and_then(|output| self.output_state.info(output))
+            .and_then(|info| info.name);
         (name, output)
     }
 
@@ -459,7 +708,8 @@ impl Daemon {
     /// monitor changed since last time. Returns true when a fresh surface was
     /// created and must wait for its initial configure before drawing.
     fn place_on_focused_output(&mut self, qh: &QueueHandle<Self>) -> bool {
-        let (name, output) = self.target_output();
+        let focused = focused_monitor_name();
+        let (name, output) = self.target_output(focused.as_deref());
         if self.layer.is_some() && name == self.output_name {
             return false;
         }
@@ -504,24 +754,20 @@ impl Daemon {
         }
     }
 
-    /// Handle one client connection: read a single request and act on it.
-    fn handle_client(&mut self, mut stream: std::os::unix::net::UnixStream) {
+    /// Handle one request already read by a worker, keeping IPC reads off calloop.
+    fn handle_client_request(
+        &mut self,
+        req: crate::ipc::Request,
+        mut stream: std::os::unix::net::UnixStream,
+    ) {
         use std::io::Write;
-        let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
-        let req = match crate::ipc::Request::read(&mut stream) {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!("boltsnap daemon: bad request: {e}");
-                return;
-            }
-        };
         let qh = match self.qh.clone() {
             Some(qh) => qh,
             None => return,
         };
         match req {
             crate::ipc::Request::Ping => {
-                let _ = stream.write_all(b"PONG");
+                spawn_client_writer(stream, b"PONG".to_vec());
             }
             crate::ipc::Request::Add { source, png } => {
                 self.add_png(&png, &source, &qh);
@@ -529,22 +775,84 @@ impl Daemon {
             crate::ipc::Request::Reload { id } => {
                 self.reload(id, &qh);
             }
-            crate::ipc::Request::StartRecording { x, y, w, h, .. } => {
-                self.start_recording(x, y, w, h, &qh);
+            crate::ipc::Request::RecordingStatus => {
+                self.write_response(
+                    stream,
+                    crate::ipc::Response::ok(Some(self.recording_snapshot())),
+                );
+            }
+            crate::ipc::Request::RecordingWatch => {
+                let _ = stream.set_read_timeout(None);
+                let _ = stream.set_nonblocking(true);
+                let line = self.recording_snapshot().to_json_line();
+                if matches!(stream.write(line.as_bytes()), Ok(written) if written == line.len()) {
+                    self.watchers.push(stream);
+                }
+            }
+            crate::ipc::Request::ShowRecordingControls => {
+                if !self
+                    .recording
+                    .as_ref()
+                    .is_some_and(|session| recording_controls_visible(session.phase))
+                {
+                    self.write_response(
+                        stream,
+                        crate::ipc::Response::error("recording controls are unavailable"),
+                    );
+                } else {
+                    self.pending_controls.push(stream);
+                    self.refresh_focus();
+                }
+            }
+            crate::ipc::Request::RecordingControl { action } => {
+                let response = match self.handle_recording_action(action, &qh) {
+                    Ok(()) => crate::ipc::Response::ok(Some(self.recording_snapshot())),
+                    Err(error) => crate::ipc::Response::error(error),
+                };
+                self.write_response(stream, response);
+            }
+            crate::ipc::Request::StartRecording {
+                x,
+                y,
+                w,
+                h,
+                show_frame,
+            } => {
+                let response = match self.start_recording(x, y, w, h, show_frame, &qh) {
+                    Ok(()) => crate::ipc::Response::ok(Some(self.recording_snapshot())),
+                    Err(error) => crate::ipc::Response::error(error),
+                };
+                self.write_response(stream, response);
             }
             crate::ipc::Request::StartRecordingOutput { name } => {
-                self.start_recording_output(name);
+                let response = match self.start_recording_outputs(vec![name], false) {
+                    Ok(()) => crate::ipc::Response::ok(Some(self.recording_snapshot())),
+                    Err(error) => crate::ipc::Response::error(error),
+                };
+                self.write_response(stream, response);
+            }
+            crate::ipc::Request::StartRecordingOutputs { names, combined } => {
+                let response = match self.start_recording_outputs(names, combined) {
+                    Ok(()) => crate::ipc::Response::ok(Some(self.recording_snapshot())),
+                    Err(error) => crate::ipc::Response::error(error),
+                };
+                self.write_response(stream, response);
             }
             crate::ipc::Request::RecordingThumb { id, thumb } => {
                 self.update_recording_thumb(id, thumb, &qh);
             }
             crate::ipc::Request::StopRecording => {
-                // Same as clicking Stop in the indicator (no-op if not recording).
-                self.stop_recording();
+                let response = match self.handle_recording_action(RecordingAction::SaveShelf, &qh) {
+                    Ok(()) => crate::ipc::Response::ok(Some(self.recording_snapshot())),
+                    Err(error) => crate::ipc::Response::error(error),
+                };
+                self.write_response(stream, response);
             }
-            // Task 6 wires the request/response recording commands into the daemon.
-            _ => {}
         }
+    }
+
+    fn write_response(&self, stream: UnixStream, response: crate::ipc::Response) {
+        spawn_client_writer(stream, response.encode());
     }
 
     /// Re-read a thumbnail's PNG from disk (after the editor overwrote it) and refresh.
@@ -998,142 +1306,91 @@ impl Daemon {
         layer.commit();
     }
 
-    // ----- Area recording lifecycle --------------------------------------
+    // ----- Recording lifecycle -------------------------------------------
 
-    /// True while a recording is actively counting up (Recording phase). Drives
-    /// the loop's per-second indicator refresh; the Stopped phase doesn't tick.
-    fn recording_counting(&self) -> bool {
-        matches!(
-            self.recording.as_ref().map(|r| r.phase),
-            Some(RecPhase::Recording)
-        )
-    }
-
-    /// Begin recording the global-coords region (x,y,w,h): spawn wf-recorder,
-    /// raise a click-through marker around the rect and a control indicator near
-    /// the shelf. One recording at a time.
-    fn start_recording(&mut self, x: i32, y: i32, w: u32, h: u32, qh: &QueueHandle<Self>) {
+    fn start_recording(
+        &mut self,
+        x: i32,
+        y: i32,
+        w: u32,
+        h: u32,
+        show_frame: bool,
+        qh: &QueueHandle<Self>,
+    ) -> Result<(), String> {
         if self.recording.is_some() {
-            eprintln!("boltsnap daemon: a recording is already in progress");
-            return;
+            return Err("a recording is already in progress".into());
         }
         if !crate::paths::has_cmd("wf-recorder") {
-            eprintln!("boltsnap daemon: wf-recorder not found — cannot record");
-            notify("Recording needs wf-recorder — install it (e.g. pacman -S wf-recorder)");
-            return;
+            return Err("wf-recorder is not installed".into());
         }
         let geo = crate::record::Geometry { x, y, w, h };
-        // Disk-backed (~/.cache/boltsnap/rec), NOT the RAM-backed temp dir — an
-        // mp4 is many MB and tmpfs is precious RAM on this machine.
-        let path = crate::paths::rec_file("rec", "mp4");
+        let scope = CaptureScope::Area(geo);
         let codec = crate::config::resolve_record_codec(None, &crate::config::Config::load());
-
-        let child = match std::process::Command::new("wf-recorder")
-            .args(crate::record::wf_recorder_args(&geo, &codec, &path))
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-        {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("boltsnap daemon: failed to spawn wf-recorder: {e}");
-                notify(&format!("Recording failed to start: {e}"));
-                return;
-            }
-        };
-
-        // Control indicator near the shelf. If even this tiny pool can't be made,
-        // abort cleanly (SIGINT + reap the just-spawned child) rather than recording
-        // headlessly with no way to stop it.
-        let (indicator, indicator_pool) = match self.create_indicator(qh) {
-            Some(v) => v,
-            None => {
-                eprintln!("boltsnap daemon: could not allocate indicator buffer; aborting record");
-                let mut child = child;
-                unsafe {
-                    libc::kill(child.id() as i32, libc::SIGINT);
-                }
-                let _ = child.wait();
-                let _ = std::fs::remove_file(&path);
-                return;
-            }
-        };
-        // Click-through region marker (border just OUTSIDE the recorded rect).
-        let (marker, marker_pool, marker_region) = self.create_marker(&geo, qh);
-
-        self.recording = Some(Recording {
-            child: Some(child),
-            path,
-            started: std::time::Instant::now(),
-            geo,
-            marker,
-            marker_pool,
-            marker_region,
-            marker_configured: false,
-            indicator: Some(indicator),
-            indicator_pool: Some(indicator_pool),
-            indicator_configured: false,
-            phase: RecPhase::Recording,
-            last_drawn_secs: None,
-            auto_confirm: false,
-        });
-        eprintln!("boltsnap daemon: recording {} -> {:?}", geo.to_arg(), codec);
+        let tools = RecorderTools::default();
+        let monitors = self.cached_monitors();
+        let monitors = monitor_for_geometry(&monitors, &geo)
+            .cloned()
+            .into_iter()
+            .collect();
+        let active = spawn_segment(&scope, &codec, &tools)?;
+        self.recording = Some(RecordingSession::new(
+            scope,
+            monitors,
+            codec.clone(),
+            crate::config::RecordBothMode::Separate,
+            show_frame,
+            active,
+            std::time::Instant::now(),
+        ));
+        if show_frame {
+            self.create_marker(&geo, qh);
+        }
+        self.publish_recording_snapshot();
+        eprintln!("boltsnap daemon: recording {} -> {codec:?}", geo.to_arg());
+        Ok(())
     }
 
-    /// Begin a fullscreen recording of `output` (a Hyprland monitor name) via
-    /// `wf-recorder -o`. No marker, no indicator — an overlay would be captured
-    /// into the fullscreen video — so stop is keyboard-only (`boltsnap stop`,
-    /// already bound) and finalizes straight into a card. One recording at a time.
-    fn start_recording_output(&mut self, name: String) {
+    fn start_recording_outputs(
+        &mut self,
+        names: Vec<String>,
+        combined: bool,
+    ) -> Result<(), String> {
         if self.recording.is_some() {
-            eprintln!("boltsnap daemon: a recording is already in progress");
-            return;
+            return Err("a recording is already in progress".into());
         }
         if !crate::paths::has_cmd("wf-recorder") {
-            eprintln!("boltsnap daemon: wf-recorder not found — cannot record");
-            notify("Recording needs wf-recorder — install it (e.g. pacman -S wf-recorder)");
-            return;
+            return Err("wf-recorder is not installed".into());
         }
-        let path = crate::paths::rec_file("rec", "mp4");
+        if names.is_empty() {
+            return Err("no recording output was selected".into());
+        }
+        let scope = CaptureScope::Outputs(names.clone());
         let codec = crate::config::resolve_record_codec(None, &crate::config::Config::load());
-        let child = match std::process::Command::new("wf-recorder")
-            .args(crate::record::wf_recorder_output_args(&name, &codec, &path))
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-        {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("boltsnap daemon: failed to spawn wf-recorder: {e}");
-                notify(&format!("Recording failed to start: {e}"));
-                return;
-            }
-        };
-        self.recording = Some(Recording {
-            child: Some(child),
-            path,
-            started: std::time::Instant::now(),
-            geo: crate::record::Geometry {
-                x: 0,
-                y: 0,
-                w: 0,
-                h: 0,
+        let tools = RecorderTools::default();
+        let monitors: Vec<_> = self
+            .cached_monitors()
+            .into_iter()
+            .filter(|monitor| names.contains(&monitor.name))
+            .collect();
+        if combined && monitors.len() != names.len() {
+            return Err("combined recording output layout is unavailable".into());
+        }
+        let active = spawn_segment(&scope, &codec, &tools)?;
+        self.recording = Some(RecordingSession::new(
+            scope,
+            monitors,
+            codec,
+            if combined {
+                crate::config::RecordBothMode::Combined
+            } else {
+                crate::config::RecordBothMode::Separate
             },
-            marker: None,
-            marker_pool: None,
-            marker_region: None,
-            marker_configured: false,
-            indicator: None,
-            indicator_pool: None,
-            indicator_configured: false,
-            phase: RecPhase::Recording,
-            last_drawn_secs: None,
-            auto_confirm: true,
-        });
-        notify("Recording full screen — Super+Alt+Print to stop");
-        eprintln!("boltsnap daemon: recording output {name} -> {codec:?}");
+            false,
+            active,
+            std::time::Instant::now(),
+        ));
+        self.publish_recording_snapshot();
+        Ok(())
     }
 
     /// Build the click-through marker layer surface (a `Top` layer with an EMPTY
@@ -1145,18 +1402,21 @@ impl Daemon {
     /// is in compositor-GLOBAL coords; we convert it to OUTPUT-LOCAL margins by
     /// subtracting that output's layout origin — the same origin `record_flow`
     /// added to globalize the selection, so the subtraction is exact.
-    fn create_marker(
-        &mut self,
-        geo: &crate::record::Geometry,
-        qh: &QueueHandle<Self>,
-    ) -> (Option<LayerSurface>, Option<SlotPool>, Option<Region>) {
+    fn create_marker(&mut self, geo: &crate::record::Geometry, qh: &QueueHandle<Self>) {
         use crate::shelf::recording::MARKER_INFLATE;
         let inflate = MARKER_INFLATE as i32;
         let mw = geo.w + 2 * MARKER_INFLATE;
         let mh = geo.h + 2 * MARKER_INFLATE;
 
+        let monitor = self
+            .cached_monitors()
+            .into_iter()
+            .find(|monitor| monitor_for_geometry(std::slice::from_ref(monitor), geo).is_some());
+        let (output_name, ox, oy) = monitor
+            .map(|monitor| (Some(monitor.name), monitor.x, monitor.y))
+            .unwrap_or((None, 0, 0));
         let surface = self.compositor.create_surface(qh);
-        let (_name, output) = self.target_output();
+        let (_name, output) = self.target_output(output_name.as_deref());
         let layer = self.layer_shell.create_layer_surface(
             qh,
             surface,
@@ -1168,7 +1428,6 @@ impl Daemon {
         // Convert the GLOBAL rect to OUTPUT-LOCAL margins by subtracting the
         // focused monitor's layout origin (the inverse of record_flow's globalize),
         // then anchor top-left and push to the rect via margins (inflated by border).
-        let (ox, oy) = focused_monitor_origin().unwrap_or((0, 0));
         let local_x = geo.x - ox;
         let local_y = geo.y - oy;
         layer.set_margin((local_y - inflate).max(0), 0, 0, (local_x - inflate).max(0));
@@ -1186,52 +1445,50 @@ impl Daemon {
         }
         layer.commit();
 
-        let pool = SlotPool::new((mw * mh * 4) as usize, &self.shm).ok();
-        (Some(layer), pool, region)
+        self.marker = Some(layer);
+        self.marker_pool = SlotPool::new((mw * mh * 4) as usize, &self.shm).ok();
+        self.marker_region = region;
+        self.marker_configured = false;
     }
 
-    /// Build the recording control indicator layer surface, anchored bottom-left
-    /// above the shelf. `None` if its (tiny) draw pool can't be allocated.
-    fn create_indicator(&mut self, qh: &QueueHandle<Self>) -> Option<(LayerSurface, SlotPool)> {
-        use crate::shelf::recording::{IND_H, IND_W};
-        let pool = SlotPool::new((IND_W * IND_H * 4) as usize, &self.shm).ok()?;
+    fn create_popup(&mut self, qh: &QueueHandle<Self>) -> Result<(), String> {
+        let pool = SlotPool::new((POPUP_W * POPUP_H * 4) as usize, &self.shm)
+            .map_err(|error| format!("allocate recording controls: {error}"))?;
         let surface = self.compositor.create_surface(qh);
-        let (_name, output) = self.target_output();
+        let (_name, output) = self.target_output(self.focused_output.as_deref());
         let layer = self.layer_shell.create_layer_surface(
             qh,
             surface,
-            Layer::Top,
-            Some("boltsnap-recording"),
+            Layer::Overlay,
+            Some("boltsnap-recording-controls"),
             output.as_ref(),
         );
-        layer.set_anchor(Anchor::BOTTOM | Anchor::LEFT);
-        // Sit above the shelf (shelf is at bottom-left margin 24 with its own
-        // height). Offset by an estimate so the two don't overlap.
-        let above = (self.height as i32).max(60) + 48;
-        layer.set_margin(0, 0, above, 24);
-        layer.set_size(IND_W, IND_H);
-        layer.set_keyboard_interactivity(KeyboardInteractivity::None);
+        layer.set_size(POPUP_W, POPUP_H);
+        layer.set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
         layer.set_exclusive_zone(-1);
         layer.commit();
-        Some((layer, pool))
+        self.popup = Some(layer);
+        self.popup_pool = Some(pool);
+        self.popup_configured = false;
+        Ok(())
     }
 
     /// Draw the click-through marker border into its surface.
     fn draw_marker(&mut self) {
-        let rec = match self.recording.as_mut() {
-            Some(r) => r,
-            None => return,
-        };
-        if !rec.marker_configured {
+        if !self.marker_configured {
             return;
         }
-        let (layer, pool) = match (rec.marker.as_ref(), rec.marker_pool.as_mut()) {
+        let geo = match self.recording.as_ref().map(|session| &session.scope) {
+            Some(CaptureScope::Area(geo)) => *geo,
+            _ => return,
+        };
+        let (layer, pool) = match (self.marker.as_ref(), self.marker_pool.as_mut()) {
             (Some(l), Some(p)) => (l, p),
             _ => return,
         };
         use crate::shelf::recording::MARKER_INFLATE;
-        let mw = rec.geo.w + 2 * MARKER_INFLATE;
-        let mh = rec.geo.h + 2 * MARKER_INFLATE;
+        let mw = geo.w + 2 * MARKER_INFLATE;
+        let mh = geo.h + 2 * MARKER_INFLATE;
         let stride = (mw * 4) as i32;
         let (buffer, canvas) = match pool.create_buffer(
             mw as i32,
@@ -1255,214 +1512,470 @@ impl Daemon {
         layer.commit();
     }
 
-    /// Draw the indicator (●+MM:SS+Stop, or Confirm/Cancel) into its surface.
-    /// No-op when there is no indicator (fullscreen recording).
-    fn draw_indicator(&mut self) {
-        use crate::shelf::recording::{IND_H, IND_W};
-        let rec = match self.recording.as_mut() {
-            Some(r) => r,
-            None => return,
-        };
-        if !rec.indicator_configured {
+    fn draw_popup(&mut self) {
+        if !self.popup_configured {
             return;
         }
-        let (layer, pool) = match (rec.indicator.as_ref(), rec.indicator_pool.as_mut()) {
+        let (state, enabled, elapsed) = match self.recording.as_ref() {
+            Some(session) => (
+                session.public_state(),
+                session.actions_enabled(),
+                crate::shelf::recording::fmt_elapsed(
+                    session.elapsed_at(std::time::Instant::now()).as_secs(),
+                ),
+            ),
+            None => return,
+        };
+        let (layer, pool) = match (self.popup.as_ref(), self.popup_pool.as_mut()) {
             (Some(l), Some(p)) => (l, p),
             _ => return,
         };
-        let phase = rec.phase;
-        let elapsed = crate::shelf::recording::fmt_elapsed(rec.started.elapsed().as_secs());
-        let stride = (IND_W * 4) as i32;
+        let stride = (POPUP_W * 4) as i32;
         let (buffer, canvas) = match pool.create_buffer(
-            IND_W as i32,
-            IND_H as i32,
+            POPUP_W as i32,
+            POPUP_H as i32,
             stride,
             wayland_client::protocol::wl_shm::Format::Argb8888,
         ) {
             Ok(v) => v,
             Err(_) => return,
         };
-        crate::shelf::paint::draw_indicator(canvas, IND_W, IND_H, phase, &elapsed);
+        crate::shelf::paint::draw_recording_popup(
+            canvas, POPUP_W, POPUP_H, state, enabled, &elapsed,
+        );
         let surface = layer.wl_surface();
-        surface.damage_buffer(0, 0, IND_W as i32, IND_H as i32);
+        surface.damage_buffer(0, 0, POPUP_W as i32, POPUP_H as i32);
         let _ = buffer.attach_to(surface);
         layer.commit();
     }
 
-    /// Per-loop recording housekeeping: refresh the MM:SS readout on whole-second
-    /// boundaries, and detect a wf-recorder that died/exited on its own.
     fn tick_recording(&mut self, _qh: &QueueHandle<Self>) {
-        let teardown = {
-            let rec = match self.recording.as_mut() {
-                Some(r) => r,
-                None => return,
-            };
-            // While recording, did the child exit unexpectedly (crash/error)?
-            let mut dead = false;
-            if rec.phase == RecPhase::Recording {
-                if let Some(child) = rec.child.as_mut() {
-                    if let Ok(Some(status)) = child.try_wait() {
-                        eprintln!("boltsnap daemon: wf-recorder exited early: {status}");
-                        notify("Recording stopped — wf-recorder exited unexpectedly");
-                        dead = true;
+        let unexpected = self.recording.as_mut().and_then(|session| {
+            if session.phase != SessionPhase::Recording {
+                return None;
+            }
+            session
+                .active
+                .iter_mut()
+                .find_map(|recorder| match recorder.child.try_wait() {
+                    Ok(Some(status)) => Some(format!("wf-recorder exited unexpectedly: {status}")),
+                    Err(error) => Some(format!("check wf-recorder: {error}")),
+                    Ok(None) => None,
+                })
+        });
+        if let Some(error) = unexpected {
+            if let Some(session) = self.recording.as_mut() {
+                let _ = session.begin_pause(std::time::Instant::now());
+            }
+            self.remove_marker();
+            let children = self
+                .recording
+                .as_mut()
+                .map(|session| std::mem::take(&mut session.active))
+                .unwrap_or_default();
+            self.stop_children(AfterStop::Recover(error), children);
+        }
+        let snapshot = self.recording_snapshot();
+        if snapshot != self.last_recording_snapshot {
+            self.draw_popup();
+            self.publish_recording_snapshot();
+        }
+    }
+
+    fn refresh_focus(&mut self) {
+        if self.focus_query_pending {
+            return;
+        }
+        self.focus_query_pending = true;
+        spawn_focus_query(self.event_tx.clone());
+    }
+
+    fn finish_pending_controls(&mut self) {
+        if self.pending_controls.is_empty() {
+            return;
+        }
+        let response = match self.qh.clone() {
+            Some(qh) => {
+                self.remove_popup();
+                match self.show_recording_controls(&qh) {
+                    Ok(()) => crate::ipc::Response::ok(Some(self.recording_snapshot())),
+                    Err(error) => crate::ipc::Response::error(error),
+                }
+            }
+            None => crate::ipc::Response::error("recording controls are unavailable"),
+        };
+        let encoded = response.encode();
+        for stream in std::mem::take(&mut self.pending_controls) {
+            spawn_client_writer(stream, encoded.clone());
+        }
+    }
+
+    fn reject_pending_controls(&mut self, error: &str) {
+        let encoded = crate::ipc::Response::error(error).encode();
+        for stream in std::mem::take(&mut self.pending_controls) {
+            spawn_client_writer(stream, encoded.clone());
+        }
+    }
+
+    fn show_recording_controls(&mut self, qh: &QueueHandle<Self>) -> Result<(), String> {
+        if !self
+            .recording
+            .as_ref()
+            .is_some_and(|session| recording_controls_visible(session.phase))
+        {
+            return Err("recording controls are unavailable".into());
+        }
+        if self.popup.is_none() {
+            self.create_popup(qh)?;
+        } else {
+            self.draw_popup();
+        }
+        Ok(())
+    }
+
+    fn handle_recording_action(
+        &mut self,
+        action: RecordingAction,
+        qh: &QueueHandle<Self>,
+    ) -> Result<(), String> {
+        let session = self
+            .recording
+            .as_ref()
+            .ok_or_else(|| "there is no active recording".to_string())?;
+        if !session.can_accept(action) {
+            return Err(format!(
+                "cannot {} while {:?}",
+                recording_action_label(action),
+                session.phase
+            ));
+        }
+
+        match action {
+            RecordingAction::Pause => {
+                let session = self.recording.as_mut().unwrap();
+                session.begin_pause(std::time::Instant::now())?;
+                let children = std::mem::take(&mut session.active);
+                self.remove_marker();
+                self.stop_children(AfterStop::Pause, children);
+            }
+            RecordingAction::Resume => {
+                let (scope, codec) = {
+                    let session = self.recording.as_ref().unwrap();
+                    (session.scope.clone(), session.codec.clone())
+                };
+                let active = match spawn_segment(&scope, &codec, &RecorderTools::default()) {
+                    Ok(active) => active,
+                    Err(error) => {
+                        if let Some(session) = self.recording.as_mut() {
+                            session.last_error = Some(error.clone());
+                        }
+                        self.publish_recording_snapshot();
+                        return Err(error);
+                    }
+                };
+                self.recording
+                    .as_mut()
+                    .unwrap()
+                    .resume(active, std::time::Instant::now())?;
+                let marker = self.recording.as_ref().and_then(|session| {
+                    if session.show_frame {
+                        match &session.scope {
+                            CaptureScope::Area(geo) => Some(*geo),
+                            CaptureScope::Outputs(_) => None,
+                        }
+                    } else {
+                        None
+                    }
+                });
+                if let Some(geo) = marker {
+                    self.create_marker(&geo, qh);
+                }
+            }
+            RecordingAction::SaveShelf | RecordingAction::SaveDisk => {
+                let destination = if action == RecordingAction::SaveShelf {
+                    SaveDestination::Shelf
+                } else {
+                    SaveDestination::Disk(crate::config::resolve_record_dir(
+                        &crate::config::Config::load(),
+                    ))
+                };
+                let session = self.recording.as_mut().unwrap();
+                session.begin_finalize(std::time::Instant::now())?;
+                let children = std::mem::take(&mut session.active);
+                self.remove_marker();
+                self.draw_popup();
+                if children.is_empty() {
+                    self.start_finalize_worker(destination);
+                } else {
+                    self.stop_children(AfterStop::Save(destination), children);
+                }
+            }
+            RecordingAction::Discard => {
+                let session = self.recording.as_mut().unwrap();
+                session.begin_discard(std::time::Instant::now())?;
+                let children = std::mem::take(&mut session.active);
+                self.reject_pending_controls("recording is being discarded");
+                self.remove_marker();
+                self.remove_popup();
+                if children.is_empty() {
+                    self.finish_discard(Vec::new());
+                } else {
+                    self.stop_children(AfterStop::Discard, children);
+                }
+            }
+        }
+        self.draw_popup();
+        self.publish_recording_snapshot();
+        Ok(())
+    }
+
+    fn stop_children(
+        &mut self,
+        after: AfterStop,
+        children: Vec<crate::record::session::ActiveRecorder>,
+    ) {
+        if children.is_empty() {
+            self.handle_daemon_event(DaemonEvent::ChildrenStopped {
+                after,
+                result: StopChildrenResult::Ready(Vec::new()),
+            });
+            return;
+        }
+        let tx = self.event_tx.clone();
+        std::thread::spawn(move || {
+            let job = StopChildrenJob { children };
+            let interrupt_error = job.interrupt().err();
+            let result = match (interrupt_error, job.wait()) {
+                (None, result) => result,
+                (Some(interrupt), StopChildrenResult::Ready(kept)) => StopChildrenResult::Failed {
+                    kept,
+                    error: interrupt,
+                },
+                (Some(interrupt), StopChildrenResult::Failed { kept, error }) => {
+                    StopChildrenResult::Failed {
+                        kept,
+                        error: format!("{interrupt}; {error}"),
                     }
                 }
-            }
-            dead
-        };
-        if teardown {
-            self.cancel_recording_cleanup();
-            return;
-        }
-        // Repaint the elapsed time only when the whole second changed.
-        if self.recording_counting() {
-            let secs = self
-                .recording
-                .as_ref()
-                .map(|r| r.started.elapsed().as_secs());
-            let changed = self
-                .recording
-                .as_ref()
-                .map(|r| r.last_drawn_secs != secs)
-                .unwrap_or(false);
-            if changed {
-                if let Some(r) = self.recording.as_mut() {
-                    r.last_drawn_secs = secs;
-                }
-                self.draw_indicator();
-            }
-        }
-    }
-
-    /// Stop the active recording: SIGINT wf-recorder (so it FINALIZES the mp4 —
-    /// SIGKILL would truncate it). For a region recording, drop the marker and
-    /// switch the indicator to Confirm/Cancel. For a fullscreen recording
-    /// (`auto_confirm`), there is no Confirm/Cancel overlay, so finalize straight
-    /// into a card.
-    fn stop_recording(&mut self) {
-        let auto = match self.recording.as_ref() {
-            Some(r) if r.phase == RecPhase::Recording => r.auto_confirm,
-            _ => return,
-        };
-        if let Some(child) = self.recording.as_ref().and_then(|r| r.child.as_ref()) {
-            unsafe {
-                libc::kill(child.id() as i32, libc::SIGINT);
-            }
-        }
-        if auto {
-            self.finalize_into_card();
-            return;
-        }
-        if let Some(rec) = self.recording.as_mut() {
-            // Drop the click-through marker; a finished recording needn't be framed.
-            rec.marker = None;
-            rec.marker_pool = None;
-            rec.marker_region = None;
-            rec.phase = RecPhase::Stopped;
-        }
-        self.draw_indicator();
-    }
-
-    /// Confirm the stopped recording (region flow): finalize it into a card now.
-    fn confirm_recording(&mut self) {
-        if !matches!(
-            self.recording.as_ref().map(|r| r.phase),
-            Some(RecPhase::Stopped)
-        ) {
-            return;
-        }
-        self.finalize_into_card();
-    }
-
-    /// Turn the active (already SIGINT'd) recording into a shelf card IMMEDIATELY
-    /// with a placeholder thumbnail, then fill in the real first frame off-thread.
-    /// Shared by the region Confirm button and the fullscreen keyboard-stop (which
-    /// has no Confirm step). Nothing length-dependent blocks the loop: `wait()` and
-    /// ffmpeg run on a detached thread and post `RecordingThumb` when done.
-    fn finalize_into_card(&mut self) {
-        let qh = match self.qh.clone() {
-            Some(q) => q,
-            None => return,
-        };
-        // Take the child + path, ending the &mut borrow before touching the model.
-        let (child, video) = match self.recording.as_mut() {
-            Some(r) => (r.child.take(), r.path.clone()),
-            None => return,
-        };
-        // Neutral placeholder so the card shows instantly (same look as the old
-        // missing-thumbnail fallback); the real first frame replaces it shortly.
-        let mut ph = image::RgbaImage::new(
-            crate::shelf::thumbnail::CARD_W,
-            crate::shelf::thumbnail::CARD_H,
-        );
-        for p in ph.pixels_mut() {
-            *p = image::Rgba([32, 32, 40, 255]);
-        }
-        let placeholder = crate::shelf::thumbnail::make_card_thumbnail(
-            &ph,
-            crate::shelf::thumbnail::CARD_W,
-            crate::shelf::thumbnail::CARD_H,
-        );
-        let id = self
-            .model
-            .add_kind(video.clone(), placeholder, "record".into(), CardKind::Video);
-        // Tear down overlays (indicator/marker drop with the Recording) and show.
-        self.recording = None;
-        self.start_anim(id, AnimKind::Appear);
-        self.relayout();
-        self.place_on_focused_output(&qh);
-        self.draw(&qh);
-
-        // Off-thread: wait for finalize (usually already done — SIGINT was sent at
-        // Stop) + extract a first-frame thumbnail, then post it back for swap-in.
-        let thumb = crate::paths::rec_file("rec-thumb", "png");
-        std::thread::spawn(move || {
-            if let Some(mut c) = child {
-                let _ = c.wait();
-            }
-            let _ = std::process::Command::new("ffmpeg")
-                .args(["-y", "-i"])
-                .arg(&video)
-                .args(["-frames:v", "1", "-update", "1"])
-                .arg(&thumb)
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status();
-            let _ = crate::ipc::send_to_shelf(crate::ipc::Request::RecordingThumb { id, thumb });
+            };
+            let _ = tx.send(DaemonEvent::ChildrenStopped { after, result });
         });
     }
 
-    /// Tear down the active recording without keeping its output: SIGINT the
-    /// child if we still own it (so a still-LIVE wf-recorder actually finalizes
-    /// rather than being orphaned), then reap it and unlink the temp mp4 on a
-    /// DETACHED thread, and drop both overlays immediately on the calloop thread.
-    ///
-    /// This MUST NOT block the loop: it is reached both from the Cancel button
-    /// and from `LayerShellHandler::closed`, where the recorder may still be live
-    /// (a synchronous `wait()` there would freeze the daemon until it exits on its
-    /// own). The crash-path caller (`tick_recording`) only invokes this AFTER
-    /// `try_wait()` already saw the child dead, so the off-thread `wait()` returns
-    /// at once there.
-    fn cancel_recording_cleanup(&mut self) {
-        if let Some(mut rec) = self.recording.take() {
-            let child = rec.child.take();
-            let path = rec.path.clone();
-            // SIGINT only when we still own the child (don't signal a pid we may
-            // have already waited). Mirror stop_recording: SIGINT, never SIGKILL.
-            if let Some(c) = child.as_ref() {
-                unsafe {
-                    libc::kill(c.id() as i32, libc::SIGINT);
+    fn handle_daemon_event(&mut self, event: DaemonEvent) {
+        match event {
+            DaemonEvent::ClientRequest { request, stream } => {
+                self.handle_client_request(request, stream);
+            }
+            DaemonEvent::ChildrenStopped { after, result } => {
+                let (segments, error) = match result {
+                    StopChildrenResult::Ready(segments) => (segments, None),
+                    StopChildrenResult::Failed { kept, error } => (kept, Some(error)),
+                };
+                match after {
+                    AfterStop::Pause | AfterStop::Recover(_) => {
+                        let recovery = match after {
+                            AfterStop::Recover(error) => Some(error),
+                            _ => error,
+                        };
+                        if let Some(session) = self.recording.as_mut() {
+                            let _ = session.finish_pause(segments);
+                            if let Some(error) = recovery {
+                                session.last_error = Some(error.clone());
+                                notify(&format!("Recording paused: {error}"));
+                            }
+                        }
+                        self.draw_popup();
+                    }
+                    AfterStop::Save(destination) => {
+                        if let Some(error) = error {
+                            if let Some(session) = self.recording.as_mut() {
+                                session.add_completed(segments);
+                                let _ = session.finalize_failed(error.clone());
+                            }
+                            notify(&format!("Recording could not be finalized: {error}"));
+                            self.draw_popup();
+                        } else {
+                            if let Some(session) = self.recording.as_mut() {
+                                session.add_completed(segments);
+                            }
+                            self.start_finalize_worker(destination);
+                        }
+                    }
+                    AfterStop::Discard => self.finish_discard(segments),
                 }
             }
-            std::thread::spawn(move || {
-                if let Some(mut c) = child {
-                    let _ = c.wait();
+            DaemonEvent::Finalized(Ok(clips)) => {
+                self.recording = None;
+                self.remove_marker();
+                self.remove_popup();
+                self.add_finalized_cards(clips);
+            }
+            DaemonEvent::Finalized(Err(failure)) => {
+                self.add_finalized_cards(failure.completed);
+                if let Some(session) = self.recording.as_mut() {
+                    session.completed = failure.recoverable_segments;
+                    let _ = session.finalize_failed(failure.error.clone());
                 }
-                let _ = std::fs::remove_file(&path);
-            });
+                notify(&format!(
+                    "Recording could not be finalized: {}",
+                    failure.error
+                ));
+                self.draw_popup();
+            }
+            DaemonEvent::FocusResolved(output) => {
+                if output.is_some() {
+                    self.focused_output = output;
+                }
+                self.focus_query_pending = false;
+                self.finish_pending_controls();
+            }
         }
-        // `rec` dropped here -> marker + indicator surfaces (and the region) unmap.
+        self.publish_recording_snapshot();
+    }
+
+    fn start_finalize_worker(&mut self, destination: SaveDestination) {
+        let Some(session) = self.recording.as_mut() else {
+            return;
+        };
+        let request = FinalizeRequest {
+            segments: std::mem::take(&mut session.completed),
+            monitors: session.monitors.clone(),
+            both_mode: session.both_mode,
+            codec: session.codec.clone(),
+            destination,
+        };
+        let tx = self.event_tx.clone();
+        std::thread::spawn(move || {
+            let result = finalize_recording(request, &RecorderTools::default());
+            let _ = tx.send(DaemonEvent::Finalized(result));
+        });
+    }
+
+    fn finish_discard(&mut self, segments: Vec<StoppedSegment>) {
+        if let Some(session) = self.recording.as_mut() {
+            session.add_completed(segments);
+        }
+        let paths = self
+            .recording
+            .take()
+            .into_iter()
+            .flat_map(|session| session.completed.into_values().flatten())
+            .collect::<Vec<_>>();
+        self.remove_marker();
+        self.remove_popup();
+        std::thread::spawn(move || {
+            let cache = crate::paths::rec_dir();
+            for path in paths {
+                if path.starts_with(&cache) {
+                    let _ = std::fs::remove_file(path);
+                }
+            }
+        });
+    }
+
+    fn add_finalized_cards(&mut self, clips: Vec<FinalizedClip>) {
+        let prefs = crate::config::Config::load().recording_prefs();
+        let Some(qh) = self.qh.clone() else {
+            return;
+        };
+        let mut added = false;
+        for clip in clips {
+            if clip.permanent && !prefs.disk_add_to_shelf {
+                continue;
+            }
+            let mut image = image::RgbaImage::new(
+                crate::shelf::thumbnail::CARD_W,
+                crate::shelf::thumbnail::CARD_H,
+            );
+            for pixel in image.pixels_mut() {
+                *pixel = image::Rgba([32, 32, 40, 255]);
+            }
+            let placeholder = crate::shelf::thumbnail::make_card_thumbnail(
+                &image,
+                crate::shelf::thumbnail::CARD_W,
+                crate::shelf::thumbnail::CARD_H,
+            );
+            let source = clip
+                .output
+                .as_deref()
+                .map(|output| format!("record:{output}"))
+                .unwrap_or_else(|| "record".into());
+            let id = self.model.add_kind_with_lifetime(
+                clip.path.clone(),
+                placeholder,
+                source,
+                CardKind::Video,
+                if clip.permanent {
+                    FileLifetime::Permanent
+                } else {
+                    FileLifetime::Temporary
+                },
+            );
+            self.start_anim(id, AnimKind::Appear);
+            spawn_recording_thumbnail(id, clip.path);
+            added = true;
+        }
+        if added {
+            self.relayout();
+            self.place_on_focused_output(&qh);
+            self.draw(&qh);
+        }
+    }
+
+    fn recording_snapshot(&self) -> crate::ipc::RecordingSnapshot {
+        let Some(session) = self.recording.as_ref() else {
+            return crate::ipc::RecordingSnapshot::idle();
+        };
+        let (scope, outputs) = match &session.scope {
+            CaptureScope::Area(_) => (
+                "area".to_string(),
+                session
+                    .monitors
+                    .iter()
+                    .map(|monitor| monitor.name.clone())
+                    .collect(),
+            ),
+            CaptureScope::Outputs(outputs) => (
+                if outputs.len() > 1 { "both" } else { "output" }.to_string(),
+                outputs.clone(),
+            ),
+        };
+        let elapsed_ms = session.elapsed_at(std::time::Instant::now()).as_millis() as u64;
+        crate::ipc::RecordingSnapshot {
+            state: session.public_state(),
+            elapsed_ms: elapsed_ms / 1000 * 1000,
+            scope,
+            outputs,
+            actions_enabled: session.actions_enabled(),
+            error: session.last_error.clone(),
+        }
+    }
+
+    fn publish_recording_snapshot(&mut self) {
+        use std::io::Write;
+        let snapshot = self.recording_snapshot();
+        if snapshot == self.last_recording_snapshot {
+            return;
+        }
+        let line = snapshot.to_json_line();
+        self.watchers.retain_mut(
+            |watcher| matches!(watcher.write(line.as_bytes()), Ok(n) if n == line.len()),
+        );
+        self.last_recording_snapshot = snapshot;
+    }
+
+    fn remove_marker(&mut self) {
+        self.marker = None;
+        self.marker_pool = None;
+        self.marker_region = None;
+        self.marker_configured = false;
+    }
+
+    fn remove_popup(&mut self) {
+        self.popup = None;
+        self.popup_pool = None;
+        self.popup_configured = false;
     }
 
     /// Swap a recording card's placeholder for its real first-frame thumbnail,
@@ -1487,36 +2000,44 @@ impl Daemon {
         let _ = std::fs::remove_file(&thumb);
     }
 
-    /// True if `surface` is the active recording's indicator surface.
-    fn is_indicator_surface(&self, surface: &WlSurface) -> bool {
-        self.recording
+    fn is_popup_surface(&self, surface: &WlSurface) -> bool {
+        self.popup
             .as_ref()
-            .and_then(|r| r.indicator.as_ref())
-            .map(|i| i.wl_surface() == surface)
+            .map(|popup| popup.wl_surface() == surface)
             .unwrap_or(false)
     }
 
     /// True if `surface` is the active recording's click-through marker surface.
     fn is_marker_surface(&self, surface: &WlSurface) -> bool {
-        self.recording
+        self.marker
             .as_ref()
-            .and_then(|r| r.marker.as_ref())
-            .map(|m| m.wl_surface() == surface)
+            .map(|marker| marker.wl_surface() == surface)
             .unwrap_or(false)
     }
 
-    /// Handle a left-click at indicator-local `pos`: hit-test the current phase's
-    /// buttons and act (Stop / Confirm / Cancel).
-    fn on_indicator_click(&mut self, pos: (f64, f64)) {
-        let phase = match self.recording.as_ref() {
-            Some(r) => r.phase,
+    fn on_popup_click(&mut self, pos: (f64, f64)) {
+        let Some(session) = self.recording.as_ref() else {
+            return;
+        };
+        let action = match crate::shelf::recording::popup_hit(
+            session.public_state(),
+            session.actions_enabled(),
+            pos.0,
+            pos.1,
+        ) {
+            Some(PopupButton::PauseResume)
+                if session.public_state() == PublicRecordingState::Paused =>
+            {
+                RecordingAction::Resume
+            }
+            Some(PopupButton::PauseResume) => RecordingAction::Pause,
+            Some(PopupButton::SaveShelf) => RecordingAction::SaveShelf,
+            Some(PopupButton::SaveDisk) => RecordingAction::SaveDisk,
+            Some(PopupButton::Discard) => RecordingAction::Discard,
             None => return,
         };
-        match crate::shelf::recording::ind_hit(phase, pos.0, pos.1) {
-            Some(IndButton::Stop) => self.stop_recording(),
-            Some(IndButton::Confirm) => self.confirm_recording(),
-            Some(IndButton::Cancel) => self.cancel_recording_cleanup(),
-            None => {}
+        if let Some(qh) = self.qh.clone() {
+            let _ = self.handle_recording_action(action, &qh);
         }
     }
 }
@@ -1568,12 +2089,12 @@ impl OutputHandler for Daemon {
 
 impl LayerShellHandler for Daemon {
     fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, layer: &LayerSurface) {
-        // A recording overlay being closed by the compositor: tear the recording
-        // down (reap the child, drop overlays) instead of exiting the daemon.
-        if self.is_indicator_surface(layer.wl_surface())
-            || self.is_marker_surface(layer.wl_surface())
-        {
-            self.cancel_recording_cleanup();
+        if self.is_popup_surface(layer.wl_surface()) {
+            self.remove_popup();
+            return;
+        }
+        if self.is_marker_surface(layer.wl_surface()) {
+            self.remove_marker();
             return;
         }
         if self
@@ -1593,19 +2114,13 @@ impl LayerShellHandler for Daemon {
         configure: LayerSurfaceConfigure,
         _serial: u32,
     ) {
-        // Route recording overlays first: they are self-sized like the shelf, so
-        // mark them configured and draw their (fixed-size) content.
-        if self.is_indicator_surface(layer.wl_surface()) {
-            if let Some(r) = self.recording.as_mut() {
-                r.indicator_configured = true;
-            }
-            self.draw_indicator();
+        if self.is_popup_surface(layer.wl_surface()) {
+            self.popup_configured = true;
+            self.draw_popup();
             return;
         }
         if self.is_marker_surface(layer.wl_surface()) {
-            if let Some(r) = self.recording.as_mut() {
-                r.marker_configured = true;
-            }
+            self.marker_configured = true;
             self.draw_marker();
             return;
         }
@@ -1698,10 +2213,7 @@ impl PointerHandler for Daemon {
         let shelf_surface = self.layer.as_ref().map(|l| l.wl_surface().clone());
         let mut redraw = false;
         for ev in events {
-            // Route clicks on the recording indicator to its Stop/Confirm/Cancel
-            // buttons. (The marker has an empty input region, so it never gets
-            // pointer events.)
-            if self.is_indicator_surface(&ev.surface) {
+            if self.is_popup_surface(&ev.surface) {
                 if matches!(ev.kind, PointerEventKind::Enter { .. }) {
                     if let Some(p) = self.pointer.as_ref() {
                         let _ = p.set_cursor(conn, CursorIcon::Default);
@@ -1709,7 +2221,7 @@ impl PointerHandler for Daemon {
                 }
                 if let PointerEventKind::Press { button, .. } = ev.kind {
                     if button == BTN_LEFT {
-                        self.on_indicator_click(ev.position);
+                        self.on_popup_click(ev.position);
                     }
                 }
                 continue;
@@ -1833,8 +2345,11 @@ impl KeyboardHandler for Daemon {
         _: &QueueHandle<Self>,
         _: &WlKeyboard,
         _: u32,
-        _: KeyEvent,
+        event: KeyEvent,
     ) {
+        if event.keysym == Keysym::Escape {
+            self.remove_popup();
+        }
     }
     fn release_key(
         &mut self,
@@ -2017,3 +2532,186 @@ delegate_pointer!(Daemon);
 delegate_layer!(Daemon);
 delegate_data_device!(Daemon);
 delegate_registry!(Daemon);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::time::{Duration, Instant};
+
+    fn receive_event(rx: &calloop::channel::Channel<DaemonEvent>) -> DaemonEvent {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            match rx.try_recv() {
+                Ok(event) => return event,
+                Err(std::sync::mpsc::TryRecvError::Empty) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    panic!("timed out waiting for daemon event")
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    panic!("daemon event channel disconnected")
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn partial_client_does_not_block_a_complete_client_or_drop_its_payload() {
+        let (tx, rx) = calloop::channel::channel();
+        let (slow_server, mut slow_client) = UnixStream::pair().unwrap();
+        let png = vec![0x5a; 256 * 1024];
+        let mut encoded = Vec::new();
+        crate::ipc::write_frame(&mut encoded, br#"{"cmd":"add","source":"area"}"#, &png).unwrap();
+        let split = encoded.len() / 2;
+        slow_client.write_all(&encoded[..split]).unwrap();
+        spawn_client_reader(slow_server, tx.clone());
+
+        let (fast_server, mut fast_client) = UnixStream::pair().unwrap();
+        spawn_client_reader(fast_server, tx);
+        fast_client
+            .write_all(&crate::ipc::Request::Ping.encode())
+            .unwrap();
+
+        assert!(matches!(
+            receive_event(&rx),
+            DaemonEvent::ClientRequest {
+                request: crate::ipc::Request::Ping,
+                ..
+            }
+        ));
+
+        slow_client.write_all(&encoded[split..]).unwrap();
+        match receive_event(&rx) {
+            DaemonEvent::ClientRequest {
+                request:
+                    crate::ipc::Request::Add {
+                        source,
+                        png: received,
+                        ..
+                    },
+                ..
+            } => {
+                assert_eq!(source, "area");
+                assert_eq!(received, png);
+            }
+            _ => panic!("expected complete PNG request"),
+        }
+    }
+
+    #[test]
+    fn unread_reply_does_not_block_another_reply() {
+        let (mut blocked_server, _blocked_client) = UnixStream::pair().unwrap();
+        blocked_server.set_nonblocking(true).unwrap();
+        let fill = [0u8; 4096];
+        loop {
+            match blocked_server.write(&fill) {
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(error) => panic!("fill reply socket: {error}"),
+            }
+        }
+        blocked_server.set_nonblocking(false).unwrap();
+        spawn_client_writer(blocked_server, vec![1]);
+
+        let (fast_server, mut fast_client) = UnixStream::pair().unwrap();
+        fast_client
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        spawn_client_writer(fast_server, b"PONG".to_vec());
+        let mut reply = [0u8; 4];
+        fast_client.read_exact(&mut reply).unwrap();
+        assert_eq!(&reply, b"PONG");
+    }
+
+    #[test]
+    fn area_uses_cached_monitor_layout() {
+        let monitors = vec![
+            crate::record::Monitor {
+                name: "DP-1".into(),
+                description: String::new(),
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+                scale: 1.0,
+                focused: false,
+            },
+            crate::record::Monitor {
+                name: "HDMI-A-1".into(),
+                description: String::new(),
+                x: 1920,
+                y: 0,
+                width: 2560,
+                height: 1440,
+                scale: 1.0,
+                focused: true,
+            },
+        ];
+        let geo = crate::record::Geometry {
+            x: 2100,
+            y: 120,
+            w: 640,
+            h: 480,
+        };
+
+        assert_eq!(
+            monitor_for_geometry(&monitors, &geo).map(|monitor| monitor.name.as_str()),
+            Some("HDMI-A-1")
+        );
+    }
+
+    #[test]
+    fn focused_output_and_popup_target_use_current_hyprland_focus() {
+        let json = br#"[
+            {"name":"DP-1","description":"Main","x":0,"y":0,"width":1920,"height":1080,"scale":1.0,"focused":false},
+            {"name":"HDMI-A-1","description":"AOC","x":1920,"y":0,"width":2560,"height":1440,"scale":1.0,"focused":true}
+        ]"#;
+        let available = vec!["DP-1".to_string(), "HDMI-A-1".to_string()];
+
+        let focused = focused_output_from_hyprland_json(json);
+        assert_eq!(focused.as_deref(), Some("HDMI-A-1"));
+        assert_eq!(
+            resolve_output_name(focused.as_deref(), &available),
+            Some("HDMI-A-1")
+        );
+        assert_eq!(
+            resolve_output_name(Some("disconnected"), &available),
+            Some("DP-1")
+        );
+    }
+
+    #[test]
+    fn rotated_output_bounds_select_the_marker_monitor() {
+        let (width, height) = transformed_mode_size((2560, 1440), wl_output::Transform::_90);
+        assert_eq!((width, height), (1440, 2560));
+        let monitors = vec![crate::record::Monitor {
+            name: "DP-ROTATED".into(),
+            description: String::new(),
+            x: 1920,
+            y: 0,
+            width: width as u32,
+            height: height as u32,
+            scale: 1.0,
+            focused: true,
+        }];
+        let geo = crate::record::Geometry {
+            x: 2000,
+            y: 2200,
+            w: 100,
+            h: 100,
+        };
+
+        assert_eq!(
+            monitor_for_geometry(&monitors, &geo).map(|monitor| monitor.name.as_str()),
+            Some("DP-ROTATED")
+        );
+    }
+
+    #[test]
+    fn delayed_focus_cannot_reopen_discarding_controls_but_finalizing_stays_visible() {
+        assert!(!recording_controls_visible(SessionPhase::Discarding));
+        assert!(recording_controls_visible(SessionPhase::Finalizing));
+    }
+}
