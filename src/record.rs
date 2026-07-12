@@ -4,6 +4,8 @@
 use crate::config::RecordDefaultTarget;
 use std::path::Path;
 
+pub mod session;
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Monitor {
     pub name: String,
