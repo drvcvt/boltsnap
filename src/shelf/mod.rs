@@ -542,6 +542,8 @@ impl Daemon {
                 // Same as clicking Stop in the indicator (no-op if not recording).
                 self.stop_recording();
             }
+            // Task 6 wires the request/response recording commands into the daemon.
+            _ => {}
         }
     }
 
