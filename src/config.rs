@@ -1,5 +1,38 @@
 use std::env;
+use std::io;
 use std::path::{Path, PathBuf};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RecordDefaultTarget {
+    Focused,
+    Output(String),
+    Both,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecordBothMode {
+    Separate,
+    Combined,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecordingPrefs {
+    pub default_target: RecordDefaultTarget,
+    pub both_mode: RecordBothMode,
+    pub show_frame: bool,
+    pub disk_add_to_shelf: bool,
+}
+
+impl Default for RecordingPrefs {
+    fn default() -> Self {
+        Self {
+            default_target: RecordDefaultTarget::Focused,
+            both_mode: RecordBothMode::Separate,
+            show_frame: true,
+            disk_add_to_shelf: true,
+        }
+    }
+}
 
 /// Parsed `~/.config/boltsnap/config.toml`. A missing file or an unset key leaves
 /// the field `None`; defaults are applied by the `resolve_*` helpers.
@@ -9,6 +42,10 @@ pub struct Config {
     pub editor: Option<String>,
     pub record_codec: Option<String>,
     pub record_dir: Option<String>,
+    record_default_target: Option<String>,
+    record_both_mode: Option<String>,
+    record_show_frame: Option<bool>,
+    record_disk_add_to_shelf: Option<bool>,
 }
 
 impl Config {
@@ -27,6 +64,18 @@ impl Config {
                     .get("record_dir")
                     .and_then(|x| x.as_str())
                     .map(String::from),
+                record_default_target: v
+                    .get("record_default_target")
+                    .and_then(|x| x.as_str())
+                    .map(String::from),
+                record_both_mode: v
+                    .get("record_both_mode")
+                    .and_then(|x| x.as_str())
+                    .map(String::from),
+                record_show_frame: v.get("record_show_frame").and_then(|x| x.as_bool()),
+                record_disk_add_to_shelf: v
+                    .get("record_disk_add_to_shelf")
+                    .and_then(|x| x.as_bool()),
             },
             Err(e) => {
                 eprintln!("boltsnap: ignoring malformed config: {e}");
@@ -42,6 +91,89 @@ impl Config {
             Err(_) => Config::default(),
         }
     }
+
+    pub fn recording_prefs(&self) -> RecordingPrefs {
+        let defaults = RecordingPrefs::default();
+        RecordingPrefs {
+            default_target: match self.record_default_target.as_deref() {
+                Some("focused") => RecordDefaultTarget::Focused,
+                Some("both") => RecordDefaultTarget::Both,
+                Some(value) => value
+                    .strip_prefix("output:")
+                    .filter(|name| !name.is_empty())
+                    .map(|name| RecordDefaultTarget::Output(name.to_string()))
+                    .unwrap_or(defaults.default_target),
+                None => defaults.default_target,
+            },
+            both_mode: match self.record_both_mode.as_deref() {
+                Some("combined") => RecordBothMode::Combined,
+                Some("separate") => RecordBothMode::Separate,
+                _ => defaults.both_mode,
+            },
+            show_frame: self.record_show_frame.unwrap_or(defaults.show_frame),
+            disk_add_to_shelf: self
+                .record_disk_add_to_shelf
+                .unwrap_or(defaults.disk_add_to_shelf),
+        }
+    }
+}
+
+pub fn save_recording_prefs(prefs: &RecordingPrefs) -> io::Result<()> {
+    save_recording_prefs_at(&config_path(), prefs)
+}
+
+pub fn save_recording_prefs_at(path: &Path, prefs: &RecordingPrefs) -> io::Result<()> {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let mut table = match std::fs::read_to_string(path) {
+        Ok(text) => toml::from_str::<toml::Table>(&text)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => toml::Table::new(),
+        Err(error) => return Err(error),
+    };
+    let target = match &prefs.default_target {
+        RecordDefaultTarget::Focused => "focused".to_string(),
+        RecordDefaultTarget::Output(name) => format!("output:{name}"),
+        RecordDefaultTarget::Both => "both".to_string(),
+    };
+    table.insert("record_default_target".into(), toml::Value::String(target));
+    table.insert(
+        "record_both_mode".into(),
+        toml::Value::String(
+            match prefs.both_mode {
+                RecordBothMode::Separate => "separate",
+                RecordBothMode::Combined => "combined",
+            }
+            .into(),
+        ),
+    );
+    table.insert(
+        "record_show_frame".into(),
+        toml::Value::Boolean(prefs.show_frame),
+    );
+    table.insert(
+        "record_disk_add_to_shelf".into(),
+        toml::Value::Boolean(prefs.disk_add_to_shelf),
+    );
+
+    let text = toml::to_string_pretty(&table).map_err(io::Error::other)?;
+    let file_name = path.file_name().unwrap_or_default().to_string_lossy();
+    let temporary = path.with_file_name(format!("{file_name}.tmp-{}", std::process::id()));
+    let result = (|| {
+        let mut file = std::fs::File::create(&temporary)?;
+        io::Write::write_all(&mut file, text.as_bytes())?;
+        file.sync_all()?;
+        std::fs::rename(&temporary, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result
 }
 
 /// `$XDG_CONFIG_HOME/boltsnap/config.toml`, else `~/.config/boltsnap/config.toml`.
@@ -189,6 +321,97 @@ fn default_editor() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn temp_config(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "boltsnap-{name}-{}-{}.toml",
+            std::process::id(),
+            crate::paths::timestamp()
+        ))
+    }
+
+    #[test]
+    fn recording_prefs_default_to_focused_separate_and_visible() {
+        assert_eq!(
+            Config::default().recording_prefs(),
+            RecordingPrefs {
+                default_target: RecordDefaultTarget::Focused,
+                both_mode: RecordBothMode::Separate,
+                show_frame: true,
+                disk_add_to_shelf: true,
+            }
+        );
+    }
+
+    #[test]
+    fn recording_prefs_parse_all_keys_and_named_output() {
+        let prefs = Config::parse(
+            "record_default_target = \"output:DP-3\"\n\
+             record_both_mode = \"combined\"\n\
+             record_show_frame = false\n\
+             record_disk_add_to_shelf = false\n",
+        )
+        .recording_prefs();
+        assert_eq!(
+            prefs,
+            RecordingPrefs {
+                default_target: RecordDefaultTarget::Output("DP-3".into()),
+                both_mode: RecordBothMode::Combined,
+                show_frame: false,
+                disk_add_to_shelf: false,
+            }
+        );
+    }
+
+    #[test]
+    fn recording_prefs_malformed_values_fall_back_safely() {
+        let prefs = Config::parse(
+            "record_default_target = \"output:\"\n\
+             record_both_mode = \"fast\"\n\
+             record_show_frame = \"no\"\n\
+             record_disk_add_to_shelf = 0\n",
+        )
+        .recording_prefs();
+        assert_eq!(prefs, RecordingPrefs::default());
+    }
+
+    #[test]
+    fn recording_prefs_write_preserves_unknown_keys() {
+        let path = temp_config("prefs-preserve");
+        std::fs::write(&path, "editor = \"eddy\"\ncustom = 7\n").unwrap();
+        let prefs = RecordingPrefs {
+            default_target: RecordDefaultTarget::Output("DP-3".into()),
+            both_mode: RecordBothMode::Combined,
+            show_frame: false,
+            disk_add_to_shelf: false,
+        };
+        save_recording_prefs_at(&path, &prefs).unwrap();
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(written.contains("custom = 7"));
+        assert_eq!(Config::parse(&written).recording_prefs(), prefs);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn recording_prefs_write_is_readable_and_rejects_malformed_existing_config() {
+        let path = temp_config("prefs-roundtrip");
+        let prefs = RecordingPrefs {
+            default_target: RecordDefaultTarget::Both,
+            both_mode: RecordBothMode::Separate,
+            show_frame: true,
+            disk_add_to_shelf: false,
+        };
+        save_recording_prefs_at(&path, &prefs).unwrap();
+        assert_eq!(
+            Config::parse(&std::fs::read_to_string(&path).unwrap()).recording_prefs(),
+            prefs
+        );
+
+        std::fs::write(&path, "custom = = broken").unwrap();
+        assert!(save_recording_prefs_at(&path, &RecordingPrefs::default()).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "custom = = broken");
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn parse_reads_both_keys_and_ignores_unknown() {
