@@ -265,7 +265,8 @@ fn escape_concat_path(path: &Path) -> String {
     path.to_string_lossy().replace('\'', "'\\''")
 }
 
-pub fn build_xstack_filter(monitors: &[Monitor]) -> Result<String, String> {
+#[cfg(test)]
+fn build_xstack_filter(monitors: &[Monitor]) -> Result<String, String> {
     build_xstack_filter_for(&monitors.iter().collect::<Vec<_>>())
 }
 
