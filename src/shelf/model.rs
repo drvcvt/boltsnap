@@ -8,6 +8,12 @@ pub enum CardKind {
     Video,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FileLifetime {
+    Temporary,
+    Permanent,
+}
+
 pub struct Thumb {
     pub id: u64,
     pub png_path: PathBuf,
@@ -17,6 +23,17 @@ pub struct Thumb {
     #[allow(dead_code)]
     pub source: String,
     pub kind: CardKind,
+    pub lifetime: FileLifetime,
+}
+
+impl Thumb {
+    pub fn delete_file_on_dismiss(&self) -> std::io::Result<()> {
+        if self.lifetime == FileLifetime::Temporary {
+            std::fs::remove_file(&self.png_path)
+        } else {
+            Ok(())
+        }
+    }
 }
 
 #[derive(Default)]
@@ -41,6 +58,17 @@ impl ShelfModel {
         source: String,
         kind: CardKind,
     ) -> u64 {
+        self.add_kind_with_lifetime(png_path, thumb, source, kind, FileLifetime::Temporary)
+    }
+
+    pub fn add_kind_with_lifetime(
+        &mut self,
+        png_path: PathBuf,
+        thumb: RgbaImage,
+        source: String,
+        kind: CardKind,
+        lifetime: FileLifetime,
+    ) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
         self.thumbs.insert(
@@ -51,6 +79,7 @@ impl ShelfModel {
                 thumb,
                 source,
                 kind,
+                lifetime,
             },
         );
         id
@@ -137,6 +166,7 @@ mod tests {
         assert_eq!(m.get(v).unwrap().kind, CardKind::Video);
         let i = m.add(PathBuf::from("/tmp/i.png"), img(), "area".into());
         assert_eq!(m.get(i).unwrap().kind, CardKind::Image);
+        assert_eq!(m.get(i).unwrap().lifetime, FileLifetime::Temporary);
     }
 
     #[test]
@@ -150,5 +180,48 @@ mod tests {
         assert!(m.replace_thumb(a, RgbaImage::new(4, 4)));
         assert_eq!(m.get(a).unwrap().thumb.dimensions(), (4, 4));
         assert!(!m.replace_thumb(999, RgbaImage::new(1, 1)));
+    }
+
+    #[test]
+    fn permanent_file_survives_card_dismissal() {
+        let dir = (0_u32..)
+            .map(|n| {
+                std::env::temp_dir()
+                    .join(format!("boltsnap-lifetime-test-{}-{n}", std::process::id()))
+            })
+            .find_map(|path| match std::fs::create_dir(&path) {
+                Ok(()) => Some(path),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => None,
+                Err(error) => panic!("create unique test directory: {error}"),
+            })
+            .unwrap();
+        let permanent = dir.join("permanent.mp4");
+        let temporary = dir.join("temporary.mp4");
+        std::fs::write(&permanent, b"keep").unwrap();
+        std::fs::write(&temporary, b"remove").unwrap();
+
+        let mut model = ShelfModel::new();
+        let keep = model.add_kind_with_lifetime(
+            permanent.clone(),
+            img(),
+            "record".into(),
+            CardKind::Video,
+            FileLifetime::Permanent,
+        );
+        let remove = model.add_kind(temporary.clone(), img(), "record".into(), CardKind::Video);
+        model
+            .remove(keep)
+            .unwrap()
+            .delete_file_on_dismiss()
+            .unwrap();
+        model
+            .remove(remove)
+            .unwrap()
+            .delete_file_on_dismiss()
+            .unwrap();
+
+        assert!(permanent.is_file());
+        assert!(!temporary.exists());
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

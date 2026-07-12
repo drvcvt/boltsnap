@@ -4,6 +4,7 @@
 use crate::config::RecordDefaultTarget;
 use std::path::Path;
 
+pub mod finalize;
 pub mod session;
 
 #[derive(Clone, Debug, PartialEq)]

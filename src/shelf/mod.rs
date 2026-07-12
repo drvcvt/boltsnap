@@ -51,7 +51,7 @@ use wayland_client::{
 
 use crate::DynResult;
 use crate::shelf::layout::{Hit, Layout, LayoutConfig, ThumbRect};
-use crate::shelf::model::{CardKind, ShelfModel};
+use crate::shelf::model::{CardKind, FileLifetime, ShelfModel};
 use crate::shelf::recording::{IndButton, RecPhase, Recording};
 
 pub struct Daemon {
@@ -615,6 +615,12 @@ impl Daemon {
     /// `<record_dir>/boltsnap-<ts>.<ext>` (ext from the source file, usually mp4).
     fn save_card(&mut self, id: u64) {
         let (src, kind) = match self.model.get(id) {
+            Some(t) if t.lifetime == FileLifetime::Permanent => {
+                eprintln!("boltsnap daemon: already saved {}", t.png_path.display());
+                notify("Already saved");
+                self.save_flash = Some((id, std::time::Instant::now()));
+                return;
+            }
             Some(t) => (t.png_path.clone(), t.kind),
             None => return,
         };
@@ -843,7 +849,7 @@ impl Daemon {
             if kind == AnimKind::Disappear
                 && let Some(t) = self.model.remove(id)
             {
-                let _ = std::fs::remove_file(&t.png_path);
+                let _ = t.delete_file_on_dismiss();
                 if self.hovered == Some(id) {
                     self.hovered = None;
                 }
