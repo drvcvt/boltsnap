@@ -263,6 +263,20 @@ record_codec = "libx264"
 # Directory where finished .mp4 files are saved.
 # Default: same as save_dir
 record_dir = "~/Videos/boltsnap"
+
+# Fullscreen recording target: "focused", "output:<name>", or "both".
+# Default: focused
+record_default_target = "focused"
+
+# When the target is "both": "separate" or "combined".
+# Default: separate
+record_both_mode = "separate"
+
+# Show the outline around a recorded region. Default: true
+record_show_frame = true
+
+# Add permanently saved recordings to the shelf without copying them. Default: true
+record_disk_add_to_shelf = true
 ```
 
 `$BOLTSNAP_RECORD_CODEC` overrides `record_codec` from the environment.
