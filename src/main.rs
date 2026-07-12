@@ -365,7 +365,13 @@ fn record_flow(args: &Args) -> DynResult<()> {
         crate::ipc::send_to_shelf(crate::ipc::Request::StartRecordingOutput { name })?;
         return Ok(());
     }
-    let Some(rect) = crate::select_skia::run_select_record()? else {
+    let mut prefs = crate::config::Config::load().recording_prefs();
+    let selection = crate::select_skia::run_select_record(prefs.show_frame)?;
+    if selection.show_frame != prefs.show_frame {
+        prefs.show_frame = selection.show_frame;
+        crate::config::save_recording_prefs(&prefs)?;
+    }
+    let Some(rect) = selection.rect else {
         return Ok(()); // cancelled
     };
     let (ox, oy) = crate::shelf::focused_monitor_origin().unwrap_or((0, 0));
@@ -375,6 +381,7 @@ fn record_flow(args: &Args) -> DynResult<()> {
         y: geo.y,
         w: geo.w,
         h: geo.h,
+        show_frame: prefs.show_frame,
     })?;
     Ok(())
 }
