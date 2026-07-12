@@ -420,6 +420,19 @@ mod tests {
                 && icon.data.chunks_exact(4).any(|pixel| pixel[0] == 0)
                 && icon.data.chunks_exact(4).any(|pixel| pixel[0] > 0)
         }));
+
+        let icon = &icons[0];
+        let alpha_at = |x: i32, y: i32| icon.data[((y * icon.width + x) * 4) as usize];
+        assert_eq!(alpha_at(16, 20), 0, "the b counter must be transparent");
+        assert!(alpha_at(23, 15) > 0, "the snap dot must fill its cutout");
+
+        let icon = &icons[1];
+        let alpha_at = |x: i32, y: i32| icon.data[((y * icon.width + x) * 4) as usize];
+        assert_eq!(alpha_at(24, 56), 0, "the floor notch must stay visible");
+        assert!(
+            alpha_at(29, 56) > 200,
+            "the bowl must continue after the notch"
+        );
     }
 
     #[test]
