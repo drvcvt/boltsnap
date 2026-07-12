@@ -33,6 +33,7 @@ toml = "0.8"
 # SIGINT to wf-recorder so it FINALIZES the mp4 (std Child::kill only sends
 # SIGKILL, which would truncate/corrupt the file). Used by the daemon's stop flow.
 libc = "0.2"
+ksni = { version = "0.3.5", features = ["blocking"] }
 
 [profile.release]
 lto = "thin"
