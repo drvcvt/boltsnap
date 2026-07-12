@@ -2,9 +2,35 @@ use crate::config::{RecordBothMode, RecordDefaultTarget, RecordingPrefs};
 use crate::record::Monitor;
 use crate::record::session::PublicRecordingState;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 
 static OFFLINE_LOGGED: AtomicBool = AtomicBool::new(false);
+
+fn tray_icons() -> &'static [ksni::Icon] {
+    static ICONS: LazyLock<Vec<ksni::Icon>> = LazyLock::new(|| {
+        [
+            include_bytes!("../assets/icons/boltsnap-tray-32.png").as_slice(),
+            include_bytes!("../assets/icons/boltsnap-tray-64.png").as_slice(),
+        ]
+        .into_iter()
+        .map(|png| {
+            let image = image::load_from_memory_with_format(png, image::ImageFormat::Png)
+                .expect("embedded Boltsnap tray icon must be valid PNG");
+            let (width, height) = (image.width(), image.height());
+            let mut data = image.into_rgba8().into_raw();
+            for pixel in data.chunks_exact_mut(4) {
+                pixel.rotate_right(1);
+            }
+            ksni::Icon {
+                width: width as i32,
+                height: height as i32,
+                data,
+            }
+        })
+        .collect()
+    });
+    ICONS.as_slice()
+}
 
 pub(crate) struct LatestValue<T>(Mutex<Option<T>>);
 
@@ -166,8 +192,8 @@ impl ksni::Tray for BoltsnapTray {
         "boltsnap".into()
     }
 
-    fn icon_name(&self) -> String {
-        "camera-video".into()
+    fn icon_pixmap(&self) -> Vec<ksni::Icon> {
+        tray_icons().to_vec()
     }
 
     fn status(&self) -> ksni::Status {
@@ -379,6 +405,21 @@ mod tests {
         snapshot.monitors[0].focused = false;
         snapshot.monitors[1].focused = true;
         assert_eq!(menu_model(&snapshot).default_selected, 1);
+    }
+
+    #[test]
+    fn embedded_tray_icons_are_valid_argb_pixmaps() {
+        let icons = tray_icons();
+        assert_eq!(
+            icons.iter().map(|icon| icon.width).collect::<Vec<_>>(),
+            [32, 64]
+        );
+        assert!(icons.iter().all(|icon| {
+            icon.width == icon.height
+                && icon.data.len() == (icon.width * icon.height * 4) as usize
+                && icon.data.chunks_exact(4).any(|pixel| pixel[0] == 0)
+                && icon.data.chunks_exact(4).any(|pixel| pixel[0] > 0)
+        }));
     }
 
     #[test]
