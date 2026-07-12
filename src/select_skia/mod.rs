@@ -558,13 +558,15 @@ impl PointerHandler for Selector {
                                     sel,
                                     self.surf_w,
                                     self.surf_h,
-                                ) {
-                                    if x >= bx && x < bx + bw && y >= by && y < by + bh {
-                                        self.show_frame = !self.show_frame;
-                                        self.interaction = None;
-                                        self.request_redraw();
-                                        return;
-                                    }
+                                ) && x >= bx
+                                    && x < bx + bw
+                                    && y >= by
+                                    && y < by + bh
+                                {
+                                    self.show_frame = !self.show_frame;
+                                    self.interaction = None;
+                                    self.request_redraw();
+                                    return;
                                 }
                                 if let Some((bx, by, bw, bh)) =
                                     render::rec_pill_rect(sel, self.surf_w, self.surf_h)
