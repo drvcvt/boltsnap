@@ -8,6 +8,7 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SaveDestination {
@@ -38,6 +39,7 @@ pub struct FinalizeFailure {
 }
 
 static WORK_ID: AtomicU64 = AtomicU64::new(0);
+pub const RECORDING_DISK_RESERVE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 pub fn finalize_recording(
     req: FinalizeRequest,
@@ -201,6 +203,27 @@ fn move_to_disk(
     move_to_disk_with(ready, dir, move_final_file)
 }
 
+pub fn promote_recording(
+    source: &Path,
+    dir: &Path,
+    output: Option<&str>,
+) -> Result<PathBuf, String> {
+    fs::create_dir_all(dir).map_err(|error| format!("create recording directory: {error}"))?;
+    loop {
+        let destination = crate::paths::unique_recording_path(dir, output);
+        match move_final_file(source, &destination) {
+            Ok(()) => return Ok(destination),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists && destination.exists() => {}
+            Err(error) => {
+                return Err(format!(
+                    "save recording to {}: {error}",
+                    destination.display()
+                ));
+            }
+        }
+    }
+}
+
 fn move_to_disk_with(
     mut ready: BTreeMap<Option<String>, Vec<PathBuf>>,
     dir: &Path,
@@ -347,17 +370,33 @@ pub fn quality_args(codec: &str) -> Vec<String> {
 }
 
 fn run_ffmpeg(program: &Path, args: &[String]) -> Result<(), String> {
-    let status = Command::new(program)
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map_err(|error| format!("start ffmpeg: {error}"))?;
-    if status.success() {
+    let mut busy_retries = 3;
+    let output = loop {
+        let result = Command::new(program)
+            .args(["-hide_banner", "-loglevel", "error"])
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .output();
+        match result {
+            Err(error) if error.raw_os_error() == Some(libc::ETXTBSY) && busy_retries > 0 => {
+                busy_retries -= 1;
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            result => break result.map_err(|error| format!("start ffmpeg: {error}"))?,
+        }
+    };
+    if output.status.success() {
         Ok(())
     } else {
-        Err(format!("ffmpeg exited with {status}"))
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let detail = stderr.trim();
+        if detail.is_empty() {
+            Err(format!("ffmpeg exited with {}", output.status))
+        } else {
+            Err(format!("ffmpeg exited with {}: {detail}", output.status))
+        }
     }
 }
 
@@ -377,7 +416,7 @@ fn source_size(paths: &[PathBuf]) -> Result<u64, String> {
     })
 }
 
-fn ensure_free_space(dir: &Path, source_bytes: u64) -> Result<(), String> {
+pub fn available_space(dir: &Path) -> Result<u64, String> {
     let path = std::ffi::CString::new(dir.as_os_str().as_encoded_bytes())
         .map_err(|_| "recording path contains a NUL byte".to_string())?;
     let mut stat = std::mem::MaybeUninit::<libc::statvfs>::uninit();
@@ -388,7 +427,25 @@ fn ensure_free_space(dir: &Path, source_bytes: u64) -> Result<(), String> {
         ));
     }
     let stat = unsafe { stat.assume_init() };
-    let free = stat.f_bavail.saturating_mul(stat.f_frsize);
+    Ok(stat.f_bavail.saturating_mul(stat.f_frsize))
+}
+
+pub fn check_recording_reserve(dir: &Path) -> Result<(), String> {
+    require_recording_reserve(available_space(dir)?)
+}
+
+fn require_recording_reserve(free: u64) -> Result<(), String> {
+    if free > RECORDING_DISK_RESERVE_BYTES {
+        Ok(())
+    } else {
+        Err(format!(
+            "recording stopped to preserve 2 GiB of free disk space ({free} bytes available)"
+        ))
+    }
+}
+
+fn ensure_free_space(dir: &Path, source_bytes: u64) -> Result<(), String> {
+    let free = available_space(dir)?;
     let margin = (64 * 1024 * 1024_u64).max(source_bytes / 20);
     let required = source_bytes.saturating_add(margin);
     if free > required {
@@ -800,6 +857,19 @@ mod tests {
     }
 
     #[test]
+    fn available_space_reports_real_filesystem_capacity() {
+        let dir = temp_dir("available-space");
+        assert!(available_space(&dir).unwrap() > 0);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn recording_reserve_requires_more_than_two_gibibytes() {
+        assert!(require_recording_reserve(RECORDING_DISK_RESERVE_BYTES).is_err());
+        assert!(require_recording_reserve(RECORDING_DISK_RESERVE_BYTES + 1).is_ok());
+    }
+
+    #[test]
     fn failed_ffmpeg_preserves_all_segments() {
         let dir = temp_dir("failure");
         let first = file(&dir.join("one.mp4"), b"one");
@@ -817,6 +887,18 @@ mod tests {
         assert!(failure.completed.is_empty());
         assert!(first.is_file());
         assert!(second.is_file());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn ffmpeg_failure_includes_stderr() {
+        let dir = temp_dir("ffmpeg-stderr");
+        let ffmpeg = executable(
+            dir.join("ffmpeg-error"),
+            "#!/bin/sh\nprintf 'nvenc exploded' >&2\nexit 7\n",
+        );
+        let error = run_ffmpeg(&ffmpeg, &[]).unwrap_err();
+        assert!(error.contains("nvenc exploded"), "{error}");
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -953,6 +1035,24 @@ mod tests {
         assert_eq!(fs::read(raced.unwrap()).unwrap(), b"raced");
         assert_eq!(fs::read(&clips[0].path).unwrap(), b"source");
         assert_eq!(calls, 2);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn shelf_promotion_never_overwrites_and_removes_temporary_sources() {
+        let dir = temp_dir("promote");
+        let destination = dir.join("saved");
+        let first = file(&dir.join("first.mp4"), b"first");
+        let second = file(&dir.join("second.mp4"), b"second");
+
+        let first_saved = promote_recording(&first, &destination, None).unwrap();
+        let second_saved = promote_recording(&second, &destination, None).unwrap();
+
+        assert_ne!(first_saved, second_saved);
+        assert_eq!(fs::read(first_saved).unwrap(), b"first");
+        assert_eq!(fs::read(second_saved).unwrap(), b"second");
+        assert!(!first.exists());
+        assert!(!second.exists());
         let _ = fs::remove_dir_all(dir);
     }
 

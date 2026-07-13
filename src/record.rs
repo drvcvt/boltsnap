@@ -155,12 +155,7 @@ pub fn to_global_geometry(
 
 /// Build the wf-recorder argv (excluding the program name) for a region recording.
 pub fn wf_recorder_args(geo: &Geometry, codec: &str, out: &Path) -> Vec<String> {
-    let mut args = vec![
-        "-g".into(),
-        geo.to_arg(),
-        "-c".into(),
-        codec.into(),
-    ];
+    let mut args = vec!["-g".into(), geo.to_arg(), "-c".into(), codec.into()];
     args.extend(capture_profile_args(codec));
     args.extend(["-f".into(), out.to_string_lossy().into_owned()]);
     args
@@ -169,12 +164,7 @@ pub fn wf_recorder_args(geo: &Geometry, codec: &str, out: &Path) -> Vec<String> 
 /// Build the wf-recorder argv (excluding the program name) to record an entire
 /// output (monitor) by name — used for fullscreen recording.
 pub fn wf_recorder_output_args(output: &str, codec: &str, out: &Path) -> Vec<String> {
-    let mut args = vec![
-        "-o".into(),
-        output.into(),
-        "-c".into(),
-        codec.into(),
-    ];
+    let mut args = vec!["-o".into(), output.into(), "-c".into(), codec.into()];
     args.extend(capture_profile_args(codec));
     args.extend(["-f".into(), out.to_string_lossy().into_owned()]);
     args
