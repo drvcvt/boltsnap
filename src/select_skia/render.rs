@@ -337,6 +337,11 @@ const REC_PAD: f64 = 7.0;
 const REC_DOT_R: f64 = 5.0; // red dot radius
 const REC_DOT_GAP: f64 = 6.0; // gap between dot and text
 const FRAME_CHECK_GAP: f64 = 6.0;
+const FRAME_LABEL: &str = "Recording border";
+const FRAME_PX: f32 = 13.0;
+const FRAME_PAD: f64 = 7.0;
+const FRAME_BOX_SIZE: f64 = 16.0;
+const FRAME_BOX_GAP: f64 = 7.0;
 
 /// On-screen rect `(bx, by, bw, bh)` of the REC pill for selection `sel`, placed
 /// exactly like `draw_rec_pill`. Returned so the record-mode selector can hit-test
@@ -384,13 +389,19 @@ pub fn record_frame_checkbox_rect(
     surf_h: u32,
 ) -> Option<(f64, f64, f64, f64)> {
     let (rx, ry, rw, rh) = rec_pill_rect(sel, surf_w, surf_h)?;
-    let size = rh;
+    let font = badge_font();
+    let scaled = font.as_scaled(PxScale::from(FRAME_PX));
+    let text_w: f32 = FRAME_LABEL
+        .chars()
+        .map(|c| scaled.h_advance(font.glyph_id(c)))
+        .sum();
+    let width = FRAME_PAD * 2.0 + FRAME_BOX_SIZE + FRAME_BOX_GAP + text_w as f64;
     let right = rx + rw + FRAME_CHECK_GAP;
-    if right + size <= surf_w as f64 {
-        return Some((right, ry, size, size));
+    if right + width <= surf_w as f64 {
+        return Some((right, ry, width, rh));
     }
-    let left = rx - FRAME_CHECK_GAP - size;
-    (left >= 0.0 && ry >= 0.0 && ry + size <= surf_h as f64).then_some((left, ry, size, size))
+    let left = rx - FRAME_CHECK_GAP - width;
+    (left >= 0.0 && ry >= 0.0 && ry + rh <= surf_h as f64).then_some((left, ry, width, rh))
 }
 
 pub fn draw_record_frame_checkbox(
@@ -416,35 +427,18 @@ pub fn draw_record_frame_checkbox(
         );
     }
 
-    let inset = 7.0;
-    let Some(box_rect) = Rect::from_xywh(
-        (x + inset) as f32,
-        (y + inset) as f32,
-        (w - inset * 2.0) as f32,
-        (h - inset * 2.0) as f32,
-    ) else {
-        return;
-    };
+    let box_x = x + FRAME_PAD;
+    let box_y = y + (h - FRAME_BOX_SIZE) / 2.0;
     let mut box_paint = Paint::default();
-    box_paint.set_color_rgba8(
-        if checked { 0xff } else { 0xe0 },
-        if checked { 0x3b } else { 0xe0 },
-        if checked { 0x30 } else { 0xe0 },
-        255,
-    );
+    box_paint.set_color_rgba8(0xd0, 0xd0, 0xd0, 255);
     box_paint.anti_alias = true;
-    let mut path = PathBuilder::new();
-    path.push_rect(box_rect);
-    let Some(path) = path.finish() else { return };
-    if checked {
-        pm.fill_path(
-            &path,
-            &box_paint,
-            FillRule::Winding,
-            Transform::identity(),
-            None,
-        );
-    } else {
+    if let Some(path) = rounded_rect(
+        box_x as f32,
+        box_y as f32,
+        FRAME_BOX_SIZE as f32,
+        FRAME_BOX_SIZE as f32,
+        3.0,
+    ) {
         pm.stroke_path(
             &path,
             &box_paint,
@@ -456,6 +450,40 @@ pub fn draw_record_frame_checkbox(
             None,
         );
     }
+
+    if checked {
+        let mut check = PathBuilder::new();
+        check.move_to((box_x + 3.0) as f32, (box_y + 8.0) as f32);
+        check.line_to((box_x + 6.5) as f32, (box_y + 11.5) as f32);
+        check.line_to((box_x + 13.5) as f32, (box_y + 4.5) as f32);
+        let Some(check) = check.finish() else { return };
+        let mut check_paint = Paint::default();
+        check_paint.set_color_rgba8(0xff, 0x3b, 0x30, 255);
+        check_paint.anti_alias = true;
+        pm.stroke_path(
+            &check,
+            &check_paint,
+            &Stroke {
+                width: 2.2,
+                ..Default::default()
+            },
+            Transform::identity(),
+            None,
+        );
+    }
+
+    let font = badge_font();
+    let scaled = font.as_scaled(PxScale::from(FRAME_PX));
+    let text_h = scaled.ascent() - scaled.descent();
+    let baseline = y as f32 + ((h as f32 - text_h) / 2.0) + scaled.ascent();
+    draw_text_aa(
+        pm,
+        (box_x + FRAME_BOX_SIZE + FRAME_BOX_GAP) as f32,
+        baseline,
+        FRAME_LABEL,
+        FRAME_PX,
+        (0xf0, 0xf0, 0xf0),
+    );
 }
 
 /// Draw the recording affordance: a small pill near the selection with a red
@@ -768,6 +796,10 @@ mod tests {
         let rec = rec_pill_rect(sel, 1920, 1080).unwrap();
         let check = record_frame_checkbox_rect(sel, 1920, 1080).unwrap();
         assert!(check.0 >= rec.0 + rec.2);
+        assert!(
+            check.2 > check.3 * 3.0,
+            "control reserves room for its label"
+        );
         assert!(check.0 + check.2 <= 1920.0);
         assert!(check.1 >= 0.0 && check.1 + check.3 <= 1080.0);
     }
@@ -794,21 +826,40 @@ mod tests {
     }
 
     #[test]
-    fn frame_checkbox_draws_checked_and_unchecked_states() {
+    fn checked_frame_control_draws_a_checkmark_instead_of_a_solid_fill() {
         use tiny_skia::Pixmap;
         let sel = (100.0, 100.0, 200.0, 100.0);
         let rect = record_frame_checkbox_rect(sel, 400, 300).unwrap();
-        let center = |pm: &Pixmap| {
-            let x = (rect.0 + rect.2 / 2.0) as u32;
-            let y = (rect.1 + rect.3 / 2.0) as u32;
-            let i = ((y * pm.width() + x) * 4) as usize;
-            pm.data()[i..i + 4].to_vec()
-        };
-        let mut unchecked = Pixmap::new(400, 300).unwrap();
-        draw_record_frame_checkbox(&mut unchecked, sel, 400, 300, false);
         let mut checked = Pixmap::new(400, 300).unwrap();
         draw_record_frame_checkbox(&mut checked, sel, 400, 300, true);
-        assert_ne!(center(&unchecked), center(&checked));
+        let mut red = 0;
+        for y in rect.1 as u32..(rect.1 + rect.3) as u32 {
+            for x in rect.0 as u32..(rect.0 + rect.3) as u32 {
+                let i = ((y * checked.width() + x) * 4) as usize;
+                let pixel = &checked.data()[i..i + 4];
+                red += usize::from(pixel[0] > 180 && pixel[1] < 100 && pixel[2] < 100);
+            }
+        }
+        assert!(red > 0, "checked control paints a red checkmark");
+        assert!(red < 100, "checked control must not use a solid red fill");
+    }
+
+    #[test]
+    fn frame_control_draws_its_explanatory_label() {
+        use tiny_skia::Pixmap;
+        let sel = (100.0, 100.0, 200.0, 100.0);
+        let rect = record_frame_checkbox_rect(sel, 400, 300).unwrap();
+        let mut pm = Pixmap::new(400, 300).unwrap();
+        draw_record_frame_checkbox(&mut pm, sel, 400, 300, false);
+        let mut found_text = false;
+        for y in rect.1 as u32..(rect.1 + rect.3) as u32 {
+            for x in (rect.0 + rect.3) as u32..(rect.0 + rect.2) as u32 {
+                let i = ((y * pm.width() + x) * 4) as usize;
+                let pixel = &pm.data()[i..i + 4];
+                found_text |= pixel[0] > 100 && pixel[1] > 100 && pixel[2] > 100;
+            }
+        }
+        assert!(found_text, "control paints a readable label");
     }
 
     #[test]
