@@ -131,6 +131,8 @@ A session begins with one `wf-recorder` child writing a segment under Boltsnap's
 
 Elapsed time is active time only. Paused wall-clock time is excluded.
 
+The default capture profile records the selected native resolution at a constant 240 FPS. On the default `h264_nvenc` path it uses NVENC's `p5` high-quality preset with VBR constant-quality target 16. The same profile is reused for every pause segment so stream-copy concatenation remains valid. Codec overrides remain supported; codec-specific parameters are added only for encoders Boltsnap recognizes.
+
 ### Pause and resume
 
 `wf-recorder` has no native pause operation. Pause therefore sends SIGINT so the current segment is finalized correctly, waits for it off the Wayland thread, then enters `paused`. Resume starts a new segment with the same geometry, outputs, codec, and dimensions.
@@ -153,6 +155,8 @@ Combined mode first finalizes each output's segments, then composes the output v
 
 Shelf Save finalizes into Boltsnap's disk-backed cache and adds the resulting file or files as video cards. These files remain temporary and follow the shelf daemon's existing orphan-cleanup policy.
 
+Saving a temporary shelf card to disk is an asynchronous promotion, not an additional permanent copy. Boltsnap chooses a collision-safe destination, moves the file when both paths share a filesystem, and otherwise uses the existing checked copy-then-remove path. Only after success does the card switch to the permanent path and lifetime. Repeated saves therefore cannot overwrite or duplicate a clip.
+
 ### Disk Save
 
 Disk Save finalizes into the configured `record_dir`. When source and destination share a filesystem, Boltsnap renames rather than copies. A cross-filesystem destination uses a safe copy followed by source removal only after the copy completes successfully.
@@ -173,6 +177,7 @@ Discard stops all active recorder children with SIGINT, waits for clean finaliza
 - Combined dual-monitor mode is the only path that necessarily re-encodes video.
 - Segment and composition inputs are deleted immediately after verified output success.
 - Before a merge or composition that temporarily needs a second full-size output, Boltsnap checks available disk space. If space is insufficient, it keeps all segments and reports the problem instead of risking data loss.
+- Starting a recording requires more than 2 GiB available on the recording-cache filesystem. While recording, the existing daemon tick checks available space once per second. At or below the 2 GiB reserve it stops all recorder children cleanly, preserves completed segments, enters the recoverable paused state, and reports the disk-space reason over IPC.
 - Daemon startup cleanup removes abandoned cache recordings from crashes, while permanent `record_dir` files are never treated as cache.
 
 The unavoidable temporary peak for a paused or combined recording is the source segments plus the new final file. Without a pause, single-output Shelf Save or Disk Save does not create this duplicate peak.
@@ -181,12 +186,19 @@ The unavoidable temporary peak for a paused or combined recording is the source 
 
 - Invalid state transitions are rejected without mutating the session.
 - A failed child spawn leaves the session idle and removes any empty output file.
+- Recorder shutdown is bounded: send SIGINT and wait up to 10 seconds, then SIGTERM for up to 2 seconds, then SIGKILL. Any non-empty segment remains recoverable even when the child exits unsuccessfully.
 - Unexpected recorder exit stops the logical session and preserves any readable segments for recovery.
 - Failed concat, composition, move, or copy never deletes source segments.
 - The UI remains in `finalizing` until the worker reports success or failure.
 - On success, the daemon publishes the final idle event after cards/files are ready.
 - On failure, Boltsnap notifies the user, returns to a recoverable paused state where saving can be retried or discarded, and includes the error in status output.
 - Only Boltsnap-created cache paths are automatically deleted.
+- Recorder and FFmpeg failures retain concise stderr diagnostics instead of discarding them.
+- IPC rejects oversized frames and out-of-range or zero-sized recording geometry before allocating payload buffers or starting a child.
+
+## Daemon Ownership
+
+The user systemd unit is the normal daemon owner. IPC startup asks systemd to start the unit and falls back to the existing detached launch only when the unit is unavailable. Recorder children also receive a parent-death signal so the fallback cannot leave a hidden capture writing after the daemon dies. This keeps `systemctl --user restart boltsnap-daemon.service` authoritative without making systemd a hard runtime dependency.
 
 ## Testing
 
