@@ -3,6 +3,7 @@ use crate::config::{RecordBothMode, RecordingPrefs};
 use std::collections::BTreeMap;
 use std::fs;
 use std::io;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -255,12 +256,28 @@ pub fn spawn_segment(
     tools: &RecorderTools,
 ) -> Result<Vec<ActiveRecorder>, String> {
     spawn_segment_with(scope, codec, tools, |program, args| {
-        Command::new(program)
+        let parent = unsafe { libc::getpid() };
+        let mut command = Command::new(program);
+        command
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
+            .stderr(Stdio::inherit());
+        unsafe {
+            command.pre_exec(move || {
+                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) != 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                if libc::getppid() != parent {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Interrupted,
+                        "boltsnap daemon exited while starting recorder",
+                    ));
+                }
+                Ok(())
+            });
+        }
+        command.spawn()
     })
 }
 
@@ -319,20 +336,21 @@ fn segment_path(dir: &Path, output: Option<&str>) -> PathBuf {
     ))
 }
 
-fn stop_and_reap(mut active: Vec<ActiveRecorder>) {
+fn stop_and_reap(active: Vec<ActiveRecorder>) {
     for recorder in &active {
         let _ = send_sigint(&recorder.child);
     }
     std::thread::spawn(move || {
-        for recorder in &mut active {
-            let _ = recorder.child.wait();
-            remove_if_empty(&recorder.path);
-        }
+        let _ = StopChildrenJob { children: active }.wait();
     });
 }
 
 fn send_sigint(child: &Child) -> io::Result<()> {
-    let result = unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGINT) };
+    send_signal(child, libc::SIGINT)
+}
+
+fn send_signal(child: &Child, signal: libc::c_int) -> io::Result<()> {
+    let result = unsafe { libc::kill(child.id() as libc::pid_t, signal) };
     if result == 0 {
         Ok(())
     } else {
@@ -388,11 +406,29 @@ impl StopChildrenJob {
         }
     }
 
-    pub fn wait(mut self) -> StopChildrenResult {
+    pub fn wait(self) -> StopChildrenResult {
+        self.wait_with_timeouts(Duration::from_secs(10), Duration::from_secs(2))
+    }
+
+    fn wait_with_timeouts(
+        mut self,
+        graceful_timeout: Duration,
+        terminate_timeout: Duration,
+    ) -> StopChildrenResult {
         let mut stopped = Vec::with_capacity(self.children.len());
         let mut errors = Vec::new();
         for recorder in &mut self.children {
-            match recorder.child.wait() {
+            match wait_for_exit(&mut recorder.child, graceful_timeout).and_then(|status| {
+                if let Some(status) = status {
+                    return Ok(status);
+                }
+                send_signal(&recorder.child, libc::SIGTERM)?;
+                if let Some(status) = wait_for_exit(&mut recorder.child, terminate_timeout)? {
+                    return Ok(status);
+                }
+                recorder.child.kill()?;
+                recorder.child.wait()
+            }) {
                 Ok(status) if status.success() && is_nonempty(&recorder.path) => {
                     stopped.push(StoppedSegment {
                         output: recorder.output.clone(),
@@ -428,6 +464,22 @@ impl StopChildrenJob {
                 error: errors.join("; "),
             }
         }
+    }
+}
+
+fn wait_for_exit(
+    child: &mut Child,
+    timeout: Duration,
+) -> io::Result<Option<std::process::ExitStatus>> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(Some(status));
+        }
+        if Instant::now() >= deadline {
+            return Ok(None);
+        }
+        std::thread::sleep(Duration::from_millis(10));
     }
 }
 
@@ -855,7 +907,8 @@ while :; do sleep 1; done
                         let path = PathBuf::from(
                             &args[args.iter().position(|arg| arg == "-f").unwrap() + 1],
                         );
-                        let child = Command::new(program)
+                        let child = Command::new("sh")
+                            .arg(program)
                             .args(args)
                             .stdin(Stdio::null())
                             .stdout(Stdio::null())
@@ -908,6 +961,79 @@ while :; do sleep 1; done
                 if kept == vec![StoppedSegment { output: Some("DP-3".into()), path: path.clone() }]
         ));
         assert_eq!(fs::read(&path).unwrap(), b"recoverable");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn stop_escalates_from_ignored_sigint_to_sigterm() {
+        let dir = test_dir();
+        let path = dir.join("forced-stop.mp4");
+        let child = Command::new("sh")
+            .args([
+                "-c",
+                "trap '' INT; trap 'exit 0' TERM; printf video > \"$1\"; while :; do :; done",
+                "sh",
+                path.to_str().unwrap(),
+            ])
+            .spawn()
+            .unwrap();
+        assert!(wait_for(Duration::from_secs(1), || path.exists()));
+        let job = StopChildrenJob {
+            children: vec![ActiveRecorder {
+                output: None,
+                path: path.clone(),
+                child,
+            }],
+        };
+        job.interrupt().unwrap();
+
+        let started = Instant::now();
+        let result = job.wait_with_timeouts(Duration::from_millis(50), Duration::from_millis(500));
+
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(matches!(result, StopChildrenResult::Ready(_)));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn spawned_recorder_receives_parent_death_signal() {
+        let dir = test_dir();
+        let script = dir.join("pdeath-recorder");
+        fs::write(
+            &script,
+            r#"#!/bin/sh
+while [ "$#" -gt 0 ]; do
+    if [ "$1" = "-f" ]; then out="$2"; shift 2; else shift; fi
+done
+exec python3 -c 'import ctypes,signal,sys,time; value=ctypes.c_int(); ctypes.CDLL(None).prctl(2,ctypes.byref(value),0,0,0); open(sys.argv[1],"w").write(str(value.value)); signal.signal(signal.SIGINT,lambda *_:sys.exit(0)); signal.signal(signal.SIGTERM,lambda *_:sys.exit(0)); time.sleep(100)' "$out"
+"#,
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&script).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&script, permissions).unwrap();
+        let tools = RecorderTools {
+            wf_recorder: script,
+            ffmpeg: PathBuf::from("ffmpeg"),
+            segment_dir: dir.clone(),
+        };
+
+        let active = spawn_segment(
+            &CaptureScope::Area(Geometry {
+                x: 0,
+                y: 0,
+                w: 10,
+                h: 10,
+            }),
+            "test",
+            &tools,
+        )
+        .unwrap();
+        assert!(wait_for(Duration::from_secs(1), || active[0].path.exists()));
+        assert_eq!(fs::read(&active[0].path).unwrap(), b"15");
+        let job = StopChildrenJob { children: active };
+        job.interrupt().unwrap();
+        assert!(matches!(job.wait(), StopChildrenResult::Ready(_)));
         fs::remove_dir_all(dir).unwrap();
     }
 
