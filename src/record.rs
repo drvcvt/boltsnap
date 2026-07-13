@@ -155,27 +155,39 @@ pub fn to_global_geometry(
 
 /// Build the wf-recorder argv (excluding the program name) for a region recording.
 pub fn wf_recorder_args(geo: &Geometry, codec: &str, out: &Path) -> Vec<String> {
-    vec![
+    let mut args = vec![
         "-g".into(),
         geo.to_arg(),
         "-c".into(),
         codec.into(),
-        "-f".into(),
-        out.to_string_lossy().into_owned(),
-    ]
+    ];
+    args.extend(capture_profile_args(codec));
+    args.extend(["-f".into(), out.to_string_lossy().into_owned()]);
+    args
 }
 
 /// Build the wf-recorder argv (excluding the program name) to record an entire
 /// output (monitor) by name — used for fullscreen recording.
 pub fn wf_recorder_output_args(output: &str, codec: &str, out: &Path) -> Vec<String> {
-    vec![
+    let mut args = vec![
         "-o".into(),
         output.into(),
         "-c".into(),
         codec.into(),
-        "-f".into(),
-        out.to_string_lossy().into_owned(),
-    ]
+    ];
+    args.extend(capture_profile_args(codec));
+    args.extend(["-f".into(), out.to_string_lossy().into_owned()]);
+    args
+}
+
+fn capture_profile_args(codec: &str) -> Vec<String> {
+    let mut args = vec!["-r".into(), "240".into()];
+    if codec.ends_with("_nvenc") {
+        for option in ["preset=p5", "tune=hq", "rc=vbr", "cq=16"] {
+            args.extend(["-p".into(), option.into()]);
+        }
+    }
+    args
 }
 
 #[cfg(test)]
@@ -272,7 +284,24 @@ mod tests {
         let args = wf_recorder_args(&g, "h264_nvenc", &PathBuf::from("/tmp/r.mp4"));
         assert_eq!(
             args,
-            vec!["-g", "0,0 1280x720", "-c", "h264_nvenc", "-f", "/tmp/r.mp4"]
+            vec![
+                "-g",
+                "0,0 1280x720",
+                "-c",
+                "h264_nvenc",
+                "-r",
+                "240",
+                "-p",
+                "preset=p5",
+                "-p",
+                "tune=hq",
+                "-p",
+                "rc=vbr",
+                "-p",
+                "cq=16",
+                "-f",
+                "/tmp/r.mp4"
+            ]
         );
     }
 
@@ -281,7 +310,24 @@ mod tests {
         let args = wf_recorder_output_args("DP-1", "h264_nvenc", &PathBuf::from("/tmp/r.mp4"));
         assert_eq!(
             args,
-            vec!["-o", "DP-1", "-c", "h264_nvenc", "-f", "/tmp/r.mp4"]
+            vec![
+                "-o",
+                "DP-1",
+                "-c",
+                "h264_nvenc",
+                "-r",
+                "240",
+                "-p",
+                "preset=p5",
+                "-p",
+                "tune=hq",
+                "-p",
+                "rc=vbr",
+                "-p",
+                "cq=16",
+                "-f",
+                "/tmp/r.mp4"
+            ]
         );
     }
 }
