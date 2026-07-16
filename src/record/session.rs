@@ -1,5 +1,6 @@
 use super::{Geometry, Monitor, resolve_record_outputs, wf_recorder_args, wf_recorder_output_args};
 use crate::config::{RecordBothMode, RecordingPrefs};
+use crate::record::audio::AudioCapture;
 use std::collections::BTreeMap;
 use std::fs;
 use std::io;
@@ -88,6 +89,7 @@ pub struct RecordingSession {
     pub codec: String,
     pub both_mode: RecordBothMode,
     pub show_frame: bool,
+    pub audio: Option<AudioCapture>,
     pub completed: BTreeMap<Option<String>, Vec<PathBuf>>,
     pub active: Vec<ActiveRecorder>,
     pub active_elapsed: Duration,
@@ -103,6 +105,7 @@ impl RecordingSession {
         codec: String,
         both_mode: RecordBothMode,
         show_frame: bool,
+        audio: Option<AudioCapture>,
         active: Vec<ActiveRecorder>,
         now: Instant,
     ) -> Self {
@@ -113,6 +116,7 @@ impl RecordingSession {
             codec,
             both_mode,
             show_frame,
+            audio,
             completed: BTreeMap::new(),
             active,
             active_elapsed: Duration::ZERO,
@@ -134,6 +138,7 @@ impl RecordingSession {
             "test".into(),
             RecordBothMode::Separate,
             false,
+            None,
             Vec::new(),
             now,
         )
@@ -253,9 +258,10 @@ static SEGMENT_ID: AtomicU64 = AtomicU64::new(0);
 pub fn spawn_segment(
     scope: &CaptureScope,
     codec: &str,
+    audio_source: Option<&str>,
     tools: &RecorderTools,
 ) -> Result<Vec<ActiveRecorder>, String> {
-    spawn_segment_with(scope, codec, tools, |program, args| {
+    spawn_segment_with(scope, codec, audio_source, tools, |program, args| {
         let parent = unsafe { libc::getpid() };
         let mut command = Command::new(program);
         command
@@ -284,6 +290,7 @@ pub fn spawn_segment(
 fn spawn_segment_with(
     scope: &CaptureScope,
     codec: &str,
+    audio_source: Option<&str>,
     tools: &RecorderTools,
     mut spawn: impl FnMut(&Path, &[String]) -> io::Result<Child>,
 ) -> Result<Vec<ActiveRecorder>, String> {
@@ -303,9 +310,11 @@ fn spawn_segment_with(
     for output in outputs {
         let path = segment_path(&tools.segment_dir, output);
         let args = match (scope, output) {
-            (CaptureScope::Area(geometry), None) => wf_recorder_args(geometry, codec, &path),
+            (CaptureScope::Area(geometry), None) => {
+                wf_recorder_args(geometry, codec, audio_source, &path)
+            }
             (CaptureScope::Outputs(_), Some(output)) => {
-                wf_recorder_output_args(output, codec, &path)
+                wf_recorder_output_args(output, codec, audio_source, &path)
             }
             _ => unreachable!(),
         };
@@ -623,6 +632,21 @@ while :; do sleep 1; done
     }
 
     #[test]
+    fn audio_source_survives_pause() {
+        let t0 = Instant::now();
+        let mut session = RecordingSession::new_for_test(t0);
+        session.audio = Some(crate::record::audio::AudioCapture::for_test(
+            "boltsnap_mix_test.monitor",
+        ));
+        session.begin_pause(t0 + Duration::from_secs(1)).unwrap();
+        session.finish_pause(Vec::new()).unwrap();
+        assert_eq!(
+            session.audio.as_ref().map(|audio| audio.source()),
+            Some("boltsnap_mix_test.monitor")
+        );
+    }
+
+    #[test]
     fn action_acceptance_covers_every_phase_and_action() {
         use RecordingAction::*;
         use SessionPhase::*;
@@ -756,7 +780,7 @@ while :; do sleep 1; done
         let tools = tools(&dir);
         let scope = CaptureScope::Outputs(vec!["DP-3".into(), "DP-1".into()]);
         let t0 = Instant::now();
-        let active = spawn_segment(&scope, "h264_nvenc", &tools).unwrap();
+        let active = spawn_segment(&scope, "h264_nvenc", None, &tools).unwrap();
         assert_eq!(active.len(), 2);
         let mut session = RecordingSession::new(
             scope,
@@ -764,6 +788,7 @@ while :; do sleep 1; done
             "h264_nvenc".into(),
             RecordBothMode::Separate,
             false,
+            None,
             active,
             t0,
         );
@@ -775,7 +800,7 @@ while :; do sleep 1; done
             let completed = stopped(std::mem::take(&mut session.active));
             session.finish_pause(completed).unwrap();
             if cycle < 2 {
-                let active = spawn_segment(&session.scope, &session.codec, &tools).unwrap();
+                let active = spawn_segment(&session.scope, &session.codec, None, &tools).unwrap();
                 session
                     .resume(active, t0 + Duration::from_secs(cycle * 2 + 2))
                     .unwrap();
@@ -849,6 +874,7 @@ sleep 1
                 h: 10,
             }),
             "test",
+            None,
             &tools,
         )
         .unwrap();
@@ -898,6 +924,7 @@ while :; do sleep 1; done
             spawn_segment_with(
                 &CaptureScope::Outputs(vec!["DP-3".into(), "DP-1".into()]),
                 "h264_nvenc",
+                None,
                 &tools,
                 |program, args| {
                     spawns += 1;
@@ -1026,6 +1053,7 @@ exec python3 -c 'import ctypes,signal,sys,time; value=ctypes.c_int(); ctypes.CDL
                 h: 10,
             }),
             "test",
+            None,
             &tools,
         )
         .unwrap();

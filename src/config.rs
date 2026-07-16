@@ -15,12 +15,21 @@ pub enum RecordBothMode {
     Combined,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecordAudioSource {
+    SystemAndMic,
+    Mic,
+    System,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecordingPrefs {
     pub default_target: RecordDefaultTarget,
     pub both_mode: RecordBothMode,
     pub show_frame: bool,
     pub disk_add_to_shelf: bool,
+    pub audio_enabled: bool,
+    pub audio_source: RecordAudioSource,
 }
 
 impl Default for RecordingPrefs {
@@ -30,6 +39,8 @@ impl Default for RecordingPrefs {
             both_mode: RecordBothMode::Separate,
             show_frame: true,
             disk_add_to_shelf: true,
+            audio_enabled: true,
+            audio_source: RecordAudioSource::SystemAndMic,
         }
     }
 }
@@ -46,6 +57,8 @@ pub struct Config {
     record_both_mode: Option<String>,
     record_show_frame: Option<bool>,
     record_disk_add_to_shelf: Option<bool>,
+    record_audio_enabled: Option<bool>,
+    record_audio_source: Option<String>,
 }
 
 impl Config {
@@ -76,6 +89,11 @@ impl Config {
                 record_disk_add_to_shelf: v
                     .get("record_disk_add_to_shelf")
                     .and_then(|x| x.as_bool()),
+                record_audio_enabled: v.get("record_audio_enabled").and_then(|x| x.as_bool()),
+                record_audio_source: v
+                    .get("record_audio_source")
+                    .and_then(|x| x.as_str())
+                    .map(String::from),
             },
             Err(e) => {
                 eprintln!("boltsnap: ignoring malformed config: {e}");
@@ -114,6 +132,13 @@ impl Config {
             disk_add_to_shelf: self
                 .record_disk_add_to_shelf
                 .unwrap_or(defaults.disk_add_to_shelf),
+            audio_enabled: self.record_audio_enabled.unwrap_or(defaults.audio_enabled),
+            audio_source: match self.record_audio_source.as_deref() {
+                Some("system-and-mic") => RecordAudioSource::SystemAndMic,
+                Some("mic") => RecordAudioSource::Mic,
+                Some("system") => RecordAudioSource::System,
+                _ => defaults.audio_source,
+            },
         }
     }
 }
@@ -159,6 +184,21 @@ pub fn save_recording_prefs_at(path: &Path, prefs: &RecordingPrefs) -> io::Resul
     table.insert(
         "record_disk_add_to_shelf".into(),
         toml::Value::Boolean(prefs.disk_add_to_shelf),
+    );
+    table.insert(
+        "record_audio_enabled".into(),
+        toml::Value::Boolean(prefs.audio_enabled),
+    );
+    table.insert(
+        "record_audio_source".into(),
+        toml::Value::String(
+            match prefs.audio_source {
+                RecordAudioSource::SystemAndMic => "system-and-mic",
+                RecordAudioSource::Mic => "mic",
+                RecordAudioSource::System => "system",
+            }
+            .into(),
+        ),
     );
 
     let text = toml::to_string_pretty(&table).map_err(io::Error::other)?;
@@ -331,6 +371,54 @@ mod tests {
     }
 
     #[test]
+    fn audio_preferences_default_on_and_system_plus_mic() {
+        let prefs = Config::default().recording_prefs();
+        assert!(prefs.audio_enabled);
+        assert_eq!(prefs.audio_source, RecordAudioSource::SystemAndMic);
+    }
+
+    #[test]
+    fn audio_preferences_parse_and_round_trip() {
+        let parsed = Config::parse(
+            r#"
+record_audio_enabled = false
+record_audio_source = "system"
+unrelated = "keep-me"
+"#,
+        )
+        .recording_prefs();
+        assert!(!parsed.audio_enabled);
+        assert_eq!(parsed.audio_source, RecordAudioSource::System);
+
+        let path = temp_config("record-audio-round-trip");
+        std::fs::write(&path, "unrelated = \"keep-me\"\n").unwrap();
+        save_recording_prefs_at(
+            &path,
+            &RecordingPrefs {
+                audio_enabled: true,
+                audio_source: RecordAudioSource::Mic,
+                ..RecordingPrefs::default()
+            },
+        )
+        .unwrap();
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(saved.contains("record_audio_enabled = true"));
+        assert!(saved.contains("record_audio_source = \"mic\""));
+        assert!(saved.contains("unrelated = \"keep-me\""));
+        assert_eq!(
+            Config::parse(&saved).recording_prefs().audio_source,
+            RecordAudioSource::Mic
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn invalid_audio_source_uses_default() {
+        let prefs = Config::parse("record_audio_source = \"bluetooth\"\n").recording_prefs();
+        assert_eq!(prefs.audio_source, RecordAudioSource::SystemAndMic);
+    }
+
+    #[test]
     fn recording_prefs_default_to_focused_separate_and_visible() {
         assert_eq!(
             Config::default().recording_prefs(),
@@ -339,6 +427,8 @@ mod tests {
                 both_mode: RecordBothMode::Separate,
                 show_frame: true,
                 disk_add_to_shelf: true,
+                audio_enabled: true,
+                audio_source: RecordAudioSource::SystemAndMic,
             }
         );
     }
@@ -359,6 +449,8 @@ mod tests {
                 both_mode: RecordBothMode::Combined,
                 show_frame: false,
                 disk_add_to_shelf: false,
+                audio_enabled: true,
+                audio_source: RecordAudioSource::SystemAndMic,
             }
         );
     }
@@ -384,6 +476,7 @@ mod tests {
             both_mode: RecordBothMode::Combined,
             show_frame: false,
             disk_add_to_shelf: false,
+            ..RecordingPrefs::default()
         };
         save_recording_prefs_at(&path, &prefs).unwrap();
         let written = std::fs::read_to_string(&path).unwrap();
@@ -400,6 +493,7 @@ mod tests {
             both_mode: RecordBothMode::Separate,
             show_frame: true,
             disk_add_to_shelf: false,
+            ..RecordingPrefs::default()
         };
         save_recording_prefs_at(&path, &prefs).unwrap();
         assert_eq!(

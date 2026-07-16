@@ -56,7 +56,7 @@ where
 {
     // Start the screenshot grab so it overlaps with Wayland init below.
     let capture_handle = thread::spawn(capture);
-    let mut sel = run_selector(instant, false, true, Some(capture_handle))?;
+    let mut sel = run_selector(instant, false, true, true, Some(capture_handle))?;
     Ok(sel.result.take())
 }
 
@@ -69,13 +69,18 @@ where
 pub struct RecordSelectionResult {
     pub rect: Option<edit::Rect>,
     pub show_frame: bool,
+    pub audio_enabled: bool,
 }
 
-pub fn run_select_record(initial_show_frame: bool) -> DynResult<RecordSelectionResult> {
-    let mut sel = run_selector(false, true, initial_show_frame, None)?;
+pub fn run_select_record(
+    initial_show_frame: bool,
+    initial_audio_enabled: bool,
+) -> DynResult<RecordSelectionResult> {
+    let mut sel = run_selector(false, true, initial_show_frame, initial_audio_enabled, None)?;
     Ok(RecordSelectionResult {
         rect: sel.result_rect.take(),
         show_frame: sel.show_frame,
+        audio_enabled: sel.audio_enabled,
     })
 }
 
@@ -88,6 +93,7 @@ fn run_selector(
     instant: bool,
     record_mode: bool,
     show_frame: bool,
+    audio_enabled: bool,
     capture_handle: Option<thread::JoinHandle<Result<RgbaImage, String>>>,
 ) -> DynResult<Selector> {
     let conn = Connection::connect_to_env()?;
@@ -127,6 +133,7 @@ fn run_selector(
         instant,
         record_mode,
         show_frame,
+        audio_enabled,
         result_rect: None,
     };
 
@@ -213,8 +220,42 @@ struct Selector {
     record_mode: bool,
     /// Whether the recording-area border should remain visible while recording.
     show_frame: bool,
+    /// Whether the next recording should include the configured audio source.
+    audio_enabled: bool,
     /// The confirmed selection rect (surface px), set on confirm in record mode.
     result_rect: Option<edit::Rect>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RecordControlHit {
+    Audio,
+    Frame,
+    Record,
+}
+
+fn contains(rect: (f64, f64, f64, f64), point: (f64, f64)) -> bool {
+    point.0 >= rect.0 && point.0 < rect.0 + rect.2 && point.1 >= rect.1 && point.1 < rect.1 + rect.3
+}
+
+fn record_control_hit(
+    sel: (f32, f32, f32, f32),
+    surf_w: u32,
+    surf_h: u32,
+    point: (f64, f64),
+) -> Option<RecordControlHit> {
+    if render::record_audio_button_rect(sel, surf_w, surf_h)
+        .is_some_and(|rect| contains(rect, point))
+    {
+        Some(RecordControlHit::Audio)
+    } else if render::record_frame_checkbox_rect(sel, surf_w, surf_h)
+        .is_some_and(|rect| contains(rect, point))
+    {
+        Some(RecordControlHit::Frame)
+    } else if render::rec_pill_rect(sel, surf_w, surf_h).is_some_and(|rect| contains(rect, point)) {
+        Some(RecordControlHit::Record)
+    } else {
+        None
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -317,6 +358,13 @@ impl Selector {
                     self.surf_w,
                     self.surf_h,
                     self.show_frame,
+                );
+                render::draw_record_audio_button(
+                    &mut frame,
+                    s,
+                    self.surf_w,
+                    self.surf_h,
+                    self.audio_enabled,
                 );
             } else {
                 render::draw_badge(&mut frame, s, self.surf_w, self.surf_h);
@@ -554,27 +602,24 @@ impl PointerHandler for Selector {
                             if self.record_mode {
                                 let sel =
                                     (rect.x as f32, rect.y as f32, rect.w as f32, rect.h as f32);
-                                if let Some((bx, by, bw, bh)) = render::record_frame_checkbox_rect(
-                                    sel,
-                                    self.surf_w,
-                                    self.surf_h,
-                                ) && x >= bx
-                                    && x < bx + bw
-                                    && y >= by
-                                    && y < by + bh
-                                {
-                                    self.show_frame = !self.show_frame;
-                                    self.interaction = None;
-                                    self.request_redraw();
-                                    return;
-                                }
-                                if let Some((bx, by, bw, bh)) =
-                                    render::rec_pill_rect(sel, self.surf_w, self.surf_h)
-                                {
-                                    if x >= bx && x < bx + bw && y >= by && y < by + bh {
+                                match record_control_hit(sel, self.surf_w, self.surf_h, (x, y)) {
+                                    Some(RecordControlHit::Audio) => {
+                                        self.audio_enabled = !self.audio_enabled;
+                                        self.interaction = None;
+                                        self.request_redraw();
+                                        return;
+                                    }
+                                    Some(RecordControlHit::Frame) => {
+                                        self.show_frame = !self.show_frame;
+                                        self.interaction = None;
+                                        self.request_redraw();
+                                        return;
+                                    }
+                                    Some(RecordControlHit::Record) => {
                                         self.confirm_rect(rect);
                                         return;
                                     }
+                                    None => {}
                                 }
                             }
                             match edit::hit_region(rect, (x, y), HANDLE_R) {
@@ -791,3 +836,19 @@ delegate_keyboard!(Selector);
 delegate_pointer!(Selector);
 delegate_layer!(Selector);
 delegate_registry!(Selector);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn audio_control_hit_does_not_confirm() {
+        let sel = (80.0, 80.0, 200.0, 120.0);
+        let audio = render::record_audio_button_rect(sel, 400, 300).unwrap();
+        let center = (audio.0 + audio.2 / 2.0, audio.1 + audio.3 / 2.0);
+        assert_eq!(
+            record_control_hit(sel, 400, 300, center),
+            Some(RecordControlHit::Audio)
+        );
+    }
+}

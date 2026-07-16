@@ -39,6 +39,7 @@ pub struct FinalizeFailure {
 }
 
 static WORK_ID: AtomicU64 = AtomicU64::new(0);
+pub const RECORDING_CACHE_LIMIT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 pub const RECORDING_DISK_RESERVE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 pub fn finalize_recording(
@@ -345,6 +346,10 @@ fn build_combined_args(
         "[v]".into(),
         "-c:v".into(),
         codec.into(),
+        "-map".into(),
+        "0:a?".into(),
+        "-c:a".into(),
+        "copy".into(),
     ]);
     args.extend(quality_args(codec));
     args.push(output.to_string_lossy().into_owned());
@@ -432,6 +437,38 @@ pub fn available_space(dir: &Path) -> Result<u64, String> {
 
 pub fn check_recording_reserve(dir: &Path) -> Result<(), String> {
     require_recording_reserve(available_space(dir)?)
+}
+
+pub fn check_recording_cache_limit(dir: &Path) -> Result<(), String> {
+    check_recording_cache_capacity(dir, 0)
+}
+
+pub fn check_recording_cache_capacity(dir: &Path, incoming_bytes: u64) -> Result<(), String> {
+    let bytes = fs::read_dir(dir)
+        .map_err(|error| format!("read recording cache: {error}"))?
+        .try_fold(0_u64, |total, entry| {
+            let entry = entry.map_err(|error| format!("read recording cache entry: {error}"))?;
+            let metadata = entry
+                .metadata()
+                .map_err(|error| format!("inspect recording cache entry: {error}"))?;
+            let bytes = if metadata.is_file() {
+                metadata.len()
+            } else {
+                0
+            };
+            Ok::<_, String>(total.saturating_add(bytes))
+        })?;
+    require_recording_cache_limit(bytes.saturating_add(incoming_bytes))
+}
+
+fn require_recording_cache_limit(bytes: u64) -> Result<(), String> {
+    if bytes < RECORDING_CACHE_LIMIT_BYTES {
+        Ok(())
+    } else {
+        Err(format!(
+            "recording paused because the temporary recording cache reached 2 GiB ({bytes} bytes used); save or dismiss shelf recordings to free space"
+        ))
+    }
 }
 
 fn require_recording_reserve(free: u64) -> Result<(), String> {
@@ -697,6 +734,23 @@ mod tests {
     }
 
     #[test]
+    fn combined_output_maps_only_first_optional_audio_stream() {
+        let args = build_combined_args(
+            &[PathBuf::from("left.mp4"), PathBuf::from("right.mp4")],
+            "[0:v][1:v]xstack=inputs=2[v]",
+            "libx264",
+            Path::new("combined.mp4"),
+        );
+        let audio_maps = args
+            .windows(2)
+            .filter(|pair| pair[0] == "-map" && pair[1].contains(":a"))
+            .collect::<Vec<_>>();
+        assert_eq!(audio_maps.len(), 1);
+        assert_eq!(audio_maps[0][1], "0:a?");
+        assert!(args.windows(2).any(|pair| pair == ["-c:a", "copy"]));
+    }
+
+    #[test]
     fn separate_mode_keeps_one_clip_per_output() {
         let dir = temp_dir("separate");
         let a = file(&dir.join("a.mp4"), b"a");
@@ -867,6 +921,26 @@ mod tests {
     fn recording_reserve_requires_more_than_two_gibibytes() {
         assert!(require_recording_reserve(RECORDING_DISK_RESERVE_BYTES).is_err());
         assert!(require_recording_reserve(RECORDING_DISK_RESERVE_BYTES + 1).is_ok());
+    }
+
+    #[test]
+    fn recording_cache_counts_regular_files() {
+        let dir = temp_dir("recording-cache");
+        File::create(dir.join("clip.mp4"))
+            .unwrap()
+            .set_len(RECORDING_CACHE_LIMIT_BYTES)
+            .unwrap();
+
+        let error = check_recording_cache_limit(&dir).unwrap_err();
+
+        assert!(error.contains("temporary recording cache reached 2 GiB"));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn recording_cache_requires_less_than_two_gibibytes() {
+        assert!(require_recording_cache_limit(RECORDING_CACHE_LIMIT_BYTES).is_err());
+        assert!(require_recording_cache_limit(RECORDING_CACHE_LIMIT_BYTES - 1).is_ok());
     }
 
     #[test]

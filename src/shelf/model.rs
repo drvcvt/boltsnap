@@ -108,6 +108,27 @@ impl ShelfModel {
         }
     }
 
+    pub fn replace_path(&mut self, id: u64, path: PathBuf) -> bool {
+        if let Some(t) = self.thumbs.iter_mut().find(|t| t.id == id) {
+            t.png_path = path;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn promote(&mut self, id: u64, path: PathBuf) -> bool {
+        let Some(card) = self.thumbs.iter_mut().find(|card| card.id == id) else {
+            return false;
+        };
+        if card.lifetime == FileLifetime::Permanent {
+            return false;
+        }
+        card.png_path = path;
+        card.lifetime = FileLifetime::Permanent;
+        true
+    }
+
     /// Used by tests and reserved for shelf-state queries; not yet read by the binary.
     #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
@@ -122,6 +143,15 @@ impl ShelfModel {
     /// Iterate newest-first (top of the shelf first).
     pub fn newest_first(&self) -> impl Iterator<Item = &Thumb> {
         self.thumbs.iter()
+    }
+
+    pub fn temporary_video_bytes(&self) -> u64 {
+        self.thumbs
+            .iter()
+            .filter(|card| card.kind == CardKind::Video && card.lifetime == FileLifetime::Temporary)
+            .filter_map(|card| std::fs::metadata(&card.png_path).ok())
+            .map(|metadata| metadata.len())
+            .fold(0, u64::saturating_add)
     }
 }
 
@@ -183,6 +213,25 @@ mod tests {
     }
 
     #[test]
+    fn replace_path_keeps_card_identity() {
+        let mut m = ShelfModel::new();
+        let id = m.add_kind(
+            PathBuf::from("/tmp/original.mp4"),
+            img(),
+            "record".into(),
+            CardKind::Video,
+        );
+
+        assert!(m.replace_path(id, PathBuf::from("/tmp/edited.mp4")));
+        assert_eq!(
+            m.get(id).unwrap().png_path,
+            PathBuf::from("/tmp/edited.mp4")
+        );
+        assert_eq!(m.get(id).unwrap().kind, CardKind::Video);
+        assert!(!m.replace_path(999, PathBuf::from("/tmp/missing.mp4")));
+    }
+
+    #[test]
     fn permanent_file_survives_card_dismissal() {
         let dir = (0_u32..)
             .map(|n| {
@@ -209,6 +258,7 @@ mod tests {
             FileLifetime::Permanent,
         );
         let remove = model.add_kind(temporary.clone(), img(), "record".into(), CardKind::Video);
+        assert_eq!(model.temporary_video_bytes(), 6);
         model
             .remove(keep)
             .unwrap()
@@ -223,5 +273,27 @@ mod tests {
         assert!(permanent.is_file());
         assert!(!temporary.exists());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn promotion_updates_path_and_lifetime_only_once() {
+        let mut model = ShelfModel::new();
+        let id = model.add_kind(
+            PathBuf::from("/tmp/temporary.mp4"),
+            img(),
+            "record".into(),
+            CardKind::Video,
+        );
+
+        assert!(model.promote(id, PathBuf::from("/videos/saved.mp4")));
+        assert_eq!(
+            model.get(id).map(|card| (&card.png_path, card.lifetime)),
+            Some((&PathBuf::from("/videos/saved.mp4"), FileLifetime::Permanent))
+        );
+        assert!(!model.promote(id, PathBuf::from("/videos/duplicate.mp4")));
+        assert_eq!(
+            model.get(id).unwrap().png_path,
+            PathBuf::from("/videos/saved.mp4")
+        );
     }
 }
