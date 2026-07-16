@@ -1,4 +1,4 @@
-use crate::config::{RecordBothMode, RecordDefaultTarget, RecordingPrefs};
+use crate::config::{RecordAudioSource, RecordBothMode, RecordDefaultTarget, RecordingPrefs};
 use crate::record::Monitor;
 use crate::record::session::PublicRecordingState;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -61,6 +61,7 @@ pub enum TrayAction {
     StartDefault,
     SetDefaultTarget(RecordDefaultTarget),
     SetBothMode(RecordBothMode),
+    SetAudioSource(RecordAudioSource),
     SetShowFrame(bool),
     SetDiskAddToShelf(bool),
 }
@@ -71,9 +72,20 @@ struct TrayMenuModel {
     default_labels: Vec<String>,
     default_selected: usize,
     both_mode_selected: usize,
+    audio_source_selected: usize,
     show_frame: bool,
     disk_add_to_shelf: bool,
     settings_enabled: bool,
+}
+
+const AUDIO_SOURCE_LABELS: [&str; 3] = ["System + microphone", "Microphone only", "System only"];
+
+fn audio_source_at(index: usize) -> RecordAudioSource {
+    match index {
+        1 => RecordAudioSource::Mic,
+        2 => RecordAudioSource::System,
+        _ => RecordAudioSource::SystemAndMic,
+    }
 }
 
 fn monitor_label(monitor: &Monitor) -> String {
@@ -113,6 +125,11 @@ fn menu_model(snapshot: &TraySnapshot) -> TrayMenuModel {
             .collect(),
         default_selected,
         both_mode_selected: usize::from(snapshot.prefs.both_mode == RecordBothMode::Combined),
+        audio_source_selected: match snapshot.prefs.audio_source {
+            RecordAudioSource::SystemAndMic => 0,
+            RecordAudioSource::Mic => 1,
+            RecordAudioSource::System => 2,
+        },
         show_frame: snapshot.prefs.show_frame,
         disk_add_to_shelf: snapshot.prefs.disk_add_to_shelf,
         settings_enabled: true,
@@ -288,6 +305,30 @@ impl ksni::Tray for BoltsnapTray {
                 ..Default::default()
             }
             .into(),
+            SubMenu {
+                label: "Audio source".into(),
+                enabled: model.settings_enabled,
+                submenu: vec![
+                    RadioGroup {
+                        selected: model.audio_source_selected,
+                        options: AUDIO_SOURCE_LABELS
+                            .into_iter()
+                            .map(|label| RadioItem {
+                                label: label.into(),
+                                ..Default::default()
+                            })
+                            .collect(),
+                        select: Box::new(|tray: &mut Self, index| {
+                            let source = audio_source_at(index);
+                            tray.snapshot.prefs.audio_source = source;
+                            tray.send(TrayAction::SetAudioSource(source));
+                        }),
+                    }
+                    .into(),
+                ],
+                ..Default::default()
+            }
+            .into(),
             CheckmarkItem {
                 label: "Show recording frame".into(),
                 enabled: model.settings_enabled,
@@ -327,6 +368,7 @@ mod tests {
                 both_mode: RecordBothMode::Combined,
                 show_frame: false,
                 disk_add_to_shelf: true,
+                ..RecordingPrefs::default()
             },
             monitors: vec![
                 Monitor {
@@ -368,6 +410,18 @@ mod tests {
         assert!(!model.show_frame);
         assert!(model.disk_add_to_shelf);
         assert!(model.settings_enabled);
+    }
+
+    #[test]
+    fn menu_model_selects_microphone_audio_source() {
+        let mut snapshot = snapshot(PublicRecordingState::Idle);
+        snapshot.prefs.audio_source = RecordAudioSource::Mic;
+        let model = menu_model(&snapshot);
+        assert_eq!(model.audio_source_selected, 1);
+        assert_eq!(
+            AUDIO_SOURCE_LABELS,
+            ["System + microphone", "Microphone only", "System only"]
+        );
     }
 
     #[test]
@@ -423,16 +477,15 @@ mod tests {
 
         let icon = &icons[0];
         let alpha_at = |x: i32, y: i32| icon.data[((y * icon.width + x) * 4) as usize];
-        assert_eq!(alpha_at(16, 20), 0, "the b counter must be transparent");
+        assert!(alpha_at(16, 20) > 200, "the chosen mark has a solid body");
         assert!(alpha_at(23, 15) > 0, "the snap dot must fill its cutout");
 
         let icon = &icons[1];
         let alpha_at = |x: i32, y: i32| icon.data[((y * icon.width + x) * 4) as usize];
-        assert_eq!(alpha_at(24, 56), 0, "the floor notch must stay visible");
-        assert!(
-            alpha_at(29, 56) > 200,
-            "the bowl must continue after the notch"
-        );
+        assert!(alpha_at(24, 56) > 200, "the base must remain solid");
+        assert!(alpha_at(29, 56) > 200, "the base must remain continuous");
+        assert!(alpha_at(39, 25) < 64, "the snap cutout must stay open");
+        assert!(alpha_at(45, 25) > 200, "the snap dot must stay opaque");
     }
 
     #[test]

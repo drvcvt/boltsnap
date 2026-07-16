@@ -22,6 +22,7 @@ pub fn run_editor(
     copy_after: bool,
     backend: Backend,
     editor_override: Option<String>,
+    shelf_card_id: Option<u64>,
 ) -> DynResult<PathBuf> {
     let output = output_path.unwrap_or_else(|| temp_png("edited"));
 
@@ -30,12 +31,17 @@ pub fn run_editor(
          or set $BOLTSNAP_EDITOR",
     )?;
 
-    let status = Command::new(&editor)
+    let mut command = Command::new(&editor);
+    command
         .arg("-f")
         .arg(&image_path)
         .arg("-o")
         .arg(&output)
-        .arg("--no-copy")
+        .arg("--no-copy");
+    if let Some(id) = shelf_card_id {
+        command.arg("--boltsnap-card-id").arg(id.to_string());
+    }
+    let status = command
         .status()
         .map_err(|e| format!("failed to launch editor '{editor}': {e}"))?;
     if !status.success() {

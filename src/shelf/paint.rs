@@ -1,3 +1,4 @@
+use ab_glyph::{Font, FontVec, PxScale, ScaleFont, point};
 use image::{RgbaImage, imageops};
 
 use crate::shelf::layout::{Layout, LayoutConfig, ThumbRect};
@@ -334,6 +335,7 @@ pub fn draw_recording_popup(
     state: crate::record::session::PublicRecordingState,
     enabled: bool,
     elapsed: &str,
+    font: &FontVec,
 ) {
     use crate::record::session::PublicRecordingState;
     use crate::shelf::recording::{
@@ -351,8 +353,31 @@ pub fn draw_recording_popup(
         PublicRecordingState::Finalizing => "SAVING...",
     };
     fill_circle(canvas, w, h, 22.0, 28.0, 5.0, REC_RGB, 1.0);
-    draw_pixel_text(canvas, w, h, 36, 20, title, 2, GLYPH_RGB);
-    draw_time(canvas, w, h, 326.0, 28.0, 18.0, GLYPH_RGB, elapsed);
+    let header_px = 18.0;
+    let scaled = font.as_scaled(PxScale::from(header_px));
+    let header_baseline = 28.0 + (scaled.ascent() + scaled.descent()) / 2.0;
+    draw_font_text(
+        canvas,
+        w,
+        h,
+        font,
+        36.0,
+        header_baseline,
+        title,
+        header_px,
+        GLYPH_RGB,
+    );
+    draw_font_text(
+        canvas,
+        w,
+        h,
+        font,
+        382.0 - text_width(font, elapsed, header_px),
+        header_baseline,
+        elapsed,
+        header_px,
+        GLYPH_RGB,
+    );
 
     let button_alpha = if enabled && state != PublicRecordingState::Finalizing {
         0.95
@@ -379,82 +404,77 @@ pub fn draw_recording_popup(
         } else {
             GLYPH_RGB
         };
-        let text_w = (label.chars().count() as i32 * 8 - 2).max(0);
-        draw_pixel_text(
+        let text_px = 14.0;
+        let scaled = font.as_scaled(PxScale::from(text_px));
+        draw_font_text(
             canvas,
             w,
             h,
-            x as i32 + (bw as i32 - text_w) / 2,
-            y as i32 + (bh as i32 - 10) / 2,
+            font,
+            x + (bw - text_width(font, label, text_px)) / 2.0,
+            y + bh / 2.0 + (scaled.ascent() + scaled.descent()) / 2.0,
             label,
-            2,
+            text_px,
             color,
         );
     }
 }
 
+fn text_width(font: &FontVec, text: &str, px: f32) -> f32 {
+    let scaled = font.as_scaled(PxScale::from(px));
+    let mut width = 0.0;
+    let mut previous = None;
+    for ch in text.chars() {
+        let id = font.glyph_id(ch);
+        if let Some(previous) = previous {
+            width += scaled.kern(previous, id);
+        }
+        width += scaled.h_advance(id);
+        previous = Some(id);
+    }
+    width
+}
+
 #[allow(clippy::too_many_arguments)]
-fn draw_pixel_text(
+fn draw_font_text(
     canvas: &mut [u8],
     w: u32,
     h: u32,
-    x: i32,
-    y: i32,
+    font: &FontVec,
+    x: f32,
+    baseline: f32,
     text: &str,
-    scale: i32,
+    px: f32,
     color: (u8, u8, u8),
 ) {
+    let scale = PxScale::from(px);
+    let scaled = font.as_scaled(scale);
     let mut caret = x;
+    let mut previous = None;
     for ch in text.chars() {
-        let rows = pixel_glyph(ch);
-        for (row, bits) in rows.into_iter().enumerate() {
-            for col in 0..3 {
-                if bits & (1 << (2 - col)) == 0 {
-                    continue;
-                }
-                for dy in 0..scale {
-                    for dx in 0..scale {
-                        blend_px(
-                            canvas,
-                            w,
-                            h,
-                            caret + col * scale + dx,
-                            y + row as i32 * scale + dy,
-                            color.0,
-                            color.1,
-                            color.2,
-                            1.0,
-                        );
-                    }
-                }
-            }
+        let id = font.glyph_id(ch);
+        if let Some(previous) = previous {
+            caret += scaled.kern(previous, id);
         }
-        caret += 4 * scale;
-    }
-}
-
-fn pixel_glyph(ch: char) -> [u8; 5] {
-    match ch {
-        'A' => [2, 5, 7, 5, 5],
-        'C' => [3, 4, 4, 4, 3],
-        'D' => [6, 5, 5, 5, 6],
-        'E' => [7, 4, 6, 4, 7],
-        'F' => [7, 4, 6, 4, 4],
-        'G' => [3, 4, 5, 5, 3],
-        'H' => [5, 5, 7, 5, 5],
-        'I' => [7, 2, 2, 2, 7],
-        'K' => [5, 5, 6, 5, 5],
-        'L' => [4, 4, 4, 4, 7],
-        'M' => [5, 7, 7, 5, 5],
-        'N' => [5, 7, 7, 7, 5],
-        'O' => [2, 5, 5, 5, 2],
-        'P' => [6, 5, 6, 4, 4],
-        'R' => [6, 5, 6, 5, 5],
-        'S' => [3, 4, 2, 1, 6],
-        'U' => [5, 5, 5, 5, 7],
-        'V' => [5, 5, 5, 5, 2],
-        '.' => [0, 0, 0, 0, 2],
-        _ => [0; 5],
+        let glyph = id.with_scale_and_position(scale, point(caret, baseline));
+        if let Some(outlined) = font.outline_glyph(glyph) {
+            let bounds = outlined.px_bounds();
+            outlined.draw(|gx, gy, coverage| {
+                blend_px(
+                    canvas,
+                    w,
+                    h,
+                    bounds.min.x as i32 + gx as i32,
+                    bounds.min.y as i32 + gy as i32,
+                    color.0,
+                    color.1,
+                    color.2,
+                    coverage,
+                );
+            });
+        }
+        caret += scaled.h_advance(id);
+        previous = Some(id);
     }
 }
 
@@ -486,110 +506,6 @@ fn fill_round_rect(
             }
         }
     }
-}
-
-/// Draw a `MM:SS`-style string left-aligned with its vertical centre at `cy`,
-/// using a 7-segment-ish stroked rendering (the embedded badge font has no colon,
-/// and the daemon draws with these BGRA primitives, not tiny-skia). `digit_h` is
-/// the cell height; digits are `digit_h * 0.55` wide.
-fn draw_time(
-    canvas: &mut [u8],
-    cw: u32,
-    ch: u32,
-    x: f32,
-    cy: f32,
-    digit_h: f32,
-    c: (u8, u8, u8),
-    s: &str,
-) {
-    let dw = digit_h * 0.55;
-    let gap = digit_h * 0.18;
-    let top = cy - digit_h / 2.0;
-    let mut caret = x;
-    for ch_ in s.chars() {
-        if ch_ == ':' {
-            // Colon: two small dots at 1/3 and 2/3 height.
-            let colon_w = digit_h * 0.28;
-            let r = digit_h * 0.07;
-            let dx = caret + colon_w / 2.0;
-            fill_circle(canvas, cw, ch, dx, top + digit_h * 0.34, r, c, 1.0);
-            fill_circle(canvas, cw, ch, dx, top + digit_h * 0.66, r, c, 1.0);
-            caret += colon_w + gap;
-        } else if let Some(d) = ch_.to_digit(10) {
-            draw_seg_digit(canvas, cw, ch, caret, top, dw, digit_h, c, d as u8);
-            caret += dw + gap;
-        } else {
-            caret += dw + gap; // unknown char -> advance, draw nothing
-        }
-    }
-}
-
-/// Seven-segment digit at (x, top), cell (w, h). Segments:
-/// ```text
-///  _a_
-/// f   b
-///  _g_
-/// e   c
-///  _d_
-/// ```
-fn draw_seg_digit(
-    canvas: &mut [u8],
-    cw: u32,
-    ch: u32,
-    x: f32,
-    top: f32,
-    w: f32,
-    h: f32,
-    c: (u8, u8, u8),
-    d: u8,
-) {
-    // Segment presence per digit, order [a,b,c,d,e,f,g].
-    const SEGS: [[bool; 7]; 10] = [
-        [true, true, true, true, true, true, false],     // 0
-        [false, true, true, false, false, false, false], // 1
-        [true, true, false, true, true, false, true],    // 2
-        [true, true, true, true, false, false, true],    // 3
-        [false, true, true, false, false, true, true],   // 4
-        [true, false, true, true, false, true, true],    // 5
-        [true, false, true, true, true, true, true],     // 6
-        [true, true, true, false, false, false, false],  // 7
-        [true, true, true, true, true, true, true],      // 8
-        [true, true, true, true, false, true, true],     // 9
-    ];
-    let seg = match SEGS.get(d as usize) {
-        Some(s) => s,
-        None => return,
-    };
-    let hw = (h * 0.045).max(0.9); // half stroke width
-    let l = x + hw;
-    let rr = x + w - hw;
-    let midy = top + h / 2.0;
-    let t = top + hw;
-    let b = top + h - hw;
-    let line = |canvas: &mut [u8], x0: f32, y0: f32, x1: f32, y1: f32| {
-        stroke_line(canvas, cw, ch, x0, y0, x1, y1, hw, c, 1.0);
-    };
-    if seg[0] {
-        line(canvas, l, t, rr, t);
-    } // a (top)
-    if seg[1] {
-        line(canvas, rr, t, rr, midy);
-    } // b (top-right)
-    if seg[2] {
-        line(canvas, rr, midy, rr, b);
-    } // c (bottom-right)
-    if seg[3] {
-        line(canvas, l, b, rr, b);
-    } // d (bottom)
-    if seg[4] {
-        line(canvas, l, midy, l, b);
-    } // e (bottom-left)
-    if seg[5] {
-        line(canvas, l, t, l, midy);
-    } // f (top-left)
-    if seg[6] {
-        line(canvas, l, midy, rr, midy);
-    } // g (middle)
 }
 
 /// Render the whole shelf: each thumbnail, plus hover icons on the hovered thumb.
@@ -1031,6 +947,7 @@ mod tests {
         };
 
         let mut buf = vec![0u8; (POPUP_W * POPUP_H * 4) as usize];
+        let font = crate::shelf::font::fallback_popup_font();
         draw_recording_popup(
             &mut buf,
             POPUP_W,
@@ -1038,6 +955,7 @@ mod tests {
             PublicRecordingState::Recording,
             true,
             "01:23",
+            &font,
         );
         assert!(buf[((POPUP_H / 2 * POPUP_W + POPUP_W / 2) * 4 + 3) as usize] > 0);
         for (x, y, w, h) in [
@@ -1050,6 +968,25 @@ mod tests {
             let py = (y + h / 2.0) as u32;
             assert!(buf[((py * POPUP_W + px) * 4 + 3) as usize] > 0);
         }
+    }
+
+    #[test]
+    fn popup_font_renderer_paints_text_pixels() {
+        let (w, h) = (180, 48);
+        let mut buf = vec![0u8; (w * h * 4) as usize];
+        let font = crate::shelf::font::fallback_popup_font();
+        draw_font_text(
+            &mut buf,
+            w,
+            h,
+            &font,
+            8.0,
+            30.0,
+            "RECORDING 01:23",
+            18.0,
+            GLYPH_RGB,
+        );
+        assert!(buf.chunks_exact(4).any(|pixel| pixel[3] != 0));
     }
 
     #[test]

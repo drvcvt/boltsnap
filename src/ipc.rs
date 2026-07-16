@@ -8,11 +8,31 @@ use serde_json::{Value, json};
 
 use crate::record::session::{PublicRecordingState, RecordingAction};
 
+const MAX_HEADER_BYTES: usize = 64 * 1024;
+const MAX_PAYLOAD_BYTES: usize = 256 * 1024 * 1024;
+
+#[derive(Debug)]
+pub enum Replacement {
+    Image(Vec<u8>),
+    Video(PathBuf),
+}
+
 #[derive(Debug)]
 pub enum Request {
     Add {
         source: String,
         png: Vec<u8>,
+        output: Option<String>,
+    },
+    AddVideo {
+        source: String,
+        path: PathBuf,
+        output: Option<String>,
+        take_ownership: bool,
+    },
+    Replace {
+        id: u64,
+        media: Replacement,
     },
     Reload {
         id: u64,
@@ -34,6 +54,7 @@ pub enum Request {
         w: u32,
         h: u32,
         show_frame: bool,
+        audio_enabled: bool,
     },
     /// Start a fullscreen recording of a whole output (Hyprland monitor name) via
     /// `wf-recorder -o`. No overlay; stop is keyboard-only and auto-finalizes.
@@ -266,6 +287,16 @@ pub fn read_frame<R: Read>(r: &mut R) -> io::Result<(Vec<u8>, Vec<u8>)> {
     let hlen = u32::from_be_bytes(len4) as usize;
     r.read_exact(&mut len4)?;
     let plen = u32::from_be_bytes(len4) as usize;
+    if hlen > MAX_HEADER_BYTES {
+        return Err(invalid_data(format!(
+            "IPC header exceeds {MAX_HEADER_BYTES} bytes"
+        )));
+    }
+    if plen > MAX_PAYLOAD_BYTES {
+        return Err(invalid_data(format!(
+            "IPC payload exceeds {MAX_PAYLOAD_BYTES} bytes"
+        )));
+    }
     let mut header = vec![0u8; hlen];
     r.read_exact(&mut header)?;
     let mut payload = vec![0u8; plen];
@@ -277,9 +308,52 @@ impl Request {
     pub fn encode(&self) -> Vec<u8> {
         let mut buf = Vec::new();
         match self {
-            Request::Add { source, png } => {
-                let header = json!({ "cmd": "add", "source": source });
+            Request::Add {
+                source,
+                png,
+                output,
+            } => {
+                let mut header = json!({ "cmd": "add", "source": source });
+                if let Some(output) = output {
+                    header["output"] = json!(output);
+                }
                 write_frame(&mut buf, header.to_string().as_bytes(), png).unwrap();
+            }
+            Request::AddVideo {
+                source,
+                path,
+                output,
+                take_ownership,
+            } => {
+                let mut header = json!({
+                    "cmd": "add_video",
+                    "source": source,
+                    "path": path.to_string_lossy(),
+                    "take_ownership": take_ownership,
+                });
+                if let Some(output) = output {
+                    header["output"] = json!(output);
+                }
+                write_frame(&mut buf, header.to_string().as_bytes(), &[]).unwrap();
+            }
+            Request::Replace {
+                id,
+                media: Replacement::Image(png),
+            } => {
+                let header = json!({ "cmd": "replace", "id": id, "media": "image" });
+                write_frame(&mut buf, header.to_string().as_bytes(), png).unwrap();
+            }
+            Request::Replace {
+                id,
+                media: Replacement::Video(path),
+            } => {
+                let header = json!({
+                    "cmd": "replace",
+                    "id": id,
+                    "media": "video",
+                    "path": path.to_string_lossy(),
+                });
+                write_frame(&mut buf, header.to_string().as_bytes(), &[]).unwrap();
             }
             Request::Reload { id } => {
                 let header = json!({ "cmd": "reload", "id": id });
@@ -322,6 +396,7 @@ impl Request {
                 w,
                 h,
                 show_frame,
+                audio_enabled,
             } => {
                 let header = json!({
                     "cmd": "record",
@@ -330,6 +405,7 @@ impl Request {
                     "w": w,
                     "h": h,
                     "show_frame": show_frame,
+                    "audio_enabled": audio_enabled,
                 });
                 write_frame(&mut buf, header.to_string().as_bytes(), &[]).unwrap();
             }
@@ -369,7 +445,48 @@ impl Request {
                     .unwrap_or("")
                     .to_string(),
                 png: payload,
+                output: v
+                    .get("output")
+                    .and_then(|s| s.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned),
             }),
+            Some("add_video") => Ok(Request::AddVideo {
+                source: v
+                    .get("source")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+                path: PathBuf::from(v.get("path").and_then(Value::as_str).unwrap_or("")),
+                output: v
+                    .get("output")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_owned),
+                take_ownership: v
+                    .get("take_ownership")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+            }),
+            Some("replace") => {
+                let id = v.get("id").and_then(|i| i.as_u64()).unwrap_or(0);
+                match v.get("media").and_then(|m| m.as_str()) {
+                    Some("image") => Ok(Request::Replace {
+                        id,
+                        media: Replacement::Image(payload),
+                    }),
+                    Some("video") => Ok(Request::Replace {
+                        id,
+                        media: Replacement::Video(PathBuf::from(
+                            v.get("path").and_then(|p| p.as_str()).unwrap_or(""),
+                        )),
+                    }),
+                    other => Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("unknown replacement media: {other:?}"),
+                    )),
+                }
+            }
             Some("reload") => Ok(Request::Reload {
                 id: v.get("id").and_then(|i| i.as_u64()).unwrap_or(0),
             }),
@@ -386,16 +503,42 @@ impl Request {
             }),
             Some("record_default") => Ok(Request::StartDefaultRecording),
             Some("stop") => Ok(Request::StopRecording),
-            Some("record") => Ok(Request::StartRecording {
-                x: v.get("x").and_then(|n| n.as_i64()).unwrap_or(0) as i32,
-                y: v.get("y").and_then(|n| n.as_i64()).unwrap_or(0) as i32,
-                w: v.get("w").and_then(|n| n.as_u64()).unwrap_or(0) as u32,
-                h: v.get("h").and_then(|n| n.as_u64()).unwrap_or(0) as u32,
-                show_frame: v
-                    .get("show_frame")
-                    .and_then(|value| value.as_bool())
-                    .unwrap_or(true),
-            }),
+            Some("record") => {
+                let coordinate = |name| {
+                    i32::try_from(
+                        v.get(name)
+                            .and_then(Value::as_i64)
+                            .ok_or_else(|| invalid_data(format!("{name} must be an integer")))?,
+                    )
+                    .map_err(|_| invalid_data(format!("{name} is out of range")))
+                };
+                let dimension = |name| {
+                    let value =
+                        u32::try_from(v.get(name).and_then(Value::as_u64).ok_or_else(|| {
+                            invalid_data(format!("{name} must be an unsigned integer"))
+                        })?)
+                        .map_err(|_| invalid_data(format!("{name} is out of range")))?;
+                    if value == 0 {
+                        Err(invalid_data(format!("{name} must be greater than zero")))
+                    } else {
+                        Ok(value)
+                    }
+                };
+                Ok(Request::StartRecording {
+                    x: coordinate("x")?,
+                    y: coordinate("y")?,
+                    w: dimension("w")?,
+                    h: dimension("h")?,
+                    show_frame: v
+                        .get("show_frame")
+                        .and_then(|value| value.as_bool())
+                        .unwrap_or(true),
+                    audio_enabled: v
+                        .get("audio_enabled")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(true),
+                })
+            }
             Some("record_output") => Ok(Request::StartRecordingOutput {
                 name: v
                     .get("name")
@@ -448,19 +591,35 @@ pub fn daemon_alive() -> bool {
     }
 }
 
-/// Connect to the daemon, self-spawning `boltsnap daemon` if none is running.
+fn systemd_start_args() -> [&'static str; 4] {
+    ["--user", "start", "--no-block", "boltsnap-daemon.service"]
+}
+
+/// Connect to the daemon, asking the user service manager to start it if needed.
 fn ensure_daemon() -> io::Result<UnixStream> {
     if let Ok(s) = UnixStream::connect(socket_path()) {
         return Ok(s);
     }
-    // No daemon: spawn one detached.
-    let exe = std::env::current_exe()?;
-    Command::new(exe)
-        .arg("daemon")
+
+    let managed = Command::new("systemctl")
+        .args(systemd_start_args())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .spawn()?;
+        .status()
+        .is_ok_and(|status| status.success());
+
+    // Keep working on systems without a usable user service manager.
+    if !managed {
+        let exe = std::env::current_exe()?;
+        Command::new(exe)
+            .arg("daemon")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()?;
+    }
+
     // Poll for it to come up (~1s).
     for _ in 0..100 {
         if let Ok(s) = UnixStream::connect(socket_path()) {
@@ -658,17 +817,136 @@ mod tests {
     }
 
     #[test]
+    fn oversized_frame_header_is_rejected_before_allocation() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&(65_537_u32).to_be_bytes());
+        bytes.extend_from_slice(&0_u32.to_be_bytes());
+        let error = read_frame(&mut Cursor::new(bytes)).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("header"));
+    }
+
+    #[test]
+    fn oversized_frame_payload_is_rejected_before_allocation() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&0_u32.to_be_bytes());
+        bytes.extend_from_slice(&((MAX_PAYLOAD_BYTES as u32) + 1).to_be_bytes());
+        let error = read_frame(&mut Cursor::new(bytes)).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("payload"));
+    }
+
+    #[test]
+    fn recording_geometry_rejects_wrapped_and_zero_dimensions() {
+        for header in [
+            br#"{"cmd":"record","x":2147483648,"y":0,"w":1,"h":1}"#.as_slice(),
+            br#"{"cmd":"record","x":0,"y":0,"w":0,"h":1}"#.as_slice(),
+        ] {
+            let mut bytes = Vec::new();
+            write_frame(&mut bytes, header, &[]).unwrap();
+            assert_eq!(
+                Request::read(&mut Cursor::new(bytes)).unwrap_err().kind(),
+                io::ErrorKind::InvalidData
+            );
+        }
+    }
+
+    #[test]
     fn request_add_roundtrip() {
         let req = Request::Add {
             source: "area".into(),
             png: vec![9, 8, 7],
+            output: Some("DP-3".into()),
         };
         let bytes = req.encode();
         let mut cur = Cursor::new(bytes);
         match Request::read(&mut cur).unwrap() {
-            Request::Add { source, png } => {
+            Request::Add {
+                source,
+                png,
+                output,
+            } => {
                 assert_eq!(source, "area");
                 assert_eq!(png, vec![9, 8, 7]);
+                assert_eq!(output.as_deref(), Some("DP-3"));
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn request_add_without_output_remains_compatible() {
+        let mut bytes = Vec::new();
+        write_frame(
+            &mut bytes,
+            br#"{"cmd":"add","source":"legacy"}"#,
+            &[1, 2, 3],
+        )
+        .unwrap();
+
+        match Request::read(&mut Cursor::new(bytes)).unwrap() {
+            Request::Add { output, .. } => assert_eq!(output, None),
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn request_add_video_roundtrip() {
+        let req = Request::AddVideo {
+            source: "eddy".into(),
+            path: PathBuf::from("/tmp/eddy clip.mp4"),
+            output: Some("DP-2".into()),
+            take_ownership: true,
+        };
+        match Request::read(&mut Cursor::new(req.encode())).unwrap() {
+            Request::AddVideo {
+                source,
+                path,
+                output,
+                take_ownership,
+            } => {
+                assert_eq!(source, "eddy");
+                assert_eq!(path, PathBuf::from("/tmp/eddy clip.mp4"));
+                assert_eq!(output.as_deref(), Some("DP-2"));
+                assert!(take_ownership);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn request_replace_image_roundtrip() {
+        let req = Request::Replace {
+            id: 12,
+            media: Replacement::Image(vec![9, 8, 7]),
+        };
+
+        match Request::read(&mut Cursor::new(req.encode())).unwrap() {
+            Request::Replace {
+                id,
+                media: Replacement::Image(png),
+            } => {
+                assert_eq!(id, 12);
+                assert_eq!(png, vec![9, 8, 7]);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn request_replace_video_roundtrip() {
+        let req = Request::Replace {
+            id: 13,
+            media: Replacement::Video(PathBuf::from("/tmp/edited.mp4")),
+        };
+
+        match Request::read(&mut Cursor::new(req.encode())).unwrap() {
+            Request::Replace {
+                id,
+                media: Replacement::Video(path),
+            } => {
+                assert_eq!(id, 13);
+                assert_eq!(path, PathBuf::from("/tmp/edited.mp4"));
             }
             other => panic!("wrong variant: {other:?}"),
         }
@@ -698,6 +976,7 @@ mod tests {
             w: 800,
             h: 600,
             show_frame: false,
+            audio_enabled: false,
         };
         let mut cur = Cursor::new(req.encode());
         match Request::read(&mut cur).unwrap() {
@@ -707,9 +986,11 @@ mod tests {
                 w,
                 h,
                 show_frame,
+                audio_enabled,
             } => {
                 assert_eq!((x, y, w, h), (-100, 40, 800, 600));
                 assert!(!show_frame);
+                assert!(!audio_enabled);
             }
             other => panic!("wrong variant: {other:?}"),
         }
@@ -728,6 +1009,24 @@ mod tests {
             Request::read(&mut Cursor::new(bytes)).unwrap(),
             Request::StartRecording {
                 show_frame: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn start_recording_missing_audio_field_defaults_true() {
+        let mut bytes = Vec::new();
+        write_frame(
+            &mut bytes,
+            br#"{"cmd":"record","x":1,"y":2,"w":3,"h":4}"#,
+            &[],
+        )
+        .unwrap();
+        assert!(matches!(
+            Request::read(&mut Cursor::new(bytes)).unwrap(),
+            Request::StartRecording {
+                audio_enabled: true,
                 ..
             }
         ));
@@ -770,5 +1069,13 @@ mod tests {
             Some(v) => unsafe { std::env::set_var("XDG_RUNTIME_DIR", v) },
             None => unsafe { std::env::remove_var("XDG_RUNTIME_DIR") },
         }
+    }
+
+    #[test]
+    fn daemon_start_uses_the_user_systemd_service() {
+        assert_eq!(
+            systemd_start_args(),
+            ["--user", "start", "--no-block", "boltsnap-daemon.service"]
+        );
     }
 }

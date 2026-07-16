@@ -14,25 +14,26 @@ pub fn capture(
     output: &Path,
     backend: Backend,
     instant: bool,
-) -> DynResult<Backend> {
+) -> DynResult<(Backend, Option<String>)> {
     let backend = backend.resolved()?;
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent)?;
     }
-    match backend {
+    let capture_output = match backend {
         Backend::X11 => {
             capture_x11(mode, output)?;
             // Strip alpha + iCCP that ImageMagick/maim may emit, otherwise
             // some viewers composite onto white and show a halo.
             flatten_to_rgb(output)?;
+            None
         }
         Backend::Wayland => capture_wayland(mode, output, instant)?,
         Backend::Auto => unreachable!(),
-    }
+    };
     if !output.is_file() || output.metadata()?.len() == 0 {
         return Err(format!("capture helper did not create {}", output.display()).into());
     }
-    Ok(backend)
+    Ok((backend, capture_output))
 }
 
 fn flatten_to_rgb(path: &Path) -> DynResult<()> {
@@ -302,7 +303,8 @@ fn x11_pick_window_id() -> DynResult<Option<u32>> {
     Ok(target.filter(|w| *w != 0))
 }
 
-fn capture_wayland(mode: CaptureMode, output: &Path, instant: bool) -> DynResult<()> {
+fn capture_wayland(mode: CaptureMode, output: &Path, instant: bool) -> DynResult<Option<String>> {
+    let capture_output = crate::shelf::focused_monitor_name();
     match mode {
         CaptureMode::Full => {
             let conn = libwayshot::WayshotConnection::new()
@@ -313,7 +315,7 @@ fn capture_wayland(mode: CaptureMode, output: &Path, instant: bool) -> DynResult
             img.to_rgb8()
                 .save(output)
                 .map_err(|e| format!("png encode failed: {e}"))?;
-            Ok(())
+            Ok(capture_output)
         }
         CaptureMode::ActiveWindow => {
             let conn = libwayshot::WayshotConnection::new()
@@ -327,7 +329,7 @@ fn capture_wayland(mode: CaptureMode, output: &Path, instant: bool) -> DynResult
             img.to_rgb8()
                 .save(output)
                 .map_err(|e| format!("png encode failed: {e}"))?;
-            Ok(())
+            Ok(capture_output)
         }
         CaptureMode::Area | CaptureMode::Window => {
             // Run libwayshot capture on a worker so it overlaps with the
@@ -348,7 +350,7 @@ fn capture_wayland(mode: CaptureMode, output: &Path, instant: bool) -> DynResult
                 .to_rgb8()
                 .save(output)
                 .map_err(|e| format!("png encode failed: {e}"))?;
-            Ok(())
+            Ok(capture_output)
         }
     }
 }

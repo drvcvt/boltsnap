@@ -321,6 +321,7 @@ fn run() -> DynResult<()> {
                 args.copy,
                 args.backend,
                 args.editor_cmd.clone(),
+                None,
             )?;
             remember_last_screenshot(&result)?;
             println!("Edited image ready: {}", result.display());
@@ -342,6 +343,7 @@ fn edit_last_screenshot(args: &Args) -> DynResult<()> {
         args.copy,
         args.backend,
         args.editor_cmd.clone(),
+        None,
     )?;
     remember_last_screenshot(&result)?;
     println!("Edited last screenshot: {}", result.display());
@@ -379,9 +381,10 @@ fn record_flow(args: &Args) -> DynResult<()> {
         return Ok(());
     }
     let mut prefs = crate::config::Config::load().recording_prefs();
-    let selection = crate::select_skia::run_select_record(prefs.show_frame)?;
-    if selection.show_frame != prefs.show_frame {
+    let selection = crate::select_skia::run_select_record(prefs.show_frame, prefs.audio_enabled)?;
+    if selection.show_frame != prefs.show_frame || selection.audio_enabled != prefs.audio_enabled {
         prefs.show_frame = selection.show_frame;
+        prefs.audio_enabled = selection.audio_enabled;
         crate::config::save_recording_prefs(&prefs)?;
     }
     let Some(rect) = selection.rect else {
@@ -395,6 +398,7 @@ fn record_flow(args: &Args) -> DynResult<()> {
         w: geo.w,
         h: geo.h,
         show_frame: prefs.show_frame,
+        audio_enabled: selection.audio_enabled,
     })?;
     Ok(())
 }
@@ -491,7 +495,7 @@ fn capture_flow(args: &Args) -> DynResult<()> {
     } else {
         target_path(args)
     };
-    let resolved = capture(mode, &output, args.backend, args.instant)?;
+    let (resolved, capture_output) = capture(mode, &output, args.backend, args.instant)?;
     if matches!(mode, CaptureMode::Window | CaptureMode::ActiveWindow) {
         let _ = strip_uniform_border(&output);
     }
@@ -505,6 +509,7 @@ fn capture_flow(args: &Args) -> DynResult<()> {
                 args.copy,
                 resolved,
                 args.editor_cmd.clone(),
+                None,
             )?;
             remember_last_screenshot(&final_path)?;
             println!(
@@ -546,6 +551,7 @@ fn capture_flow(args: &Args) -> DynResult<()> {
             crate::ipc::send_to_shelf(crate::ipc::Request::Add {
                 source: mode.label().to_string(),
                 png,
+                output: capture_output,
             })?;
             let suffix = if copy { " (copied)" } else { "" };
             println!("Boltsnap sent {} to shelf{}", mode.label(), suffix);

@@ -1,3 +1,4 @@
+mod font;
 pub mod layout;
 pub mod model;
 pub mod paint;
@@ -50,8 +51,11 @@ use wayland_client::{
 };
 
 use crate::DynResult;
+use crate::record::audio::AudioCapture;
 use crate::record::finalize::{
-    FinalizeFailure, FinalizeRequest, FinalizedClip, SaveDestination, finalize_recording,
+    FinalizeFailure, FinalizeRequest, FinalizedClip, RECORDING_CACHE_LIMIT_BYTES, SaveDestination,
+    check_recording_cache_capacity, check_recording_cache_limit, check_recording_reserve,
+    finalize_recording, promote_recording,
 };
 use crate::record::session::{
     CaptureScope, PublicRecordingState, RecorderTools, RecordingAction, RecordingSession,
@@ -108,6 +112,7 @@ pub struct Daemon {
     save_dir: std::path::PathBuf,
     /// Card id + start time of the transient ✓ "saved" flash on its Save button.
     save_flash: Option<(u64, std::time::Instant)>,
+    saving_cards: std::collections::HashSet<u64>,
     press: Option<PressState>,
     /// In-flight per-card appear/dismiss animations.
     anims: Vec<CardAnim>,
@@ -121,9 +126,11 @@ pub struct Daemon {
     marker_configured: bool,
     popup: Option<LayerSurface>,
     popup_pool: Option<SlotPool>,
+    popup_font: ab_glyph::FontVec,
     popup_configured: bool,
     watchers: Vec<UnixStream>,
     last_recording_snapshot: crate::ipc::RecordingSnapshot,
+    last_recording_space_check: std::time::Instant,
     event_tx: calloop::channel::Sender<DaemonEvent>,
     focused_output: Option<String>,
     focus_query_pending: bool,
@@ -155,6 +162,10 @@ pub(crate) enum DaemonEvent {
         result: StopChildrenResult,
     },
     Finalized(Result<Vec<FinalizedClip>, FinalizeFailure>),
+    CardPromoted {
+        id: u64,
+        result: Result<std::path::PathBuf, String>,
+    },
     FocusResolved(Result<Vec<crate::record::Monitor>, String>),
     Tray(crate::tray::TrayAction),
     PrefsPersisted {
@@ -281,6 +292,51 @@ fn notify(body: &str) {
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn();
+    }
+}
+
+fn prepare_recording_cache() -> Result<(), String> {
+    let dir = crate::paths::rec_dir();
+    std::fs::create_dir_all(&dir).map_err(|error| format!("create recording cache: {error}"))?;
+    check_recording_cache_limit(&dir)?;
+    check_recording_reserve(&dir)
+}
+
+fn prepare_shelf_video(
+    path: &std::path::Path,
+    take_ownership: bool,
+) -> Result<std::path::PathBuf, String> {
+    let metadata =
+        std::fs::metadata(path).map_err(|error| format!("inspect shelf video: {error}"))?;
+    if !metadata.is_file() || metadata.len() == 0 {
+        return Err("shelf video is empty".into());
+    }
+    if metadata.len() >= RECORDING_CACHE_LIMIT_BYTES {
+        return Err("video exceeds the 2 GiB temporary shelf limit".into());
+    }
+    if take_ownership {
+        return Ok(path.to_path_buf());
+    }
+
+    prepare_recording_cache()?;
+    let dir = crate::paths::rec_dir();
+    check_recording_cache_capacity(&dir, metadata.len())?;
+    let ext = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("mp4");
+    let target = crate::paths::rec_file("shelf-video", ext);
+    if std::fs::hard_link(path, &target).is_err() {
+        std::fs::copy(path, &target).map_err(|error| format!("copy shelf video: {error}"))?;
+    }
+    Ok(target)
+}
+
+fn validate_recording_dimensions(width: u32, height: u32) -> Result<(), String> {
+    if width == 0 || height == 0 {
+        Err("recording width and height must be greater than zero".into())
+    } else {
+        Ok(())
     }
 }
 
@@ -605,6 +661,9 @@ pub fn run_daemon(save_dir_cli: Option<std::path::PathBuf>) -> DynResult<()> {
     if cleaned_rec > 0 {
         eprintln!("boltsnap daemon: cleaned {cleaned_rec} orphaned recording file(s)");
     }
+    if let Err(error) = crate::record::audio::cleanup_stale_mixes() {
+        eprintln!("boltsnap daemon: clean up stale recording audio: {error}");
+    }
 
     let conn = Connection::connect_to_env()?;
     let (globals, mut event_queue) = registry_queue_init::<Daemon>(&conn)?;
@@ -652,6 +711,7 @@ pub fn run_daemon(save_dir_cli: Option<std::path::PathBuf>) -> DynResult<()> {
         hovered: None,
         save_dir,
         save_flash: None,
+        saving_cards: std::collections::HashSet::new(),
         press: None,
         anims: Vec::new(),
         exit: false,
@@ -663,9 +723,11 @@ pub fn run_daemon(save_dir_cli: Option<std::path::PathBuf>) -> DynResult<()> {
         marker_configured: false,
         popup: None,
         popup_pool: None,
+        popup_font: font::fallback_popup_font(),
         popup_configured: false,
         watchers: Vec::new(),
         last_recording_snapshot: crate::ipc::RecordingSnapshot::idle(),
+        last_recording_space_check: std::time::Instant::now(),
         event_tx,
         focused_output: None,
         focus_query_pending: false,
@@ -685,7 +747,7 @@ pub fn run_daemon(save_dir_cli: Option<std::path::PathBuf>) -> DynResult<()> {
     event_queue.roundtrip(&mut daemon)?;
     // No-animation layer rule must be in place before the surface maps.
     prep_shelf_compositor_rules();
-    daemon.place_on_focused_output(&qh);
+    daemon.place_on_output(None, &qh);
 
     // Unified event loop: Wayland fd + the unix-socket listener fd.
     use calloop::generic::Generic;
@@ -747,8 +809,71 @@ pub fn run_daemon(save_dir_cli: Option<std::path::PathBuf>) -> DynResult<()> {
         // Publish whole-second progress and notice an unexpected recorder exit.
         daemon.tick_recording(&qh);
     }
+    if let Some(mut session) = daemon.recording.take() {
+        let children = std::mem::take(&mut session.active);
+        if !children.is_empty() {
+            let job = StopChildrenJob { children };
+            let _ = job.interrupt();
+            let _ = job.wait();
+        }
+        if let Some(audio) = session.audio.take()
+            && let Err(error) = audio.cleanup()
+        {
+            eprintln!("boltsnap daemon: clean up recording audio on shutdown: {error}");
+        }
+    }
     let _ = std::fs::remove_file(&sock);
     Ok(())
+}
+
+fn requested_audio(
+    prefs: &crate::config::RecordingPrefs,
+) -> Option<crate::config::RecordAudioSource> {
+    prefs.audio_enabled.then_some(prefs.audio_source)
+}
+
+fn spawn_initial_segment(
+    scope: &CaptureScope,
+    codec: &str,
+    tools: &RecorderTools,
+    prefs: &crate::config::RecordingPrefs,
+) -> Result<
+    (
+        Vec<crate::record::session::ActiveRecorder>,
+        Option<AudioCapture>,
+    ),
+    String,
+> {
+    let mut audio = requested_audio(prefs)
+        .map(crate::record::audio::prepare_audio)
+        .transpose()?;
+    match spawn_segment(
+        scope,
+        codec,
+        audio.as_ref().map(AudioCapture::source),
+        tools,
+    ) {
+        Ok(active) => Ok((active, audio)),
+        Err(error) => {
+            let Some(audio) = audio.take() else {
+                return Err(error);
+            };
+            match audio.cleanup() {
+                Ok(()) => Err(error),
+                Err(cleanup) => Err(format!("{error}; clean up recording audio: {cleanup}")),
+            }
+        }
+    }
+}
+
+fn cleanup_audio_async(audio: Option<AudioCapture>) {
+    if let Some(audio) = audio {
+        std::thread::spawn(move || {
+            if let Err(error) = audio.cleanup() {
+                eprintln!("boltsnap daemon: clean up recording audio: {error}");
+            }
+        });
+    }
 }
 
 impl Daemon {
@@ -895,6 +1020,11 @@ impl Daemon {
                 prefs.both_mode = mode;
                 self.persist_tray_prefs(prefs);
             }
+            TrayAction::SetAudioSource(source) => {
+                let mut prefs = self.recording_prefs.clone();
+                prefs.audio_source = source;
+                self.persist_tray_prefs(prefs);
+            }
             TrayAction::SetShowFrame(show) => {
                 let mut prefs = self.recording_prefs.clone();
                 prefs.show_frame = show;
@@ -940,9 +1070,9 @@ impl Daemon {
     /// the layer surface (dropping the old one, which unmaps it) when the focused
     /// monitor changed since last time. Returns true when a fresh surface was
     /// created and must wait for its initial configure before drawing.
-    fn place_on_focused_output(&mut self, qh: &QueueHandle<Self>) -> bool {
-        let focused = focused_monitor_name();
-        let (name, output) = self.target_output(focused.as_deref());
+    fn place_on_output(&mut self, requested: Option<&str>, qh: &QueueHandle<Self>) -> bool {
+        let requested = requested.or(self.output_name.as_deref());
+        let (name, output) = self.target_output(requested);
         if self.layer.is_some() && name == self.output_name {
             return false;
         }
@@ -1002,9 +1132,25 @@ impl Daemon {
             crate::ipc::Request::Ping => {
                 spawn_client_writer(stream, b"PONG".to_vec());
             }
-            crate::ipc::Request::Add { source, png } => {
-                self.add_png(&png, &source, &qh);
+            crate::ipc::Request::Add {
+                source,
+                png,
+                output,
+            } => {
+                self.add_png(&png, &source, output.as_deref(), &qh);
             }
+            crate::ipc::Request::AddVideo {
+                source,
+                path,
+                output,
+                take_ownership,
+            } => {
+                self.add_video(path, &source, output.as_deref(), take_ownership, &qh);
+            }
+            crate::ipc::Request::Replace { id, media } => match media {
+                crate::ipc::Replacement::Image(png) => self.replace_image(id, &png, &qh),
+                crate::ipc::Replacement::Video(path) => self.replace_video(id, path),
+            },
             crate::ipc::Request::Reload { id } => {
                 self.reload(id, &qh);
             }
@@ -1061,13 +1207,16 @@ impl Daemon {
                 w,
                 h,
                 show_frame,
+                audio_enabled,
             } => {
                 // The selector already persisted this value in its process. Feed it
                 // through the ordered writer too so an older in-flight tray write
                 // cannot restore a stale frame preference afterward.
                 self.persisted_recording_prefs.show_frame = show_frame;
+                self.persisted_recording_prefs.audio_enabled = audio_enabled;
                 let mut prefs = self.recording_prefs.clone();
                 prefs.show_frame = show_frame;
+                prefs.audio_enabled = audio_enabled;
                 self.persist_tray_prefs(prefs);
                 let response = match self.start_recording(x, y, w, h, show_frame, &qh) {
                     Ok(()) => crate::ipc::Response::ok(Some(self.recording_snapshot())),
@@ -1136,7 +1285,7 @@ impl Daemon {
 
     /// Ingest a PNG: persist a daemon-owned temp copy, scale a thumbnail, show it
     /// on the currently focused monitor.
-    fn add_png(&mut self, png: &[u8], source: &str, qh: &QueueHandle<Self>) {
+    fn add_png(&mut self, png: &[u8], source: &str, output: Option<&str>, qh: &QueueHandle<Self>) {
         let img = match image::load_from_memory(png) {
             Ok(i) => i.to_rgba8(),
             Err(e) => {
@@ -1158,8 +1307,114 @@ impl Daemon {
         let id = self.model.add(path, thumb, source.to_string());
         self.start_anim(id, AnimKind::Appear);
         self.relayout();
-        self.place_on_focused_output(qh); // follow the user to the active monitor
+        self.place_on_output(output, qh);
         self.draw(qh);
+    }
+
+    fn add_video(
+        &mut self,
+        path: std::path::PathBuf,
+        source: &str,
+        output: Option<&str>,
+        take_ownership: bool,
+        qh: &QueueHandle<Self>,
+    ) {
+        let incoming_bytes = match std::fs::metadata(&path) {
+            Ok(metadata) => metadata.len(),
+            Err(error) => {
+                eprintln!("boltsnap daemon: inspect shelf video: {error}");
+                return;
+            }
+        };
+        if self
+            .model
+            .temporary_video_bytes()
+            .saturating_add(incoming_bytes)
+            >= RECORDING_CACHE_LIMIT_BYTES
+        {
+            eprintln!("boltsnap daemon: temporary shelf videos reached the 2 GiB limit");
+            return;
+        }
+        let path = match prepare_shelf_video(&path, take_ownership) {
+            Ok(path) => path,
+            Err(error) => {
+                eprintln!("boltsnap daemon: {error}");
+                return;
+            }
+        };
+        let image = image::RgbaImage::from_pixel(
+            crate::shelf::thumbnail::CARD_W,
+            crate::shelf::thumbnail::CARD_H,
+            image::Rgba([32, 32, 40, 255]),
+        );
+        let placeholder = crate::shelf::thumbnail::make_card_thumbnail(
+            &image,
+            crate::shelf::thumbnail::CARD_W,
+            crate::shelf::thumbnail::CARD_H,
+        );
+        let id = self.model.add_kind_with_lifetime(
+            path.clone(),
+            placeholder,
+            source.to_string(),
+            CardKind::Video,
+            FileLifetime::Temporary,
+        );
+        self.start_anim(id, AnimKind::Appear);
+        spawn_recording_thumbnail(id, path);
+        self.relayout();
+        self.place_on_output(output, qh);
+        self.draw(qh);
+    }
+
+    fn replace_image(&mut self, id: u64, png: &[u8], qh: &QueueHandle<Self>) {
+        let path = match self.model.get(id) {
+            Some(card) if card.kind == CardKind::Image => card.png_path.clone(),
+            _ => return,
+        };
+        let img = match image::load_from_memory(png) {
+            Ok(img) => img.to_rgba8(),
+            Err(e) => {
+                eprintln!("boltsnap daemon: bad replacement PNG: {e}");
+                return;
+            }
+        };
+        if let Err(e) = std::fs::write(&path, png) {
+            eprintln!("boltsnap daemon: replacement write failed: {e}");
+            return;
+        }
+        let thumb = crate::shelf::thumbnail::make_card_thumbnail(
+            &img,
+            crate::shelf::thumbnail::CARD_W,
+            crate::shelf::thumbnail::CARD_H,
+        );
+        if self.model.replace_thumb(id, thumb) {
+            self.relayout();
+            self.draw(qh);
+        }
+    }
+
+    fn replace_video(&mut self, id: u64, path: std::path::PathBuf) {
+        if !path.is_file()
+            || !matches!(self.model.get(id), Some(card) if card.kind == CardKind::Video)
+        {
+            return;
+        }
+        if !self.model.replace_path(id, path.clone()) {
+            return;
+        }
+        let thumb = crate::paths::rec_file("replace-thumb", "png");
+        std::thread::spawn(move || {
+            let _ = std::process::Command::new("ffmpeg")
+                .args(["-y", "-i"])
+                .arg(&path)
+                .args(["-frames:v", "1", "-update", "1"])
+                .arg(&thumb)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+            let _ = crate::ipc::send_to_shelf(crate::ipc::Request::RecordingThumb { id, thumb });
+        });
     }
 
     /// Copy the card under the cursor to the clipboard: an image as `image/png`,
@@ -1195,19 +1450,23 @@ impl Daemon {
             Some(t) => (t.png_path.clone(), t.kind),
             None => return,
         };
+        if kind == CardKind::Video {
+            if !self.saving_cards.insert(id) {
+                return;
+            }
+            let dir = crate::config::resolve_record_dir(&crate::config::Config::load());
+            let tx = self.event_tx.clone();
+            std::thread::spawn(move || {
+                let result = promote_recording(&src, &dir, None);
+                let _ = tx.send(DaemonEvent::CardPromoted { id, result });
+            });
+            return;
+        }
+
         let stamp = crate::paths::local_timestamp();
-        let (dir, dest) = match kind {
-            crate::shelf::model::CardKind::Image => {
-                let name = crate::paths::boltsnap_filename_ext(&stamp, "png");
-                (self.save_dir.clone(), self.save_dir.join(name))
-            }
-            crate::shelf::model::CardKind::Video => {
-                let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("mp4");
-                let name = crate::paths::boltsnap_filename_ext(&stamp, ext);
-                let rec_dir = crate::config::resolve_record_dir(&crate::config::Config::load());
-                (rec_dir.clone(), rec_dir.join(name))
-            }
-        };
+        let name = crate::paths::boltsnap_filename_ext(&stamp, "png");
+        let dir = self.save_dir.clone();
+        let dest = dir.join(name);
         if let Err(e) = std::fs::create_dir_all(&dir) {
             eprintln!("boltsnap daemon: save mkdir failed: {e}");
             return;
@@ -1352,18 +1611,15 @@ impl Daemon {
             None => return,
         };
         std::thread::spawn(move || {
-            let exe = match std::env::current_exe() {
-                Ok(e) => e,
-                Err(_) => return,
-            };
-            let status = std::process::Command::new(exe)
-                .arg("edit")
-                .arg(&path)
-                .arg("-o")
-                .arg(&path)
-                .arg("--no-copy")
-                .status();
-            if matches!(status, Ok(s) if s.success()) {
+            let status = crate::editor::run_editor(
+                path.clone(),
+                Some(path),
+                false,
+                crate::Backend::Wayland,
+                None,
+                Some(id),
+            );
+            if status.is_ok() {
                 let _ = crate::ipc::send_to_shelf(crate::ipc::Request::Reload { id });
             }
         });
@@ -1581,9 +1837,11 @@ impl Daemon {
         if self.recording.is_some() {
             return Err("a recording is already in progress".into());
         }
+        validate_recording_dimensions(w, h)?;
         if !crate::paths::has_cmd("wf-recorder") {
             return Err("wf-recorder is not installed".into());
         }
+        prepare_recording_cache()?;
         let geo = crate::record::Geometry { x, y, w, h };
         let scope = CaptureScope::Area(geo);
         let codec = crate::config::resolve_record_codec(None, &crate::config::Config::load());
@@ -1593,13 +1851,14 @@ impl Daemon {
             .cloned()
             .into_iter()
             .collect();
-        let active = spawn_segment(&scope, &codec, &tools)?;
+        let (active, audio) = spawn_initial_segment(&scope, &codec, &tools, &self.recording_prefs)?;
         self.recording = Some(RecordingSession::new(
             scope,
             monitors,
             codec.clone(),
             crate::config::RecordBothMode::Separate,
             show_frame,
+            audio,
             active,
             std::time::Instant::now(),
         ));
@@ -1658,6 +1917,7 @@ impl Daemon {
         if !crate::paths::has_cmd("wf-recorder") {
             return Err("wf-recorder is not installed".into());
         }
+        prepare_recording_cache()?;
         if monitors.is_empty() {
             return Err("no recording output was selected".into());
         }
@@ -1668,13 +1928,14 @@ impl Daemon {
         let scope = CaptureScope::Outputs(names.clone());
         let codec = crate::config::resolve_record_codec(None, &crate::config::Config::load());
         let tools = RecorderTools::default();
-        let active = spawn_segment(&scope, &codec, &tools)?;
+        let (active, audio) = spawn_initial_segment(&scope, &codec, &tools, &self.recording_prefs)?;
         self.recording = Some(RecordingSession::new(
             scope,
             monitors,
             codec,
             both_mode,
             false,
+            audio,
             active,
             std::time::Instant::now(),
         ));
@@ -1741,6 +2002,7 @@ impl Daemon {
     }
 
     fn create_popup(&mut self, qh: &QueueHandle<Self>) -> Result<(), String> {
+        self.popup_font = font::load_popup_font();
         let pool = SlotPool::new((POPUP_W * POPUP_H * 4) as usize, &self.shm)
             .map_err(|error| format!("allocate recording controls: {error}"))?;
         let surface = self.compositor.create_surface(qh);
@@ -1830,7 +2092,13 @@ impl Daemon {
             Err(_) => return,
         };
         crate::shelf::paint::draw_recording_popup(
-            canvas, POPUP_W, POPUP_H, state, enabled, &elapsed,
+            canvas,
+            POPUP_W,
+            POPUP_H,
+            state,
+            enabled,
+            &elapsed,
+            &self.popup_font,
         );
         let surface = layer.wl_surface();
         surface.damage_buffer(0, 0, POPUP_W as i32, POPUP_H as i32);
@@ -1839,7 +2107,7 @@ impl Daemon {
     }
 
     fn tick_recording(&mut self, _qh: &QueueHandle<Self>) {
-        let unexpected = self.recording.as_mut().and_then(|session| {
+        let mut recovery = self.recording.as_mut().and_then(|session| {
             if session.phase != SessionPhase::Recording {
                 return None;
             }
@@ -1852,7 +2120,20 @@ impl Daemon {
                     Ok(None) => None,
                 })
         });
-        if let Some(error) = unexpected {
+        if recovery.is_none()
+            && self.recording.as_ref().is_some_and(|session| {
+                session.phase == SessionPhase::Recording
+                    && self.last_recording_space_check.elapsed()
+                        >= std::time::Duration::from_secs(1)
+            })
+        {
+            self.last_recording_space_check = std::time::Instant::now();
+            let dir = crate::paths::rec_dir();
+            recovery = check_recording_cache_limit(&dir)
+                .and_then(|()| check_recording_reserve(&dir))
+                .err();
+        }
+        if let Some(error) = recovery {
             if let Some(session) = self.recording.as_mut() {
                 let _ = session.begin_pause(std::time::Instant::now());
             }
@@ -1961,11 +2242,23 @@ impl Daemon {
                 self.stop_children(AfterStop::Pause, children);
             }
             RecordingAction::Resume => {
-                let (scope, codec) = {
+                let (scope, codec, audio_source) = {
                     let session = self.recording.as_ref().unwrap();
-                    (session.scope.clone(), session.codec.clone())
+                    (
+                        session.scope.clone(),
+                        session.codec.clone(),
+                        session
+                            .audio
+                            .as_ref()
+                            .map(|audio| audio.source().to_owned()),
+                    )
                 };
-                let active = match spawn_segment(&scope, &codec, &RecorderTools::default()) {
+                let active = match spawn_segment(
+                    &scope,
+                    &codec,
+                    audio_source.as_deref(),
+                    &RecorderTools::default(),
+                ) {
                     Ok(active) => active,
                     Err(error) => {
                         if let Some(session) = self.recording.as_mut() {
@@ -2108,7 +2401,12 @@ impl Daemon {
                 }
             }
             DaemonEvent::Finalized(Ok(clips)) => {
+                let audio = self
+                    .recording
+                    .as_mut()
+                    .and_then(|session| session.audio.take());
                 self.recording = None;
+                cleanup_audio_async(audio);
                 self.remove_marker();
                 self.remove_popup();
                 self.add_finalized_cards(clips);
@@ -2124,6 +2422,24 @@ impl Daemon {
                     failure.error
                 ));
                 self.draw_popup();
+            }
+            DaemonEvent::CardPromoted { id, result } => {
+                self.saving_cards.remove(&id);
+                match result {
+                    Ok(path) => {
+                        eprintln!("boltsnap daemon: saved {}", path.display());
+                        if self.model.promote(id, path) {
+                            self.save_flash = Some((id, std::time::Instant::now()));
+                            if let Some(qh) = self.qh.clone() {
+                                self.draw(&qh);
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        eprintln!("boltsnap daemon: video save failed: {error}");
+                        notify(&format!("Video could not be saved: {error}"));
+                    }
+                }
             }
             DaemonEvent::FocusResolved(snapshot) => {
                 let connected = self.cached_monitors();
@@ -2208,12 +2524,18 @@ impl Daemon {
         if let Some(session) = self.recording.as_mut() {
             session.add_completed(segments);
         }
-        let paths = self
-            .recording
-            .take()
-            .into_iter()
-            .flat_map(|session| session.completed.into_values().flatten())
-            .collect::<Vec<_>>();
+        let (paths, audio) = match self.recording.take() {
+            Some(session) => (
+                session
+                    .completed
+                    .into_values()
+                    .flatten()
+                    .collect::<Vec<_>>(),
+                session.audio,
+            ),
+            None => (Vec::new(), None),
+        };
+        cleanup_audio_async(audio);
         self.remove_marker();
         self.remove_popup();
         std::thread::spawn(move || {
@@ -2269,7 +2591,7 @@ impl Daemon {
         }
         if added {
             self.relayout();
-            self.place_on_focused_output(&qh);
+            self.place_on_output(None, &qh);
             self.draw(&qh);
         }
     }
@@ -2900,6 +3222,37 @@ mod tests {
     use std::io::{Read, Write};
     use std::time::{Duration, Instant};
 
+    #[test]
+    fn owned_shelf_video_keeps_fast_path_and_rejects_oversized_files() {
+        let path =
+            std::env::temp_dir().join(format!("boltsnap-owned-video-test-{}", std::process::id()));
+        std::fs::write(&path, b"video").unwrap();
+        assert_eq!(prepare_shelf_video(&path, true).unwrap(), path);
+        let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.set_len(RECORDING_CACHE_LIMIT_BYTES).unwrap();
+        assert!(
+            prepare_shelf_video(&path, true)
+                .unwrap_err()
+                .contains("2 GiB")
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn requested_audio_respects_toggle_and_keeps_source_choice() {
+        let mut prefs = crate::config::RecordingPrefs {
+            audio_enabled: false,
+            audio_source: crate::config::RecordAudioSource::System,
+            ..Default::default()
+        };
+        assert_eq!(requested_audio(&prefs), None);
+        prefs.audio_enabled = true;
+        assert_eq!(
+            requested_audio(&prefs),
+            Some(crate::config::RecordAudioSource::System)
+        );
+    }
+
     fn receive_event(rx: &calloop::channel::Channel<DaemonEvent>) -> DaemonEvent {
         let deadline = Instant::now() + Duration::from_secs(1);
         loop {
@@ -3170,6 +3523,13 @@ mod tests {
     fn delayed_focus_cannot_reopen_discarding_controls_but_finalizing_stays_visible() {
         assert!(!recording_controls_visible(SessionPhase::Discarding));
         assert!(recording_controls_visible(SessionPhase::Finalizing));
+    }
+
+    #[test]
+    fn daemon_rejects_zero_sized_recording_geometry() {
+        assert!(validate_recording_dimensions(0, 1080).is_err());
+        assert!(validate_recording_dimensions(1920, 0).is_err());
+        assert!(validate_recording_dimensions(1920, 1080).is_ok());
     }
 
     #[test]

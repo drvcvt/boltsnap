@@ -239,8 +239,8 @@ boltsnap recording watch --json        # newline-delimited state stream
 ```
 
 When idle, `boltsnap record` opens the region selector. Draw a region and click
-**REC** to start. The checkbox beside **REC** controls whether a thin,
-click-through frame remains around the captured area; that choice is saved.
+**REC** to start. The controls beside **REC** toggle audio and whether a thin,
+click-through frame remains around the captured area; both choices are saved.
 When a recording is already running, paused, or being saved, the same command
 opens the centered recording controls instead of starting another recording.
 This makes an `Alt+Print` binding a state-aware recording toggle.
@@ -248,7 +248,8 @@ This makes an `Alt+Print` binding a state-aware recording toggle.
 The native tray icon is available whenever the daemon is running. Its
 right-click menu can start a region or fullscreen recording and stores the
 default monitor, **Both displays**, separate/combined output mode, frame
-visibility, and whether permanent Disk Saves should also appear in the shelf.
+visibility, audio source (**System + microphone**, **Microphone only**, or
+**System only**), and whether permanent Disk Saves should also appear in the shelf.
 
 The recording controls offer:
 
@@ -273,12 +274,13 @@ retried or discarded instead of losing the recording.
 
 Video cards carry a **▶** badge; clicking one opens the file in **eddy**.
 
-**Requires `wf-recorder`** (uses `wlr-screencopy` directly — no PipeWire,
-no portal, no permission dialog).
+**Requires `wf-recorder`**. Audio-enabled recording also requires `pactl`
+(PipeWire-Pulse or PulseAudio). Video uses `wlr-screencopy` directly, with no
+portal or permission dialog.
 
 ```sh
 # Arch / Manjaro
-pacman -S wf-recorder
+pacman -S wf-recorder libpulse
 ```
 
 ### Recording controls and shell integration
@@ -327,12 +329,18 @@ record_show_frame = true
 
 # Add permanently saved recordings to the shelf without copying them. Default: true
 record_disk_add_to_shelf = true
+
+# Include audio in recordings. Default: true
+record_audio_enabled = true
+
+# "system-and-mic", "mic", or "system". Default: system-and-mic
+record_audio_source = "system-and-mic"
 ```
 
 `$BOLTSNAP_RECORD_CODEC` overrides `record_codec` from the environment.
 
-Recording currently captures video only; audio capture is not part of this
-workflow.
+Audio sources follow the current default sink and microphone. Per-device
+pickers and volume controls are intentionally left to the desktop audio mixer.
 
 ## License
 

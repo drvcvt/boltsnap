@@ -24,8 +24,8 @@ arboard = { version = "3.4", default-features = false, features = ["image-data"]
 # Pure-CPU 2D rasterizer for the new region-selector overlay (behind --new).
 # No GPU cold-start; unifies on the same wl_shm path the shelf already uses.
 tiny-skia = "0.11"
-# Anti-aliased glyph rasterization for the selector's W×H dimension badge, from a
-# tiny embedded DejaVu Sans Bold subset (assets/fonts/, digits + ×).
+# Anti-aliased glyph rasterization for selector badges and recording controls,
+# from a small embedded DejaVu Sans subset (printable ASCII + ×).
 ab_glyph = "0.2"
 # Parse ~/.config/boltsnap/config.toml (save_dir + editor). Read via toml::Value,
 # so no serde-derive is needed in this crate.

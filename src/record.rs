@@ -4,6 +4,7 @@
 use crate::config::RecordDefaultTarget;
 use std::path::Path;
 
+pub mod audio;
 pub mod finalize;
 pub mod session;
 
@@ -154,18 +155,34 @@ pub fn to_global_geometry(
 }
 
 /// Build the wf-recorder argv (excluding the program name) for a region recording.
-pub fn wf_recorder_args(geo: &Geometry, codec: &str, out: &Path) -> Vec<String> {
+pub fn wf_recorder_args(
+    geo: &Geometry,
+    codec: &str,
+    audio_source: Option<&str>,
+    out: &Path,
+) -> Vec<String> {
     let mut args = vec!["-g".into(), geo.to_arg(), "-c".into(), codec.into()];
     args.extend(capture_profile_args(codec));
+    if let Some(source) = audio_source {
+        args.push(format!("--audio={source}"));
+    }
     args.extend(["-f".into(), out.to_string_lossy().into_owned()]);
     args
 }
 
 /// Build the wf-recorder argv (excluding the program name) to record an entire
 /// output (monitor) by name — used for fullscreen recording.
-pub fn wf_recorder_output_args(output: &str, codec: &str, out: &Path) -> Vec<String> {
+pub fn wf_recorder_output_args(
+    output: &str,
+    codec: &str,
+    audio_source: Option<&str>,
+    out: &Path,
+) -> Vec<String> {
     let mut args = vec!["-o".into(), output.into(), "-c".into(), codec.into()];
     args.extend(capture_profile_args(codec));
+    if let Some(source) = audio_source {
+        args.push(format!("--audio={source}"));
+    }
     args.extend(["-f".into(), out.to_string_lossy().into_owned()]);
     args
 }
@@ -271,7 +288,7 @@ mod tests {
             w: 1280,
             h: 720,
         };
-        let args = wf_recorder_args(&g, "h264_nvenc", &PathBuf::from("/tmp/r.mp4"));
+        let args = wf_recorder_args(&g, "h264_nvenc", None, &PathBuf::from("/tmp/r.mp4"));
         assert_eq!(
             args,
             vec![
@@ -297,7 +314,8 @@ mod tests {
 
     #[test]
     fn wf_output_args_shape() {
-        let args = wf_recorder_output_args("DP-1", "h264_nvenc", &PathBuf::from("/tmp/r.mp4"));
+        let args =
+            wf_recorder_output_args("DP-1", "h264_nvenc", None, &PathBuf::from("/tmp/r.mp4"));
         assert_eq!(
             args,
             vec![
@@ -319,5 +337,27 @@ mod tests {
                 "/tmp/r.mp4"
             ]
         );
+    }
+
+    #[test]
+    fn wf_recorder_area_adds_selected_audio_source() {
+        let args = wf_recorder_args(
+            &Geometry {
+                x: 1,
+                y: 2,
+                w: 3,
+                h: 4,
+            },
+            "libx264",
+            Some("desk.monitor"),
+            Path::new("/tmp/out.mp4"),
+        );
+        assert!(args.iter().any(|arg| arg == "--audio=desk.monitor"));
+    }
+
+    #[test]
+    fn wf_recorder_output_without_audio_keeps_previous_arguments() {
+        let args = wf_recorder_output_args("DP-3", "libx264", None, Path::new("/tmp/out.mp4"));
+        assert!(!args.iter().any(|arg| arg.starts_with("--audio")));
     }
 }
