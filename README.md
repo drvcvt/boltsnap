@@ -1,15 +1,15 @@
 # Boltsnap
 
-Fast Rust screenshot tool for Wayland (wlroots, Hyprland, sway) and X11 — no
+Fast Rust screenshot tool for Wayland (tested on Hyprland, Sway, and Niri) and X11 — no
 `maim`, `import`, `slurp`, `xdotool`, `xwininfo`, `xclip` or other CLI helpers
 required. Everything runs in-process.
 
 - In-process capture: `libwayshot` on Wayland, `x11rb` on X11
-- In-process selection overlay (drag a region) — replaces `slurp` / `slop`
+- In-process Wayland selection overlay (drag a region) — replaces `slurp`
 - In-process clipboard: `wl-clipboard-rs` on Wayland, `arboard` on X11
 - Pre-pushed compositor rules so the selector appears INSTANTLY (no fade-in
   animation on Hyprland or Sway)
-- Built-in egui annotation editor, fully opt-in
+- Optional integration with the separate Eddy annotation editor
 - Pipe-friendly: `-o -` writes PNG to stdout
 
 ## Install
@@ -93,17 +93,39 @@ Backends:
 
 | Backend | Capture        | Region select         | Clipboard          |
 |---------|----------------|-----------------------|--------------------|
-| Wayland | libwayshot     | in-process eframe     | wl-clipboard-rs    |
-| X11     | x11rb GetImage | in-process eframe     | arboard            |
+| Wayland | libwayshot     | in-process tiny-skia  | wl-clipboard-rs    |
+| X11     | x11rb GetImage | unavailable           | arboard            |
 
-The only optional external is `hyprctl`, used for active-window geometry on
-Hyprland. Other Wayland compositors fall back to the in-process selector for
-window mode.
+### Wayland compatibility
+
+Boltsnap supports Wayland protocols, not a specific compositor framework:
+
+| Feature | Required protocol |
+|---------|-------------------|
+| Capture and recording | `wlr-screencopy-unstable-v1` |
+| Region selector and screenshot shelf | `wlr-layer-shell-unstable-v1` |
+| Clipboard | `ext-data-control-v1` or `wlr-data-control-unstable-v1` |
+
+The following compositor stacks are tested:
+
+| Stack | Tested compositors |
+|-------|--------------------|
+| wlroots | Hyprland, Sway |
+| Smithay | Niri |
+
+Other Wayland compositors may work if they expose the required protocols;
+using wlroots or Smithay alone is not a compatibility guarantee.
+
+Screenshot capture and clipboard handling need no CLI helpers. `hyprctl` is
+optional and supplies active-window geometry on Hyprland; other Wayland
+compositors fall back to the in-process selector for window mode. Recording
+uses `wf-recorder` and FFmpeg, while annotation requires a separately installed
+editor such as Eddy.
 
 ## Usage
 
 ```sh
-boltsnap                                # area, copy PNG, remember as last
+boltsnap                                # area (Wayland), copy PNG, remember as last
 boltsnap area --edit                    # capture, then open editor
 boltsnap --edit                         # open last screenshot in editor
 boltsnap window                         # pick a window
@@ -138,9 +160,10 @@ bind = ALT, Print, exec, boltsnap record
 bind = $mod, Print, exec, boltsnap --edit
 ```
 
-## Editor
+## Eddy editor
 
-Floating, always-on-top window. Annotations:
+Boltsnap launches the separately installed Eddy application. Eddy provides a
+floating, always-on-top annotation window with these shortcuts:
 
 | Tool      | Key |
 |-----------|-----|
@@ -162,7 +185,7 @@ cargo build --release
 cargo test
 ```
 
-## Screenshot shelf (Wayland / wlroots, e.g. Hyprland)
+## Screenshot shelf (Wayland: Hyprland, Sway, Niri)
 
 On Wayland, an interactive capture no longer copies-and-exits. Instead the
 screenshot lands as a small floating **thumbnail in the bottom-left corner**
@@ -195,7 +218,10 @@ boltsnap daemon
 exec-once = boltsnap daemon
 ```
 
-The shelf is **RAM-only**: its contents are cleared if the daemon restarts.
+The shelf state is **RAM-only** and is cleared if the daemon restarts. Image
+files use the system temporary directory; large video files use the disk-backed
+Boltsnap cache and are removed when their cards are dismissed or the daemon is
+restarted.
 `boltsnap doctor` reports the Wayland session, whether the daemon is running,
 and the socket path.
 

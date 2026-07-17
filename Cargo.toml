@@ -2,7 +2,7 @@
 name = "boltsnap"
 version = "0.4.3"
 edition = "2024"
-description = "In-process Wayland and X11 screenshot tool with built-in annotation editor."
+description = "In-process Wayland and X11 screenshot tool with companion editor support."
 license = "MIT"
 readme = "README.md"
 keywords = ["screenshot", "wayland", "hyprland", "x11", "tiny-skia"]
@@ -21,7 +21,7 @@ calloop = "0.13"
 calloop-wayland-source = "0.3"
 x11rb = "0.13"
 arboard = { version = "3.4", default-features = false, features = ["image-data"] }
-# Pure-CPU 2D rasterizer for the new region-selector overlay (behind --new).
+# Pure-CPU 2D rasterizer for the region-selector overlay.
 # No GPU cold-start; unifies on the same wl_shm path the shelf already uses.
 tiny-skia = "0.11"
 # Anti-aliased glyph rasterization for selector badges and recording controls,
@@ -60,7 +60,7 @@ copyright = "2026, boltsnap contributors"
 license-file = ["LICENSE", "0"]
 extended-description = """\
 boltsnap is a fast, in-process screenshot tool for Wayland (Hyprland, Sway, KDE)
-and X11 with a built-in annotation editor. It captures full screens, regions,
+and X11 with companion editor support. It captures full screens, regions,
 and windows without external CLI helpers like maim, import, xdotool, or xclip."""
 section = "graphics"
 priority = "optional"

@@ -198,7 +198,11 @@ The unavoidable temporary peak for a paused or combined recording is the source 
 
 ## Daemon Ownership
 
-The user systemd unit is the normal daemon owner. IPC startup asks systemd to start the unit and falls back to the existing detached launch only when the unit is unavailable. Recorder children also receive a parent-death signal so the fallback cannot leave a hidden capture writing after the daemon dies. This keeps `systemctl --user restart boltsnap-daemon.service` authoritative without making systemd a hard runtime dependency.
+IPC startup first asks systemd to start an optional user-provided unit, then falls
+back to the built-in detached launch when no unit is installed. Recorder children
+also receive a parent-death signal so the fallback cannot leave a hidden capture
+writing after the daemon dies. This keeps systemd integration available without
+shipping or requiring a unit.
 
 ## Testing
 
