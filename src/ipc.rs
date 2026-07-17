@@ -14,7 +14,7 @@ const MAX_PAYLOAD_BYTES: usize = 256 * 1024 * 1024;
 #[derive(Debug)]
 pub enum Replacement {
     Image(Vec<u8>),
-    Video(PathBuf),
+    Video { path: PathBuf, take_ownership: bool },
 }
 
 #[derive(Debug)]
@@ -156,6 +156,7 @@ pub struct Response {
     pub ok: bool,
     pub error: Option<String>,
     pub snapshot: Option<RecordingSnapshot>,
+    pub path: Option<PathBuf>,
 }
 
 impl Response {
@@ -164,6 +165,16 @@ impl Response {
             ok: true,
             error: None,
             snapshot,
+            path: None,
+        }
+    }
+
+    pub fn ok_path(path: PathBuf) -> Self {
+        Self {
+            ok: true,
+            error: None,
+            snapshot: None,
+            path: Some(path),
         }
     }
 
@@ -172,6 +183,7 @@ impl Response {
             ok: false,
             error: Some(error.into()),
             snapshot: None,
+            path: None,
         }
     }
 
@@ -180,6 +192,7 @@ impl Response {
             "ok": self.ok,
             "error": self.error,
             "snapshot": self.snapshot.as_ref().map(RecordingSnapshot::as_value),
+            "path": self.path.as_ref().map(|path| path.to_string_lossy()),
         });
         let mut buf = Vec::new();
         write_frame(&mut buf, header.to_string().as_bytes(), &[]).unwrap();
@@ -206,10 +219,16 @@ impl Response {
             Some(Value::Null) | None => None,
             Some(snapshot) => Some(RecordingSnapshot::from_value(snapshot)?),
         };
+        let path = match value.get("path") {
+            Some(Value::Null) | None => None,
+            Some(Value::String(path)) => Some(PathBuf::from(path)),
+            _ => return Err(invalid_data("response path must be a string or null")),
+        };
         Ok(Self {
             ok,
             error,
             snapshot,
+            path,
         })
     }
 }
@@ -345,13 +364,18 @@ impl Request {
             }
             Request::Replace {
                 id,
-                media: Replacement::Video(path),
+                media:
+                    Replacement::Video {
+                        path,
+                        take_ownership,
+                    },
             } => {
                 let header = json!({
                     "cmd": "replace",
                     "id": id,
                     "media": "video",
                     "path": path.to_string_lossy(),
+                    "take_ownership": take_ownership,
                 });
                 write_frame(&mut buf, header.to_string().as_bytes(), &[]).unwrap();
             }
@@ -477,9 +501,15 @@ impl Request {
                     }),
                     Some("video") => Ok(Request::Replace {
                         id,
-                        media: Replacement::Video(PathBuf::from(
-                            v.get("path").and_then(|p| p.as_str()).unwrap_or(""),
-                        )),
+                        media: Replacement::Video {
+                            path: PathBuf::from(
+                                v.get("path").and_then(|p| p.as_str()).unwrap_or(""),
+                            ),
+                            take_ownership: v
+                                .get("take_ownership")
+                                .and_then(Value::as_bool)
+                                .unwrap_or(true),
+                        },
                     }),
                     other => Err(io::Error::new(
                         io::ErrorKind::InvalidData,
@@ -749,6 +779,12 @@ mod tests {
             Response::read(&mut Cursor::new(failure.encode())).unwrap(),
             failure
         );
+
+        let owned = Response::ok_path(PathBuf::from("/tmp/boltsnap-shelf-video.mp4"));
+        assert_eq!(
+            Response::read(&mut Cursor::new(owned.encode())).unwrap(),
+            owned
+        );
     }
 
     #[test]
@@ -937,16 +973,24 @@ mod tests {
     fn request_replace_video_roundtrip() {
         let req = Request::Replace {
             id: 13,
-            media: Replacement::Video(PathBuf::from("/tmp/edited.mp4")),
+            media: Replacement::Video {
+                path: PathBuf::from("/tmp/edited.mp4"),
+                take_ownership: false,
+            },
         };
 
         match Request::read(&mut Cursor::new(req.encode())).unwrap() {
             Request::Replace {
                 id,
-                media: Replacement::Video(path),
+                media:
+                    Replacement::Video {
+                        path,
+                        take_ownership,
+                    },
             } => {
                 assert_eq!(id, 13);
                 assert_eq!(path, PathBuf::from("/tmp/edited.mp4"));
+                assert!(!take_ownership);
             }
             other => panic!("wrong variant: {other:?}"),
         }

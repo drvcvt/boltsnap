@@ -392,7 +392,7 @@ fn record_flow(args: &Args) -> DynResult<()> {
     };
     let (ox, oy) = crate::shelf::focused_monitor_origin().unwrap_or((0, 0));
     let geo = crate::record::to_global_geometry(rect.x, rect.y, rect.w, rect.h, ox, oy);
-    crate::ipc::send_to_shelf(crate::ipc::Request::StartRecording {
+    checked_recording_call(crate::ipc::Request::StartRecording {
         x: geo.x,
         y: geo.y,
         w: geo.w,

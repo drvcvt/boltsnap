@@ -24,8 +24,20 @@ pub fn serve_wayland_clipboard(path: &Path) -> DynResult<()> {
 
 /// Build a `text/uri-list` payload (one `file://` URI + CRLF) for `path`.
 pub fn uri_list_for(path: &Path) -> String {
+    use std::fmt::Write as _;
+    use std::os::unix::ffi::OsStrExt;
+
     let abs = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    format!("file://{}\r\n", abs.display())
+    let mut uri = String::from("file://");
+    for byte in abs.as_os_str().as_bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~' | b'/') {
+            uri.push(char::from(*byte));
+        } else {
+            write!(uri, "%{byte:02X}").expect("writing to a String cannot fail");
+        }
+    }
+    uri.push_str("\r\n");
+    uri
 }
 
 /// Serve `path` as a `text/uri-list` selection (a file REFERENCE, not bytes) on
@@ -109,5 +121,13 @@ mod tests {
         assert!(s.starts_with("file://"), "got {s:?}");
         assert!(s.ends_with("\r\n"), "got {s:?}");
         assert!(s.contains("x.mp4"), "got {s:?}");
+    }
+
+    #[test]
+    fn uri_list_percent_encodes_path_bytes() {
+        assert_eq!(
+            uri_list_for(Path::new("/nonexistent/a b#%ä.mp4")),
+            "file:///nonexistent/a%20b%23%25%C3%A4.mp4\r\n"
+        );
     }
 }

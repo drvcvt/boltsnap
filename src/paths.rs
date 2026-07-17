@@ -1,9 +1,12 @@
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::{Args, DynResult};
+
+static NEXT_PATH_ID: AtomicU64 = AtomicU64::new(0);
 
 /// True if `name` is an executable on `PATH`.
 pub fn has_cmd(name: &str) -> bool {
@@ -20,19 +23,19 @@ pub fn print_doctor() {
     println!("Session: {session}");
     println!();
     println!("Optional compositor IPC (only used for active-window on Wayland):");
-    for cmd in ["hyprctl"] {
-        println!(
-            "  {cmd:<10} {}",
-            if has_cmd(cmd) { "ok" } else { "missing" }
-        );
-    }
+    let cmd = "hyprctl";
+    println!(
+        "  {cmd:<10} {}",
+        if has_cmd(cmd) { "ok" } else { "missing" }
+    );
     println!();
     println!("Capabilities (no external screenshot/clipboard helpers required):");
     println!("  X11 capture:       in-process via x11rb (root pixmap GetImage)");
-    println!("  X11 area/window:   in-process selection overlay (eframe)");
+    println!("  X11 area:          unavailable");
+    println!("  X11 window:        in-process x11rb picker");
     println!("  X11 active win:    in-process via x11rb (_NET_ACTIVE_WINDOW)");
     println!("  Wayland capture:   in-process via libwayshot (wlr-screencopy)");
-    println!("  Wayland area/win:  in-process selection overlay (eframe)");
+    println!("  Wayland area/win:  in-process selection overlay (tiny-skia)");
     println!("  Wayland active win: hyprctl on Hyprland");
     println!("  Clipboard:         in-process via arboard (X11) and wl-clipboard-rs (Wayland)");
     println!();
@@ -154,22 +157,25 @@ pub fn temp_png(prefix: &str) -> PathBuf {
     temp_file(prefix, "png")
 }
 
-/// A unique temp path `boltsnap-<prefix>-<pid>-<ts>.<ext>` in the system temp
+/// A unique temp path `boltsnap-<prefix>-<pid>-<ts>-<seq>.<ext>` in the system temp
 /// dir. Generalizes `temp_png` for recordings (`mp4`) and their thumbnails.
 pub fn temp_file(prefix: &str, ext: &str) -> PathBuf {
     env::temp_dir().join(format!(
-        "boltsnap-{prefix}-{}-{}.{ext}",
+        "boltsnap-{prefix}-{}-{}-{}.{ext}",
         std::process::id(),
-        timestamp()
+        timestamp(),
+        NEXT_PATH_ID.fetch_add(1, Ordering::Relaxed)
     ))
 }
 
-/// Delete orphaned shelf thumbnail tempfiles (`boltsnap-shelf-*.png` in the temp
-/// dir). Called at daemon startup: with no daemon running the shelf is empty, so
-/// every such file is from a previous run/crash and safe to remove. Without this
-/// the RAM-only shelf still leaks a ~MB PNG per capture to disk forever (only an
-/// explicit card-close deleted them), which filled /tmp over time. Returns the
-/// number of files removed.
+fn is_orphan_shelf_temp(name: &str) -> bool {
+    (name.starts_with("boltsnap-shelf-") && name.ends_with(".png"))
+        || name.starts_with("boltsnap-shelf-video-")
+}
+
+/// Delete orphaned shelf media in the temp dir. Called at daemon startup: with no
+/// daemon running the shelf is empty, so every such file is from a previous run or
+/// crash and safe to remove. Returns the number of files removed.
 pub fn clean_orphan_shelf_temps() -> usize {
     let dir = env::temp_dir();
     let mut removed = 0;
@@ -179,10 +185,7 @@ pub fn clean_orphan_shelf_temps() -> usize {
     for entry in entries.flatten() {
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if name.starts_with("boltsnap-shelf-")
-            && name.ends_with(".png")
-            && fs::remove_file(entry.path()).is_ok()
-        {
+        if is_orphan_shelf_temp(&name) && fs::remove_file(entry.path()).is_ok() {
             removed += 1;
         }
     }
@@ -196,15 +199,17 @@ pub fn rec_dir() -> PathBuf {
     cache_dir().join("rec")
 }
 
-/// A unique recording path `<rec_dir>/boltsnap-<prefix>-<pid>-<ts>.<ext>`, creating
-/// `rec_dir` if needed. Disk-backed (see `rec_dir`), unlike `temp_file`.
+/// A unique recording path
+/// `<rec_dir>/boltsnap-<prefix>-<pid>-<ts>-<seq>.<ext>`, creating `rec_dir` if
+/// needed. Disk-backed (see `rec_dir`), unlike `temp_file`.
 pub fn rec_file(prefix: &str, ext: &str) -> PathBuf {
     let dir = rec_dir();
     let _ = fs::create_dir_all(&dir);
     dir.join(format!(
-        "boltsnap-{prefix}-{}-{}.{ext}",
+        "boltsnap-{prefix}-{}-{}-{}.{ext}",
         std::process::id(),
-        timestamp()
+        timestamp(),
+        NEXT_PATH_ID.fetch_add(1, Ordering::Relaxed)
     ))
 }
 
@@ -308,6 +313,13 @@ mod tests {
             boltsnap_filename_ext("2026-06-01_14-23-05", "png"),
             "boltsnap-2026-06-01_14-23-05.png"
         );
+    }
+
+    #[test]
+    fn orphan_shelf_video_names_are_cleanup_candidates() {
+        assert!(is_orphan_shelf_temp("boltsnap-shelf-video-12-34.mp4"));
+        assert!(is_orphan_shelf_temp("boltsnap-shelf-12-34.png"));
+        assert!(!is_orphan_shelf_temp("boltsnap-recording-12-34.mp4"));
     }
 
     #[test]
