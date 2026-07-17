@@ -1,5 +1,5 @@
 {
-  description = "boltsnap — fast in-process Wayland + X11 screenshot tool with built-in editor";
+  description = "boltsnap — fast in-process Wayland + X11 screenshot tool";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -20,7 +20,8 @@
           # Wayland
           wayland
           libxkbcommon
-          # GPU (egui_glow path — libGL is dlopen'd at runtime)
+          # Wayland capture runtime (DRM/GBM; libGL remains available for
+          # compatibility across nixpkgs/libwayshot variants)
           libGL
           libdrm
           gbm
@@ -40,7 +41,7 @@
       {
         packages.default = pkgs.rustPlatform.buildRustPackage {
           pname = "boltsnap";
-          version = "0.4.2";
+          version = "0.4.3";
           src = ./.;
           cargoLock.lockFile = ./Cargo.lock;
 
@@ -55,7 +56,7 @@
           '';
 
           meta = with lib; {
-            description = "Fast in-process Wayland + X11 screenshot tool with built-in annotation editor";
+            description = "Fast in-process Wayland + X11 screenshot tool with companion editor support";
             homepage = "https://github.com/drvcvt/boltsnap";
             license = licenses.mit;
             platforms = platforms.linux;
