@@ -1057,7 +1057,9 @@ exec python3 -c 'import ctypes,signal,sys,time; value=ctypes.c_int(); ctypes.CDL
             &tools,
         )
         .unwrap();
-        assert!(wait_for(Duration::from_secs(1), || active[0].path.exists()));
+        assert!(wait_for(Duration::from_secs(1), || {
+            fs::read(&active[0].path).is_ok_and(|bytes| bytes == b"15")
+        }));
         assert_eq!(fs::read(&active[0].path).unwrap(), b"15");
         let job = StopChildrenJob { children: active };
         job.interrupt().unwrap();

@@ -157,6 +157,11 @@ pub(crate) enum DaemonEvent {
         request: crate::ipc::Request,
         stream: UnixStream,
     },
+    VideoPrepared {
+        action: VideoPreparedAction,
+        result: Result<PreparedVideo, String>,
+        stream: UnixStream,
+    },
     ChildrenStopped {
         after: AfterStop,
         result: StopChildrenResult,
@@ -173,6 +178,22 @@ pub(crate) enum DaemonEvent {
         prefs: crate::config::RecordingPrefs,
         error: Option<String>,
     },
+}
+
+pub(crate) enum VideoPreparedAction {
+    Add {
+        source: String,
+        output: Option<String>,
+    },
+    Replace {
+        id: u64,
+        take_ownership: bool,
+    },
+}
+
+pub(crate) struct PreparedVideo {
+    path: std::path::PathBuf,
+    thumb: std::path::PathBuf,
 }
 
 #[derive(Clone)]
@@ -302,10 +323,7 @@ fn prepare_recording_cache() -> Result<(), String> {
     check_recording_reserve(&dir)
 }
 
-fn prepare_shelf_video(
-    path: &std::path::Path,
-    take_ownership: bool,
-) -> Result<std::path::PathBuf, String> {
+fn prepare_shelf_video(path: &std::path::Path) -> Result<std::path::PathBuf, String> {
     let metadata =
         std::fs::metadata(path).map_err(|error| format!("inspect shelf video: {error}"))?;
     if !metadata.is_file() || metadata.len() == 0 {
@@ -314,10 +332,6 @@ fn prepare_shelf_video(
     if metadata.len() >= RECORDING_CACHE_LIMIT_BYTES {
         return Err("video exceeds the 2 GiB temporary shelf limit".into());
     }
-    if take_ownership {
-        return Ok(path.to_path_buf());
-    }
-
     prepare_recording_cache()?;
     let dir = crate::paths::rec_dir();
     check_recording_cache_capacity(&dir, metadata.len())?;
@@ -330,6 +344,101 @@ fn prepare_shelf_video(
         std::fs::copy(path, &target).map_err(|error| format!("copy shelf video: {error}"))?;
     }
     Ok(target)
+}
+
+fn prepare_video_thumbnail_with(
+    ffmpeg: &std::path::Path,
+    video: &std::path::Path,
+) -> Result<std::path::PathBuf, String> {
+    let thumb = crate::paths::rec_file("video-thumb", "png");
+    let status = std::process::Command::new(ffmpeg)
+        .args(["-y", "-v", "error", "-i"])
+        .arg(video)
+        .args(["-frames:v", "1", "-update", "1"])
+        .arg(&thumb)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map_err(|error| format!("start ffmpeg video validation: {error}"))?;
+    if status.success() && thumb.is_file() {
+        Ok(thumb)
+    } else {
+        let _ = std::fs::remove_file(&thumb);
+        Err("video could not be decoded by ffmpeg".into())
+    }
+}
+
+fn spawn_video_prepare(
+    path: std::path::PathBuf,
+    action: VideoPreparedAction,
+    stream: UnixStream,
+    tx: calloop::channel::Sender<DaemonEvent>,
+) {
+    std::thread::spawn(move || {
+        let prepared = match &action {
+            VideoPreparedAction::Replace {
+                take_ownership: false,
+                ..
+            } => match std::fs::metadata(&path) {
+                Ok(metadata) if metadata.is_file() && metadata.len() > 0 => Ok(path),
+                Ok(_) => Err("replacement video is empty".into()),
+                Err(error) => Err(format!("inspect replacement video: {error}")),
+            },
+            _ => prepare_shelf_video(&path),
+        };
+        let result = prepared.and_then(|path| {
+            match prepare_video_thumbnail_with(std::path::Path::new("ffmpeg"), &path) {
+                Ok(thumb) => Ok(PreparedVideo { path, thumb }),
+                Err(error) => {
+                    if action_owns_prepared_path(&action) {
+                        let _ = std::fs::remove_file(path);
+                    }
+                    Err(error)
+                }
+            }
+        });
+        if !client_is_connected(&stream) {
+            if let Ok(prepared) = result {
+                if action_owns_prepared_path(&action) {
+                    let _ = std::fs::remove_file(prepared.path);
+                }
+                let _ = std::fs::remove_file(prepared.thumb);
+            }
+            return;
+        }
+        let _ = tx.send(DaemonEvent::VideoPrepared {
+            action,
+            result,
+            stream,
+        });
+    });
+}
+
+fn client_is_connected(stream: &UnixStream) -> bool {
+    use std::os::fd::AsRawFd;
+    let mut byte = [0_u8; 1];
+    let read = unsafe {
+        libc::recv(
+            stream.as_raw_fd(),
+            byte.as_mut_ptr().cast(),
+            byte.len(),
+            libc::MSG_PEEK | libc::MSG_DONTWAIT,
+        )
+    };
+    read > 0
+        || (read < 0 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::WouldBlock)
+}
+
+fn action_owns_prepared_path(action: &VideoPreparedAction) -> bool {
+    matches!(
+        action,
+        VideoPreparedAction::Add { .. }
+            | VideoPreparedAction::Replace {
+                take_ownership: true,
+                ..
+            }
+    )
 }
 
 fn validate_recording_dimensions(width: u32, height: u32) -> Result<(), String> {
@@ -431,7 +540,7 @@ fn default_start_plan(
     query: &Result<Vec<crate::record::Monitor>, String>,
     wayland: &[crate::record::Monitor],
 ) -> Result<crate::record::session::StartPlan, String> {
-    let monitors: Vec<_> = match query {
+    let mut monitors: Vec<_> = match query {
         Ok(fresh) => fresh
             .iter()
             .filter(|monitor| wayland.iter().any(|output| output.name == monitor.name))
@@ -446,6 +555,18 @@ fn default_start_plan(
             })
             .collect(),
     };
+    if query.is_err() {
+        let needs_focused_fallback = match &prefs.default_target {
+            crate::config::RecordDefaultTarget::Focused => true,
+            crate::config::RecordDefaultTarget::Output(name) => {
+                !monitors.iter().any(|monitor| monitor.name == *name)
+            }
+            crate::config::RecordDefaultTarget::Both => false,
+        };
+        if needs_focused_fallback && let Some(first) = monitors.first_mut() {
+            first.focused = true;
+        }
+    }
     start_plan(prefs, &monitors).map_err(|error| match query {
         Ok(_) => error,
         Err(query_error) => format!("{query_error}: {error}"),
@@ -1143,13 +1264,28 @@ impl Daemon {
                 source,
                 path,
                 output,
-                take_ownership,
+                take_ownership: _,
             } => {
-                self.add_video(path, &source, output.as_deref(), take_ownership, &qh);
+                spawn_video_prepare(
+                    path,
+                    VideoPreparedAction::Add { source, output },
+                    stream,
+                    self.event_tx.clone(),
+                );
             }
             crate::ipc::Request::Replace { id, media } => match media {
                 crate::ipc::Replacement::Image(png) => self.replace_image(id, &png, &qh),
-                crate::ipc::Replacement::Video(path) => self.replace_video(id, path),
+                crate::ipc::Replacement::Video {
+                    path,
+                    take_ownership,
+                } => {
+                    spawn_video_prepare(
+                        path,
+                        VideoPreparedAction::Replace { id, take_ownership },
+                        stream,
+                        self.event_tx.clone(),
+                    );
+                }
             },
             crate::ipc::Request::Reload { id } => {
                 self.reload(id, &qh);
@@ -1311,19 +1447,20 @@ impl Daemon {
         self.draw(qh);
     }
 
-    fn add_video(
+    fn add_prepared_video(
         &mut self,
-        path: std::path::PathBuf,
+        prepared: PreparedVideo,
         source: &str,
         output: Option<&str>,
-        take_ownership: bool,
         qh: &QueueHandle<Self>,
-    ) {
+    ) -> Result<std::path::PathBuf, String> {
+        let PreparedVideo { path, thumb } = prepared;
         let incoming_bytes = match std::fs::metadata(&path) {
             Ok(metadata) => metadata.len(),
             Err(error) => {
-                eprintln!("boltsnap daemon: inspect shelf video: {error}");
-                return;
+                let _ = std::fs::remove_file(&path);
+                let _ = std::fs::remove_file(&thumb);
+                return Err(format!("inspect shelf video: {error}"));
             }
         };
         if self
@@ -1332,16 +1469,10 @@ impl Daemon {
             .saturating_add(incoming_bytes)
             >= RECORDING_CACHE_LIMIT_BYTES
         {
-            eprintln!("boltsnap daemon: temporary shelf videos reached the 2 GiB limit");
-            return;
+            let _ = std::fs::remove_file(&path);
+            let _ = std::fs::remove_file(&thumb);
+            return Err("temporary shelf videos reached the 2 GiB limit".into());
         }
-        let path = match prepare_shelf_video(&path, take_ownership) {
-            Ok(path) => path,
-            Err(error) => {
-                eprintln!("boltsnap daemon: {error}");
-                return;
-            }
-        };
         let image = image::RgbaImage::from_pixel(
             crate::shelf::thumbnail::CARD_W,
             crate::shelf::thumbnail::CARD_H,
@@ -1360,10 +1491,11 @@ impl Daemon {
             FileLifetime::Temporary,
         );
         self.start_anim(id, AnimKind::Appear);
-        spawn_recording_thumbnail(id, path);
+        self.update_recording_thumb(id, thumb, qh);
         self.relayout();
         self.place_on_output(output, qh);
         self.draw(qh);
+        Ok(path)
     }
 
     fn replace_image(&mut self, id: u64, png: &[u8], qh: &QueueHandle<Self>) {
@@ -1393,28 +1525,72 @@ impl Daemon {
         }
     }
 
-    fn replace_video(&mut self, id: u64, path: std::path::PathBuf) {
-        if !path.is_file()
-            || !matches!(self.model.get(id), Some(card) if card.kind == CardKind::Video)
+    fn replace_prepared_video(
+        &mut self,
+        id: u64,
+        prepared: PreparedVideo,
+        take_ownership: bool,
+        qh: &QueueHandle<Self>,
+    ) -> Result<std::path::PathBuf, String> {
+        let PreparedVideo { path, thumb } = prepared;
+        let old_bytes = match self.model.get(id) {
+            Some(card)
+                if card.kind == CardKind::Video && card.lifetime == FileLifetime::Temporary =>
+            {
+                std::fs::metadata(&card.png_path).map_or(0, |metadata| metadata.len())
+            }
+            Some(card) if card.kind == CardKind::Video => 0,
+            _ => {
+                if take_ownership {
+                    let _ = std::fs::remove_file(&path);
+                }
+                let _ = std::fs::remove_file(&thumb);
+                return Err("video replacement target is invalid".into());
+            }
+        };
+        let incoming_bytes = match std::fs::metadata(&path) {
+            Ok(metadata) => metadata.len(),
+            Err(error) => {
+                if take_ownership {
+                    let _ = std::fs::remove_file(&path);
+                }
+                let _ = std::fs::remove_file(&thumb);
+                return Err(format!("inspect replacement video: {error}"));
+            }
+        };
+        if take_ownership
+            && self
+                .model
+                .temporary_video_bytes()
+                .saturating_sub(old_bytes)
+                .saturating_add(incoming_bytes)
+                >= RECORDING_CACHE_LIMIT_BYTES
         {
-            return;
+            let _ = std::fs::remove_file(&path);
+            let _ = std::fs::remove_file(&thumb);
+            return Err("temporary shelf videos reached the 2 GiB limit".into());
         }
-        if !self.model.replace_path(id, path.clone()) {
-            return;
+        const fn replacement_lifetime(take_ownership: bool) -> FileLifetime {
+            if take_ownership {
+                FileLifetime::Temporary
+            } else {
+                FileLifetime::Permanent
+            }
         }
-        let thumb = crate::paths::rec_file("replace-thumb", "png");
-        std::thread::spawn(move || {
-            let _ = std::process::Command::new("ffmpeg")
-                .args(["-y", "-i"])
-                .arg(&path)
-                .args(["-frames:v", "1", "-update", "1"])
-                .arg(&thumb)
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status();
-            let _ = crate::ipc::send_to_shelf(crate::ipc::Request::RecordingThumb { id, thumb });
-        });
+        if !self.model.replace_path_with_lifetime(
+            id,
+            path.clone(),
+            replacement_lifetime(take_ownership),
+        ) {
+            if take_ownership {
+                let _ = std::fs::remove_file(&path);
+            }
+            let _ = std::fs::remove_file(&thumb);
+            return Err("video replacement failed".into());
+        }
+        let owned_path = path.clone();
+        self.update_recording_thumb(id, thumb, qh);
+        Ok(owned_path)
     }
 
     /// Copy the card under the cursor to the clipboard: an image as `image/png`,
@@ -2362,6 +2538,52 @@ impl Daemon {
             DaemonEvent::ClientRequest { request, stream } => {
                 self.handle_client_request(request, stream);
             }
+            DaemonEvent::VideoPrepared {
+                action,
+                result,
+                stream,
+            } => {
+                if !client_is_connected(&stream) {
+                    if let Ok(prepared) = &result {
+                        if action_owns_prepared_path(&action) {
+                            let _ = std::fs::remove_file(&prepared.path);
+                        }
+                        let _ = std::fs::remove_file(&prepared.thumb);
+                    }
+                    return;
+                }
+                let response = match result {
+                    Err(error) => crate::ipc::Response::error(error),
+                    Ok(prepared) => {
+                        let qh = self.qh.clone();
+                        let result = match (action, qh) {
+                            (VideoPreparedAction::Add { source, output }, Some(qh)) => {
+                                self.add_prepared_video(prepared, &source, output.as_deref(), &qh)
+                            }
+                            (VideoPreparedAction::Replace { id, take_ownership }, Some(qh)) => {
+                                self.replace_prepared_video(id, prepared, take_ownership, &qh)
+                            }
+                            (VideoPreparedAction::Add { .. }, None) => {
+                                let _ = std::fs::remove_file(prepared.path);
+                                let _ = std::fs::remove_file(prepared.thumb);
+                                Err("Boltsnap is not ready for video delivery".into())
+                            }
+                            (VideoPreparedAction::Replace { take_ownership, .. }, None) => {
+                                if take_ownership {
+                                    let _ = std::fs::remove_file(prepared.path);
+                                }
+                                let _ = std::fs::remove_file(prepared.thumb);
+                                Err("Boltsnap is not ready for video delivery".into())
+                            }
+                        };
+                        match result {
+                            Ok(path) => crate::ipc::Response::ok_path(path),
+                            Err(error) => crate::ipc::Response::error(error),
+                        }
+                    }
+                };
+                self.write_response(stream, response);
+            }
             DaemonEvent::ChildrenStopped { after, result } => {
                 let (segments, error) = match result {
                     StopChildrenResult::Ready(segments) => (segments, None),
@@ -3105,8 +3327,7 @@ impl DataSourceHandler for Daemon {
             let mut file = std::fs::File::from(fd);
             match mime.as_str() {
                 "text/uri-list" => {
-                    let abs = std::fs::canonicalize(&path).unwrap_or(path);
-                    let uri = format!("file://{}\r\n", abs.display());
+                    let uri = crate::clipboard::uri_list_for(&path);
                     let _ = file.write_all(uri.as_bytes());
                 }
                 _ => {
@@ -3220,22 +3441,79 @@ delegate_registry!(Daemon);
 mod tests {
     use super::*;
     use std::io::{Read, Write};
+    use std::os::unix::fs::MetadataExt;
     use std::time::{Duration, Instant};
 
     #[test]
-    fn owned_shelf_video_keeps_fast_path_and_rejects_oversized_files() {
-        let path =
-            std::env::temp_dir().join(format!("boltsnap-owned-video-test-{}", std::process::id()));
+    fn owned_shelf_video_uses_independent_zero_copy_link_and_rejects_oversized_files() {
+        let path = std::env::temp_dir().join(format!(
+            "boltsnap-owned-video-test-{}-{}",
+            std::process::id(),
+            crate::paths::timestamp()
+        ));
         std::fs::write(&path, b"video").unwrap();
-        assert_eq!(prepare_shelf_video(&path, true).unwrap(), path);
+        let owned = prepare_shelf_video(&path).unwrap();
+        assert_ne!(owned, path);
+        assert!(owned.starts_with(crate::paths::rec_dir()));
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(std::fs::read(&owned).unwrap(), b"video");
+        std::fs::remove_file(owned).unwrap();
+
+        std::fs::write(&path, b"video").unwrap();
         let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
         file.set_len(RECORDING_CACHE_LIMIT_BYTES).unwrap();
-        assert!(
-            prepare_shelf_video(&path, true)
-                .unwrap_err()
-                .contains("2 GiB")
-        );
+        assert!(prepare_shelf_video(&path).unwrap_err().contains("2 GiB"));
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn owned_shelf_video_falls_back_across_filesystems() {
+        std::fs::create_dir_all(crate::paths::rec_dir()).unwrap();
+        if std::fs::metadata(std::env::temp_dir()).unwrap().dev()
+            == std::fs::metadata(crate::paths::rec_dir()).unwrap().dev()
+        {
+            return;
+        }
+        let source = std::env::temp_dir().join(format!(
+            "boltsnap-cross-filesystem-video-test-{}-{}",
+            std::process::id(),
+            crate::paths::timestamp()
+        ));
+        std::fs::write(&source, b"video").unwrap();
+        let owned = prepare_shelf_video(&source).unwrap();
+        assert_eq!(std::fs::read(&owned).unwrap(), b"video");
+        std::fs::remove_file(source).unwrap();
+        std::fs::remove_file(owned).unwrap();
+    }
+
+    #[test]
+    fn disconnected_video_client_is_detected_before_commit() {
+        let (server, client) = UnixStream::pair().unwrap();
+        assert!(client_is_connected(&server));
+        drop(client);
+        assert!(!client_is_connected(&server));
+    }
+
+    #[test]
+    fn failed_video_probe_does_not_produce_a_thumbnail() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!(
+            "boltsnap-video-probe-test-{}-{}",
+            std::process::id(),
+            crate::paths::timestamp()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ffmpeg = dir.join("ffmpeg");
+        std::fs::write(&ffmpeg, "#!/bin/sh\nexit 1\n").unwrap();
+        let mut permissions = std::fs::metadata(&ffmpeg).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&ffmpeg, permissions).unwrap();
+        let video = dir.join("invalid.mp4");
+        std::fs::write(&video, b"not a video").unwrap();
+
+        assert!(prepare_video_thumbnail_with(&ffmpeg, &video).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -3428,22 +3706,22 @@ mod tests {
     #[test]
     fn failed_focus_query_never_reuses_stale_focus_for_default_start() {
         let prefs = crate::config::RecordingPrefs::default();
-        let stale_wayland = vec![monitor("DP-3", true), monitor("DP-1", false)];
-        let error =
-            default_start_plan(&prefs, &Err("query timed out".into()), &stale_wayland).unwrap_err();
-        assert!(error.contains("query timed out"));
+        let stale_wayland = vec![monitor("DP-3", false), monitor("DP-1", true)];
+        let plan =
+            default_start_plan(&prefs, &Err("query timed out".into()), &stale_wayland).unwrap();
+        assert_eq!(plan.outputs[0].name, "DP-3");
 
         let disconnected = crate::config::RecordingPrefs {
             default_target: crate::config::RecordDefaultTarget::Output("DP-OLD".into()),
             ..prefs
         };
-        let error = default_start_plan(
+        let plan = default_start_plan(
             &disconnected,
             &Err("query timed out".into()),
             &stale_wayland,
         )
-        .unwrap_err();
-        assert!(error.contains("query timed out"));
+        .unwrap();
+        assert_eq!(plan.outputs[0].name, "DP-3");
     }
 
     #[test]

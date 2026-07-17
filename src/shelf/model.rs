@@ -108,9 +108,19 @@ impl ShelfModel {
         }
     }
 
-    pub fn replace_path(&mut self, id: u64, path: PathBuf) -> bool {
+    pub fn replace_path_with_lifetime(
+        &mut self,
+        id: u64,
+        path: PathBuf,
+        lifetime: FileLifetime,
+    ) -> bool {
         if let Some(t) = self.thumbs.iter_mut().find(|t| t.id == id) {
-            t.png_path = path;
+            let previous_lifetime = t.lifetime;
+            let previous = std::mem::replace(&mut t.png_path, path);
+            t.lifetime = lifetime;
+            if previous_lifetime == FileLifetime::Temporary && previous != t.png_path {
+                let _ = std::fs::remove_file(previous);
+            }
             true
         } else {
             false
@@ -222,13 +232,42 @@ mod tests {
             CardKind::Video,
         );
 
-        assert!(m.replace_path(id, PathBuf::from("/tmp/edited.mp4")));
+        assert!(m.replace_path_with_lifetime(
+            id,
+            PathBuf::from("/tmp/edited.mp4"),
+            FileLifetime::Temporary
+        ));
         assert_eq!(
             m.get(id).unwrap().png_path,
             PathBuf::from("/tmp/edited.mp4")
         );
         assert_eq!(m.get(id).unwrap().kind, CardKind::Video);
-        assert!(!m.replace_path(999, PathBuf::from("/tmp/missing.mp4")));
+        assert!(!m.replace_path_with_lifetime(
+            999,
+            PathBuf::from("/tmp/missing.mp4"),
+            FileLifetime::Temporary
+        ));
+    }
+
+    #[test]
+    fn replace_path_removes_previous_temporary_video() {
+        let dir = std::env::temp_dir().join(format!(
+            "boltsnap-replace-test-{}-{}",
+            std::process::id(),
+            crate::paths::timestamp()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let original = dir.join("original.mp4");
+        let edited = dir.join("edited.mp4");
+        std::fs::write(&original, b"old").unwrap();
+        std::fs::write(&edited, b"new").unwrap();
+        let mut model = ShelfModel::new();
+        let id = model.add_kind(original.clone(), img(), "record".into(), CardKind::Video);
+
+        assert!(model.replace_path_with_lifetime(id, edited.clone(), FileLifetime::Temporary));
+        assert!(!original.exists());
+        assert!(edited.is_file());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
