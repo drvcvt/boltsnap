@@ -192,6 +192,10 @@ screenshot lands as a small floating **thumbnail in the bottom-left corner**
 of the screen — a macOS-style shelf — and stays there until you use or dismiss
 it. Multiple screenshots stack, newest on top.
 
+![Shelf running on a nested headless Sway output](assets/screenshots/shelf-nested-sway.png)
+
+![Headless shelf render with hover actions](assets/screenshots/shelf-headless-render.png)
+
 ```sh
 boltsnap area        # capture a region -> appears in the shelf
 boltsnap full        # whole screen -> shelf
