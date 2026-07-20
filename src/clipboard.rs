@@ -64,13 +64,14 @@ pub fn serve_wayland_uri_list(path: &Path) -> DynResult<()> {
 /// returns immediately. Copies only the path — instant regardless of file size.
 pub fn copy_uri_to_clipboard(path: &Path) -> DynResult<()> {
     let exe = env::current_exe()?;
-    Command::new(exe)
-        .arg("__serve-clipboard-uri")
-        .arg(path)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()?;
+    crate::paths::spawn_reaped(
+        Command::new(exe)
+            .arg("__serve-clipboard-uri")
+            .arg(path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null()),
+    )?;
     Ok(())
 }
 
@@ -81,13 +82,14 @@ pub fn copy_to_clipboard(path: &Path, backend: Backend) -> DynResult<Backend> {
             // Spawn a detached self holding the clipboard data source open
             // so the foreground shell returns immediately.
             let exe = env::current_exe()?;
-            Command::new(exe)
-                .arg("__serve-clipboard")
-                .arg(path)
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()?;
+            crate::paths::spawn_reaped(
+                Command::new(exe)
+                    .arg("__serve-clipboard")
+                    .arg(path)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null()),
+            )?;
         }
         Backend::X11 => {
             // arboard's set_image owns the X11 selection; on X11 it forks a

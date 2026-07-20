@@ -1,6 +1,8 @@
 use std::env;
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -14,6 +16,16 @@ pub fn has_cmd(name: &str) -> bool {
         return false;
     };
     env::split_paths(&paths).any(|dir| dir.join(name).is_file())
+}
+
+/// Spawn a fire-and-forget child without leaving a zombie in long-lived callers.
+pub fn spawn_reaped(command: &mut Command) -> io::Result<u32> {
+    let mut child = command.spawn()?;
+    let pid = child.id();
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(pid)
 }
 
 pub fn print_doctor() {
@@ -302,6 +314,21 @@ pub fn local_timestamp() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn detached_child_is_reaped() {
+        let pid = spawn_reaped(std::process::Command::new("sh").args(["-c", "exit 0"]))
+            .expect("spawn child");
+        let proc = PathBuf::from(format!("/proc/{pid}"));
+        for _ in 0..100 {
+            if !proc.exists() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("child {pid} was not reaped");
+    }
 
     #[test]
     fn filename_ext_uses_given_extension() {
