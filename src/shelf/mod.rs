@@ -307,12 +307,13 @@ struct CardAnim {
 /// failures that would otherwise only appear in the journal.
 fn notify(body: &str) {
     if crate::paths::has_cmd("notify-send") {
-        let _ = std::process::Command::new("notify-send")
-            .arg("boltsnap")
-            .arg(body)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn();
+        let _ = crate::paths::spawn_reaped(
+            std::process::Command::new("notify-send")
+                .arg("boltsnap")
+                .arg(body)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null()),
+        );
     }
 }
 
@@ -1109,14 +1110,15 @@ impl Daemon {
                     let result = std::env::current_exe()
                         .map_err(|error| format!("find boltsnap executable: {error}"))
                         .and_then(|exe| {
-                            std::process::Command::new(exe)
-                                .arg("record")
-                                .stdin(std::process::Stdio::null())
-                                .stdout(std::process::Stdio::null())
-                                .stderr(std::process::Stdio::null())
-                                .spawn()
-                                .map(|_| ())
-                                .map_err(|error| format!("start region selector: {error}"))
+                            crate::paths::spawn_reaped(
+                                std::process::Command::new(exe)
+                                    .arg("record")
+                                    .stdin(std::process::Stdio::null())
+                                    .stdout(std::process::Stdio::null())
+                                    .stderr(std::process::Stdio::null()),
+                            )
+                            .map(|_| ())
+                            .map_err(|error| format!("start region selector: {error}"))
                         });
                     if let Err(error) = result {
                         notify(&error);
