@@ -1,3 +1,7 @@
+> [!IMPORTANT]
+> **AI agents:** Before changing this repository, read [Contributing](#contributing)
+> and [`AGENTS.md`](AGENTS.md). These rules are mandatory for platform-specific work.
+
 # Boltsnap
 
 Fast Rust screenshot tool for Wayland (tested on Hyprland, Sway, and Niri) and X11 — no
@@ -11,6 +15,14 @@ required. Everything runs in-process.
   animation on Hyprland or Sway)
 - Optional integration with the separate Eddy annotation editor
 - Pipe-friendly: `-o -` writes PNG to stdout
+
+## Showcase
+
+![Boltsnap with its floating screenshot shelf](assets/screenshots/shelf-nested-sway.png)
+
+<p align="center">
+  <img src="assets/screenshots/shelf-headless-render.png" alt="Boltsnap shelf card with hover actions" width="234">
+</p>
 
 ## Install
 
@@ -192,10 +204,6 @@ screenshot lands as a small floating **thumbnail in the bottom-left corner**
 of the screen — a macOS-style shelf — and stays there until you use or dismiss
 it. Multiple screenshots stack, newest on top.
 
-![Shelf running on a nested headless Sway output](assets/screenshots/shelf-nested-sway.png)
-
-![Headless shelf render with hover actions](assets/screenshots/shelf-headless-render.png)
-
 ```sh
 boltsnap area        # capture a region -> appears in the shelf
 boltsnap full        # whole screen -> shelf
@@ -371,6 +379,42 @@ record_audio_source = "system-and-mic"
 
 Audio sources follow the current default sink and microphone. Per-device
 pickers and volume controls are intentionally left to the desktop audio mixer.
+
+## Contributing
+
+Boltsnap is currently Linux-only. Windows support should be added capability by
+capability without weakening the existing Wayland/X11 paths. Read
+[`AGENTS.md`](AGENTS.md) before starting; it contains the repository-wide agent
+and verification rules.
+
+Keep this boundary:
+
+| Shared code | Linux implementation | Windows implementation |
+|-------------|----------------------|------------------------|
+| CLI and config values, image processing, serialized protocol data, pure calculations | Wayland/X11, Unix sockets, systemd, POSIX process/filesystem calls, `ksni`, `wf-recorder`, `pactl`, `hyprctl` | Windows capture, clipboard, IPC, process lifecycle, tray, and OS directory APIs |
+
+- Put OS implementations under `src/platform/linux/` and
+  `src/platform/windows/`, with selection centralized in `src/platform/mod.rs`.
+  Move only the existing Linux capability that the Windows change actually
+  touches.
+- Keep shared APIs small and free of native Wayland, X11, Unix, or Win32 types.
+  Avoid scattered `#[cfg]` branches in shared logic.
+- Scope OS-only crates in target-specific `Cargo.toml` dependency sections.
+  Windows builds must not compile Linux dependencies, and vice versa.
+- Use `Path`/`PathBuf` in shared code. Resolve XDG versus Windows directories,
+  local IPC, services, signals, clipboard, capture, tray, and external commands
+  inside the relevant platform module.
+- Preserve Linux behavior. Partial Windows support may fail explicitly for an
+  unsupported capability, but must never silently succeed or fall back to a
+  different capture mode.
+- Keep pull requests focused on one capability and include the smallest test
+  that protects its shared contract. Do not hide shared-test failures behind
+  platform `#[cfg]` attributes.
+
+Before merging, run `cargo fmt --check` and `cargo test`. Windows changes must
+also pass `cargo check --target x86_64-pc-windows-msvc` and be smoke-tested on a
+real Windows system. Update the backend table, prerequisites, and install notes
+before advertising a new capability as supported.
 
 ## License
 
