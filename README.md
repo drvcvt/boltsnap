@@ -74,9 +74,10 @@ Explicit startup is optional:
 .\target\release\boltsnap.exe daemon
 ```
 
-For a normal Windows installation, download the newest MSI from
+For a normal Windows installation, download the newest MSI or NSIS setup from
 [GitHub Releases](https://github.com/drvcvt/boltsnap/releases/latest), open it,
-and follow its feature selection dialog:
+and follow its feature selection dialog. Both installers provide the same
+per-user Boltsnap and optional Eddy components.
 
 ```powershell
 msiexec /i .\dist\msi\Boltsnap-0.4.6-windows-x64.msi
@@ -96,10 +97,12 @@ and redaction. When installed through the MSI, right-clicking an image in the
 Shelf opens that exact image in Eddy; there is no separate Edit button. Boltsnap
 continues to work normally when Eddy is not selected, except for this action.
 
-Maintainers can build the MSI, including Eddy and its Qt runtime, with:
+Maintainers can build the MSI and NSIS setup, including Eddy and its Qt runtime,
+with:
 
 ```powershell
 .\packaging\windows\build-msi.ps1
+.\packaging\windows\build-nsis.ps1
 ```
 
 The build script expects the Eddy repository beside the Boltsnap workspace by
