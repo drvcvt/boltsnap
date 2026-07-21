@@ -301,6 +301,15 @@ impl ShelfApplication {
         self.error = Some(error);
     }
 
+    /// Surface a recording error to the user. The daemon runs without a
+    /// console, so stderr alone is invisible; errors only, no success toasts.
+    fn notify_error(&self, body: &str) {
+        eprintln!("boltsnap daemon: {body}");
+        if let Some(window) = &self.window {
+            crate::tray::notify_error(window, body);
+        }
+    }
+
     fn native_regions(&self) -> Vec<(u32, u32, u32, u32)> {
         if self.recording_controls_visible && self.recording.is_some() {
             vec![(
@@ -659,11 +668,11 @@ impl ShelfApplication {
             if let Some(action) = action {
                 let response = self.recording_control(action);
                 if !response.ok {
-                    eprintln!(
-                        "boltsnap daemon: {}",
+                    self.notify_error(
                         response
                             .error
-                            .unwrap_or_else(|| "recording action failed".into())
+                            .as_deref()
+                            .unwrap_or("recording action failed"),
                     );
                 }
                 if self.recording.is_none() {
@@ -894,7 +903,23 @@ impl ApplicationHandler<ShelfEvent> for ShelfApplication {
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: ShelfEvent) {
         match event {
             ShelfEvent::Request { request, reply } => {
+                // Recording requests usually come from hotkeys or `boltsnap
+                // stop`, where the client's stderr is nulled — balloon their
+                // failures so they aren't silent.
+                let recording_request = matches!(
+                    request,
+                    crate::ipc::Request::StartRecording { .. }
+                        | crate::ipc::Request::StartDefaultRecording
+                        | crate::ipc::Request::RecordingControl { .. }
+                        | crate::ipc::Request::StopRecording
+                );
                 let response = self.handle_request(request);
+                if recording_request
+                    && !response.ok
+                    && let Some(error) = response.error.as_deref()
+                {
+                    self.notify_error(error);
+                }
                 let _ = reply.send(response);
             }
             ShelfEvent::Tray(event) => {

@@ -188,7 +188,7 @@ pub(crate) fn set_rounded_window_regions(
     Ok(())
 }
 
-fn window_hwnd(window: &Window) -> DynResult<windows::Win32::Foundation::HWND> {
+pub(crate) fn window_hwnd(window: &Window) -> DynResult<windows::Win32::Foundation::HWND> {
     let handle = window.window_handle()?;
     let RawWindowHandle::Win32(handle) = handle.as_raw() else {
         return Err("Boltsnap utility window is not a Win32 window".into());
