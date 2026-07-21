@@ -1,16 +1,30 @@
 [package]
 name = "boltsnap"
-version = "0.4.4"
+version = "0.4.6"
 edition = "2024"
-description = "In-process Wayland and X11 screenshot tool with companion editor support."
+description = "Fast native screenshot and screen-recording tool for Linux and Windows."
 license = "MIT"
 readme = "README.md"
 keywords = ["screenshot", "wayland", "hyprland", "x11", "tiny-skia"]
 categories = ["command-line-utilities", "multimedia::images"]
 
+[build-dependencies]
+embed-resource = "3.0.11"
+
 [dependencies]
 image = { version = "0.25.8", default-features = false, features = ["png", "jpeg"] }
 serde_json = "1.0"
+# Pure-CPU 2D rasterizer for the region-selector overlay.
+# No GPU cold-start; unifies on the same wl_shm path the shelf already uses.
+tiny-skia = "0.11"
+# Anti-aliased glyph rasterization for selector badges and recording controls,
+# from a small embedded DejaVu Sans subset (printable ASCII + ×).
+ab_glyph = "0.2"
+# Parse ~/.config/boltsnap/config.toml (save_dir + editor). Read via toml::Value,
+# so no serde-derive is needed in this crate.
+toml = "0.8"
+
+[target.'cfg(target_os = "linux")'.dependencies]
 libwayshot = "0.7"
 wl-clipboard-rs = "0.9"
 smithay-client-toolkit = "0.19"
@@ -21,19 +35,52 @@ calloop = "0.13"
 calloop-wayland-source = "0.3"
 x11rb = "0.13"
 arboard = { version = "3.4", default-features = false, features = ["image-data"] }
-# Pure-CPU 2D rasterizer for the region-selector overlay.
-# No GPU cold-start; unifies on the same wl_shm path the shelf already uses.
-tiny-skia = "0.11"
-# Anti-aliased glyph rasterization for selector badges and recording controls,
-# from a small embedded DejaVu Sans subset (printable ASCII + ×).
-ab_glyph = "0.2"
-# Parse ~/.config/boltsnap/config.toml (save_dir + editor). Read via toml::Value,
-# so no serde-derive is needed in this crate.
-toml = "0.8"
 # SIGINT to wf-recorder so it FINALIZES the mp4 (std Child::kill only sends
 # SIGKILL, which would truncate/corrupt the file). Used by the daemon's stop flow.
 libc = "0.2"
 ksni = { version = "0.3.5", features = ["blocking"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+arboard = { version = "3.4", default-features = false, features = ["image-data"] }
+drag = "2.1.1"
+raw-window-handle = "0.6"
+softbuffer = "0.4"
+tray-icon = "0.24"
+wasapi = "0.23"
+winit = "0.30"
+windows = { version = "0.62.2", features = [
+    "Foundation",
+    "Graphics_Capture",
+    "Graphics_DirectX",
+    "Graphics_DirectX_Direct3D11",
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Gdi",
+    "Win32_Media_Audio",
+    "Win32_Media_MediaFoundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Com",
+    "Win32_System_DataExchange",
+    "Win32_System_IO",
+    "Win32_System_JobObjects",
+    "Win32_System_Memory",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Ole",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+    "Win32_System_SystemInformation",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+windows-capture = "2.0.0"
 
 [profile.release]
 lto = "thin"

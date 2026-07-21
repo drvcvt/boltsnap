@@ -2,35 +2,7 @@
 
 #![allow(dead_code)] // wired into the driver in Task 8+; removed there.
 
-/// Axis-aligned rectangle in surface pixels.
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub struct Rect {
-    pub x: f64,
-    pub y: f64,
-    pub w: f64,
-    pub h: f64,
-}
-
-impl Rect {
-    /// Build a normalized rect (non-negative w/h) from two opposite corners.
-    pub fn from_corners(a: (f64, f64), b: (f64, f64)) -> Rect {
-        Rect {
-            x: a.0.min(b.0),
-            y: a.1.min(b.1),
-            w: (a.0 - b.0).abs(),
-            h: (a.1 - b.1).abs(),
-        }
-    }
-    pub fn right(&self) -> f64 {
-        self.x + self.w
-    }
-    pub fn bottom(&self) -> f64 {
-        self.y + self.h
-    }
-    pub fn contains(&self, p: (f64, f64)) -> bool {
-        p.0 >= self.x && p.0 <= self.right() && p.1 >= self.y && p.1 <= self.bottom()
-    }
-}
+pub use crate::image_model::Rect;
 
 /// The eight resize handles: four corners and four edge midpoints.
 #[derive(Clone, Copy, PartialEq, Debug)]

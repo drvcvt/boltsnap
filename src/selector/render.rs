@@ -298,13 +298,13 @@ pub fn draw_badge(pm: &mut Pixmap, sel: (f32, f32, f32, f32), surf_w: u32, surf_
         .map(|c| scaled.h_advance(font.glyph_id(c)))
         .sum();
     let text_h = scaled.ascent() - scaled.descent();
-    let rect = crate::select_skia::edit::Rect {
+    let rect = crate::selector::edit::Rect {
         x: x as f64,
         y: y as f64,
         w: w as f64,
         h: h as f64,
     };
-    let (bx, by, bw, bh) = crate::select_skia::edit::badge_rect(
+    let (bx, by, bw, bh) = crate::selector::edit::badge_rect(
         rect,
         text_w as f64,
         text_h as f64,
@@ -370,13 +370,13 @@ pub fn rec_pill_rect(
     // The pill carries a leading red dot, so widen the content box by the dot
     // diameter plus its gap; badge_rect handles placement + on-screen clamping.
     let content_w = REC_DOT_R * 2.0 + REC_DOT_GAP + text_w as f64;
-    let rect = crate::select_skia::edit::Rect {
+    let rect = crate::selector::edit::Rect {
         x: x as f64,
         y: y as f64,
         w: w as f64,
         h: h as f64,
     };
-    Some(crate::select_skia::edit::badge_rect(
+    Some(crate::selector::edit::badge_rect(
         rect,
         content_w,
         text_h as f64,
@@ -648,7 +648,7 @@ pub fn draw_magnifier(
     surf_w: u32,
     surf_h: u32,
 ) {
-    use crate::select_skia::edit::{magnifier_placement, magnifier_source};
+    use crate::selector::edit::{magnifier_placement, magnifier_source};
     const LOUPE: u32 = 120;
     const SAMPLE: u32 = 30;
     let (lx, ly) = magnifier_placement(cursor, LOUPE as f64, 24.0, surf_w as f64, surf_h as f64);

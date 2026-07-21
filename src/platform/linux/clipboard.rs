@@ -108,6 +108,7 @@ pub fn copy_to_clipboard(path: &Path, backend: Backend) -> DynResult<Backend> {
                 })
                 .map_err(|e| format!("X11 clipboard set_image failed: {e}"))?;
         }
+        Backend::Windows => return Err("Windows clipboard is unavailable on Linux".into()),
         Backend::Auto => unreachable!(),
     }
     Ok(backend)

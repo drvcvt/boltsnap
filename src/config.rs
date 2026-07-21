@@ -216,18 +216,8 @@ pub fn save_recording_prefs_at(path: &Path, prefs: &RecordingPrefs) -> io::Resul
     result
 }
 
-/// `$XDG_CONFIG_HOME/boltsnap/config.toml`, else `~/.config/boltsnap/config.toml`.
 pub fn config_path() -> PathBuf {
-    if let Some(x) = env::var_os("XDG_CONFIG_HOME") {
-        PathBuf::from(x).join("boltsnap").join("config.toml")
-    } else if let Some(home) = env::var_os("HOME") {
-        PathBuf::from(home)
-            .join(".config")
-            .join("boltsnap")
-            .join("config.toml")
-    } else {
-        PathBuf::from("boltsnap-config.toml")
-    }
+    crate::paths::config_dir().join("config.toml")
 }
 
 /// Expand a leading `~` (to `$HOME`) and `$VAR` / `${VAR}` tokens from the env.
@@ -238,10 +228,7 @@ pub fn expand_path(raw: &str) -> PathBuf {
     let mut first = true;
     while let Some(c) = chars.next() {
         match c {
-            '~' if first => match env::var_os("HOME") {
-                Some(home) => out.push_str(&home.to_string_lossy()),
-                None => out.push('~'),
-            },
+            '~' if first => out.push_str(&crate::paths::home_dir().to_string_lossy()),
             '$' => {
                 let braced = chars.peek() == Some(&'{');
                 if braced {
@@ -292,11 +279,7 @@ pub fn resolve_save_dir(cli: Option<&Path>, cfg: &Config) -> PathBuf {
 }
 
 fn default_save_dir() -> PathBuf {
-    env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("Bilder")
-        .join("boltsnap")
+    crate::paths::default_screenshot_dir()
 }
 
 /// The annotation editor command: CLI flag > `$BOLTSNAP_EDITOR` > config >
@@ -343,6 +326,10 @@ pub fn resolve_record_dir(cfg: &Config) -> PathBuf {
 }
 
 fn default_editor() -> Option<String> {
+    #[cfg(target_os = "windows")]
+    if let Some(editor) = crate::paths::bundled_editor() {
+        return Some(editor.to_string_lossy().into_owned());
+    }
     if crate::paths::has_cmd("eddy") {
         return Some("eddy".to_string());
     }
@@ -551,9 +538,9 @@ unrelated = "keep-me"
 
     #[test]
     fn save_dir_falls_back_to_config_then_default() {
-        // BOLTSNAP_SAVE_DIR is boltsnap-private; removing it is race-free. HOME is
-        // left untouched and the expectation is derived from it.
-        let home = env::var("HOME").expect("HOME set in test env");
+        // BOLTSNAP_SAVE_DIR is boltsnap-private; removing it is race-free. The
+        // expectations come from the selected platform path provider.
+        let home = crate::paths::home_dir();
         unsafe {
             env::remove_var("BOLTSNAP_SAVE_DIR");
         }
@@ -567,7 +554,7 @@ unrelated = "keep-me"
         );
         assert_eq!(
             resolve_save_dir(None, &Config::default()),
-            PathBuf::from(&home).join("Bilder").join("boltsnap")
+            crate::paths::default_screenshot_dir()
         );
     }
 

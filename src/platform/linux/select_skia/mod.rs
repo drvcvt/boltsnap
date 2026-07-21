@@ -1,8 +1,7 @@
 //! New region selector on raw SCTK (wlr-layer-shell) + tiny-skia, behind `--new`.
 //! Parallel to `src/select.rs` (egui); same public signature so it is a drop-in.
 
-mod edit;
-mod render;
+use crate::selector::{edit, render};
 
 use std::thread;
 
@@ -294,7 +293,7 @@ impl Selector {
         if outputs.len() <= 1 {
             return outputs.into_iter().next();
         }
-        let name = crate::shelf::focused_monitor_name();
+        let name = crate::platform::shelf::focused_monitor_name();
         name.as_ref()
             .and_then(|n| {
                 outputs
