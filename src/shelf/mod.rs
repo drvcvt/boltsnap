@@ -7,7 +7,7 @@ pub mod thumbnail;
 
 use crate::DynResult;
 
-pub use crate::platform::shelf::{focused_monitor_origin, run_daemon};
+pub(crate) use crate::platform::shelf::{focused_monitor_origin, run_daemon};
 
 pub fn debug_render(output: &std::path::Path) -> DynResult<()> {
     use image::{Rgba, RgbaImage};

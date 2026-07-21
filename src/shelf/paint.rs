@@ -534,6 +534,7 @@ pub fn draw_shelf(
     );
 }
 
+#[cfg(target_os = "windows")]
 pub fn draw_shelf_opaque(
     canvas: &mut [u8],
     cw: u32,

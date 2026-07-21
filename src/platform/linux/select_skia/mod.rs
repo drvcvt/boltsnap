@@ -293,7 +293,7 @@ impl Selector {
         if outputs.len() <= 1 {
             return outputs.into_iter().next();
         }
-        let name = crate::shelf::focused_monitor_name();
+        let name = crate::platform::shelf::focused_monitor_name();
         name.as_ref()
             .and_then(|n| {
                 outputs

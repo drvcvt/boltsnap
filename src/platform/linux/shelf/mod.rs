@@ -59,7 +59,6 @@ use crate::record::session::{
 use crate::shelf::layout::{Hit, Layout, LayoutConfig, ThumbRect};
 use crate::shelf::model::{CardKind, FileLifetime, ShelfModel};
 use crate::shelf::recording::{POPUP_H, POPUP_W, PopupButton};
-use crate::shelf::{layout, model, paint, recording, thumbnail};
 
 pub struct Daemon {
     registry_state: RegistryState,
@@ -701,63 +700,6 @@ fn prep_shelf_compositor_rules() {
             .stderr(Stdio::null())
             .status();
     }
-}
-
-/// Render the shelf with one sample thumbnail (hovered, so the buttons show) to
-/// a PNG via the exact production draw path. Lets styling be inspected without a
-/// compositor. Converts the premultiplied BGRA canvas back to straight RGBA.
-pub fn debug_render(out: &std::path::Path) -> DynResult<()> {
-    use image::{Rgba, RgbaImage};
-    let (tw, th) = (thumbnail::CARD_W, thumbnail::CARD_H);
-    let mut sample = RgbaImage::new(tw, th);
-    for (x, y, p) in sample.enumerate_pixels_mut() {
-        // a colourful gradient so corners/border are easy to see
-        *p = Rgba([(x * 255 / tw) as u8, (y * 200 / th) as u8, 170, 255]);
-    }
-    let mut model = ShelfModel::new();
-    let id = model.add(
-        std::path::PathBuf::from("/tmp/x.png"),
-        sample,
-        "area".into(),
-    );
-    let cfg = LayoutConfig::default();
-    let sizes: Vec<(u64, u32, u32)> = model
-        .newest_first()
-        .map(|t| (t.id, t.thumb.width(), t.thumb.height()))
-        .collect();
-    let layout = Layout::compute(&sizes, &cfg);
-    let (w, h) = (layout.width, layout.height);
-    let mut canvas = vec![0u8; (w * h * 4) as usize];
-    paint::draw_shelf(
-        &mut canvas,
-        w,
-        h,
-        &layout,
-        &model,
-        Some(id),
-        &cfg,
-        &[],
-        None,
-    );
-
-    // BGRA premultiplied -> composite over mid-gray so the rounded corners
-    // (transparent) and the white border are clearly visible when inspected.
-    let bg = 64u32;
-    let mut img = RgbaImage::new(w, h);
-    for (i, px) in canvas.chunks_exact(4).enumerate() {
-        let (pb, pg, pr, a) = (px[0] as u32, px[1] as u32, px[2] as u32, px[3] as u32);
-        // premultiplied source over opaque gray: out = src + bg*(1-a)
-        let inv = 255 - a;
-        let r = (pr + bg * inv / 255).min(255) as u8;
-        let g = (pg + bg * inv / 255).min(255) as u8;
-        let b = (pb + bg * inv / 255).min(255) as u8;
-        let x = (i as u32) % w;
-        let y = (i as u32) / w;
-        img.put_pixel(x, y, Rgba([r, g, b, 255]));
-    }
-    img.save(out)?;
-    eprintln!("debug-render: wrote {}x{} to {}", w, h, out.display());
-    Ok(())
 }
 
 pub fn run_daemon(save_dir_cli: Option<std::path::PathBuf>) -> DynResult<()> {
