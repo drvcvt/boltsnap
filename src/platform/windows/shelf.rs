@@ -705,14 +705,15 @@ impl ShelfApplication {
             self.pressed_body = None;
             return;
         };
-        let path = match std::fs::canonicalize(&card.png_path) {
-            Ok(path) => path,
-            Err(error) => {
-                eprintln!("boltsnap daemon: prepare drag path: {error}");
-                self.pressed_body = None;
-                return;
-            }
-        };
+        // Not fs::canonicalize: that returns a verbatim `\\?\C:\...` path, and
+        // Chromium-based drop targets (Discord, browsers) reject the prefix in
+        // CF_HDROP. The card path is already absolute.
+        let path = crate::paths::normalize_path(&card.png_path);
+        if let Err(error) = crate::paths::ensure_file(&path) {
+            eprintln!("boltsnap daemon: prepare drag path: {error}");
+            self.pressed_body = None;
+            return;
+        }
         let mut preview = std::io::Cursor::new(Vec::new());
         if let Err(error) = image::DynamicImage::ImageRgba8(card.thumb.clone())
             .write_to(&mut preview, image::ImageFormat::Png)
