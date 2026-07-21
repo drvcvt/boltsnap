@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   windows-x86_64:
-    name: Windows x86_64 (binary + ZIP + MSI)
+    name: Windows x86_64 (binary + ZIP + MSI + NSIS)
     runs-on: windows-latest
     env:
       TAG_NAME: ${{ github.event.inputs.tag || github.ref_name }}
@@ -65,6 +65,20 @@ jobs:
             -Version $env:RELEASE_VERSION `
             -SkipBuild
 
+      - name: Install NSIS
+        shell: pwsh
+        run: choco install nsis --yes --no-progress
+
+      - name: Build NSIS installer
+        shell: pwsh
+        run: |
+          ./packaging/windows/build-nsis.ps1 `
+            -EddyRepository "$env:GITHUB_WORKSPACE/eddy" `
+            -QtDirectory $env:QT_ROOT_DIR `
+            -Version $env:RELEASE_VERSION `
+            -SkipBuild `
+            -SkipEddyBuild
+
       - name: Stage portable ZIP
         shell: pwsh
         run: |
@@ -79,8 +93,11 @@ jobs:
       - name: Generate Windows checksums
         shell: pwsh
         run: |
-          Get-ChildItem dist -Recurse -File |
-            Where-Object { $_.Extension -in '.zip', '.msi' } |
+          @(
+            Get-ChildItem dist -Filter '*.zip' -File
+            Get-ChildItem dist/msi -Filter '*.msi' -File
+            Get-ChildItem dist/nsis -Filter '*.exe' -File
+          ) |
             Sort-Object Name |
             ForEach-Object {
               "$(($_ | Get-FileHash -Algorithm SHA256).Hash.ToLower())  $($_.Name)"
@@ -96,6 +113,7 @@ jobs:
           files: |
             dist/*.zip
             dist/msi/*.msi
+            dist/nsis/*.exe
             dist/SHA256SUMS-windows
 
   linux-x86_64:
