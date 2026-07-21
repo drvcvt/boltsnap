@@ -107,6 +107,24 @@ pub fn cache_dir() -> PathBuf {
     }
 }
 
+pub fn home_dir() -> PathBuf {
+    env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+pub fn config_dir() -> PathBuf {
+    if let Some(config) = env::var_os("XDG_CONFIG_HOME") {
+        PathBuf::from(config).join("boltsnap")
+    } else {
+        home_dir().join(".config").join("boltsnap")
+    }
+}
+
+pub fn default_screenshot_dir() -> PathBuf {
+    home_dir().join("Bilder").join("boltsnap")
+}
+
 pub fn last_pointer_path() -> PathBuf {
     cache_dir().join("last.txt")
 }
@@ -204,7 +222,7 @@ pub fn clean_orphan_shelf_temps() -> usize {
     removed
 }
 
-/// Disk-backed directory for screen recordings — `$XDG_CACHE_HOME/boltsnap/rec`
+/// Disk-backed directory for screen recordings â€” `$XDG_CACHE_HOME/boltsnap/rec`
 /// (else `~/.cache/boltsnap/rec`). Recordings are many MB, so they must NOT go in
 /// the system temp dir, which on this setup is tmpfs (RAM-backed).
 pub fn rec_dir() -> PathBuf {
@@ -297,7 +315,7 @@ fn unique_recording_path_at(dir: &Path, output: Option<&str>, stamp: &str) -> Pa
 }
 
 /// Local wall-clock stamp `YYYY-MM-DD_HH-MM-SS` via `date` (correct local time,
-/// no date-crate dependency — matching how the codebase already shells out to
+/// no date-crate dependency â€” matching how the codebase already shells out to
 /// `hyprctl`). Falls back to epoch millis if `date` is unavailable.
 pub fn local_timestamp() -> String {
     std::process::Command::new("date")

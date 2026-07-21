@@ -85,7 +85,7 @@ const DIM_ALPHA: u8 = 110;
 const BORDER_W: f32 = 1.5;
 /// Draw the selection overlay onto `pm` (which already contains the opaque
 /// screenshot). `sel` is the surface-space selection `(x, y, w, h)`; `None`
-/// means "no selection yet" — dim the whole surface.
+/// means "no selection yet" Ã¢â‚¬â€ dim the whole surface.
 pub fn dim_and_restore(pm: &mut Pixmap, sel: Option<(f32, f32, f32, f32)>) {
     let w = pm.width();
     let h = pm.height();
@@ -107,7 +107,7 @@ pub fn dim_and_restore(pm: &mut Pixmap, sel: Option<(f32, f32, f32, f32)>) {
     // Save the selection's bright pixels, then dim with a SINGLE full-surface
     // fill, then write the bright pixels back. One uniform fill (instead of four
     // rects around the selection) leaves no non-antialiased fractional-edge
-    // seams — those left 1px undimmed rows at the selection/screen boundary.
+    // seams Ã¢â‚¬â€ those left 1px undimmed rows at the selection/screen boundary.
     let rowbytes = (w * 4) as usize;
     let saved = bounds.map(|(x0, y0, x1, y1)| {
         let span = ((x1 - x0) * 4) as usize;
@@ -178,7 +178,7 @@ pub fn draw_handles(pm: &mut Pixmap, sel: (f32, f32, f32, f32)) {
         return;
     }
     const HS: f32 = 10.0; // handle square side
-    const RAD: f32 = 3.5; // corner radius — rounded "squircle" handles
+    const RAD: f32 = 3.5; // corner radius Ã¢â‚¬â€ rounded "squircle" handles
     let (l, t, r, b) = (x, y, x + w, y + h);
     let (cx, cy) = (x + w / 2.0, y + h / 2.0);
     let centers = [
@@ -219,7 +219,7 @@ pub fn draw_handles(pm: &mut Pixmap, sel: (f32, f32, f32, f32)) {
     }
 }
 
-/// The badge font: a small embedded DejaVu Sans subset (printable ASCII + ×).
+/// The badge font: a small embedded DejaVu Sans subset (printable ASCII + Ãƒâ€”).
 /// Parsed once and cached.
 fn badge_font() -> &'static FontRef<'static> {
     static FONT: OnceLock<FontRef<'static>> = OnceLock::new();
@@ -281,14 +281,14 @@ fn draw_text_aa(pm: &mut Pixmap, x: f32, baseline: f32, text: &str, px: f32, rgb
     }
 }
 
-/// Draw the `W×H` dimension badge: a rounded translucent pill with crisp,
+/// Draw the `WÃƒâ€”H` dimension badge: a rounded translucent pill with crisp,
 /// anti-aliased text. Placed by `edit::badge_rect` (above-left, flipping at edges).
 pub fn draw_badge(pm: &mut Pixmap, sel: (f32, f32, f32, f32), surf_w: u32, surf_h: u32) {
     let (x, y, w, h) = sel;
     if w < 1.0 || h < 1.0 {
         return;
     }
-    let label = format!("{}×{}", w.round() as i32, h.round() as i32);
+    let label = format!("{}Ãƒâ€”{}", w.round() as i32, h.round() as i32);
     let px = 17.0_f32;
     let pad = 7.0_f64;
     let font = badge_font();
@@ -298,13 +298,13 @@ pub fn draw_badge(pm: &mut Pixmap, sel: (f32, f32, f32, f32), surf_w: u32, surf_
         .map(|c| scaled.h_advance(font.glyph_id(c)))
         .sum();
     let text_h = scaled.ascent() - scaled.descent();
-    let rect = crate::select_skia::edit::Rect {
+    let rect = crate::selector::edit::Rect {
         x: x as f64,
         y: y as f64,
         w: w as f64,
         h: h as f64,
     };
-    let (bx, by, bw, bh) = crate::select_skia::edit::badge_rect(
+    let (bx, by, bw, bh) = crate::selector::edit::badge_rect(
         rect,
         text_w as f64,
         text_h as f64,
@@ -330,7 +330,7 @@ pub fn draw_badge(pm: &mut Pixmap, sel: (f32, f32, f32, f32), surf_w: u32, surf_
     );
 }
 
-// REC pill metrics — shared by `rec_pill_rect` (placement/hit-zone) and
+// REC pill metrics Ã¢â‚¬â€ shared by `rec_pill_rect` (placement/hit-zone) and
 // `draw_rec_pill` (interior), so the clickable area exactly matches the drawn pill.
 const REC_PX: f32 = 17.0;
 const REC_PAD: f64 = 7.0;
@@ -370,13 +370,13 @@ pub fn rec_pill_rect(
     // The pill carries a leading red dot, so widen the content box by the dot
     // diameter plus its gap; badge_rect handles placement + on-screen clamping.
     let content_w = REC_DOT_R * 2.0 + REC_DOT_GAP + text_w as f64;
-    let rect = crate::select_skia::edit::Rect {
+    let rect = crate::selector::edit::Rect {
         x: x as f64,
         y: y as f64,
         w: w as f64,
         h: h as f64,
     };
-    Some(crate::select_skia::edit::badge_rect(
+    Some(crate::selector::edit::badge_rect(
         rect,
         content_w,
         text_h as f64,
@@ -585,7 +585,7 @@ pub fn draw_record_frame_checkbox(
 /// Draw the recording affordance: a small pill near the selection with a red
 /// filled dot and the text "REC". Placed like the dimension badge (above-left,
 /// flipping at edges) and reuses the badge font/text rendering. Red accent so it
-/// reads as record. Used by the record-mode selector instead of the W×H badge.
+/// reads as record. Used by the record-mode selector instead of the WÃƒâ€”H badge.
 /// The clickable hit-zone is `rec_pill_rect` (same box).
 pub fn draw_rec_pill(pm: &mut Pixmap, sel: (f32, f32, f32, f32), surf_w: u32, surf_h: u32) {
     let Some((bx, by, bw, bh)) = rec_pill_rect(sel, surf_w, surf_h) else {
@@ -595,7 +595,7 @@ pub fn draw_rec_pill(pm: &mut Pixmap, sel: (f32, f32, f32, f32), surf_w: u32, su
     let font = badge_font();
     let scaled = font.as_scaled(PxScale::from(REC_PX));
     let mut pill = Paint::default();
-    pill.set_color_rgba8(0x12, 0x12, 0x12, 230); // #121212, matching the W×H badge
+    pill.set_color_rgba8(0x12, 0x12, 0x12, 230); // #121212, matching the WÃƒâ€”H badge
     pill.anti_alias = true;
     if let Some(path) = rounded_rect(bx as f32, by as f32, bw as f32, bh as f32, 7.0) {
         pm.fill_path(&path, &pill, FillRule::Winding, Transform::identity(), None);
@@ -648,7 +648,7 @@ pub fn draw_magnifier(
     surf_w: u32,
     surf_h: u32,
 ) {
-    use crate::select_skia::edit::{magnifier_placement, magnifier_source};
+    use crate::selector::edit::{magnifier_placement, magnifier_source};
     const LOUPE: u32 = 120;
     const SAMPLE: u32 = 30;
     let (lx, ly) = magnifier_placement(cursor, LOUPE as f64, 24.0, surf_w as f64, surf_h as f64);
@@ -872,7 +872,7 @@ mod tests {
 
     #[test]
     fn rec_pill_rect_is_above_selection_and_hittable() {
-        // Selection well clear of the top edge → pill sits above it.
+        // Selection well clear of the top edge Ã¢â€ â€™ pill sits above it.
         let sel = (120.0, 150.0, 160.0, 90.0);
         let (bx, by, bw, bh) =
             rec_pill_rect(sel, 400, 300).expect("pill rect for a real selection");
@@ -882,7 +882,7 @@ mod tests {
         // Its own centre is inside the rect (so a click there hits the button).
         let (cx, cy) = (bx + bw / 2.0, by + bh / 2.0);
         assert!(cx >= bx && cx < bx + bw && cy >= by && cy < by + bh);
-        // Sub-pixel selection → no pill.
+        // Sub-pixel selection Ã¢â€ â€™ no pill.
         assert!(rec_pill_rect((10.0, 10.0, 0.0, 0.0), 400, 300).is_none());
     }
 

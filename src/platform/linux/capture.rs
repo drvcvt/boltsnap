@@ -28,6 +28,7 @@ pub fn capture(
             None
         }
         Backend::Wayland => capture_wayland(mode, output, instant)?,
+        Backend::Windows => return Err("Windows capture is unavailable on Linux".into()),
         Backend::Auto => unreachable!(),
     };
     if !output.is_file() || output.metadata()?.len() == 0 {
@@ -344,8 +345,9 @@ fn capture_wayland(mode: CaptureMode, output: &Path, instant: bool) -> DynResult
                     .map_err(|e| format!("wayshot single-output failed: {e}"))?;
                 Ok(img.to_rgba8())
             };
-            let cropped = crate::select_skia::run_select_with_parallel_capture(grab, instant)?
-                .ok_or("selection cancelled")?;
+            let cropped =
+                crate::platform::select_skia::run_select_with_parallel_capture(grab, instant)?
+                    .ok_or("selection cancelled")?;
             image::DynamicImage::ImageRgba8(cropped)
                 .to_rgb8()
                 .save(output)
