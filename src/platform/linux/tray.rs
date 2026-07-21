@@ -9,8 +9,8 @@ static OFFLINE_LOGGED: AtomicBool = AtomicBool::new(false);
 fn tray_icons() -> &'static [ksni::Icon] {
     static ICONS: LazyLock<Vec<ksni::Icon>> = LazyLock::new(|| {
         [
-            include_bytes!("../assets/icons/boltsnap-tray-32.png").as_slice(),
-            include_bytes!("../assets/icons/boltsnap-tray-64.png").as_slice(),
+            include_bytes!("../../../assets/icons/boltsnap-tray-32.png").as_slice(),
+            include_bytes!("../../../assets/icons/boltsnap-tray-64.png").as_slice(),
         ]
         .into_iter()
         .map(|png| {
@@ -138,7 +138,7 @@ fn menu_model(snapshot: &TraySnapshot) -> TrayMenuModel {
 
 pub struct BoltsnapTray {
     snapshot: TraySnapshot,
-    sender: calloop::channel::Sender<crate::shelf::DaemonEvent>,
+    sender: calloop::channel::Sender<super::shelf::DaemonEvent>,
 }
 
 pub struct TrayPublisher {
@@ -149,7 +149,7 @@ pub struct TrayPublisher {
 impl TrayPublisher {
     pub fn spawn(
         snapshot: TraySnapshot,
-        sender: calloop::channel::Sender<crate::shelf::DaemonEvent>,
+        sender: calloop::channel::Sender<super::shelf::DaemonEvent>,
     ) -> Self {
         let latest = Arc::new(LatestValue::new());
         let worker_latest = Arc::clone(&latest);
@@ -184,7 +184,7 @@ impl TrayPublisher {
 impl BoltsnapTray {
     pub fn new(
         snapshot: TraySnapshot,
-        sender: calloop::channel::Sender<crate::shelf::DaemonEvent>,
+        sender: calloop::channel::Sender<super::shelf::DaemonEvent>,
     ) -> Self {
         Self { snapshot, sender }
     }
@@ -194,7 +194,7 @@ impl BoltsnapTray {
     }
 
     fn send(&self, action: TrayAction) {
-        let _ = self.sender.send(crate::shelf::DaemonEvent::Tray(action));
+        let _ = self.sender.send(super::shelf::DaemonEvent::Tray(action));
     }
 }
 

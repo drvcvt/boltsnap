@@ -1,5 +1,6 @@
 use super::{Geometry, Monitor, resolve_record_outputs, wf_recorder_args, wf_recorder_output_args};
 use crate::config::{RecordBothMode, RecordingPrefs};
+pub use crate::protocol::{PublicRecordingState, RecordingAction};
 use crate::record::audio::AudioCapture;
 use std::collections::BTreeMap;
 use std::fs;
@@ -9,23 +10,6 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PublicRecordingState {
-    Idle,
-    Recording,
-    Paused,
-    Finalizing,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RecordingAction {
-    Pause,
-    Resume,
-    SaveShelf,
-    SaveDisk,
-    Discard,
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionPhase {

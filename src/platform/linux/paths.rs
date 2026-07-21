@@ -107,6 +107,24 @@ pub fn cache_dir() -> PathBuf {
     }
 }
 
+pub fn home_dir() -> PathBuf {
+    env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+pub fn config_dir() -> PathBuf {
+    if let Some(config) = env::var_os("XDG_CONFIG_HOME") {
+        PathBuf::from(config).join("boltsnap")
+    } else {
+        home_dir().join(".config").join("boltsnap")
+    }
+}
+
+pub fn default_screenshot_dir() -> PathBuf {
+    home_dir().join("Bilder").join("boltsnap")
+}
+
 pub fn last_pointer_path() -> PathBuf {
     cache_dir().join("last.txt")
 }

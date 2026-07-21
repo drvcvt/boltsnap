@@ -14,6 +14,48 @@ permissions:
   contents: write
 
 jobs:
+  windows-x86_64:
+    name: Windows x86_64 (binary + ZIP)
+    runs-on: windows-latest
+    env:
+      TAG_NAME: ${{ github.event.inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Cargo test
+        run: cargo test --release --locked
+
+      - name: Cargo build (release)
+        run: cargo build --release --locked
+
+      - name: Stage portable ZIP
+        shell: pwsh
+        run: |
+          $name = "boltsnap-$env:TAG_NAME-x86_64-windows"
+          New-Item -ItemType Directory -Force "dist/$name" | Out-Null
+          Copy-Item target/release/boltsnap.exe "dist/$name/boltsnap.exe"
+          Copy-Item target/release/boltsnap-background.exe "dist/$name/boltsnap-background.exe"
+          Copy-Item README.md "dist/$name/README.md"
+          Copy-Item LICENSE "dist/$name/LICENSE"
+          Compress-Archive -Path "dist/$name" -DestinationPath "dist/$name.zip"
+          (Get-FileHash "dist/$name.zip" -Algorithm SHA256).Hash.ToLower() + "  $name.zip" |
+            Set-Content -Encoding ascii dist/SHA256SUMS-windows
+
+      - name: Create / update GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG_NAME }}
+          name: boltsnap ${{ env.TAG_NAME }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/*.zip
+            dist/SHA256SUMS-windows
+
   linux-x86_64:
     name: Linux x86_64 (binary + .deb)
     runs-on: ubuntu-22.04

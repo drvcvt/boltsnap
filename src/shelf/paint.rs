@@ -520,6 +520,49 @@ pub fn draw_shelf(
     anims: &[(u64, f32, f32)],
     save_flash: Option<u64>,
 ) {
+    draw_shelf_with_opacity(
+        canvas,
+        cw,
+        ch,
+        layout,
+        model,
+        hovered,
+        cfg,
+        anims,
+        save_flash,
+        CARD_OPACITY,
+    );
+}
+
+#[cfg(target_os = "windows")]
+pub fn draw_shelf_opaque(
+    canvas: &mut [u8],
+    cw: u32,
+    ch: u32,
+    layout: &Layout,
+    model: &ShelfModel,
+    hovered: Option<u64>,
+    cfg: &LayoutConfig,
+    anims: &[(u64, f32, f32)],
+    save_flash: Option<u64>,
+) {
+    draw_shelf_with_opacity(
+        canvas, cw, ch, layout, model, hovered, cfg, anims, save_flash, 1.0,
+    );
+}
+
+fn draw_shelf_with_opacity(
+    canvas: &mut [u8],
+    cw: u32,
+    ch: u32,
+    layout: &Layout,
+    model: &ShelfModel,
+    hovered: Option<u64>,
+    cfg: &LayoutConfig,
+    anims: &[(u64, f32, f32)],
+    save_flash: Option<u64>,
+    card_opacity: f32,
+) {
     clear(canvas);
     // Pass 1: a soft drop shadow behind every settled card — independent of hover
     // and opacity, so all cards read as lifted. Drawn first so each card blits on
@@ -545,7 +588,7 @@ pub fn draw_shelf(
             let base = if hovered == Some(r.id) {
                 1.0
             } else {
-                CARD_OPACITY
+                card_opacity
             };
             blit_thumb_card_anim(
                 canvas,
