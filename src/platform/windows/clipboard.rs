@@ -78,10 +78,15 @@ pub fn copy_uri_to_clipboard(path: &Path) -> DynResult<()> {
         }
         return Err("open Windows clipboard for file reference failed".into());
     }
-    let result = unsafe {
-        EmptyClipboard()?;
+    // No `?` between OpenClipboard and CloseClipboard: an early return would
+    // leave the clipboard open and block every other application's clipboard
+    // for the daemon's lifetime.
+    let result = (|| unsafe {
+        EmptyClipboard().map_err(|error| format!("empty Windows clipboard: {error}"))?;
         SetClipboardData(CF_HDROP.0 as u32, Some(HANDLE(memory.0)))
-    };
+            .map_err(|error| format!("set Windows file clipboard: {error}"))?;
+        Ok::<(), String>(())
+    })();
     unsafe {
         let _ = CloseClipboard();
     }
@@ -89,7 +94,7 @@ pub fn copy_uri_to_clipboard(path: &Path) -> DynResult<()> {
         unsafe {
             let _ = GlobalFree(Some(memory));
         }
-        return Err(format!("set Windows file clipboard: {error}").into());
+        return Err(error.into());
     }
     Ok(())
 }
