@@ -30,7 +30,7 @@ pub fn clear(canvas: &mut [u8]) {
 /// transparent outside the radius, no border) in premultiplied BGRA. The
 /// full-size slot is `img.dimensions()` at (dx, dy); the card is scaled by
 /// `scale` (0..1) and centred in that slot, and `opacity` (0..1) is the card's
-/// final alpha Ã¢â‚¬â€ the caller picks the base translucency (e.g. `CARD_OPACITY`, or
+/// final alpha — the caller picks the base translucency (e.g. `CARD_OPACITY`, or
 /// `1.0` for the hovered card) and folds in any appear/dismiss fade. `scale == 1.0
 /// && opacity == 1.0` is a fully-opaque settled card.
 pub fn blit_thumb_card_anim(
@@ -55,7 +55,7 @@ pub fn blit_thumb_card_anim(
         scaled = imageops::resize(img, sw, sh, imageops::FilterType::Triangle);
         &scaled
     };
-    // Centre the scaled card in the original iwÃƒâ€”ih slot.
+    // Centre the scaled card in the original iw×ih slot.
     let ox = dx + (iw - sw) / 2;
     let oy = dy + (ih - sh) / 2;
     let w = sw as f32;
@@ -117,7 +117,7 @@ pub fn build_drag_icon(src: &RgbaImage, w: u32, h: u32, radius: f32, opacity: f3
     buf
 }
 
-/// Coverage of a rounded rectangle (size wÃƒâ€”h, corner radius r) at point (px,py):
+/// Coverage of a rounded rectangle (size w×h, corner radius r) at point (px,py):
 /// ~1.0 well inside, ~0.0 well outside, anti-aliased across ~1px at the edge.
 /// Uses the standard rounded-box signed distance field.
 fn rr_coverage(px: f32, py: f32, w: f32, h: f32, r: f32) -> f32 {
@@ -215,7 +215,7 @@ fn stroke_line(
     }
 }
 
-/// Draw a Ã¢â€“Â¶ play badge centered on a card, to mark Video cards as distinct from
+/// Draw a ▶ play badge centered on a card, to mark Video cards as distinct from
 /// screenshots. The badge is always visible (not hover-gated).
 fn draw_play_badge(canvas: &mut [u8], cw: u32, ch: u32, r: &ThumbRect) {
     let min_dim = r.w.min(r.h) as f32;
@@ -228,10 +228,10 @@ fn draw_play_badge(canvas: &mut [u8], cw: u32, ch: u32, r: &ThumbRect) {
     fill_circle(canvas, cw, ch, cx, cy, radius + 1.5, (0, 0, 0), 0.28);
     fill_circle(canvas, cw, ch, cx, cy, radius, BTN_BG, 0.6);
 
-    // Right-pointing triangle (Ã¢â€“Â¶), optically centred (a play glyph looks centred
-    // when its centroid Ã¢â‚¬â€ 1/3 from the flat left edge Ã¢â‚¬â€ sits at the disc centre).
+    // Right-pointing triangle (▶), optically centred (a play glyph looks centred
+    // when its centroid — 1/3 from the flat left edge — sits at the disc centre).
     let tri_h = radius * 1.04; // triangle height
-    let tri_w = radius * 0.96; // flat left edge Ã¢â€ â€™ apex
+    let tri_w = radius * 0.96; // flat left edge → apex
     let left_x = cx - tri_w / 3.0;
     let apex_x = left_x + tri_w;
     let top_y = cy - tri_h / 2.0;
@@ -240,7 +240,7 @@ fn draw_play_badge(canvas: &mut [u8], cw: u32, ch: u32, r: &ThumbRect) {
 
     // Inside test: within the y-band, right of the flat left edge, and left of the
     // boundary that shrinks linearly from the apex (at mid-height) to `left_x` (at
-    // the tips). Sampled 4Ãƒâ€”4 per pixel for smooth anti-aliased edges on all sides.
+    // the tips). Sampled 4×4 per pixel for smooth anti-aliased edges on all sides.
     let inside = |x: f32, y: f32| -> bool {
         if y < top_y || y > bot_y || x < left_x {
             return false;
@@ -254,7 +254,7 @@ fn draw_play_badge(canvas: &mut [u8], cw: u32, ch: u32, r: &ThumbRect) {
     let x1 = apex_x.ceil() as i32 + 1;
     let y0 = top_y.floor() as i32 - 1;
     let y1 = bot_y.ceil() as i32 + 1;
-    const SS: i32 = 4; // 4Ãƒâ€”4 supersampling
+    const SS: i32 = 4; // 4×4 supersampling
     let inv = 1.0 / (SS * SS) as f32;
     for py in y0..=y1 {
         for px in x0..=x1 {
@@ -286,7 +286,7 @@ fn draw_play_badge(canvas: &mut [u8], cw: u32, ch: u32, r: &ThumbRect) {
     }
 }
 
-/// Recording-overlay accent (red Ã¢â€”Â, button glyphs).
+/// Recording-overlay accent (red ●, button glyphs).
 const REC_RGB: (u8, u8, u8) = (235, 64, 64);
 /// Region marker frame: black, for a clean, unobtrusive recording outline.
 const MARKER_RGB: (u8, u8, u8) = (0, 0, 0);
@@ -298,7 +298,7 @@ const IND_BG: (u8, u8, u8) = (0x12, 0x12, 0x12); // #121212, matching the badge/
 const IND_BTN_BG: (u8, u8, u8) = (0x26, 0x26, 0x26); // #262626
 
 /// Draw the click-through region marker: a rounded, anti-aliased `border`-px black
-/// frame on a transparent `w`Ãƒâ€”`h` surface. The surface is inflated past the
+/// frame on a transparent `w`×`h` surface. The surface is inflated past the
 /// recorded rect by `radius` so the rounded corners sit fully OUTSIDE the recording
 /// and are never captured. The frame is the ring between an outer rounded rect
 /// (the whole surface, radius `radius`) and an inner one inset by `border`.
@@ -564,7 +564,7 @@ fn draw_shelf_with_opacity(
     card_opacity: f32,
 ) {
     clear(canvas);
-    // Pass 1: a soft drop shadow behind every settled card Ã¢â‚¬â€ independent of hover
+    // Pass 1: a soft drop shadow behind every settled card — independent of hover
     // and opacity, so all cards read as lifted. Drawn first so each card blits on
     // top of ALL shadows (no card edge is darkened by a neighbour's shadow).
     for r in &layout.thumbs {
@@ -601,7 +601,7 @@ fn draw_shelf_with_opacity(
                 base * anim_opacity,
             );
         }
-        // Ã¢â€“Â¶ play badge on Video cards (settled only, so it doesn't sit at full size
+        // ▶ play badge on Video cards (settled only, so it doesn't sit at full size
         // over a scaling card during the appear/dismiss animation).
         if !animating
             && model.get(r.id).map(|t| t.kind) == Some(crate::shelf::model::CardKind::Video)
@@ -891,7 +891,7 @@ mod tests {
         // slot corner (well outside the centred 20x20 card) stays transparent
         let corner = ((2 * 40 + 2) * 4) as usize;
         assert_eq!(buf[corner + 3], 0, "slot corner should be untouched");
-        // centre carries ~0.5*0.75*255 Ã¢â€°Ë† 95
+        // centre carries ~0.5*0.75*255 ≈ 95
         let c = ((20 * 40 + 20) * 4) as usize;
         assert!(
             buf[c + 3] > 70 && buf[c + 3] < 120,

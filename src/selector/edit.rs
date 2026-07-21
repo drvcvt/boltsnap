@@ -144,7 +144,7 @@ pub fn badge_rect(
 }
 
 /// Top-left + size of the source window (in image pixels) to sample for the
-/// magnifier, an `sample`Ãƒâ€”`sample` box centered on `cursor`, clamped to the image.
+/// magnifier, an `sample`×`sample` box centered on `cursor`, clamped to the image.
 pub fn magnifier_source(
     cursor: (f64, f64),
     sample: u32,
