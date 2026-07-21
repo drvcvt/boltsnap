@@ -72,7 +72,7 @@ mod tests {
     #[test]
     fn embedded_fallback_contains_popup_and_selector_glyphs() {
         let font = fallback_popup_font();
-        for ch in "RECORDING PAUSED SAVING... SHELF DISK DISCARD AUDIO ON OFF 01:23 Ã—".chars() {
+        for ch in "RECORDING PAUSED SAVING... SHELF DISK DISCARD AUDIO ON OFF 01:23 ×".chars() {
             if !ch.is_whitespace() {
                 assert_ne!(font.glyph_id(ch), ab_glyph::GlyphId(0), "missing {ch:?}");
             }
