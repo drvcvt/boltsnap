@@ -4,39 +4,89 @@
 
 # Boltsnap
 
-Fast native Rust screenshot and screen-recording tool for Windows, Wayland and
-X11. Capture, selection, shelf, clipboard and Windows recording run in-process.
+Boltsnap is a native screenshot and screen-recording tool for Windows, Wayland,
+and X11. Capture, selection, the screenshot shelf, and clipboard handling run
+in-process.
 
-- In-process capture: `libwayshot` on Wayland, `x11rb` on X11
-- In-process Wayland selection overlay (drag a region) — replaces `slurp`
-- In-process clipboard: `wl-clipboard-rs` on Wayland, `arboard` on X11
-- Pre-pushed compositor rules so the selector appears INSTANTLY (no fade-in
-  animation on Hyprland or Sway)
-- Optional integration with the separate Eddy annotation editor
+- Native capture on Windows, Wayland, and X11
+- In-process region selector on Windows and Wayland
+- Screenshot shelf on Windows and Wayland
+- Optional integration with the separate [Eddy](https://github.com/drvcvt/eddy)
+  annotation editor
 - Pipe-friendly: `-o -` writes PNG to stdout
 
-## Showcase
+## Screenshots
 
-![Boltsnap with its floating screenshot shelf](assets/screenshots/shelf-nested-sway.png)
+These were captured from a real 1280 x 720 headless Sway session using the
+software renderer. The second image is a crop of the same session.
+
+![Two screenshots on the Boltsnap shelf in headless Sway](assets/screenshots/shelf-nested-sway.png)
 
 <p align="center">
-  <img src="assets/screenshots/shelf-headless-render.png" alt="Boltsnap shelf card with hover actions" width="234">
+  <img src="assets/screenshots/shelf-headless-render.png" alt="Close-up of two real captures on the Boltsnap shelf" width="330">
 </p>
 
 ## Install
 
-### Pre-built binaries (Linux x86_64)
+### Windows 10/11
+
+Download one of these from the
+[latest release](https://github.com/drvcvt/boltsnap/releases/latest):
+
+| File | Use it for |
+|------|------------|
+| `Boltsnap-X.Y.Z-windows-x64-setup.exe` | Regular interactive setup (NSIS) |
+| `Boltsnap-X.Y.Z-windows-x64.msi` | MSI deployment or unattended installation |
+| `boltsnap-vX.Y.Z-x86_64-windows.zip` | Portable use without installation |
+
+The NSIS and MSI installers are per-user, need no administrator account, and
+offer the same Boltsnap and optional Eddy components. They start the shelf
+daemon after setup and at sign-in, add Start-menu shortcuts, and can be removed
+from Windows **Installed apps**. Eddy is selected by default; Boltsnap still
+works normally without it.
+
+For an unattended MSI install:
+
+```powershell
+msiexec /i .\Boltsnap-1.0.0-windows-x64.msi /qn
+```
+
+After installation, **PrintScreen** or **Win+Shift+S** opens the area selector;
+**Alt+Shift+S** opens the recording selector. The shelf runs in the notification
+area and does not take focus or add a taskbar entry.
+
+To build on Windows, install the Rust MSVC toolchain, Visual Studio Build Tools
+with **Desktop development with C++**, and a current Windows SDK:
+
+```powershell
+git clone https://github.com/drvcvt/boltsnap
+cd boltsnap
+cargo build --release
+.\target\release\boltsnap.exe area
+```
+
+Maintainers can build both installers, including Eddy and its Qt runtime, with:
+
+```powershell
+.\packaging\windows\build-msi.ps1
+.\packaging\windows\build-nsis.ps1
+```
+
+Both scripts expect the Eddy repository beside the Boltsnap workspace. Pass
+`-EddyRepository PATH` if it lives elsewhere.
+
+### Linux x86_64
 
 Each tagged release on the
 [GitHub releases page](https://github.com/drvcvt/boltsnap/releases) ships:
 
 - `boltsnap-vX.Y.Z-x86_64-linux.tar.gz` — standalone binary
-- `boltsnap_X.Y.Z_amd64.deb` — Debian / Ubuntu package
+- `boltsnap_X.Y.Z-1_amd64.deb` — Debian / Ubuntu package
 - `SHA256SUMS`
 
 ```sh
 # .deb (Debian/Ubuntu)
-curl -L -o boltsnap.deb "https://github.com/drvcvt/boltsnap/releases/latest/download/boltsnap_<VERSION>_amd64.deb"
+curl -L -o boltsnap.deb "https://github.com/drvcvt/boltsnap/releases/latest/download/boltsnap_<VERSION>-1_amd64.deb"
 sudo apt install ./boltsnap.deb
 
 # Tarball (any glibc-based distro)
@@ -50,69 +100,6 @@ sudo install -m755 boltsnap-*/boltsnap /usr/local/bin/
 ```sh
 cargo install --path .
 ```
-
-### Windows 10/11
-
-Install the Rust MSVC toolchain, Visual Studio Build Tools with **Desktop
-development with C++**, and a current Windows SDK. Then build and start:
-
-```powershell
-git clone https://github.com/drvcvt/boltsnap
-cd boltsnap
-cargo build --release
-.\target\release\boltsnap.exe area
-```
-
-The shelf daemon starts automatically and provides a Windows notification-area
-icon with quick actions. On Windows, the Shelf window is clipped directly to
-the rounded image cards without title text, padding, borders, taskbar entries,
-or Alt+Tab entries, and it never takes foreground focus. Selector and recording
-controls also remain borderless.
-Explicit startup is optional:
-
-```powershell
-.\target\release\boltsnap.exe daemon
-```
-
-For a normal Windows installation, download the newest MSI or NSIS setup from
-[GitHub Releases](https://github.com/drvcvt/boltsnap/releases/latest), open it,
-and follow its feature selection dialog. Both installers provide the same
-per-user Boltsnap and optional Eddy components.
-
-```powershell
-msiexec /i .\dist\msi\Boltsnap-1.0.0-windows-x64.msi
-```
-
-The per-user MSI needs no install script or administrator account. It installs
-Boltsnap under `%LOCALAPPDATA%\Programs\Boltsnap`, starts the daemon after setup
-and at every sign-in through an independent per-user Task Scheduler task,
-restarts it after failures, and uses a dedicated GUI-subsystem launcher so no
-console window is created. It also registers Start-menu shortcuts, disables
-the Windows PrintScreen Snipping Tool action, and keeps the native tray menu
-available. Uninstall it from Windows **Installed apps**.
-
-**Eddy image editor (recommended)** is selected by default but remains
-optional. Eddy is the companion editor for arrows, text, highlighting, blur,
-and redaction. When installed through the MSI, right-clicking an image in the
-Shelf opens that exact image in Eddy; there is no separate Edit button. Boltsnap
-continues to work normally when Eddy is not selected, except for this action.
-
-Maintainers can build the MSI and NSIS setup, including Eddy and its Qt runtime,
-with:
-
-```powershell
-.\packaging\windows\build-msi.ps1
-.\packaging\windows\build-nsis.ps1
-```
-
-The build script expects the Eddy repository beside the Boltsnap workspace by
-default. Use `-EddyRepository PATH` when it is stored elsewhere.
-
-Afterwards, pressing **PrintScreen** or **Win+Shift+S** opens the Boltsnap area
-selector and captures immediately when the mouse button is released;
-**Alt+Shift+S** opens the area recording selector. A dedicated
-low-level keyboard hook suppresses the Windows-reserved shortcut and
-immediately hands capture startup to a worker thread.
 
 ### Arch Linux
 
@@ -262,10 +249,9 @@ cargo test
 
 ## Screenshot shelf (Wayland: Hyprland, Sway, Niri)
 
-On Wayland, an interactive capture no longer copies-and-exits. Instead the
-screenshot lands as a small floating **thumbnail in the bottom-left corner**
-of the screen — a macOS-style shelf — and stays there until you use or dismiss
-it. Multiple screenshots stack, newest on top.
+On Wayland, an interactive capture appears as a small floating **thumbnail in
+the bottom-left corner**. It stays there until you use or dismiss it. Multiple
+screenshots stack with the newest one on top.
 
 ```sh
 boltsnap area        # capture a region -> appears in the shelf
