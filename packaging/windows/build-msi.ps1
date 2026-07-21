@@ -2,7 +2,7 @@
 param(
     [string]$EddyRepository = "",
     [string]$QtDirectory = "C:\Qt\6.9.3\msvc2022_64",
-    [string]$Version = "0.4.5",
+    [string]$Version = "0.4.6",
     [string]$OutputDirectory = "dist\msi",
     [switch]$SkipBuild,
     [switch]$SkipEddyBuild
@@ -25,6 +25,7 @@ $output = [System.IO.Path]::GetFullPath((Join-Path $repository $OutputDirectory)
 $source = Join-Path $PSScriptRoot "Boltsnap.wxs"
 $license = Join-Path $PSScriptRoot "License.rtf"
 $boltsnapExecutable = Join-Path $repository "target\release\boltsnap.exe"
+$boltsnapBackgroundExecutable = Join-Path $repository "target\release\boltsnap-background.exe"
 $eddyBuild = Join-Path $EddyRepository "build-win"
 $eddyExecutable = Join-Path $eddyBuild "Release\eddy.exe"
 $windeployqt = Join-Path $QtDirectory "bin\windeployqt.exe"
@@ -63,7 +64,7 @@ if (-not $SkipEddyBuild) {
         throw "cmake is unavailable and no Eddy release executable exists: $eddyExecutable"
     }
 }
-foreach ($required in @($boltsnapExecutable, $eddyExecutable)) {
+foreach ($required in @($boltsnapExecutable, $boltsnapBackgroundExecutable, $eddyExecutable)) {
     if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
         throw "Release executable not found: $required"
     }
@@ -77,6 +78,8 @@ if (Test-Path -LiteralPath $stageRoot) {
 }
 New-Item -ItemType Directory -Path $boltsnapStage, $eddyStage, $output -Force | Out-Null
 Copy-Item -LiteralPath $boltsnapExecutable -Destination (Join-Path $boltsnapStage "boltsnap.exe")
+Copy-Item -LiteralPath $boltsnapBackgroundExecutable `
+    -Destination (Join-Path $boltsnapStage "boltsnap-background.exe")
 Copy-Item -LiteralPath $eddyExecutable -Destination (Join-Path $eddyStage "eddy.exe")
 
 & $windeployqt --release --dir $eddyStage $eddyExecutable

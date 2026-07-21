@@ -78,14 +78,15 @@ For a normal Windows installation, open the generated MSI and follow its
 feature selection dialog:
 
 ```powershell
-msiexec /i .\dist\msi\Boltsnap-0.4.5-windows-x64.msi
+msiexec /i .\dist\msi\Boltsnap-0.4.6-windows-x64.msi
 ```
 
 The per-user MSI needs no install script or administrator account. It installs
 Boltsnap under `%LOCALAPPDATA%\Programs\Boltsnap`, starts the daemon after setup
 and at every sign-in through an independent per-user Task Scheduler task,
-restarts it after failures, registers Start-menu shortcuts, disables the
-Windows PrintScreen Snipping Tool action, and keeps the native tray menu
+restarts it after failures, and uses a dedicated GUI-subsystem launcher so no
+console window is created. It also registers Start-menu shortcuts, disables
+the Windows PrintScreen Snipping Tool action, and keeps the native tray menu
 available. Uninstall it from Windows **Installed apps**.
 
 **Eddy image editor (recommended)** is selected by default but remains

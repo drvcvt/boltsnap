@@ -38,6 +38,7 @@ jobs:
           $name = "boltsnap-$env:TAG_NAME-x86_64-windows"
           New-Item -ItemType Directory -Force "dist/$name" | Out-Null
           Copy-Item target/release/boltsnap.exe "dist/$name/boltsnap.exe"
+          Copy-Item target/release/boltsnap-background.exe "dist/$name/boltsnap-background.exe"
           Copy-Item README.md "dist/$name/README.md"
           Copy-Item LICENSE "dist/$name/LICENSE"
           Compress-Archive -Path "dist/$name" -DestinationPath "dist/$name.zip"
