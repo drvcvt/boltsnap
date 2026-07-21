@@ -45,6 +45,22 @@ enum ShelfEvent {
 const SHELF_MARGIN: i32 = 12;
 const SHELF_CORNER_RADIUS: u32 = 18;
 
+fn prepare_shelf_video(path: &Path) -> DynResult<PathBuf> {
+    let metadata = std::fs::metadata(path)?;
+    if !metadata.is_file() || metadata.len() == 0 {
+        return Err("shelf video is empty".into());
+    }
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("mp4");
+    let retained = crate::paths::rec_file("shelf-video", extension);
+    if std::fs::hard_link(path, &retained).is_err() {
+        std::fs::copy(path, &retained).map_err(|error| format!("copy shelf video: {error}"))?;
+    }
+    Ok(retained)
+}
+
 fn shelf_position(work_area: windows::Win32::Foundation::RECT, height: u32) -> (i32, i32) {
     let height = i32::try_from(height).unwrap_or(i32::MAX);
     let x = work_area.left.saturating_add(SHELF_MARGIN);
@@ -401,17 +417,28 @@ impl ShelfApplication {
         Ok(())
     }
 
-    fn add_video(&mut self, source: String, path: PathBuf, take_ownership: bool) -> DynResult<()> {
-        if !path.is_file() {
-            return Err(format!("video not found: {}", path.display()).into());
-        }
+    fn add_video(
+        &mut self,
+        source: String,
+        path: PathBuf,
+        take_ownership: bool,
+    ) -> DynResult<PathBuf> {
+        let retained = if take_ownership {
+            prepare_shelf_video(&path)?
+        } else {
+            let metadata = std::fs::metadata(&path)?;
+            if !metadata.is_file() || metadata.len() == 0 {
+                return Err("shelf video is empty".into());
+            }
+            path
+        };
         let mut placeholder = RgbaImage::new(thumbnail::CARD_W, thumbnail::CARD_H);
         for (x, y, pixel) in placeholder.enumerate_pixels_mut() {
             let shade = 24 + ((x + y) % 24) as u8;
             *pixel = Rgba([shade, shade, shade + 8, 255]);
         }
         self.model.add_kind_with_lifetime(
-            path,
+            retained.clone(),
             placeholder,
             source,
             CardKind::Video,
@@ -422,55 +449,14 @@ impl ShelfApplication {
             },
         );
         self.rebuild_layout();
-        Ok(())
+        Ok(retained)
     }
 
     fn handle_request(&mut self, request: crate::ipc::Request) -> crate::ipc::Response {
-        use crate::ipc::{Replacement, Request, Response};
+        use crate::ipc::{Request, Response};
         let result = match request {
             Request::Ping => return Response::ok(None),
             Request::Add { source, png, .. } => self.add_image(source, png),
-            Request::AddVideo {
-                source,
-                path,
-                take_ownership,
-                ..
-            } => self.add_video(source, path, take_ownership),
-            Request::Replace { id, media } => match media {
-                Replacement::Image(png) => image::load_from_memory(&png)
-                    .map(|image| image.to_rgba8())
-                    .map_err(|error| error.into())
-                    .and_then(|image| {
-                        let thumbnail = thumbnail::make_card_thumbnail(
-                            &image,
-                            thumbnail::CARD_W,
-                            thumbnail::CARD_H,
-                        );
-                        self.model
-                            .replace_thumb(id, thumbnail)
-                            .then_some(())
-                            .ok_or_else(|| "unknown shelf card".into())
-                    }),
-                Replacement::Video { path, .. } => self
-                    .model
-                    .replace_path_with_lifetime(id, path, FileLifetime::Temporary)
-                    .then_some(())
-                    .ok_or_else(|| "unknown shelf card".into()),
-            },
-            Request::Reload { id } => self
-                .model
-                .get(id)
-                .map(|card| card.png_path.clone())
-                .ok_or_else(|| "unknown shelf card".into())
-                .and_then(|path| image::open(path).map_err(|error| error.into()))
-                .map(|image| {
-                    let thumbnail = thumbnail::make_card_thumbnail(
-                        &image.to_rgba8(),
-                        thumbnail::CARD_W,
-                        thumbnail::CARD_H,
-                    );
-                    self.model.replace_thumb(id, thumbnail);
-                }),
             Request::RecordingStatus => return Response::ok(Some(self.recording_snapshot())),
             Request::RecordingWatch => {
                 return Response::error(
@@ -603,7 +589,7 @@ impl ShelfApplication {
                 match action {
                     RecordingAction::SaveShelf => {
                         match self.add_video("record".into(), temporary, true) {
-                            Ok(()) => Response::ok(Some(self.recording_snapshot())),
+                            Ok(_) => Response::ok(Some(self.recording_snapshot())),
                             Err(error) => Response::error(error.to_string()),
                         }
                     }
@@ -689,47 +675,20 @@ impl ShelfApplication {
                 let _ = self.save(id);
             }
             Hit::Body(id) => {
-                if let Some(card) = self.model.get(id) {
-                    if card.kind == CardKind::Image {
-                        let _ =
-                            crate::clipboard::copy_to_clipboard(&card.png_path, Backend::Windows);
-                    } else {
-                        let _ = crate::clipboard::copy_uri_to_clipboard(&card.png_path);
-                    }
-                }
+                self.copy_card(id);
             }
         }
         self.rebuild_layout();
     }
 
-    fn open_in_eddy(&self) {
-        if self.recording_controls_visible {
-            return;
-        }
-        let Some(Hit::Body(id)) = self.layout.hit(self.cursor.0, self.cursor.1, &self.config)
-        else {
-            return;
-        };
-        let Some(card) = self.model.get(id) else {
-            return;
-        };
-        if card.kind != CardKind::Image {
-            return;
-        }
-        let path = card.png_path.clone();
-        std::thread::spawn(move || {
-            let result = crate::editor::run_editor(
-                path.clone(),
-                Some(path),
-                false,
-                Backend::Windows,
-                None,
-                Some(id),
-            );
-            if let Err(error) = result {
-                eprintln!("boltsnap daemon: open Eddy: {error}");
+    fn copy_card(&self, id: u64) {
+        if let Some(card) = self.model.get(id) {
+            if card.kind == CardKind::Image {
+                let _ = crate::clipboard::copy_to_clipboard(&card.png_path, Backend::Windows);
+            } else {
+                let _ = crate::clipboard::copy_uri_to_clipboard(&card.png_path);
             }
-        });
+        }
     }
 
     fn begin_drag_if_needed(&mut self) {
@@ -1023,7 +982,14 @@ impl ApplicationHandler<ShelfEvent> for ShelfApplication {
                 state: ElementState::Released,
                 button: MouseButton::Right,
                 ..
-            } => self.open_in_eddy(),
+            } => {
+                if !self.recording_controls_visible
+                    && let Some(Hit::Body(id)) =
+                        self.layout.hit(self.cursor.0, self.cursor.1, &self.config)
+                {
+                    self.copy_card(id);
+                }
+            }
             WindowEvent::RedrawRequested => self.draw(event_loop),
             _ => {}
         }
@@ -1070,6 +1036,12 @@ mod tests {
     use super::*;
     use windows::Win32::Foundation::RECT;
 
+    fn video_file(label: &str, contents: &[u8]) -> PathBuf {
+        let path = crate::paths::temp_file(label, "mp4");
+        std::fs::write(&path, contents).unwrap();
+        path
+    }
+
     #[test]
     fn shelf_is_anchored_bottom_left_inside_work_area() {
         let work_area = RECT {
@@ -1090,5 +1062,23 @@ mod tests {
             bottom: 1040,
         };
         assert_eq!(shelf_position(work_area, 300), (-1908, 728));
+    }
+
+    #[test]
+    fn add_video_retains_and_returns_a_boltsnap_owned_path() {
+        let source = video_file("windows-shelf-source", b"video bytes");
+        let mut app = ShelfApplication::new(std::env::temp_dir());
+
+        let retained = app
+            .add_video("record".into(), source.clone(), true)
+            .unwrap();
+
+        assert_ne!(retained, source);
+        assert_eq!(std::fs::read(&retained).unwrap(), b"video bytes");
+        let card = app.model.newest_first().next().unwrap();
+        assert_eq!(card.png_path, retained);
+        assert_eq!(card.lifetime, FileLifetime::Temporary);
+        std::fs::remove_file(source).unwrap();
+        std::fs::remove_file(retained).unwrap();
     }
 }

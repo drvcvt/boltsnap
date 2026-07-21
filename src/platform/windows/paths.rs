@@ -18,28 +18,6 @@ use crate::{Args, DynResult};
 
 static NEXT_PATH_ID: AtomicU64 = AtomicU64::new(0);
 
-pub fn has_cmd(name: &str) -> bool {
-    let Some(paths) = env::var_os("PATH") else {
-        return false;
-    };
-    let extensions = env::var_os("PATHEXT")
-        .map(|value| env::split_paths(&value).collect::<Vec<_>>())
-        .unwrap_or_default();
-    env::split_paths(&paths).any(|directory| {
-        directory.join(name).is_file()
-            || extensions.iter().any(|extension| {
-                let extension = extension.to_string_lossy();
-                directory.join(format!("{name}{extension}")).is_file()
-            })
-    })
-}
-
-pub fn bundled_editor() -> Option<PathBuf> {
-    let executable = env::current_exe().ok()?;
-    let editor = executable.parent()?.join("Eddy").join("eddy.exe");
-    editor.is_file().then_some(editor)
-}
-
 pub fn spawn_reaped(command: &mut Command) -> io::Result<u32> {
     let mut child = command.spawn()?;
     let process_id = child.id();
@@ -77,14 +55,6 @@ pub(crate) fn target_path(args: &Args) -> PathBuf {
     }
 }
 
-pub(crate) fn edit_output_path(args: &Args) -> Option<PathBuf> {
-    args.output
-        .as_deref()
-        .map(normalize_path)
-        .or_else(|| args.save.then(default_save_path))
-        .or_else(|| Some(cache_dir().join("last-edited.png")))
-}
-
 pub fn home_dir() -> PathBuf {
     known_folder(&FOLDERID_Profile)
         .or_else(|| env::var_os("USERPROFILE").map(PathBuf::from))
@@ -102,34 +72,6 @@ pub fn cache_dir() -> PathBuf {
         .unwrap_or_else(|| env::temp_dir())
         .join("boltsnap")
         .join("cache")
-}
-
-pub fn last_pointer_path() -> PathBuf {
-    cache_dir().join("last.txt")
-}
-
-pub fn remember_last_screenshot(path: &Path) -> DynResult<()> {
-    let path = normalize_path(path);
-    if !path.is_file() {
-        return Ok(());
-    }
-    fs::create_dir_all(cache_dir())?;
-    fs::write(last_pointer_path(), path.to_string_lossy().as_bytes())?;
-    Ok(())
-}
-
-pub fn last_screenshot_path() -> DynResult<PathBuf> {
-    let pointer = last_pointer_path();
-    if pointer.is_file() {
-        let path = PathBuf::from(fs::read_to_string(pointer)?.trim());
-        if path.is_file() {
-            return Ok(path);
-        }
-    }
-    let fallback = cache_dir().join("last.png");
-    fallback.is_file().then_some(fallback).ok_or_else(|| {
-        "no last screenshot yet; run `boltsnap` first, then `boltsnap --edit`".into()
-    })
 }
 
 pub fn normalize_path(path: &Path) -> PathBuf {

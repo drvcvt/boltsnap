@@ -5,7 +5,6 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 
 mod config;
-mod editor;
 mod platform;
 mod record;
 mod selector;
@@ -16,7 +15,6 @@ pub(crate) use boltsnap::{image_model, protocol};
 
 use crate::capture::{capture, strip_uniform_border};
 use crate::clipboard::{copy_to_clipboard, serve_wayland_clipboard, serve_wayland_uri_list};
-use crate::editor::run_editor;
 use crate::paths::*;
 
 pub type DynResult<T> = Result<T, Box<dyn Error>>;
@@ -89,9 +87,7 @@ impl CaptureMode {
 #[derive(Clone, Debug)]
 struct Args {
     command: String,
-    command_explicit: bool,
     image: Option<PathBuf>,
-    edit: bool,
     copy: bool,
     /// True if the user passed --copy or --no-copy explicitly. On Wayland the
     /// shelf is the default sink, so we only auto-copy when copy was asked for.
@@ -104,8 +100,6 @@ struct Args {
     instant: bool,
     /// Override the shelf save directory (daemon).
     save_dir: Option<PathBuf>,
-    /// Override the annotation editor command (edit).
-    editor_cmd: Option<String>,
     tail: Vec<String>,
     json: bool,
 }
@@ -114,9 +108,7 @@ impl Default for Args {
     fn default() -> Self {
         Self {
             command: "area".to_string(),
-            command_explicit: false,
             image: None,
-            edit: false,
             copy: true,
             copy_explicit: false,
             save: false,
@@ -124,7 +116,6 @@ impl Default for Args {
             backend: Backend::Auto,
             instant: false,
             save_dir: None,
-            editor_cmd: None,
             tail: Vec::new(),
             json: false,
         }
@@ -135,7 +126,6 @@ impl Default for Args {
 #[derive(Debug, PartialEq, Eq)]
 enum PostCapture {
     Stdout,
-    Edit,
     File { copy: bool },
     Shelf { copy: bool },
     CopyOnly,
@@ -145,9 +135,6 @@ enum PostCapture {
 fn decide_post_capture(args: &Args, backend: Backend) -> PostCapture {
     if is_stdout_target(args) {
         return PostCapture::Stdout;
-    }
-    if args.edit {
-        return PostCapture::Edit;
     }
     if args.output.is_some() || args.save {
         return PostCapture::File { copy: args.copy };
@@ -165,24 +152,19 @@ fn usage() -> &'static str {
 Usage:
   boltsnap [area|full|window|active-window] [-o PATH|-] [--save] [--no-copy] [--instant] [--backend auto|x11|wayland|windows]
   boltsnap area --instant                 select a region, capture on release (no edit handles)
-  boltsnap --edit                         open last screenshot in editor
-  boltsnap [area|window|full] --edit      capture then edit
-  boltsnap edit [IMAGE] [-o PATH] [--no-copy]
   boltsnap daemon [--save-dir DIR]        run the screenshot shelf
-  boltsnap record [--editor CMD]          select an area and screen-record it
+  boltsnap record                         select an area and screen-record it
   boltsnap record full                    record the configured fullscreen target (no selector)
   boltsnap recording status --json
   boltsnap recording watch --json
   boltsnap recording show-controls
   boltsnap recording pause|resume|save-shelf|save-disk|discard
   boltsnap stop                           compatibility alias for recording save-shelf
-  boltsnap [COMMAND] [--editor CMD]       annotate with a specific editor
-  Config: platform config directory       (save_dir, editor, record_codec, record_dir)
+  Config: platform config directory       (save_dir, record_codec, record_dir)
   boltsnap doctor
 
 Examples:
   boltsnap                                area, copy PNG, remember as last
-  boltsnap --edit                         open last screenshot in editor
   boltsnap window                         pick window, copy PNG
   boltsnap full --no-copy -o /tmp/x.png   write file, no clipboard
   boltsnap area --no-copy -o - | eddy -f -      pipe to external editor
@@ -203,7 +185,6 @@ fn parse_args(raw: &[String]) -> DynResult<Args> {
                 println!("boltsnap {}", env!("CARGO_PKG_VERSION"));
                 std::process::exit(0);
             }
-            "--edit" => args.edit = true,
             "--copy" => {
                 args.copy = true;
                 args.copy_explicit = true;
@@ -236,13 +217,6 @@ fn parse_args(raw: &[String]) -> DynResult<Args> {
                 };
                 args.save_dir = Some(PathBuf::from(path));
             }
-            "--editor" => {
-                i += 1;
-                let Some(cmd) = raw.get(i) else {
-                    return Err("--editor needs a command".into());
-                };
-                args.editor_cmd = Some(cmd.clone());
-            }
             value if value.starts_with('-') => {
                 return Err(format!("unknown option '{value}'\n{}", usage()).into());
             }
@@ -253,7 +227,6 @@ fn parse_args(raw: &[String]) -> DynResult<Args> {
 
     if let Some(command) = positional.first() {
         args.command = command.to_lowercase();
-        args.command_explicit = true;
     }
     if positional.len() > 1 {
         args.image = Some(PathBuf::from(&positional[1]));
@@ -272,10 +245,6 @@ fn main() {
 fn run() -> DynResult<()> {
     let raw: Vec<String> = env::args().collect();
     let args = parse_args(&raw)?;
-
-    if args.edit && !args.command_explicit {
-        return edit_last_screenshot(&args);
-    }
 
     match args.command.as_str() {
         "doctor" => {
@@ -317,43 +286,11 @@ fn run() -> DynResult<()> {
                 .ok_or("__serve-clipboard-uri needs a path")?;
             return serve_wayland_uri_list(&path);
         }
-        "edit" => {
-            let image = args.image.clone().unwrap_or(last_screenshot_path()?);
-            ensure_file(&image)?;
-            let output = edit_output_path(&args);
-            let result = run_editor(
-                normalize_path(&image),
-                output,
-                args.copy,
-                args.backend,
-                args.editor_cmd.clone(),
-                None,
-            )?;
-            remember_last_screenshot(&result)?;
-            println!("Edited image ready: {}", result.display());
-            Ok(())
-        }
         command => {
             CaptureMode::parse(command)?;
             capture_flow(&args)
         }
     }
-}
-
-fn edit_last_screenshot(args: &Args) -> DynResult<()> {
-    let image = last_screenshot_path()?;
-    ensure_file(&image)?;
-    let result = run_editor(
-        image.clone(),
-        edit_output_path(args),
-        args.copy,
-        args.backend,
-        args.editor_cmd.clone(),
-        None,
-    )?;
-    remember_last_screenshot(&result)?;
-    println!("Edited last screenshot: {}", result.display());
-    Ok(())
 }
 
 #[cfg(target_os = "linux")]
@@ -543,13 +480,7 @@ fn capture_flow(args: &Args) -> DynResult<()> {
         return capture_to_stdout(mode, args.backend, args.instant);
     }
 
-    // Capture to a temp file for --edit, then let the editor write the final
-    // output. This avoids overwriting `-o PATH` before the user saves.
-    let output = if args.edit {
-        temp_png("shot")
-    } else {
-        target_path(args)
-    };
+    let output = target_path(args);
     let (resolved, capture_output) = capture(mode, &output, args.backend, args.instant)?;
     if matches!(mode, CaptureMode::Window | CaptureMode::ActiveWindow) {
         let _ = strip_uniform_border(&output);
@@ -557,28 +488,10 @@ fn capture_flow(args: &Args) -> DynResult<()> {
 
     match decide_post_capture(args, resolved) {
         PostCapture::Stdout => unreachable!("handled above"),
-        PostCapture::Edit => {
-            let final_path = run_editor(
-                output.clone(),
-                edit_output_path(args),
-                args.copy,
-                resolved,
-                args.editor_cmd.clone(),
-                None,
-            )?;
-            remember_last_screenshot(&final_path)?;
-            println!(
-                "Boltsnap edited {} via {}: {}",
-                mode.label(),
-                resolved.as_str(),
-                final_path.display()
-            );
-        }
         PostCapture::File { copy } => {
             if copy {
                 copy_to_clipboard(&output, resolved)?;
             }
-            remember_last_screenshot(&output)?;
             let verb = if copy { "copied" } else { "captured" };
             println!(
                 "Boltsnap {verb} {} via {}: {}",
@@ -589,7 +502,6 @@ fn capture_flow(args: &Args) -> DynResult<()> {
         }
         PostCapture::CopyOnly => {
             copy_to_clipboard(&output, resolved)?;
-            remember_last_screenshot(&output)?;
             println!(
                 "Boltsnap copied {} via {}: {}",
                 mode.label(),
@@ -598,7 +510,6 @@ fn capture_flow(args: &Args) -> DynResult<()> {
             );
         }
         PostCapture::Shelf { copy } => {
-            remember_last_screenshot(&output)?;
             if copy {
                 copy_to_clipboard(&output, resolved)?;
             }
@@ -721,48 +632,34 @@ mod tests {
     fn parser_defaults_to_area_copy() {
         let args = parse_args(&["boltsnap".into()]).unwrap();
         assert_eq!(args.command, "area");
-        assert!(!args.command_explicit);
         assert!(args.copy);
     }
 
     #[test]
-    fn parser_edit_without_command_means_edit_last() {
-        let args = parse_args(&["boltsnap".into(), "--edit".into()]).unwrap();
-        assert!(args.edit);
-        assert!(!args.command_explicit);
-        assert_eq!(args.command, "area");
+    fn parser_rejects_removed_editor_flags() {
+        assert!(parse_args(&["boltsnap".into(), "--edit".into()]).is_err());
+        assert!(
+            parse_args(&[
+                "boltsnap".into(),
+                "--editor".into(),
+                "external-editor".into()
+            ])
+            .is_err()
+        );
     }
 
     #[test]
     fn parser_handles_window_modes() {
-        let args = parse_args(&["boltsnap".into(), "window".into(), "--edit".into()]).unwrap();
+        let args = parse_args(&["boltsnap".into(), "window".into()]).unwrap();
         assert_eq!(
             CaptureMode::parse(&args.command).unwrap(),
             CaptureMode::Window
         );
-        assert!(args.edit);
         assert_eq!(
             CaptureMode::parse("active-window").unwrap(),
             CaptureMode::ActiveWindow
         );
         assert_eq!(CaptureMode::parse("select").unwrap(), CaptureMode::Area);
-    }
-
-    #[test]
-    fn parser_handles_edit_output_no_copy() {
-        let args = parse_args(&[
-            "boltsnap".into(),
-            "edit".into(),
-            "a.png".into(),
-            "--no-copy".into(),
-            "-o".into(),
-            "b.png".into(),
-        ])
-        .unwrap();
-        assert_eq!(args.command, "edit");
-        assert_eq!(args.image.unwrap(), PathBuf::from("a.png"));
-        assert!(!args.copy);
-        assert_eq!(args.output.unwrap(), PathBuf::from("b.png"));
     }
 
     #[test]

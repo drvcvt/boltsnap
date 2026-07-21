@@ -87,16 +87,6 @@ pub fn target_path(args: &Args) -> PathBuf {
     }
 }
 
-pub fn edit_output_path(args: &Args) -> Option<PathBuf> {
-    if let Some(path) = &args.output {
-        Some(normalize_path(path))
-    } else if args.save {
-        Some(default_save_path())
-    } else {
-        Some(cache_dir().join("last-edited.png"))
-    }
-}
-
 pub fn cache_dir() -> PathBuf {
     if let Some(cache) = env::var_os("XDG_CACHE_HOME") {
         PathBuf::from(cache).join("boltsnap")
@@ -125,37 +115,6 @@ pub fn default_screenshot_dir() -> PathBuf {
     home_dir().join("Bilder").join("boltsnap")
 }
 
-pub fn last_pointer_path() -> PathBuf {
-    cache_dir().join("last.txt")
-}
-
-pub fn remember_last_screenshot(path: &Path) -> DynResult<()> {
-    let path = normalize_path(path);
-    if !path.is_file() {
-        return Ok(());
-    }
-    fs::create_dir_all(cache_dir())?;
-    fs::write(last_pointer_path(), path.to_string_lossy().as_bytes())?;
-    Ok(())
-}
-
-pub fn last_screenshot_path() -> DynResult<PathBuf> {
-    let pointer = last_pointer_path();
-    if pointer.is_file() {
-        let value = fs::read_to_string(pointer)?;
-        let path = PathBuf::from(value.trim());
-        if path.is_file() {
-            return Ok(path);
-        }
-    }
-    let fallback = cache_dir().join("last.png");
-    if fallback.is_file() {
-        Ok(fallback)
-    } else {
-        Err("no last screenshot yet; run `boltsnap` first, then `boltsnap --edit`".into())
-    }
-}
-
 pub fn normalize_path(path: &Path) -> PathBuf {
     if path.is_absolute() {
         path.to_path_buf()
@@ -163,14 +122,6 @@ pub fn normalize_path(path: &Path) -> PathBuf {
         env::current_dir()
             .unwrap_or_else(|_| PathBuf::from("."))
             .join(path)
-    }
-}
-
-pub fn ensure_file(path: &Path) -> DynResult<()> {
-    if normalize_path(path).is_file() {
-        Ok(())
-    } else {
-        Err(format!("file not found: {}", path.display()).into())
     }
 }
 

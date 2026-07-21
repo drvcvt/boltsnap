@@ -15,9 +15,6 @@ SetCompressor /SOLID lzma
 !ifndef BOLTSNAP_SOURCE_DIR
   !error "BOLTSNAP_SOURCE_DIR is required"
 !endif
-!ifndef EDDY_SOURCE_DIR
-  !error "EDDY_SOURCE_DIR is required"
-!endif
 !ifndef LICENSE_FILE
   !error "LICENSE_FILE is required"
 !endif
@@ -48,7 +45,6 @@ VIAddVersionKey /LANG=1033 "LegalCopyright" "MIT License"
 !define MUI_FINISHPAGE_NOAUTOCLOSE
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_LICENSE "${LICENSE_FILE}"
-!insertmacro MUI_PAGE_COMPONENTS
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
 !insertmacro MUI_PAGE_FINISH
@@ -69,7 +65,11 @@ Section "!Boltsnap (required)" SEC_BOLTSNAP
 
   RMDir /r "$INSTDIR\Eddy"
   Delete "$SMPROGRAMS\Boltsnap\Eddy.lnk"
-  DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\App Paths\eddy.exe"
+  DeleteRegValue HKCU "Software\Boltsnap" "EddyStartMenuShortcut"
+  ReadRegStr $1 HKCU "Software\Microsoft\Windows\CurrentVersion\App Paths\eddy.exe" ""
+  ${If} $1 == "$INSTDIR\Eddy\eddy.exe"
+    DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\App Paths\eddy.exe"
+  ${EndIf}
 
   WriteRegStr HKCU "Software\Boltsnap" "InstallLocation" "$INSTDIR"
   WriteRegDWORD HKCU "Software\Boltsnap" "StartMenuShortcut" 1
@@ -99,16 +99,6 @@ Section "!Boltsnap (required)" SEC_BOLTSNAP
   ${EndIf}
 SectionEnd
 
-Section "Eddy image editor (recommended)" SEC_EDDY
-  SetShellVarContext current
-  SetOutPath "$INSTDIR\Eddy"
-  File /r "${EDDY_SOURCE_DIR}\*"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\App Paths\eddy.exe" "" "$INSTDIR\Eddy\eddy.exe"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\App Paths\eddy.exe" "Path" "$INSTDIR\Eddy"
-  WriteRegDWORD HKCU "Software\Boltsnap" "EddyStartMenuShortcut" 1
-  CreateShortcut "$SMPROGRAMS\Boltsnap\Eddy.lnk" "$INSTDIR\Eddy\eddy.exe" "" "$INSTDIR\Eddy\eddy.exe"
-SectionEnd
-
 Section "Uninstall"
   SetShellVarContext current
   IfFileExists "$INSTDIR\boltsnap.exe" 0 +2
@@ -120,7 +110,10 @@ Section "Uninstall"
   RMDir "$SMPROGRAMS\Boltsnap"
 
   DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\App Paths\boltsnap.exe"
-  DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\App Paths\eddy.exe"
+  ReadRegStr $1 HKCU "Software\Microsoft\Windows\CurrentVersion\App Paths\eddy.exe" ""
+  ${If} $1 == "$INSTDIR\Eddy\eddy.exe"
+    DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\App Paths\eddy.exe"
+  ${EndIf}
   DeleteRegKey HKCU "${PRODUCT_UNINSTALL_KEY}"
   DeleteRegKey HKCU "Software\Boltsnap"
   DeleteRegValue HKCU "Control Panel\Keyboard" "PrintScreenKeyForSnippingEnabled"
@@ -131,8 +124,3 @@ Section "Uninstall"
   Delete "$INSTDIR\Uninstall.exe"
   RMDir "$INSTDIR"
 SectionEnd
-
-!insertmacro MUI_FUNCTION_DESCRIPTION_BEGIN
-  !insertmacro MUI_DESCRIPTION_TEXT ${SEC_BOLTSNAP} "Screenshot capture, screen recording, shelf, tray, and global Windows shortcuts."
-  !insertmacro MUI_DESCRIPTION_TEXT ${SEC_EDDY} "Companion editor for arrows, text, highlighting, blur, and redaction."
-!insertmacro MUI_FUNCTION_DESCRIPTION_END

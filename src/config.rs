@@ -50,7 +50,6 @@ impl Default for RecordingPrefs {
 #[derive(Default, Debug, PartialEq, Eq)]
 pub struct Config {
     pub save_dir: Option<String>,
-    pub editor: Option<String>,
     pub record_codec: Option<String>,
     pub record_dir: Option<String>,
     record_default_target: Option<String>,
@@ -68,7 +67,6 @@ impl Config {
         match toml::from_str::<toml::Value>(text) {
             Ok(v) => Config {
                 save_dir: v.get("save_dir").and_then(|x| x.as_str()).map(String::from),
-                editor: v.get("editor").and_then(|x| x.as_str()).map(String::from),
                 record_codec: v
                     .get("record_codec")
                     .and_then(|x| x.as_str())
@@ -282,23 +280,6 @@ fn default_save_dir() -> PathBuf {
     crate::paths::default_screenshot_dir()
 }
 
-/// The annotation editor command: CLI flag > `$BOLTSNAP_EDITOR` > config >
-/// (`eddy` on PATH | `~/projects/eddy/build/eddy`). `None` if nothing is found.
-pub fn resolve_editor(cli: Option<&str>, cfg: &Config) -> Option<String> {
-    if let Some(c) = cli {
-        return Some(c.to_string());
-    }
-    if let Ok(e) = env::var("BOLTSNAP_EDITOR") {
-        if !e.is_empty() {
-            return Some(expand_path(&e).to_string_lossy().into_owned());
-        }
-    }
-    if let Some(e) = &cfg.editor {
-        return Some(e.clone());
-    }
-    default_editor()
-}
-
 /// The ffmpeg encoder passed to `wf-recorder -c`: CLI flag > $BOLTSNAP_RECORD_CODEC
 /// > config > `h264_nvenc` (NVENC default; users without NVENC set e.g. libx264).
 pub fn resolve_record_codec(cli: Option<&str>, cfg: &Config) -> String {
@@ -323,26 +304,6 @@ pub fn resolve_record_dir(cfg: &Config) -> PathBuf {
         return expand_path(s);
     }
     resolve_save_dir(None, cfg)
-}
-
-fn default_editor() -> Option<String> {
-    #[cfg(target_os = "windows")]
-    if let Some(editor) = crate::paths::bundled_editor() {
-        return Some(editor.to_string_lossy().into_owned());
-    }
-    if crate::paths::has_cmd("eddy") {
-        return Some("eddy".to_string());
-    }
-    let built = env::var_os("HOME")
-        .map(PathBuf::from)?
-        .join("projects")
-        .join("eddy")
-        .join("build")
-        .join("eddy");
-    if built.is_file() {
-        return Some(built.to_string_lossy().into_owned());
-    }
-    None
 }
 
 #[cfg(test)]
@@ -457,7 +418,7 @@ unrelated = "keep-me"
     #[test]
     fn recording_prefs_write_preserves_unknown_keys() {
         let path = temp_config("prefs-preserve");
-        std::fs::write(&path, "editor = \"eddy\"\ncustom = 7\n").unwrap();
+        std::fs::write(&path, "custom = 7\n").unwrap();
         let prefs = RecordingPrefs {
             default_target: RecordDefaultTarget::Output("DP-3".into()),
             both_mode: RecordBothMode::Combined,
@@ -495,10 +456,9 @@ unrelated = "keep-me"
     }
 
     #[test]
-    fn parse_reads_both_keys_and_ignores_unknown() {
-        let c = Config::parse("save_dir = \"/tmp/shots\"\neditor = \"eddy\"\nbogus = 1\n");
+    fn parse_reads_save_dir_and_ignores_unknown() {
+        let c = Config::parse("save_dir = \"/tmp/shots\"\nbogus = 1\n");
         assert_eq!(c.save_dir.as_deref(), Some("/tmp/shots"));
-        assert_eq!(c.editor.as_deref(), Some("eddy"));
     }
 
     #[test]
@@ -554,22 +514,6 @@ unrelated = "keep-me"
             resolve_save_dir(None, &Config::default()),
             crate::paths::default_screenshot_dir()
         );
-    }
-
-    #[test]
-    fn editor_precedence_flag_then_config() {
-        let cfg = Config {
-            editor: Some("cfg-editor".into()),
-            ..Config::default()
-        };
-        assert_eq!(
-            resolve_editor(Some("flag-editor"), &cfg),
-            Some("flag-editor".to_string())
-        );
-        unsafe {
-            env::remove_var("BOLTSNAP_EDITOR");
-        }
-        assert_eq!(resolve_editor(None, &cfg), Some("cfg-editor".to_string()));
     }
 
     #[test]

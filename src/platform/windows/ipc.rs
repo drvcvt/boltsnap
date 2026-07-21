@@ -5,9 +5,7 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-pub use crate::protocol::{
-    RecordingSnapshot, Replacement, Request, Response, read_frame, write_frame,
-};
+pub use crate::protocol::{RecordingSnapshot, Request, Response};
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 

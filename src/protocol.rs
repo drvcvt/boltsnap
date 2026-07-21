@@ -24,30 +24,11 @@ pub enum RecordingAction {
 }
 
 #[derive(Debug)]
-pub enum Replacement {
-    Image(Vec<u8>),
-    Video { path: PathBuf, take_ownership: bool },
-}
-
-#[derive(Debug)]
 pub enum Request {
     Add {
         source: String,
         png: Vec<u8>,
         output: Option<String>,
-    },
-    AddVideo {
-        source: String,
-        path: PathBuf,
-        output: Option<String>,
-        take_ownership: bool,
-    },
-    Replace {
-        id: u64,
-        media: Replacement,
-    },
-    Reload {
-        id: u64,
     },
     Ping,
     RecordingStatus,
@@ -350,51 +331,6 @@ impl Request {
                 }
                 write_frame(&mut buf, header.to_string().as_bytes(), png).unwrap();
             }
-            Request::AddVideo {
-                source,
-                path,
-                output,
-                take_ownership,
-            } => {
-                let mut header = json!({
-                    "cmd": "add_video",
-                    "source": source,
-                    "path": path.to_string_lossy(),
-                    "take_ownership": take_ownership,
-                });
-                if let Some(output) = output {
-                    header["output"] = json!(output);
-                }
-                write_frame(&mut buf, header.to_string().as_bytes(), &[]).unwrap();
-            }
-            Request::Replace {
-                id,
-                media: Replacement::Image(png),
-            } => {
-                let header = json!({ "cmd": "replace", "id": id, "media": "image" });
-                write_frame(&mut buf, header.to_string().as_bytes(), png).unwrap();
-            }
-            Request::Replace {
-                id,
-                media:
-                    Replacement::Video {
-                        path,
-                        take_ownership,
-                    },
-            } => {
-                let header = json!({
-                    "cmd": "replace",
-                    "id": id,
-                    "media": "video",
-                    "path": path.to_string_lossy(),
-                    "take_ownership": take_ownership,
-                });
-                write_frame(&mut buf, header.to_string().as_bytes(), &[]).unwrap();
-            }
-            Request::Reload { id } => {
-                let header = json!({ "cmd": "reload", "id": id });
-                write_frame(&mut buf, header.to_string().as_bytes(), &[]).unwrap();
-            }
             Request::Ping => {
                 let header = json!({ "cmd": "ping" });
                 write_frame(&mut buf, header.to_string().as_bytes(), &[]).unwrap();
@@ -486,51 +422,6 @@ impl Request {
                     .and_then(|s| s.as_str())
                     .filter(|s| !s.is_empty())
                     .map(str::to_owned),
-            }),
-            Some("add_video") => Ok(Request::AddVideo {
-                source: v
-                    .get("source")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string(),
-                path: PathBuf::from(v.get("path").and_then(Value::as_str).unwrap_or("")),
-                output: v
-                    .get("output")
-                    .and_then(Value::as_str)
-                    .filter(|value| !value.is_empty())
-                    .map(str::to_owned),
-                take_ownership: v
-                    .get("take_ownership")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false),
-            }),
-            Some("replace") => {
-                let id = v.get("id").and_then(|i| i.as_u64()).unwrap_or(0);
-                match v.get("media").and_then(|m| m.as_str()) {
-                    Some("image") => Ok(Request::Replace {
-                        id,
-                        media: Replacement::Image(payload),
-                    }),
-                    Some("video") => Ok(Request::Replace {
-                        id,
-                        media: Replacement::Video {
-                            path: PathBuf::from(
-                                v.get("path").and_then(|p| p.as_str()).unwrap_or(""),
-                            ),
-                            take_ownership: v
-                                .get("take_ownership")
-                                .and_then(Value::as_bool)
-                                .unwrap_or(true),
-                        },
-                    }),
-                    other => Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("unknown replacement media: {other:?}"),
-                    )),
-                }
-            }
-            Some("reload") => Ok(Request::Reload {
-                id: v.get("id").and_then(|i| i.as_u64()).unwrap_or(0),
             }),
             Some("ping") => Ok(Request::Ping),
             Some("recording_status") => Ok(Request::RecordingStatus),
@@ -658,5 +549,21 @@ mod tests {
         bytes.extend_from_slice(&((MAX_PAYLOAD_BYTES as u32) + 1).to_be_bytes());
         let error = read_frame(&mut Cursor::new(bytes)).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn removed_editor_backchannel_commands_are_rejected() {
+        for header in [
+            br#"{"cmd":"add_video"}"#.as_slice(),
+            br#"{"cmd":"replace","media":"image"}"#.as_slice(),
+            br#"{"cmd":"reload"}"#.as_slice(),
+        ] {
+            let mut bytes = Vec::new();
+            write_frame(&mut bytes, header, &[]).unwrap();
+            assert_eq!(
+                Request::read(&mut Cursor::new(bytes)).unwrap_err().kind(),
+                io::ErrorKind::InvalidData
+            );
+        }
     }
 }
