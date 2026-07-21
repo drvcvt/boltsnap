@@ -12,7 +12,7 @@
     <SummaryInformation Description="Fast native screenshot and screen-recording tool for Windows" />
     <MajorUpgrade DowngradeErrorMessage="A newer version of Boltsnap is already installed." />
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
-    <ui:WixUI Id="WixUI_FeatureTree" />
+    <ui:WixUI Id="WixUI_Minimal" />
     <WixVariable Id="WixUILicenseRtf" Value="$(var.LicenseRtf)" />
 
     <util:CloseApplication Id="CloseBoltsnap" Target="boltsnap.exe"
@@ -21,9 +21,7 @@
 
     <StandardDirectory Id="LocalAppDataFolder">
       <Directory Id="LocalProgramsDirectory" Name="Programs">
-        <Directory Id="INSTALLFOLDER" Name="Boltsnap">
-          <Directory Id="EDDYFOLDER" Name="Eddy" />
-        </Directory>
+        <Directory Id="INSTALLFOLDER" Name="Boltsnap" />
       </Directory>
     </StandardDirectory>
     <StandardDirectory Id="ProgramMenuFolder">
@@ -35,13 +33,6 @@
       <ComponentRef Id="BoltsnapExecutable" />
       <ComponentRef Id="BoltsnapUserIntegration" />
       <ComponentRef Id="BoltsnapStartMenuShortcut" />
-    </Feature>
-
-    <Feature Id="EddyFeature" Title="Eddy Bildeditor (empfohlen)" Level="1"
-             Description="Eddy ist der schnelle Bildeditor für Markierungen, Pfeile, Text, Unschärfe und Schwärzungen. Rechtsklick auf ein Shelf-Bild öffnet es direkt in Eddy.">
-      <Files Include="$(var.EddySourceDir)\**" Directory="EDDYFOLDER" />
-      <ComponentRef Id="EddyUserIntegration" />
-      <ComponentRef Id="EddyStartMenuShortcut" />
     </Feature>
 
     <DirectoryRef Id="INSTALLFOLDER">
@@ -61,15 +52,6 @@
       </Component>
     </DirectoryRef>
 
-    <DirectoryRef Id="EDDYFOLDER">
-      <Component Id="EddyUserIntegration" Guid="ACFF5B58-C4EF-4A4C-991B-F934CE17B5C6">
-        <RegistryValue Root="HKCU" Key="Software\Microsoft\Windows\CurrentVersion\App Paths\eddy.exe"
-                       Value="[EDDYFOLDER]eddy.exe" Type="string" KeyPath="yes" />
-        <RegistryValue Root="HKCU" Key="Software\Microsoft\Windows\CurrentVersion\App Paths\eddy.exe"
-                       Name="Path" Value="[EDDYFOLDER]" Type="string" />
-      </Component>
-    </DirectoryRef>
-
     <DirectoryRef Id="BoltsnapProgramMenuFolder">
       <Component Id="BoltsnapStartMenuShortcut" Guid="C0C1BE6B-020D-4F63-B2B8-C21A271B0CC2">
         <Shortcut Id="BoltsnapStartMenu" Name="Boltsnap" Description="Boltsnap Screenshot Tool"
@@ -77,12 +59,6 @@
                   WorkingDirectory="INSTALLFOLDER" />
         <RemoveFolder Id="RemoveBoltsnapProgramMenuFolder" On="uninstall" />
         <RegistryValue Root="HKCU" Key="Software\Boltsnap" Name="StartMenuShortcut"
-                       Value="1" Type="integer" KeyPath="yes" />
-      </Component>
-      <Component Id="EddyStartMenuShortcut" Guid="A0234F6F-AC49-4D93-98D0-F5DDFE48FBE1">
-        <Shortcut Id="EddyStartMenu" Name="Eddy" Description="Eddy Bildeditor"
-                  Target="[EDDYFOLDER]eddy.exe" WorkingDirectory="EDDYFOLDER" />
-        <RegistryValue Root="HKCU" Key="Software\Boltsnap" Name="EddyStartMenuShortcut"
                        Value="1" Type="integer" KeyPath="yes" />
       </Component>
     </DirectoryRef>

@@ -51,7 +51,7 @@ Umgesetzt:
 - Bild- und Datei-Clipboard sowie OLE-Datei-Drag-and-drop
 - Media-Foundation-H.264/AAC-Encoding mit WASAPI-Systemaudio und Mikrofon
 - Per-Monitor-DPI-Awareness-V2-Manifest und Windows-Release-CI
-- WiX-MSI mit optional gebündeltem Eddy-Editor und sauberem Upgradepfad
+- WiX-MSI und NSIS-Installer ohne externe Programm-Bundles
 - unabhängiger Task-Scheduler-Autostart mit Neustart bei Fehlern
 
 Noch offen:
@@ -71,7 +71,6 @@ src/
 ├── config.rs
 ├── image.rs
 ├── protocol.rs
-├── editor.rs
 ├── selector/
 │   ├── mod.rs
 │   ├── edit.rs

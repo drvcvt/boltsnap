@@ -11,8 +11,6 @@ in-process.
 - Native capture on Windows, Wayland, and X11
 - In-process region selector on Windows and Wayland
 - Screenshot shelf on Windows and Wayland
-- Optional integration with the separate [Eddy](https://github.com/drvcvt/eddy)
-  annotation editor
 - Pipe-friendly: `-o -` writes PNG to stdout
 
 ## Screenshots
@@ -56,10 +54,8 @@ Download one of these from the
 | `boltsnap-vX.Y.Z-x86_64-windows.zip` | Portable use without installation |
 
 The NSIS and MSI installers are per-user, need no administrator account, and
-offer the same Boltsnap and optional Eddy components. They start the shelf
-daemon after setup and at sign-in, add Start-menu shortcuts, and can be removed
-from Windows **Installed apps**. Eddy is selected by default; Boltsnap still
-works normally without it.
+contain Boltsnap only. They start the shelf daemon after setup and at sign-in,
+add a Start-menu shortcut, and can be removed from Windows **Installed apps**.
 
 For an unattended MSI install:
 
@@ -81,15 +77,12 @@ cargo build --release
 .\target\release\boltsnap.exe area
 ```
 
-Maintainers can build both installers, including Eddy and its Qt runtime, with:
+Maintainers can build both installers with:
 
 ```powershell
 .\packaging\windows\build-msi.ps1
 .\packaging\windows\build-nsis.ps1
 ```
-
-Both scripts expect the Eddy repository beside the Boltsnap workspace. Pass
-`-EddyRepository PATH` if it lives elsewhere.
 
 ### Linux x86_64
 
@@ -127,16 +120,6 @@ sudo pacman -S --needed rust wayland libxkbcommon pkgconf base-devel wf-recorder
 git clone https://github.com/drvcvt/boltsnap
 cd boltsnap
 cargo install --path .        # -> ~/.cargo/bin/boltsnap
-```
-
-For the annotation editor (shelf cards open in it), also build
-[eddy](https://github.com/drvcvt/eddy):
-
-```sh
-sudo pacman -S --needed cmake qt6-base qt6-svg qt6-multimedia base-devel
-git clone https://github.com/drvcvt/eddy
-cd eddy && cmake -S . -B build && cmake --build build
-sudo install -m755 build/eddy /usr/local/bin/   # or put it on your PATH
 ```
 
 ### NixOS
@@ -197,64 +180,37 @@ using wlroots or Smithay alone is not a compatibility guarantee.
 Screenshot capture and clipboard handling need no CLI helpers. `hyprctl` is
 optional and supplies active-window geometry on Hyprland; other Wayland
 compositors fall back to the in-process selector for window mode. Recording
-uses `wf-recorder` and FFmpeg, while annotation requires a separately installed
-editor such as Eddy.
+uses `wf-recorder` and FFmpeg.
 
 ## Usage
 
 ```sh
-boltsnap                                # area (Wayland), copy PNG, remember as last
-boltsnap area --edit                    # capture, then open editor
-boltsnap --edit                         # open last screenshot in editor
+boltsnap                                # area capture
 boltsnap window                         # pick a window
 boltsnap active-window                  # current focused window
 boltsnap full                           # all monitors, copy
 
 boltsnap full --no-copy -o /tmp/x.png   # write file, skip clipboard
 boltsnap area --no-copy -o -            # PNG to stdout
-boltsnap edit /tmp/x.png                # open existing image in editor
 
 boltsnap doctor                         # check helpers + capabilities
 ```
 
-The editor is opt-in. If you prefer something else:
+Boltsnap does not bundle or launch an editor. Pipe PNG output to any external
+program when annotation is needed:
 
 ```sh
 boltsnap area --no-copy -o - | eddy -f -
 boltsnap area --no-copy -o - | satty --filename -
 ```
 
-[**eddy**](https://github.com/drvcvt/eddy) is boltsnap's companion annotation
-editor (separate repo). The shelf card viewer and the `editor` / `--editor`
-setting default to it — install eddy to get the full click-to-annotate flow.
-
 ## Suggested keybinds
 
 ```
 bind = , Print, exec, boltsnap area
-bind = SHIFT, Print, exec, boltsnap area --edit
 bind = CTRL, Print, exec, boltsnap full
 bind = ALT, Print, exec, boltsnap record
-bind = $mod, Print, exec, boltsnap --edit
 ```
-
-## Eddy editor
-
-Boltsnap launches the separately installed Eddy application. Eddy provides a
-floating, always-on-top annotation window with these shortcuts:
-
-| Tool      | Key |
-|-----------|-----|
-| Move/pan  | `M` |
-| Arrow     | `A` |
-| Pen       | `P` |
-| Box       | `R` |
-| Highlight | `H` |
-| Redact    | `X` |
-| Blur      | `B` |
-
-`Ctrl+Z` undo, `F1` help, `Esc` close, `Space`/`Enter` save and copy,
-middle-mouse drag to pan, scroll to zoom.
 
 ## Build
 
@@ -263,11 +219,12 @@ cargo build --release
 cargo test
 ```
 
-## Screenshot shelf (Wayland: Hyprland, Sway, Niri)
+## Screenshot shelf
 
-On Wayland, an interactive capture appears as a small floating **thumbnail in
-the bottom-left corner**. It stays there until you use or dismiss it. Multiple
-screenshots stack with the newest one on top.
+On Windows and supported Wayland compositors (Hyprland, Sway, Niri), an
+interactive capture appears as a small floating **thumbnail in the bottom-left
+corner**. It stays there until you use or dismiss it. Multiple screenshots
+stack with the newest one on top.
 
 ```sh
 boltsnap area        # capture a region -> appears in the shelf
@@ -282,12 +239,11 @@ Each thumbnail responds to:
   image (`image/png`) and a file path (`text/uri-list`) for maximum
   compatibility, including many XWayland apps. If the drop isn't accepted
   anywhere, the image is copied to the clipboard as a fallback.
-- **Hover** then the icons: **✎** open in the annotation editor (the result
-  updates the thumbnail), **⧉** copy, **✕** dismiss.
+- **Hover** then the icons: **Save** writes the media to disk, **✕** dismisses it.
 
 The shelf is served by a small long-lived daemon. It starts automatically on
-the first Wayland capture; you don't need to set anything up. To start it
-explicitly (or autostart it), run:
+the first Wayland capture and at sign-in after a Windows installer setup. To
+start it explicitly (or autostart it), run:
 
 ```sh
 boltsnap daemon
@@ -316,22 +272,17 @@ Create `~/.config/boltsnap/config.toml` on Linux or
 # Directory where the shelf Save button writes timestamped PNGs.
 # Default: ~/Bilder/boltsnap
 save_dir = "~/Bilder/boltsnap"
-
-# Annotation editor launched by the shelf card viewer and the --edit flag.
-# Default: eddy
-editor = "eddy"
 ```
 
 Override precedence (highest to lowest):
 
-1. CLI flag — `--save-dir DIR`, `--editor CMD`
-2. Environment variable — `$BOLTSNAP_SAVE_DIR`, `$BOLTSNAP_EDITOR`
+1. CLI flag — `--save-dir DIR`
+2. Environment variable — `$BOLTSNAP_SAVE_DIR`
 3. Config file — `~/.config/boltsnap/config.toml`
 4. Built-in default
 
-Clicking a shelf card opens the image in eddy (viewer + editor). The **Save**
-button (top-left of a card) writes a timestamped PNG to the configured save
-directory.
+Clicking a shelf card copies an image or video file reference. The **Save**
+button writes it to the configured save directory.
 
 ## Screen recording
 
@@ -374,7 +325,7 @@ ordinary path that re-encodes; it uses high-quality settings intended to be
 visually lossless. Failed saves keep their source segments so they can be
 retried or discarded instead of losing the recording.
 
-Video cards carry a **▶** badge; clicking one opens the file in **eddy**.
+Video cards carry a **▶** badge; clicking one copies a file reference.
 
 On Linux recording requires `wf-recorder`; audio also requires `pactl`. On
 Windows recording is native: Windows Graphics Capture feeds Media Foundation

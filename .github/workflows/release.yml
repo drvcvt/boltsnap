@@ -22,24 +22,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check out Eddy
-        uses: actions/checkout@v4
-        with:
-          repository: drvcvt/eddy
-          ref: 2e4aeb763c90ae746a23a1ad256ba5a4250b5a94
-          path: eddy
-
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
-
-      - name: Install Qt
-        uses: jurplel/install-qt-action@v4
-        with:
-          version: '6.9.3'
-          arch: win64_msvc2022_64
-          modules: qtmultimedia
-          cache: true
 
       - name: Resolve release version
         shell: pwsh
@@ -60,8 +45,6 @@ jobs:
         shell: pwsh
         run: |
           ./packaging/windows/build-msi.ps1 `
-            -EddyRepository "$env:GITHUB_WORKSPACE/eddy" `
-            -QtDirectory $env:QT_ROOT_DIR `
             -Version $env:RELEASE_VERSION `
             -SkipBuild
 
@@ -73,11 +56,8 @@ jobs:
         shell: pwsh
         run: |
           ./packaging/windows/build-nsis.ps1 `
-            -EddyRepository "$env:GITHUB_WORKSPACE/eddy" `
-            -QtDirectory $env:QT_ROOT_DIR `
             -Version $env:RELEASE_VERSION `
-            -SkipBuild `
-            -SkipEddyBuild
+            -SkipBuild
 
       - name: Stage portable ZIP
         shell: pwsh

@@ -4,9 +4,7 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-pub use crate::protocol::{
-    RecordingSnapshot, Replacement, Request, Response, read_frame, write_frame,
-};
+pub use crate::protocol::{RecordingSnapshot, Request, Response, read_frame, write_frame};
 
 pub fn socket_path() -> PathBuf {
     if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR") {
@@ -326,88 +324,13 @@ mod tests {
     }
 
     #[test]
-    fn request_add_video_roundtrip() {
-        let req = Request::AddVideo {
-            source: "eddy".into(),
-            path: PathBuf::from("/tmp/eddy clip.mp4"),
-            output: Some("DP-2".into()),
-            take_ownership: true,
-        };
-        match Request::read(&mut Cursor::new(req.encode())).unwrap() {
-            Request::AddVideo {
-                source,
-                path,
-                output,
-                take_ownership,
-            } => {
-                assert_eq!(source, "eddy");
-                assert_eq!(path, PathBuf::from("/tmp/eddy clip.mp4"));
-                assert_eq!(output.as_deref(), Some("DP-2"));
-                assert!(take_ownership);
-            }
-            other => panic!("wrong variant: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn request_replace_image_roundtrip() {
-        let req = Request::Replace {
-            id: 12,
-            media: Replacement::Image(vec![9, 8, 7]),
-        };
-
-        match Request::read(&mut Cursor::new(req.encode())).unwrap() {
-            Request::Replace {
-                id,
-                media: Replacement::Image(png),
-            } => {
-                assert_eq!(id, 12);
-                assert_eq!(png, vec![9, 8, 7]);
-            }
-            other => panic!("wrong variant: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn request_replace_video_roundtrip() {
-        let req = Request::Replace {
-            id: 13,
-            media: Replacement::Video {
-                path: PathBuf::from("/tmp/edited.mp4"),
-                take_ownership: false,
-            },
-        };
-
-        match Request::read(&mut Cursor::new(req.encode())).unwrap() {
-            Request::Replace {
-                id,
-                media:
-                    Replacement::Video {
-                        path,
-                        take_ownership,
-                    },
-            } => {
-                assert_eq!(id, 13);
-                assert_eq!(path, PathBuf::from("/tmp/edited.mp4"));
-                assert!(!take_ownership);
-            }
-            other => panic!("wrong variant: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn request_ping_and_reload_roundtrip() {
+    fn request_ping_and_stop_roundtrip() {
         let mut cur = Cursor::new(Request::Ping.encode());
         assert!(matches!(Request::read(&mut cur).unwrap(), Request::Ping));
         let mut cur = Cursor::new(Request::StopRecording.encode());
         assert!(matches!(
             Request::read(&mut cur).unwrap(),
             Request::StopRecording
-        ));
-        let mut cur = Cursor::new(Request::Reload { id: 42 }.encode());
-        assert!(matches!(
-            Request::read(&mut cur).unwrap(),
-            Request::Reload { id: 42 }
         ));
     }
 
