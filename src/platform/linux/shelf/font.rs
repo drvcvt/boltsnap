@@ -2,7 +2,7 @@ use ab_glyph::FontVec;
 use std::path::PathBuf;
 use std::process::Command;
 
-use crate::shelf::font::fallback_popup_font;
+pub(crate) use crate::shelf::font::fallback_popup_font;
 
 fn parse_gsettings_font(output: &str) -> Option<String> {
     let value = output.trim().trim_matches('\'');

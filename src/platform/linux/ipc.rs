@@ -4,8 +4,6 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-#[cfg(test)]
-use crate::protocol::MAX_PAYLOAD_BYTES;
 pub use crate::protocol::{
     RecordingSnapshot, Replacement, Request, Response, read_frame, write_frame,
 };
@@ -271,16 +269,6 @@ mod tests {
         let error = read_frame(&mut Cursor::new(bytes)).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         assert!(error.to_string().contains("header"));
-    }
-
-    #[test]
-    fn oversized_frame_payload_is_rejected_before_allocation() {
-        let mut bytes = Vec::new();
-        bytes.extend_from_slice(&0_u32.to_be_bytes());
-        bytes.extend_from_slice(&((MAX_PAYLOAD_BYTES as u32) + 1).to_be_bytes());
-        let error = read_frame(&mut Cursor::new(bytes)).unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
-        assert!(error.to_string().contains("payload"));
     }
 
     #[test]

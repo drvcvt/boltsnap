@@ -11,8 +11,8 @@ mod record;
 mod selector;
 mod shelf;
 
-pub use crate::platform::{capture, clipboard, ipc, paths, tray};
-pub use boltsnap::{image_model, protocol};
+pub(crate) use crate::platform::{capture, clipboard, ipc, paths, tray};
+pub(crate) use boltsnap::{image_model, protocol};
 
 use crate::capture::{capture, strip_uniform_border};
 use crate::clipboard::{copy_to_clipboard, serve_wayland_clipboard, serve_wayland_uri_list};

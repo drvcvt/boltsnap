@@ -305,7 +305,7 @@ fn x11_pick_window_id() -> DynResult<Option<u32>> {
 }
 
 fn capture_wayland(mode: CaptureMode, output: &Path, instant: bool) -> DynResult<Option<String>> {
-    let capture_output = crate::shelf::focused_monitor_name();
+    let capture_output = crate::platform::shelf::focused_monitor_name();
     match mode {
         CaptureMode::Full => {
             let conn = libwayshot::WayshotConnection::new()
