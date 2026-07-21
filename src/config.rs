@@ -515,13 +515,11 @@ unrelated = "keep-me"
 
     #[test]
     fn expand_tilde_and_env() {
-        // Do NOT mutate HOME (other modules' tests read it); assert against the
-        // real value. BOLT_T is read by no other test, so setting it is race-free.
-        let home = env::var("HOME").expect("HOME set in test env");
+        let home = crate::paths::home_dir();
         unsafe {
             env::set_var("BOLT_T", "sub");
         }
-        assert_eq!(expand_path("~/Bilder"), PathBuf::from(&home).join("Bilder"));
+        assert_eq!(expand_path("~/Bilder"), home.join("Bilder"));
         assert_eq!(expand_path("/a/$BOLT_T/b"), PathBuf::from("/a/sub/b"));
         assert_eq!(expand_path("/a/${BOLT_T}x"), PathBuf::from("/a/subx"));
     }
