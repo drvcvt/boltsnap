@@ -272,6 +272,10 @@ const SAVE_FLASH_MS: u128 = 700;
 /// Card scale at the far end of the appear/dismiss animation.
 const ANIM_SCALE_MIN: f32 = 0.88;
 
+fn shelf_commit_allowed(drag_active: bool) -> bool {
+    !drag_active
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum AnimKind {
     Appear,
@@ -1870,15 +1874,13 @@ impl Daemon {
             self.shelf_pending_draw = true;
             return;
         }
-        // NOTE: we deliberately do NOT skip drawing while a drag is active.
-        // An earlier version early-returned here whenever `drag_source.is_some()`
-        // to avoid origin-surface commits during the grab — but if a drag never
-        // delivers a terminal event (e.g. the compositor rejects start_drag in
-        // some modes and sends neither dnd_finished nor cancelled), `drag_source`
-        // stays Some forever and the shelf is permanently frozen (dead to clicks,
-        // remove, preview). That latch is far worse than the redraw it prevented,
-        // and the real freeze cause (a synchronous pipe write) is fixed by
-        // threading send_request, so this suppression is no longer needed.
+        // Committing the origin surface during the implicit grab makes some
+        // wlroots compositors cancel the drag as it crosses to another output.
+        // clear_drag() redraws after the terminal event; a fresh pointer press
+        // clears a compositor-stuck drag before processing the new interaction.
+        if !shelf_commit_allowed(self.drag_source.is_some()) {
+            return;
+        }
         // Render against an animated layout that collapses any disappearing card's
         // slot, and resize the (bottom-anchored) surface to match so the cards
         // above slide down smoothly during the dismiss instead of snapping at the
@@ -3058,6 +3060,9 @@ impl PointerHandler for Daemon {
         let shelf_surface = self.layer.as_ref().map(|l| l.wl_surface().clone());
         let mut redraw = false;
         for ev in events {
+            if matches!(ev.kind, PointerEventKind::Press { .. }) && self.drag_source.is_some() {
+                self.clear_drag();
+            }
             if self.is_popup_surface(&ev.surface) {
                 if matches!(ev.kind, PointerEventKind::Enter { .. }) {
                     if let Some(p) = self.pointer.as_ref() {
@@ -3383,6 +3388,12 @@ mod tests {
     use std::io::{Read, Write};
     use std::os::unix::fs::MetadataExt;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn active_drag_defers_shelf_commits() {
+        assert!(!shelf_commit_allowed(true));
+        assert!(shelf_commit_allowed(false));
+    }
 
     #[test]
     fn owned_shelf_video_uses_independent_zero_copy_link_and_rejects_oversized_files() {
