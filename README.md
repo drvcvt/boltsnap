@@ -26,6 +26,22 @@ software renderer. The second image is a crop of the same session.
   <img src="assets/screenshots/shelf-headless-render.png" alt="Close-up of two real captures on the Boltsnap shelf" width="330">
 </p>
 
+## Full-screen capture benchmark
+
+One local Wayland run on a 3840 x 1080 dual-monitor desktop, writing PNGs to
+`/tmp` (3 warmups, 20 measured runs; lower is better):
+
+| Tool | Mean | Median | Range | Time vs. Boltsnap |
+|------|-----:|-------:|------:|------------------:|
+| Boltsnap 1.0.0 | 67.1 ms | 67.4 ms | 57.3–75.0 ms | 1.00x |
+| Wayshot 1.5.0 | 235.8 ms | 235.4 ms | 225.4–248.7 ms | 3.51x |
+| grim 1.5.0 | 274.6 ms | 271.9 ms | 265.0–303.5 ms | 4.09x |
+| Flameshot 14.0.0 | 652.1 ms | 648.4 ms | 637.0–681.1 ms | 9.71x |
+
+This measures full-desktop capture and PNG output only, not each tool's
+selector or editor. The exact commands, machine details, and all 20 timings are
+in [`benchmarks/full-capture-2026-07-21.md`](benchmarks/full-capture-2026-07-21.md).
+
 ## Install
 
 ### Windows 10/11
