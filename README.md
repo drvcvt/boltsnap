@@ -194,6 +194,15 @@ The following compositor stacks are tested:
 Other Wayland compositors may work if they expose the required protocols;
 using wlroots or Smithay alone is not a compatibility guarantee.
 
+### Experimental Hyprland XWayland drag workaround
+
+Some Hyprland versions can omit the first `XdndPosition` event when a Wayland
+drag enters an XWayland window and is released before the next pointer motion.
+An explicitly unstable, opt-in `hyprpm` workaround is documented in
+[`contrib/hyprland-xdnd-fix`](contrib/hyprland-xdnd-fix/README.md). It runs
+inside Hyprland and can crash the compositor; Boltsnap never installs or loads
+it automatically.
+
 Screenshot capture and clipboard handling need no CLI helpers. `hyprctl` is
 optional and supplies active-window geometry on Hyprland; other Wayland
 compositors fall back to the in-process selector for window mode. Recording

@@ -3,6 +3,7 @@
 /result
 /result-*
 **/*.rs.bk
+/contrib/hyprland-xdnd-fix/*.so
 .omx/
 .direnv/
 .DS_Store

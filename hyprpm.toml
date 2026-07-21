@@ -1,0 +1,9 @@
+[repository]
+name = "boltsnap"
+authors = ["drvcvt"]
+
+[boltsnap-xdnd-fix]
+description = "Experimental workaround for missing initial XdndPosition events in Hyprland"
+authors = ["drvcvt"]
+output = "contrib/hyprland-xdnd-fix/boltsnap-xdnd-fix.so"
+build = ["make -C contrib/hyprland-xdnd-fix all"]
