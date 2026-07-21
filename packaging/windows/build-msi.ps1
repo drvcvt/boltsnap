@@ -2,7 +2,7 @@
 param(
     [string]$EddyRepository = "",
     [string]$QtDirectory = "C:\Qt\6.9.3\msvc2022_64",
-    [string]$Version = "0.4.6",
+    [string]$Version = "1.0.0",
     [string]$OutputDirectory = "dist\msi",
     [switch]$SkipBuild,
     [switch]$SkipEddyBuild

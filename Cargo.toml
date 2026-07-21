@@ -1,6 +1,6 @@
 [package]
 name = "boltsnap"
-version = "0.4.6"
+version = "1.0.0"
 edition = "2024"
 description = "Fast native screenshot and screen-recording tool for Linux and Windows."
 license = "MIT"
