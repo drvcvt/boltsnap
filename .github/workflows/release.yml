@@ -25,8 +25,8 @@ jobs:
       - name: Check out Eddy
         uses: actions/checkout@v4
         with:
-          repository: change4u/eddy
-          ref: 5bd03391f88648dbb968f3968304802fc818b40c
+          repository: drvcvt/eddy
+          ref: 2e4aeb763c90ae746a23a1ad256ba5a4250b5a94
           path: eddy
 
       - uses: dtolnay/rust-toolchain@stable
