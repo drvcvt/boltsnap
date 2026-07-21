@@ -80,7 +80,7 @@ and follow its feature selection dialog. Both installers provide the same
 per-user Boltsnap and optional Eddy components.
 
 ```powershell
-msiexec /i .\dist\msi\Boltsnap-0.4.6-windows-x64.msi
+msiexec /i .\dist\msi\Boltsnap-1.0.0-windows-x64.msi
 ```
 
 The per-user MSI needs no install script or administrator account. It installs
