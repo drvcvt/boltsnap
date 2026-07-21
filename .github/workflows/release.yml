@@ -15,22 +15,55 @@ permissions:
 
 jobs:
   windows-x86_64:
-    name: Windows x86_64 (binary + ZIP)
+    name: Windows x86_64 (binary + ZIP + MSI)
     runs-on: windows-latest
     env:
       TAG_NAME: ${{ github.event.inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
 
+      - name: Check out Eddy
+        uses: actions/checkout@v4
+        with:
+          repository: change4u/eddy
+          ref: 5bd03391f88648dbb968f3968304802fc818b40c
+          path: eddy
+
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.9.3'
+          arch: win64_msvc2022_64
+          modules: qtmultimedia
+          cache: true
+
+      - name: Resolve release version
+        shell: pwsh
+        run: |
+          $version = $env:TAG_NAME.TrimStart('v')
+          if ($version -notmatch '^\d+\.\d+\.\d+$') {
+            throw "Release tag must use vMAJOR.MINOR.PATCH: $env:TAG_NAME"
+          }
+          "RELEASE_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Cargo test
         run: cargo test --release --locked
 
       - name: Cargo build (release)
         run: cargo build --release --locked
+
+      - name: Build MSI
+        shell: pwsh
+        run: |
+          ./packaging/windows/build-msi.ps1 `
+            -EddyRepository "$env:GITHUB_WORKSPACE/eddy" `
+            -QtDirectory $env:QT_ROOT_DIR `
+            -Version $env:RELEASE_VERSION `
+            -SkipBuild
 
       - name: Stage portable ZIP
         shell: pwsh
@@ -42,8 +75,16 @@ jobs:
           Copy-Item README.md "dist/$name/README.md"
           Copy-Item LICENSE "dist/$name/LICENSE"
           Compress-Archive -Path "dist/$name" -DestinationPath "dist/$name.zip"
-          (Get-FileHash "dist/$name.zip" -Algorithm SHA256).Hash.ToLower() + "  $name.zip" |
-            Set-Content -Encoding ascii dist/SHA256SUMS-windows
+
+      - name: Generate Windows checksums
+        shell: pwsh
+        run: |
+          Get-ChildItem dist -Recurse -File |
+            Where-Object { $_.Extension -in '.zip', '.msi' } |
+            Sort-Object Name |
+            ForEach-Object {
+              "$(($_ | Get-FileHash -Algorithm SHA256).Hash.ToLower())  $($_.Name)"
+            } | Set-Content -Encoding ascii dist/SHA256SUMS-windows
 
       - name: Create / update GitHub release
         uses: softprops/action-gh-release@v2
@@ -54,6 +95,7 @@ jobs:
           fail_on_unmatched_files: true
           files: |
             dist/*.zip
+            dist/msi/*.msi
             dist/SHA256SUMS-windows
 
   linux-x86_64:
