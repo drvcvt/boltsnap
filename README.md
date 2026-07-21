@@ -74,8 +74,9 @@ Explicit startup is optional:
 .\target\release\boltsnap.exe daemon
 ```
 
-For a normal Windows installation, open the generated MSI and follow its
-feature selection dialog:
+For a normal Windows installation, download the newest MSI from
+[GitHub Releases](https://github.com/drvcvt/boltsnap/releases/latest), open it,
+and follow its feature selection dialog:
 
 ```powershell
 msiexec /i .\dist\msi\Boltsnap-0.4.6-windows-x64.msi
