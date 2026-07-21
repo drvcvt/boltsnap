@@ -294,8 +294,9 @@ boltsnap recording watch --json        # newline-delimited state stream
 ```
 
 When idle, `boltsnap record` opens the region selector. Draw a region and click
-**REC** to start. The controls beside **REC** toggle audio and whether a thin,
-click-through frame remains around the captured area; both choices are saved.
+**REC** to start. The control beside **REC** toggles audio; on Linux an
+additional checkbox toggles whether a thin, click-through frame remains around
+the captured area. Both choices are saved.
 When a recording is already running, paused, or being saved, the same command
 opens the centered recording controls instead of starting another recording.
 This makes an `Alt+Print` binding a state-aware recording toggle.
@@ -362,7 +363,8 @@ and no video data or paths are sent through IPC.
 ```toml
 # ~/.config/boltsnap/config.toml
 
-# Video codec passed to wf-recorder.
+# Video codec passed to wf-recorder (Linux; Windows always encodes H.264
+# through Media Foundation).
 # Default: h264_nvenc (NVIDIA hardware encoding)
 # Use libx264 if you have no NVENC GPU.
 record_codec = "libx264"
@@ -372,14 +374,15 @@ record_codec = "libx264"
 record_dir = "~/Videos/boltsnap"
 
 # Fullscreen recording target: "focused", "output:<name>", or "both".
+# "output:<name>" and "both" are Linux-only; Windows records the focused monitor.
 # Default: focused
 record_default_target = "focused"
 
-# When the target is "both": "separate" or "combined".
+# When the target is "both": "separate" or "combined" (Linux).
 # Default: separate
 record_both_mode = "separate"
 
-# Show the outline around a recorded region. Default: true
+# Show the outline around a recorded region (Linux). Default: true
 record_show_frame = true
 
 # Add permanently saved recordings to the shelf without copying them. Default: true
