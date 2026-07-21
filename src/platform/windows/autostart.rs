@@ -11,10 +11,18 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const TASK_NAME: &str = "Boltsnap Daemon";
 
 pub fn install() -> DynResult<()> {
-    let executable = env::current_exe()?;
-    let working_directory = executable
+    let controller = env::current_exe()?;
+    let working_directory = controller
         .parent()
         .ok_or("Boltsnap executable has no parent directory")?;
+    let executable = working_directory.join("boltsnap-background.exe");
+    if !executable.is_file() {
+        return Err(format!(
+            "Boltsnap background launcher is missing: {}",
+            executable.display()
+        )
+        .into());
+    }
     let script = r#"
 $ErrorActionPreference = 'Stop'
 $taskName = $env:BOLTSNAP_TASK_NAME
@@ -22,7 +30,7 @@ $executable = $env:BOLTSNAP_TASK_EXECUTABLE
 $workingDirectory = $env:BOLTSNAP_TASK_WORKING_DIRECTORY
 $user = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
-$action = New-ScheduledTaskAction -Execute $executable -Argument 'daemon' -WorkingDirectory $workingDirectory
+$action = New-ScheduledTaskAction -Execute $executable -WorkingDirectory $workingDirectory
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $user
 $trigger.Delay = 'PT3S'
 $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited

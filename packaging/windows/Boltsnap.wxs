@@ -34,7 +34,6 @@
              Description="Screenshot, Bildschirmaufnahme, Shelf, Tray und globale Windows-Hotkeys.">
       <ComponentRef Id="BoltsnapExecutable" />
       <ComponentRef Id="BoltsnapUserIntegration" />
-      <ComponentRef Id="BoltsnapStartupShortcut" />
       <ComponentRef Id="BoltsnapStartMenuShortcut" />
     </Feature>
 
@@ -49,14 +48,12 @@
       <Component Id="BoltsnapExecutable" Guid="E447B241-1B17-46DB-8D8A-66F3FF892B8E">
         <File Id="BoltsnapExecutableFile" Source="$(var.BoltsnapSourceDir)\boltsnap.exe"
               Name="boltsnap.exe" KeyPath="yes" />
-        <RemoveFile Id="RemoveLegacyBoltsnapExecutable" Name="boltsnap.exe" On="install" />
+        <File Id="BoltsnapBackgroundFile" Source="$(var.BoltsnapSourceDir)\boltsnap-background.exe"
+              Name="boltsnap-background.exe" />
       </Component>
       <Component Id="BoltsnapUserIntegration" Guid="09F6E844-2B82-47A2-B2C8-D308A4D54157">
         <RegistryValue Root="HKCU" Key="Software\Boltsnap" Name="InstallLocation"
                        Value="[INSTALLFOLDER]" Type="string" KeyPath="yes" />
-        <RegistryValue Root="HKCU" Key="Software\Microsoft\Windows\CurrentVersion\Run"
-                       Name="Boltsnap" Value="&quot;[INSTALLFOLDER]boltsnap.exe&quot; daemon"
-                       Type="string" />
         <RegistryValue Root="HKCU" Key="Control Panel\Keyboard"
                        Name="PrintScreenKeyForSnippingEnabled" Value="0" Type="integer" />
         <RegistryValue Root="HKCU" Key="Software\Microsoft\Windows\CurrentVersion\App Paths\boltsnap.exe"
@@ -73,19 +70,10 @@
       </Component>
     </DirectoryRef>
 
-    <StandardDirectory Id="StartupFolder">
-      <Component Id="BoltsnapStartupShortcut" Guid="3BB14772-A7FE-4D1B-8DD0-64FB727010F1">
-        <Shortcut Id="BoltsnapStartup" Name="Boltsnap" Target="[INSTALLFOLDER]boltsnap.exe"
-                  Arguments="daemon" WorkingDirectory="INSTALLFOLDER" />
-        <RegistryValue Root="HKCU" Key="Software\Boltsnap" Name="StartupShortcut"
-                       Value="1" Type="integer" KeyPath="yes" />
-      </Component>
-    </StandardDirectory>
-
     <DirectoryRef Id="BoltsnapProgramMenuFolder">
       <Component Id="BoltsnapStartMenuShortcut" Guid="C0C1BE6B-020D-4F63-B2B8-C21A271B0CC2">
         <Shortcut Id="BoltsnapStartMenu" Name="Boltsnap" Description="Boltsnap Screenshot Tool"
-                  Target="[INSTALLFOLDER]boltsnap.exe" Arguments="daemon"
+                  Target="[INSTALLFOLDER]boltsnap-background.exe"
                   WorkingDirectory="INSTALLFOLDER" />
         <RemoveFolder Id="RemoveBoltsnapProgramMenuFolder" On="uninstall" />
         <RegistryValue Root="HKCU" Key="Software\Boltsnap" Name="StartMenuShortcut"
