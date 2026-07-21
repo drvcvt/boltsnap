@@ -196,7 +196,7 @@ pub fn wf_recorder_output_args(
 }
 
 fn capture_profile_args(codec: &str) -> Vec<String> {
-    let mut args = vec!["-r".into(), "240".into()];
+    let mut args = vec!["--no-dmabuf".into(), "-r".into(), "240".into()];
     if codec.ends_with("_nvenc") {
         for option in ["preset=p5", "tune=hq", "rc=vbr", "cq=16"] {
             args.extend(["-p".into(), option.into()]);
@@ -304,6 +304,7 @@ mod tests {
                 "0,0 1280x720",
                 "-c",
                 "h264_nvenc",
+                "--no-dmabuf",
                 "-r",
                 "240",
                 "-p",
@@ -331,6 +332,7 @@ mod tests {
                 "DP-1",
                 "-c",
                 "h264_nvenc",
+                "--no-dmabuf",
                 "-r",
                 "240",
                 "-p",
