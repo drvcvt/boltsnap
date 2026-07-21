@@ -85,6 +85,16 @@ pub fn run_daemon(save_dir_cli: Option<PathBuf>) -> DynResult<()> {
     let Some(_instance) = SingleInstance::acquire()? else {
         return Ok(());
     };
+    // No daemon was running, so the shelf is empty: any leftover shelf tempfiles
+    // or cached recordings are orphans from a previous run/crash.
+    let cleaned = crate::paths::clean_orphan_shelf_temps();
+    if cleaned > 0 {
+        eprintln!("boltsnap daemon: cleaned {cleaned} orphaned shelf tempfile(s)");
+    }
+    let cleaned_rec = crate::paths::clean_orphan_rec_files();
+    if cleaned_rec > 0 {
+        eprintln!("boltsnap daemon: cleaned {cleaned_rec} orphaned recording file(s)");
+    }
     if let Err(error) = crate::platform::windows::hotkey::register_snipping_shortcuts() {
         eprintln!("boltsnap daemon: {error}");
     }
