@@ -16,7 +16,7 @@ permissions:
 jobs:
   windows-x86_64:
     name: Windows x86_64 (binary + ZIP + MSI + NSIS)
-    runs-on: windows-latest
+    runs-on: windows-2022
     env:
       TAG_NAME: ${{ github.event.inputs.tag || github.ref_name }}
     steps:
