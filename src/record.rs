@@ -4,9 +4,17 @@
 use crate::config::RecordDefaultTarget;
 use std::path::Path;
 
+#[cfg(target_os = "linux")]
 pub mod audio;
+#[cfg(target_os = "linux")]
 pub mod finalize;
+#[cfg(target_os = "linux")]
 pub mod session;
+
+#[cfg(target_os = "windows")]
+pub mod session {
+    pub use crate::protocol::{PublicRecordingState, RecordingAction};
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Monitor {

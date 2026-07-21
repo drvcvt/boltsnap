@@ -4,16 +4,15 @@ use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 
-mod capture;
-mod clipboard;
 mod config;
 mod editor;
-mod ipc;
-mod paths;
+mod platform;
 mod record;
-mod select_skia;
+mod selector;
 mod shelf;
-mod tray;
+
+pub use crate::platform::{capture, clipboard, ipc, paths, tray};
+pub use boltsnap::{image_model, protocol};
 
 use crate::capture::{capture, strip_uniform_border};
 use crate::clipboard::{copy_to_clipboard, serve_wayland_clipboard, serve_wayland_uri_list};
@@ -27,6 +26,7 @@ enum Backend {
     Auto,
     X11,
     Wayland,
+    Windows,
 }
 
 impl Backend {
@@ -35,7 +35,8 @@ impl Backend {
             "auto" => Ok(Self::Auto),
             "x11" => Ok(Self::X11),
             "wayland" => Ok(Self::Wayland),
-            other => Err(format!("unknown backend '{other}', use auto/x11/wayland").into()),
+            "windows" => Ok(Self::Windows),
+            other => Err(format!("unknown backend '{other}', use auto/x11/wayland/windows").into()),
         }
     }
 
@@ -51,6 +52,7 @@ impl Backend {
             Self::Auto => "auto",
             Self::X11 => "x11",
             Self::Wayland => "wayland",
+            Self::Windows => "windows",
         }
     }
 }
@@ -98,7 +100,7 @@ struct Args {
     output: Option<PathBuf>,
     backend: Backend,
     /// Skip the selector's editable phase: release captures immediately.
-    /// Wayland-only (the X11 path has no interactive region selector).
+    /// Supported by interactive Wayland and Windows region selectors.
     instant: bool,
     /// Override the shelf save directory (daemon).
     save_dir: Option<PathBuf>,
@@ -151,7 +153,7 @@ fn decide_post_capture(args: &Args, backend: Backend) -> PostCapture {
         return PostCapture::File { copy: args.copy };
     }
     match backend {
-        Backend::Wayland => PostCapture::Shelf {
+        Backend::Wayland | Backend::Windows => PostCapture::Shelf {
             copy: args.copy_explicit && args.copy,
         },
         _ => PostCapture::CopyOnly,
@@ -161,13 +163,13 @@ fn decide_post_capture(args: &Args, backend: Backend) -> PostCapture {
 fn usage() -> &'static str {
     "\
 Usage:
-  boltsnap [area|full|window|active-window] [-o PATH|-] [--save] [--no-copy] [--instant] [--backend auto|x11|wayland]
+  boltsnap [area|full|window|active-window] [-o PATH|-] [--save] [--no-copy] [--instant] [--backend auto|x11|wayland|windows]
   boltsnap area --instant                 select a region, capture on release (no edit handles)
   boltsnap --edit                         open last screenshot in editor
   boltsnap [area|window|full] --edit      capture then edit
   boltsnap edit [IMAGE] [-o PATH] [--no-copy]
   boltsnap daemon [--save-dir DIR]        run the screenshot shelf
-  boltsnap record [--editor CMD]          select an area and screen-record it (Wayland)
+  boltsnap record [--editor CMD]          select an area and screen-record it
   boltsnap record full                    record the configured fullscreen target (no selector)
   boltsnap recording status --json
   boltsnap recording watch --json
@@ -175,7 +177,7 @@ Usage:
   boltsnap recording pause|resume|save-shelf|save-disk|discard
   boltsnap stop                           compatibility alias for recording save-shelf
   boltsnap [COMMAND] [--editor CMD]       annotate with a specific editor
-  Config: ~/.config/boltsnap/config.toml  (save_dir, editor, record_codec, record_dir)
+  Config: platform config directory       (save_dir, editor, record_codec, record_dir)
   boltsnap doctor
 
 Examples:
@@ -285,6 +287,10 @@ fn run() -> DynResult<()> {
         "recording" => recording_command(&args),
         "stop" => recording_control(crate::record::session::RecordingAction::SaveShelf),
         "daemon" => crate::shelf::run_daemon(args.save_dir.clone()),
+        #[cfg(target_os = "windows")]
+        "__install-autostart" => crate::platform::autostart::install(),
+        #[cfg(target_os = "windows")]
+        "__remove-autostart" => crate::platform::autostart::remove(),
         "__debug-render" => {
             // Render the shelf (one sample thumbnail, hovered) straight to a PNG
             // via the real draw path, so styling can be inspected without a
@@ -350,6 +356,7 @@ fn edit_last_screenshot(args: &Args) -> DynResult<()> {
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
 fn record_flow(args: &Args) -> DynResult<()> {
     let state = match crate::ipc::call_daemon(crate::ipc::Request::RecordingStatus) {
         Ok(response) => recording_state_from_status(response)?,
@@ -381,7 +388,7 @@ fn record_flow(args: &Args) -> DynResult<()> {
         return Ok(());
     }
     let mut prefs = crate::config::Config::load().recording_prefs();
-    let selection = crate::select_skia::run_select_record(prefs.show_frame, prefs.audio_enabled)?;
+    let selection = crate::selector::run_select_record(prefs.show_frame, prefs.audio_enabled)?;
     if selection.show_frame != prefs.show_frame || selection.audio_enabled != prefs.audio_enabled {
         prefs.show_frame = selection.show_frame;
         prefs.audio_enabled = selection.audio_enabled;
@@ -397,6 +404,54 @@ fn record_flow(args: &Args) -> DynResult<()> {
         y: geo.y,
         w: geo.w,
         h: geo.h,
+        show_frame: prefs.show_frame,
+        audio_enabled: selection.audio_enabled,
+    })?;
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn record_flow(args: &Args) -> DynResult<()> {
+    let state = match crate::ipc::call_daemon(crate::ipc::Request::RecordingStatus) {
+        Ok(response) => recording_state_from_status(response)?,
+        Err(error) if is_legacy_recording_status_eof(&error) => {
+            crate::record::session::PublicRecordingState::Idle
+        }
+        Err(error) => return Err(format!("recording daemon unavailable: {error}").into()),
+    };
+    if state != crate::record::session::PublicRecordingState::Idle {
+        checked_recording_call(crate::ipc::Request::ShowRecordingControls)?;
+        return Ok(());
+    }
+
+    let target = args
+        .image
+        .as_deref()
+        .and_then(|path| path.to_str())
+        .unwrap_or("area");
+    if matches!(target, "full" | "screen" | "fullscreen") {
+        checked_recording_call(crate::ipc::Request::StartDefaultRecording)?;
+        return Ok(());
+    }
+
+    let mut prefs = crate::config::Config::load().recording_prefs();
+    let selection = crate::selector::run_select_record(prefs.show_frame, prefs.audio_enabled)?;
+    if selection.show_frame != prefs.show_frame || selection.audio_enabled != prefs.audio_enabled {
+        prefs.show_frame = selection.show_frame;
+        prefs.audio_enabled = selection.audio_enabled;
+        crate::config::save_recording_prefs(&prefs)?;
+    }
+    let Some(rect) = selection.rect else {
+        return Ok(());
+    };
+    let (origin_x, origin_y) = crate::shelf::focused_monitor_origin().unwrap_or((0, 0));
+    let geometry =
+        crate::record::to_global_geometry(rect.x, rect.y, rect.w, rect.h, origin_x, origin_y);
+    checked_recording_call(crate::ipc::Request::StartRecording {
+        x: geometry.x,
+        y: geometry.y,
+        w: geometry.w,
+        h: geometry.h,
         show_frame: prefs.show_frame,
         audio_enabled: selection.audio_enabled,
     })?;
@@ -574,18 +629,27 @@ fn capture_to_stdout(mode: CaptureMode, backend: Backend, instant: bool) -> DynR
 }
 
 fn detect_backend() -> DynResult<Backend> {
-    let session = env::var("XDG_SESSION_TYPE")
-        .unwrap_or_default()
-        .to_lowercase();
-    if session == "wayland" || (session.is_empty() && env::var_os("WAYLAND_DISPLAY").is_some()) {
-        Ok(Backend::Wayland)
-    } else if session == "x11" || env::var_os("DISPLAY").is_some() {
-        Ok(Backend::X11)
-    } else {
-        Err(
-            "could not detect X11 or Wayland session; pass --backend x11 or --backend wayland"
-                .into(),
-        )
+    #[cfg(target_os = "windows")]
+    {
+        return Ok(Backend::Windows);
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let session = env::var("XDG_SESSION_TYPE")
+            .unwrap_or_default()
+            .to_lowercase();
+        if session == "wayland" || (session.is_empty() && env::var_os("WAYLAND_DISPLAY").is_some())
+        {
+            Ok(Backend::Wayland)
+        } else if session == "x11" || env::var_os("DISPLAY").is_some() {
+            Ok(Backend::X11)
+        } else {
+            Err(
+                "could not detect X11 or Wayland session; pass --backend x11 or --backend wayland"
+                    .into(),
+            )
+        }
     }
 }
 

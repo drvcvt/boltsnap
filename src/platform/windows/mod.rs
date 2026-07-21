@@ -1,0 +1,11 @@
+pub mod audio;
+pub mod autostart;
+pub mod capture;
+pub mod clipboard;
+pub mod hotkey;
+pub mod ipc;
+pub mod paths;
+pub mod recording;
+pub mod select_skia;
+pub mod shelf;
+pub mod tray;

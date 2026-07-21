@@ -61,7 +61,7 @@ pub fn serve_wayland_uri_list(path: &Path) -> DynResult<()> {
 
 /// Put a file reference (text/uri-list) on the clipboard by spawning a detached
 /// `__serve-clipboard-uri` self that holds the data source open, so the caller
-/// returns immediately. Copies only the path — instant regardless of file size.
+/// returns immediately. Copies only the path â€” instant regardless of file size.
 pub fn copy_uri_to_clipboard(path: &Path) -> DynResult<()> {
     let exe = env::current_exe()?;
     crate::paths::spawn_reaped(
@@ -108,6 +108,7 @@ pub fn copy_to_clipboard(path: &Path, backend: Backend) -> DynResult<Backend> {
                 })
                 .map_err(|e| format!("X11 clipboard set_image failed: {e}"))?;
         }
+        Backend::Windows => return Err("Windows clipboard is unavailable on Linux".into()),
         Backend::Auto => unreachable!(),
     }
     Ok(backend)
@@ -128,7 +129,7 @@ mod tests {
     #[test]
     fn uri_list_percent_encodes_path_bytes() {
         assert_eq!(
-            uri_list_for(Path::new("/nonexistent/a b#%ä.mp4")),
+            uri_list_for(Path::new("/nonexistent/a b#%Ã¤.mp4")),
             "file:///nonexistent/a%20b%23%25%C3%A4.mp4\r\n"
         );
     }

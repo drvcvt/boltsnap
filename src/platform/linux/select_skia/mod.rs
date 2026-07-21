@@ -1,8 +1,7 @@
 //! New region selector on raw SCTK (wlr-layer-shell) + tiny-skia, behind `--new`.
 //! Parallel to `src/select.rs` (egui); same public signature so it is a drop-in.
 
-mod edit;
-mod render;
+use crate::selector::{edit, render};
 
 use std::thread;
 
@@ -142,7 +141,7 @@ fn run_selector(
     event_queue.roundtrip(&mut sel)?;
 
     // Screenshot mode: block on the capture result; the grab ran during setup.
-    // Record mode: nothing to join — the backdrop is built from a transparent
+    // Record mode: nothing to join â€” the backdrop is built from a transparent
     // base on the first configure.
     if let Some(handle) = capture_handle {
         let image = handle
@@ -202,7 +201,7 @@ struct Selector {
     interaction: Option<Interaction>,
     /// Last pointer position (so the Alt magnifier can follow the cursor).
     cursor: (f64, f64),
-    /// Alt is held → show the magnifier (consumed in Task 11).
+    /// Alt is held â†’ show the magnifier (consumed in Task 11).
     alt_held: bool,
     result: Option<RgbaImage>,
     done: bool,
@@ -283,7 +282,7 @@ enum Interaction {
 const HANDLE_R: f64 = 9.0;
 const MIN_SEL: f64 = 4.0;
 /// Pixels of motion before a press-inside counts as a drag (move) rather than a
-/// click-to-confirm — tolerates pointer jitter on a confirm click.
+/// click-to-confirm â€” tolerates pointer jitter on a confirm click.
 const DRAG_SLOP: f64 = 3.0;
 
 impl Selector {

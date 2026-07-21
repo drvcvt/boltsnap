@@ -4,9 +4,8 @@
 
 # Boltsnap
 
-Fast Rust screenshot tool for Wayland (tested on Hyprland, Sway, and Niri) and X11 — no
-`maim`, `import`, `slurp`, `xdotool`, `xwininfo`, `xclip` or other CLI helpers
-required. Everything runs in-process.
+Fast native Rust screenshot and screen-recording tool for Windows, Wayland and
+X11. Capture, selection, shelf, clipboard and Windows recording run in-process.
 
 - In-process capture: `libwayshot` on Wayland, `x11rb` on X11
 - In-process Wayland selection overlay (drag a region) — replaces `slurp`
@@ -51,6 +50,64 @@ sudo install -m755 boltsnap-*/boltsnap /usr/local/bin/
 ```sh
 cargo install --path .
 ```
+
+### Windows 10/11
+
+Install the Rust MSVC toolchain, Visual Studio Build Tools with **Desktop
+development with C++**, and a current Windows SDK. Then build and start:
+
+```powershell
+git clone https://github.com/drvcvt/boltsnap
+cd boltsnap
+cargo build --release
+.\target\release\boltsnap.exe area
+```
+
+The shelf daemon starts automatically and provides a Windows notification-area
+icon with quick actions. On Windows, the Shelf window is clipped directly to
+the rounded image cards without title text, padding, borders, taskbar entries,
+or Alt+Tab entries, and it never takes foreground focus. Selector and recording
+controls also remain borderless.
+Explicit startup is optional:
+
+```powershell
+.\target\release\boltsnap.exe daemon
+```
+
+For a normal Windows installation, open the generated MSI and follow its
+feature selection dialog:
+
+```powershell
+msiexec /i .\dist\msi\Boltsnap-0.4.5-windows-x64.msi
+```
+
+The per-user MSI needs no install script or administrator account. It installs
+Boltsnap under `%LOCALAPPDATA%\Programs\Boltsnap`, starts the daemon after setup
+and at every sign-in through an independent per-user Task Scheduler task,
+restarts it after failures, registers Start-menu shortcuts, disables the
+Windows PrintScreen Snipping Tool action, and keeps the native tray menu
+available. Uninstall it from Windows **Installed apps**.
+
+**Eddy image editor (recommended)** is selected by default but remains
+optional. Eddy is the companion editor for arrows, text, highlighting, blur,
+and redaction. When installed through the MSI, right-clicking an image in the
+Shelf opens that exact image in Eddy; there is no separate Edit button. Boltsnap
+continues to work normally when Eddy is not selected, except for this action.
+
+Maintainers can build the MSI, including Eddy and its Qt runtime, with:
+
+```powershell
+.\packaging\windows\build-msi.ps1
+```
+
+The build script expects the Eddy repository beside the Boltsnap workspace by
+default. Use `-EddyRepository PATH` when it is stored elsewhere.
+
+Afterwards, pressing **PrintScreen** or **Win+Shift+S** opens the Boltsnap area
+selector and captures immediately when the mouse button is released;
+**Alt+Shift+S** opens the area recording selector. A dedicated
+low-level keyboard hook suppresses the Windows-reserved shortcut and
+immediately hands capture startup to a worker thread.
 
 ### Arch Linux
 
@@ -107,6 +164,7 @@ Backends:
 |---------|----------------|-----------------------|--------------------|
 | Wayland | libwayshot     | in-process tiny-skia  | wl-clipboard-rs    |
 | X11     | x11rb GetImage | unavailable           | arboard            |
+| Windows | DXGI + WGC     | in-process tiny-skia  | Win32 + OLE        |
 
 ### Wayland compatibility
 
@@ -244,7 +302,8 @@ shelf.
 
 ## Configuration
 
-Create `~/.config/boltsnap/config.toml` to set persistent defaults:
+Create `~/.config/boltsnap/config.toml` on Linux or
+`%APPDATA%\boltsnap\config.toml` on Windows to set persistent defaults:
 
 ```toml
 # Directory where the shelf Save button writes timestamped PNGs.
@@ -283,11 +342,9 @@ When a recording is already running, paused, or being saved, the same command
 opens the centered recording controls instead of starting another recording.
 This makes an `Alt+Print` binding a state-aware recording toggle.
 
-The native tray icon is available whenever the daemon is running. Its
-right-click menu can start a region or fullscreen recording and stores the
-default monitor, **Both displays**, separate/combined output mode, frame
-visibility, audio source (**System + microphone**, **Microphone only**, or
-**System only**), and whether permanent Disk Saves should also appear in the shelf.
+The native tray icon is available whenever the daemon is running. On Windows,
+its menu provides area/fullscreen screenshots, area/fullscreen recordings,
+recording controls, and a daemon quit action.
 
 The recording controls offer:
 
@@ -312,9 +369,11 @@ retried or discarded instead of losing the recording.
 
 Video cards carry a **▶** badge; clicking one opens the file in **eddy**.
 
-**Requires `wf-recorder`**. Audio-enabled recording also requires `pactl`
-(PipeWire-Pulse or PulseAudio). Video uses `wlr-screencopy` directly, with no
-portal or permission dialog.
+On Linux recording requires `wf-recorder`; audio also requires `pactl`. On
+Windows recording is native: Windows Graphics Capture feeds Media Foundation
+H.264/AAC and WASAPI captures system audio and/or the microphone. Windows
+currently records one monitor or one region at a time; combined multi-monitor
+recording and `recording watch --json` remain explicit unsupported operations.
 
 ```sh
 # Arch / Manjaro
@@ -382,8 +441,8 @@ pickers and volume controls are intentionally left to the desktop audio mixer.
 
 ## Contributing
 
-Boltsnap is currently Linux-only. Windows support should be added capability by
-capability without weakening the existing Wayland/X11 paths. Read
+Boltsnap uses shared product logic with native Linux and Windows backends. New
+platform work must remain capability-based without weakening either path. Read
 [`AGENTS.md`](AGENTS.md) before starting; it contains the repository-wide agent
 and verification rules.
 
@@ -391,7 +450,7 @@ Keep this boundary:
 
 | Shared code | Linux implementation | Windows implementation |
 |-------------|----------------------|------------------------|
-| CLI and config values, image processing, serialized protocol data, pure calculations | Wayland/X11, Unix sockets, systemd, POSIX process/filesystem calls, `ksni`, `wf-recorder`, `pactl`, `hyprctl` | Windows capture, clipboard, IPC, process lifecycle, tray, and OS directory APIs |
+| CLI and config values, image processing, serialized protocol data, pure calculations | Wayland/X11, Unix sockets, systemd, POSIX process/filesystem calls, `ksni`, `wf-recorder`, `pactl`, `hyprctl` | Windows capture, clipboard, IPC, process lifecycle, shelf, tray, and OS directory APIs |
 
 - Put OS implementations under `src/platform/linux/` and
   `src/platform/windows/`, with selection centralized in `src/platform/mod.rs`.
