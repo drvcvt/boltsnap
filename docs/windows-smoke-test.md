@@ -9,8 +9,9 @@ production path).
 
 ## Capture
 
-1. **PrintScreen** opens the Boltsnap area selector (not Snipping Tool). Draw a
-   region → thumbnail appears bottom-left on the current monitor.
+1. **PrintScreen** opens the Boltsnap area selector and keeps it open (not
+   Snipping Tool). Draw a region → thumbnail appears bottom-left on the current
+   monitor.
 2. **Win+Shift+S** opens the same selector. After cancelling with Escape, the
    Start menu must NOT pop up.
 3. `boltsnap window` and `boltsnap active-window` capture the right window.
@@ -31,10 +32,10 @@ production path).
 
 ## Recording
 
-10. **Alt+Shift+S** opens the record selector with the same stable brightness as
-    the screenshot selector (including with HDR enabled), plus the REC pill and
-    audio toggle but no frame checkbox. Confirm → controls popup appears
-    top-center.
+10. **Alt+Shift+S** opens the record selector and keeps it open with the same
+    stable brightness as the screenshot selector (including with HDR enabled),
+    plus the REC pill and audio toggle but no frame checkbox. Confirm → controls
+    popup appears top-center.
 11. Popup: Pause/Resume updates the timer; **Save to shelf** adds a video card;
     **Save to disk** writes an .mp4 to the record directory; **Discard**
     removes everything.
