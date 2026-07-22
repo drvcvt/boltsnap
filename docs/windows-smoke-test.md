@@ -31,8 +31,10 @@ production path).
 
 ## Recording
 
-10. **Alt+Shift+S** opens the record selector (REC pill + audio toggle, no
-    frame checkbox). Confirm → controls popup appears top-center.
+10. **Alt+Shift+S** opens the record selector with the same stable brightness as
+    the screenshot selector (including with HDR enabled), plus the REC pill and
+    audio toggle but no frame checkbox. Confirm → controls popup appears
+    top-center.
 11. Popup: Pause/Resume updates the timer; **Save to shelf** adds a video card;
     **Save to disk** writes an .mp4 to the record directory; **Discard**
     removes everything.
