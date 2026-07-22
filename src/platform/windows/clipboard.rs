@@ -1,7 +1,7 @@
 use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 
-use windows::Win32::Foundation::{GlobalFree, HANDLE};
+use windows::Win32::Foundation::{GlobalFree, HANDLE, HWND};
 use windows::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
 };
@@ -28,7 +28,9 @@ pub(crate) fn copy_to_clipboard(path: &Path, backend: Backend) -> DynResult<Back
     Ok(backend)
 }
 
-pub fn copy_uri_to_clipboard(path: &Path) -> DynResult<()> {
+/// Copy a file reference using a real owner window. Win32 rejects
+/// `SetClipboardData` after `EmptyClipboard` when `OpenClipboard` received NULL.
+pub fn copy_uri_to_clipboard(path: &Path, owner: HWND) -> DynResult<()> {
     let path = crate::paths::normalize_path(path);
     crate::paths::ensure_file(&path)?;
     let mut wide = path
@@ -66,7 +68,7 @@ pub fn copy_uri_to_clipboard(path: &Path) -> DynResult<()> {
 
     let mut opened = false;
     for _ in 0..10 {
-        if unsafe { OpenClipboard(None) }.is_ok() {
+        if unsafe { OpenClipboard(Some(owner)) }.is_ok() {
             opened = true;
             break;
         }
