@@ -50,18 +50,11 @@ Download one of these from the
 | File | Use it for |
 |------|------------|
 | `Boltsnap-X.Y.Z-windows-x64-setup.exe` | Regular interactive setup (NSIS) |
-| `Boltsnap-X.Y.Z-windows-x64.msi` | MSI deployment or unattended installation |
 | `boltsnap-vX.Y.Z-x86_64-windows.zip` | Portable use without installation |
 
-The NSIS and MSI installers are per-user, need no administrator account, and
-contain Boltsnap only. They start the shelf daemon after setup and at sign-in,
-add a Start-menu shortcut, and can be removed from Windows **Installed apps**.
-
-For an unattended MSI install:
-
-```powershell
-msiexec /i .\Boltsnap-1.0.0-windows-x64.msi /qn
-```
+The NSIS installer is per-user, needs no administrator account, and contains
+Boltsnap only. It starts the shelf daemon after setup and at sign-in, adds a
+Start-menu shortcut, and can be removed from Windows **Installed apps**.
 
 After installation, **PrintScreen** or **Win+Shift+S** opens the area selector;
 **Alt+Shift+S** opens the recording selector. The shelf runs in the notification
@@ -77,10 +70,9 @@ cargo build --release
 .\target\release\boltsnap.exe area
 ```
 
-Maintainers can build both installers with:
+Maintainers can build the installer with:
 
 ```powershell
-.\packaging\windows\build-msi.ps1
 .\packaging\windows\build-nsis.ps1
 ```
 

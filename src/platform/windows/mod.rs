@@ -9,3 +9,13 @@ pub mod recording;
 pub mod select_skia;
 pub mod shelf;
 pub mod tray;
+
+pub(crate) fn app_window_icon() -> winit::window::Icon {
+    let image =
+        image::load_from_memory(include_bytes!("../../../assets/icons/boltsnap-app-64.png"))
+            .expect("embedded Boltsnap app icon must be valid PNG")
+            .into_rgba8();
+    let (width, height) = image.dimensions();
+    winit::window::Icon::from_rgba(image.into_raw(), width, height)
+        .expect("embedded Boltsnap app icon must have valid RGBA dimensions")
+}

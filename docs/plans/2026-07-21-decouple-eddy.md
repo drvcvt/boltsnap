@@ -6,13 +6,13 @@
 
 **Architecture:** Remove the Eddy-specific runtime path instead of replacing it with another editor abstraction. Keep capture, shelf, clipboard, save, drag-and-drop, and `-o -` in Boltsnap; external programs consume stdout themselves.
 
-**Tech Stack:** Rust, Cargo tests, PowerShell packaging, NSIS, WiX, GitHub Actions.
+**Tech Stack:** Rust, Cargo tests, PowerShell packaging, NSIS, GitHub Actions.
 
 ## Global Constraints
 
 - Preserve native Linux capture behavior and the existing platform boundary.
 - Do not add dependencies or a replacement editor integration.
-- Windows installers contain only Boltsnap.
+- The Windows installer contains only Boltsnap.
 - Verify with `cargo fmt --check`, `cargo test`, and `cargo check --target x86_64-pc-windows-msvc`.
 
 ---
@@ -114,19 +114,17 @@ Expected: PASS with no editor module references.
 **Files:**
 - Modify: `.github/workflows/release.yml`
 - Modify: `packaging/windows/Boltsnap.nsi`
-- Modify: `packaging/windows/Boltsnap.wxs`
-- Modify: `packaging/windows/build-msi.ps1`
 - Modify: `packaging/windows/build-nsis.ps1`
 - Modify: `README.md`
 - Modify: `PORTING_PLAN.md`
 
 **Interfaces:**
 - Consumes: the two Boltsnap release executables.
-- Produces: ZIP, MSI, and NSIS packages with no Eddy/Qt checkout, build, files, registry entries, or shortcuts.
+- Produces: ZIP and NSIS packages with no Eddy/Qt checkout, build, files, registry entries, or shortcuts.
 
 - [x] **Step 1: Delete bundle inputs and components**
 
-Remove Eddy/Qt parameters, staging, build steps, WiX/NSIS features, workflow checkout, and documentation that describes bundled or automatic editor integration. Keep one external pipeline example:
+Remove Eddy/Qt parameters, staging, build steps, NSIS features, workflow checkout, and documentation that describes bundled or automatic editor integration. Keep one external pipeline example:
 
 ```sh
 boltsnap area --no-copy -o - | eddy -f -
