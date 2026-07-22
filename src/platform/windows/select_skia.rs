@@ -770,6 +770,11 @@ impl ApplicationHandler for SelectorApplication {
             }
         };
         window.set_cursor(CursorIcon::Crosshair);
+        window.set_visible(true);
+        if let Err(error) = configure_utility_window(&window) {
+            self.fail(event_loop, error);
+            return;
+        }
         let hwnd = match window_hwnd(&window) {
             Ok(hwnd) => hwnd,
             Err(error) => {
@@ -784,11 +789,6 @@ impl ApplicationHandler for SelectorApplication {
                 GWL_EXSTYLE,
                 (extended_style | WS_EX_LAYERED.0) as isize,
             );
-        }
-        window.set_visible(true);
-        if let Err(error) = configure_utility_window(&window) {
-            self.fail(event_loop, error);
-            return;
         }
         window.focus_window();
         window.request_redraw();
