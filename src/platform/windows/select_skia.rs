@@ -188,7 +188,7 @@ pub(crate) fn set_rounded_window_regions(
     Ok(())
 }
 
-fn window_hwnd(window: &Window) -> DynResult<windows::Win32::Foundation::HWND> {
+pub(crate) fn window_hwnd(window: &Window) -> DynResult<windows::Win32::Foundation::HWND> {
     let handle = window.window_handle()?;
     let RawWindowHandle::Win32(handle) = handle.as_raw() else {
         return Err("Boltsnap utility window is not a Win32 window".into());
@@ -409,17 +409,6 @@ impl SelectorApplication {
                         self.request_redraw();
                         return;
                     }
-                    if render::record_frame_checkbox_rect(
-                        selection,
-                        self.image.width(),
-                        self.image.height(),
-                    )
-                    .is_some_and(|control| contains(control, self.cursor))
-                    {
-                        self.show_frame = !self.show_frame;
-                        self.request_redraw();
-                        return;
-                    }
                     if render::rec_pill_rect(selection, self.image.width(), self.image.height())
                         .is_some_and(|control| contains(control, self.cursor))
                     {
@@ -532,13 +521,9 @@ impl SelectorApplication {
             }
             if self.record_mode {
                 render::draw_rec_pill(&mut frame, selection, width, height);
-                render::draw_record_frame_checkbox(
-                    &mut frame,
-                    selection,
-                    width,
-                    height,
-                    self.show_frame,
-                );
+                // No frame checkbox on Windows: there is no recording border
+                // overlay, so the selector only offers the audio toggle and
+                // `show_frame` passes through unchanged.
                 render::draw_record_audio_button(
                     &mut frame,
                     selection,

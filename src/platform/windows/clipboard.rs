@@ -1,7 +1,7 @@
 use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 
-use windows::Win32::Foundation::{GlobalFree, HANDLE};
+use windows::Win32::Foundation::{GlobalFree, HANDLE, HWND};
 use windows::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
 };
@@ -28,7 +28,9 @@ pub(crate) fn copy_to_clipboard(path: &Path, backend: Backend) -> DynResult<Back
     Ok(backend)
 }
 
-pub fn copy_uri_to_clipboard(path: &Path) -> DynResult<()> {
+/// Copy a file reference using a real owner window. Win32 rejects
+/// `SetClipboardData` after `EmptyClipboard` when `OpenClipboard` received NULL.
+pub fn copy_uri_to_clipboard(path: &Path, owner: HWND) -> DynResult<()> {
     let path = crate::paths::normalize_path(path);
     crate::paths::ensure_file(&path)?;
     let mut wide = path
@@ -66,7 +68,7 @@ pub fn copy_uri_to_clipboard(path: &Path) -> DynResult<()> {
 
     let mut opened = false;
     for _ in 0..10 {
-        if unsafe { OpenClipboard(None) }.is_ok() {
+        if unsafe { OpenClipboard(Some(owner)) }.is_ok() {
             opened = true;
             break;
         }
@@ -78,10 +80,15 @@ pub fn copy_uri_to_clipboard(path: &Path) -> DynResult<()> {
         }
         return Err("open Windows clipboard for file reference failed".into());
     }
-    let result = unsafe {
-        EmptyClipboard()?;
+    // No `?` between OpenClipboard and CloseClipboard: an early return would
+    // leave the clipboard open and block every other application's clipboard
+    // for the daemon's lifetime.
+    let result = (|| unsafe {
+        EmptyClipboard().map_err(|error| format!("empty Windows clipboard: {error}"))?;
         SetClipboardData(CF_HDROP.0 as u32, Some(HANDLE(memory.0)))
-    };
+            .map_err(|error| format!("set Windows file clipboard: {error}"))?;
+        Ok::<(), String>(())
+    })();
     unsafe {
         let _ = CloseClipboard();
     }
@@ -89,7 +96,7 @@ pub fn copy_uri_to_clipboard(path: &Path) -> DynResult<()> {
         unsafe {
             let _ = GlobalFree(Some(memory));
         }
-        return Err(format!("set Windows file clipboard: {error}").into());
+        return Err(error.into());
     }
     Ok(())
 }
