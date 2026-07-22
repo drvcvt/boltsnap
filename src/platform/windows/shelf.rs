@@ -85,6 +85,16 @@ pub fn run_daemon(save_dir_cli: Option<PathBuf>) -> DynResult<()> {
     let Some(_instance) = SingleInstance::acquire()? else {
         return Ok(());
     };
+    // No daemon was running, so the shelf is empty: any leftover shelf tempfiles
+    // or cached recordings are orphans from a previous run/crash.
+    let cleaned = crate::paths::clean_orphan_shelf_temps();
+    if cleaned > 0 {
+        eprintln!("boltsnap daemon: cleaned {cleaned} orphaned shelf tempfile(s)");
+    }
+    let cleaned_rec = crate::paths::clean_orphan_rec_files();
+    if cleaned_rec > 0 {
+        eprintln!("boltsnap daemon: cleaned {cleaned_rec} orphaned recording file(s)");
+    }
     if let Err(error) = crate::platform::windows::hotkey::register_snipping_shortcuts() {
         eprintln!("boltsnap daemon: {error}");
     }
@@ -289,6 +299,15 @@ impl ShelfApplication {
         let error = error.to_string();
         eprintln!("boltsnap daemon: {error}");
         self.error = Some(error);
+    }
+
+    /// Surface a recording error to the user. The daemon runs without a
+    /// console, so stderr alone is invisible; errors only, no success toasts.
+    fn notify_error(&self, body: &str) {
+        eprintln!("boltsnap daemon: {body}");
+        if let Some(window) = &self.window {
+            crate::tray::notify_error(window, body);
+        }
     }
 
     fn native_regions(&self) -> Vec<(u32, u32, u32, u32)> {
@@ -649,11 +668,11 @@ impl ShelfApplication {
             if let Some(action) = action {
                 let response = self.recording_control(action);
                 if !response.ok {
-                    eprintln!(
-                        "boltsnap daemon: {}",
+                    self.notify_error(
                         response
                             .error
-                            .unwrap_or_else(|| "recording action failed".into())
+                            .as_deref()
+                            .unwrap_or("recording action failed"),
                     );
                 }
                 if self.recording.is_none() {
@@ -675,20 +694,24 @@ impl ShelfApplication {
                 let _ = self.save(id);
             }
             Hit::Body(id) => {
-                self.copy_card(id);
+                if let Err(error) = self.copy_card(id) {
+                    eprintln!("boltsnap daemon: copy shelf card: {error}");
+                }
             }
         }
         self.rebuild_layout();
     }
 
-    fn copy_card(&self, id: u64) {
-        if let Some(card) = self.model.get(id) {
-            if card.kind == CardKind::Image {
-                let _ = crate::clipboard::copy_to_clipboard(&card.png_path, Backend::Windows);
-            } else {
-                let _ = crate::clipboard::copy_uri_to_clipboard(&card.png_path);
-            }
+    fn copy_card(&self, id: u64) -> DynResult<()> {
+        let card = self.model.get(id).ok_or("shelf card not found")?;
+        if card.kind == CardKind::Image {
+            crate::clipboard::copy_to_clipboard(&card.png_path, Backend::Windows)?;
+        } else {
+            let window = self.window.as_ref().ok_or("shelf window unavailable")?;
+            let owner = crate::platform::windows::select_skia::window_hwnd(window)?;
+            crate::clipboard::copy_uri_to_clipboard(&card.png_path, owner)?;
         }
+        Ok(())
     }
 
     fn begin_drag_if_needed(&mut self) {
@@ -705,14 +728,15 @@ impl ShelfApplication {
             self.pressed_body = None;
             return;
         };
-        let path = match std::fs::canonicalize(&card.png_path) {
-            Ok(path) => path,
-            Err(error) => {
-                eprintln!("boltsnap daemon: prepare drag path: {error}");
-                self.pressed_body = None;
-                return;
-            }
-        };
+        // Not fs::canonicalize: that returns a verbatim `\\?\C:\...` path, and
+        // Chromium-based drop targets (Discord, browsers) reject the prefix in
+        // CF_HDROP. The card path is already absolute.
+        let path = crate::paths::normalize_path(&card.png_path);
+        if let Err(error) = crate::paths::ensure_file(&path) {
+            eprintln!("boltsnap daemon: prepare drag path: {error}");
+            self.pressed_body = None;
+            return;
+        }
         let mut preview = std::io::Cursor::new(Vec::new());
         if let Err(error) = image::DynamicImage::ImageRgba8(card.thumb.clone())
             .write_to(&mut preview, image::ImageFormat::Png)
@@ -883,7 +907,23 @@ impl ApplicationHandler<ShelfEvent> for ShelfApplication {
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: ShelfEvent) {
         match event {
             ShelfEvent::Request { request, reply } => {
+                // Recording requests usually come from hotkeys or `boltsnap
+                // stop`, where the client's stderr is nulled — balloon their
+                // failures so they aren't silent.
+                let recording_request = matches!(
+                    request,
+                    crate::ipc::Request::StartRecording { .. }
+                        | crate::ipc::Request::StartDefaultRecording
+                        | crate::ipc::Request::RecordingControl { .. }
+                        | crate::ipc::Request::StopRecording
+                );
                 let response = self.handle_request(request);
+                if recording_request
+                    && !response.ok
+                    && let Some(error) = response.error.as_deref()
+                {
+                    self.notify_error(error);
+                }
                 let _ = reply.send(response);
             }
             ShelfEvent::Tray(event) => {
@@ -986,8 +1026,9 @@ impl ApplicationHandler<ShelfEvent> for ShelfApplication {
                 if !self.recording_controls_visible
                     && let Some(Hit::Body(id)) =
                         self.layout.hit(self.cursor.0, self.cursor.1, &self.config)
+                    && let Err(error) = self.copy_card(id)
                 {
-                    self.copy_card(id);
+                    eprintln!("boltsnap daemon: copy shelf card: {error}");
                 }
             }
             WindowEvent::RedrawRequested => self.draw(event_loop),

@@ -56,9 +56,24 @@ Umgesetzt:
 
 Noch offen:
 
+> Kein Punkt aus dieser Liste wird ohne explizite Absprache mit dem Maintainer
+> umgesetzt — erst vorschlagen, dann implementieren.
+
+- Erster-Frame-Video-Thumbnails für Shelf-Karten (unter Windows bleibt der
+  Platzhalter; offene Entscheidung: Media Foundation SourceReader oder
+  externes ffmpeg)
 - kombinierte und getrennte Multi-Monitor-Aufnahmen unter Windows
+  (`record_default_target = "output:<name>"`/`"both"` fällt auf den fokussierten
+  Monitor zurück)
 - dauerhafter `recording watch --json`-Ereignisstream unter Windows
-- Recording-Rahmenfenster für ausgewählte Regionen
+- Recording-Rahmenfenster für ausgewählte Regionen (der Windows-Selector bietet
+  die Checkbox nicht an; `record_show_frame` wirkt nur unter Linux)
+- Lese-Timeout für `call_daemon` auf der Windows-Named-Pipe (Linux: 5 s)
+- Pipe-Server bedient eine Verbindung zur Zeit; ein Client in der Lücke spawnt
+  einen redundanten (harmlosen, Mutex-geschützten) Daemon-Prozess
+- Dead-Code-Warnings des Windows-Targets durch Linux-only-Helfer in geteilten
+  Modulen per `#[cfg]` gaten
+- Tray-Menü-Sprache angleichen (Windows deutsch, Linux englisch)
 - HDR-Tonemapping, Hotplug/RDP/Sleep-Wake-Härtung und ARM64-Gerätetests
 - Code Signing, automatischer Updatepfad und vollständige Windows-10/11-Testmatrix
 - Linux-Gesamttests in einer Linux-Umgebung ausführen

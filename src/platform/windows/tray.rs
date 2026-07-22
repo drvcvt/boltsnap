@@ -1,5 +1,12 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
+use windows::Win32::UI::Shell::{
+    NIF_ICON, NIF_INFO, NIF_TIP, NIIF_ERROR, NIM_ADD, NIM_MODIFY, NOTIFYICONDATAW,
+    Shell_NotifyIconW,
+};
+use windows::Win32::UI::WindowsAndMessaging::{IDI_APPLICATION, LoadIconW};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TrayAction {
@@ -81,4 +88,79 @@ pub fn create() -> Result<TrayState, String> {
         show_recording_controls: show_recording_controls.id().clone(),
         quit: quit.id().clone(),
     })
+}
+
+const NOTIFY_ICON_ID: u32 = 2;
+static NOTIFY_ICON_ADDED: AtomicBool = AtomicBool::new(false);
+
+/// Show an error balloon on a Boltsnap notification-area icon. The daemon has
+/// no console, so this is its only user-visible error channel; call it for
+/// errors only, success paths stay silent.
+pub fn notify_error(window: &winit::window::Window, body: &str) {
+    if let Err(error) = show_error_balloon(window, body) {
+        eprintln!("boltsnap daemon: error balloon failed: {error}");
+    }
+}
+
+fn show_error_balloon(window: &winit::window::Window, body: &str) -> Result<(), String> {
+    let hwnd = crate::platform::windows::select_skia::window_hwnd(window)
+        .map_err(|error| error.to_string())?;
+    let mut data = NOTIFYICONDATAW {
+        cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
+        hWnd: hwnd,
+        uID: NOTIFY_ICON_ID,
+        uFlags: NIF_ICON | NIF_TIP | NIF_INFO,
+        dwInfoFlags: NIIF_ERROR,
+        ..Default::default()
+    };
+    data.hIcon = unsafe { LoadIconW(None, IDI_APPLICATION) }.map_err(|error| error.to_string())?;
+    copy_to_wide(&mut data.szTip, "Boltsnap");
+    copy_to_wide(&mut data.szInfoTitle, "Boltsnap");
+    copy_to_wide(&mut data.szInfo, body);
+    let message = if NOTIFY_ICON_ADDED.load(Ordering::Acquire) {
+        NIM_MODIFY
+    } else {
+        NIM_ADD
+    };
+    if !unsafe { Shell_NotifyIconW(message, &data) }.as_bool() {
+        // The icon is lost when Explorer restarts; retry with the other verb.
+        let retry = if message == NIM_ADD {
+            NIM_MODIFY
+        } else {
+            NIM_ADD
+        };
+        if !unsafe { Shell_NotifyIconW(retry, &data) }.as_bool() {
+            return Err("Shell_NotifyIconW rejected the error balloon".into());
+        }
+    }
+    NOTIFY_ICON_ADDED.store(true, Ordering::Release);
+    Ok(())
+}
+
+fn copy_to_wide(target: &mut [u16], text: &str) {
+    let mut length = 0;
+    for unit in text.encode_utf16() {
+        if length + 1 >= target.len() {
+            break;
+        }
+        target[length] = unit;
+        length += 1;
+    }
+    target[length] = 0;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wide_copy_truncates_and_terminates() {
+        let mut small = [0xFFFF_u16; 4];
+        copy_to_wide(&mut small, "abcdef");
+        assert_eq!(small, [0x61, 0x62, 0x63, 0]);
+
+        let mut roomy = [0xFFFF_u16; 8];
+        copy_to_wide(&mut roomy, "ok");
+        assert_eq!(&roomy[..3], [0x6F, 0x6B, 0]);
+    }
 }
