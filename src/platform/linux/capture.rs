@@ -341,7 +341,7 @@ fn capture_wayland(mode: CaptureMode, output: &Path, instant: bool) -> DynResult
                 let out_info = pick_focused_wl_output(&conn)
                     .map_err(|e| format!("output pick failed: {e}"))?;
                 let img = conn
-                    .screenshot_single_output(&out_info, false)
+                    .screenshot_outputs(std::slice::from_ref(&out_info), false)
                     .map_err(|e| format!("wayshot single-output failed: {e}"))?;
                 Ok(img.to_rgba8())
             };
