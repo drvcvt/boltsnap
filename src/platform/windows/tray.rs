@@ -2,11 +2,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
+use windows::Win32::Foundation::HINSTANCE;
+use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Shell::{
     NIF_ICON, NIF_INFO, NIF_TIP, NIIF_ERROR, NIM_ADD, NIM_MODIFY, NOTIFYICONDATAW,
     Shell_NotifyIconW,
 };
-use windows::Win32::UI::WindowsAndMessaging::{IDI_APPLICATION, LoadIconW};
+use windows::Win32::UI::WindowsAndMessaging::{HICON, LoadIconW};
+use windows::core::PCWSTR;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TrayAction {
@@ -91,6 +94,7 @@ pub fn create() -> Result<TrayState, String> {
 }
 
 const NOTIFY_ICON_ID: u32 = 2;
+const APP_ICON_RESOURCE_ID: u16 = 101;
 static NOTIFY_ICON_ADDED: AtomicBool = AtomicBool::new(false);
 
 /// Show an error balloon on a Boltsnap notification-area icon. The daemon has
@@ -113,7 +117,7 @@ fn show_error_balloon(window: &winit::window::Window, body: &str) -> Result<(), 
         dwInfoFlags: NIIF_ERROR,
         ..Default::default()
     };
-    data.hIcon = unsafe { LoadIconW(None, IDI_APPLICATION) }.map_err(|error| error.to_string())?;
+    data.hIcon = load_app_icon()?;
     copy_to_wide(&mut data.szTip, "Boltsnap");
     copy_to_wide(&mut data.szInfoTitle, "Boltsnap");
     copy_to_wide(&mut data.szInfo, body);
@@ -135,6 +139,12 @@ fn show_error_balloon(window: &winit::window::Window, body: &str) -> Result<(), 
     }
     NOTIFY_ICON_ADDED.store(true, Ordering::Release);
     Ok(())
+}
+
+fn load_app_icon() -> Result<HICON, String> {
+    let module = unsafe { GetModuleHandleW(None) }.map_err(|error| error.to_string())?;
+    let resource = PCWSTR(APP_ICON_RESOURCE_ID as usize as *const u16);
+    unsafe { LoadIconW(Some(HINSTANCE(module.0)), resource) }.map_err(|error| error.to_string())
 }
 
 fn copy_to_wide(target: &mut [u16], text: &str) {
@@ -162,5 +172,10 @@ mod tests {
         let mut roomy = [0xFFFF_u16; 8];
         copy_to_wide(&mut roomy, "ok");
         assert_eq!(&roomy[..3], [0x6F, 0x6B, 0]);
+    }
+
+    #[test]
+    fn embedded_app_icon_resource_loads() {
+        load_app_icon().expect("Boltsnap icon resource 101 should load");
     }
 }
