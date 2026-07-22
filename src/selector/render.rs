@@ -111,6 +111,7 @@ pub const SCREENSHOT_OVERLAY_STYLE: OverlayStyle = OverlayStyle {
 
 /// Windows recording selector appearance. Screenshot mode uses
 /// `SCREENSHOT_OVERLAY_STYLE` instead.
+#[cfg(any(target_os = "windows", test))]
 pub const WINDOWS_RECORD_OVERLAY_STYLE: OverlayStyle = OverlayStyle {
     dim_alpha: 110,
     selection_dim_alpha: 24,

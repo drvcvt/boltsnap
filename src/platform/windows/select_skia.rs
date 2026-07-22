@@ -1,9 +1,7 @@
-use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use image::RgbaImage;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-use softbuffer::{Context, Surface};
 use windows::Win32::Foundation::{COLORREF, POINT, RECT, SIZE};
 use windows::Win32::Graphics::Dwm::{
     DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND, DwmSetWindowAttribute,
@@ -494,8 +492,6 @@ struct SelectorApplication {
     show_frame: bool,
     audio_enabled: bool,
     window: Option<Arc<Window>>,
-    context: Option<Context<Arc<Window>>>,
-    surface: Option<Surface<Arc<Window>, Arc<Window>>>,
     layered_surface: Option<LayeredSurface>,
     mode: Mode,
     interaction: Option<Interaction>,
@@ -524,8 +520,6 @@ impl SelectorApplication {
             show_frame,
             audio_enabled,
             window: None,
-            context: None,
-            surface: None,
             layered_surface: None,
             mode: Mode::Idle,
             interaction: None,
@@ -742,40 +736,11 @@ impl SelectorApplication {
             render::draw_magnifier(&mut frame, &self.base, self.cursor, width, height);
         }
 
-        if !self.record_mode {
-            let (Some(window), Some(surface)) =
-                (self.window.as_ref(), self.layered_surface.as_mut())
-            else {
-                return;
-            };
-            if let Err(error) = surface.present(window, self.monitor, &frame) {
-                self.fail(event_loop, error);
-            }
-            return;
-        }
-
-        let Some(surface) = self.surface.as_mut() else {
+        let (Some(window), Some(surface)) = (self.window.as_ref(), self.layered_surface.as_mut())
+        else {
             return;
         };
-
-        if let Err(error) = surface.resize(
-            NonZeroU32::new(width).unwrap(),
-            NonZeroU32::new(height).unwrap(),
-        ) {
-            self.fail(event_loop, error);
-            return;
-        }
-        let mut buffer = match surface.buffer_mut() {
-            Ok(buffer) => buffer,
-            Err(error) => {
-                self.fail(event_loop, error);
-                return;
-            }
-        };
-        for (target, pixel) in buffer.iter_mut().zip(frame.data().chunks_exact(4)) {
-            *target = (pixel[0] as u32) << 16 | (pixel[1] as u32) << 8 | pixel[2] as u32;
-        }
-        if let Err(error) = buffer.present() {
+        if let Err(error) = surface.present(window, self.monitor, &frame) {
             self.fail(event_loop, error);
         }
     }
@@ -797,55 +762,33 @@ impl ApplicationHandler for SelectorApplication {
             self.fail(event_loop, error);
             return;
         }
-        if self.record_mode {
-            let context = match Context::new(window.clone()) {
-                Ok(context) => context,
-                Err(error) => {
-                    self.fail(event_loop, error);
-                    return;
-                }
-            };
-            let surface = match Surface::new(&context, window.clone()) {
-                Ok(surface) => surface,
-                Err(error) => {
-                    self.fail(event_loop, error);
-                    return;
-                }
-            };
-            self.context = Some(context);
-            self.surface = Some(surface);
-        } else {
-            self.layered_surface =
-                match LayeredSurface::new(self.image.width(), self.image.height()) {
-                    Ok(surface) => Some(surface),
-                    Err(error) => {
-                        self.fail(event_loop, error);
-                        return;
-                    }
-                };
-        }
+        self.layered_surface = match LayeredSurface::new(self.image.width(), self.image.height()) {
+            Ok(surface) => Some(surface),
+            Err(error) => {
+                self.fail(event_loop, error);
+                return;
+            }
+        };
         window.set_cursor(CursorIcon::Crosshair);
+        let hwnd = match window_hwnd(&window) {
+            Ok(hwnd) => hwnd,
+            Err(error) => {
+                self.fail(event_loop, error);
+                return;
+            }
+        };
+        let extended_style = unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) } as u32;
+        unsafe {
+            SetWindowLongPtrW(
+                hwnd,
+                GWL_EXSTYLE,
+                (extended_style | WS_EX_LAYERED.0) as isize,
+            );
+        }
         window.set_visible(true);
         if let Err(error) = configure_utility_window(&window) {
             self.fail(event_loop, error);
             return;
-        }
-        if !self.record_mode {
-            let hwnd = match window_hwnd(&window) {
-                Ok(hwnd) => hwnd,
-                Err(error) => {
-                    self.fail(event_loop, error);
-                    return;
-                }
-            };
-            let extended_style = unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) } as u32;
-            unsafe {
-                SetWindowLongPtrW(
-                    hwnd,
-                    GWL_EXSTYLE,
-                    (extended_style | WS_EX_LAYERED.0) as isize,
-                );
-            }
         }
         window.focus_window();
         window.request_redraw();
