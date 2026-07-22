@@ -694,20 +694,24 @@ impl ShelfApplication {
                 let _ = self.save(id);
             }
             Hit::Body(id) => {
-                self.copy_card(id);
+                if let Err(error) = self.copy_card(id) {
+                    eprintln!("boltsnap daemon: copy shelf card: {error}");
+                }
             }
         }
         self.rebuild_layout();
     }
 
-    fn copy_card(&self, id: u64) {
-        if let Some(card) = self.model.get(id) {
-            if card.kind == CardKind::Image {
-                let _ = crate::clipboard::copy_to_clipboard(&card.png_path, Backend::Windows);
-            } else {
-                let _ = crate::clipboard::copy_uri_to_clipboard(&card.png_path);
-            }
+    fn copy_card(&self, id: u64) -> DynResult<()> {
+        let card = self.model.get(id).ok_or("shelf card not found")?;
+        if card.kind == CardKind::Image {
+            crate::clipboard::copy_to_clipboard(&card.png_path, Backend::Windows)?;
+        } else {
+            let window = self.window.as_ref().ok_or("shelf window unavailable")?;
+            let owner = crate::platform::windows::select_skia::window_hwnd(window)?;
+            crate::clipboard::copy_uri_to_clipboard(&card.png_path, owner)?;
         }
+        Ok(())
     }
 
     fn begin_drag_if_needed(&mut self) {
@@ -1022,8 +1026,9 @@ impl ApplicationHandler<ShelfEvent> for ShelfApplication {
                 if !self.recording_controls_visible
                     && let Some(Hit::Body(id)) =
                         self.layout.hit(self.cursor.0, self.cursor.1, &self.config)
+                    && let Err(error) = self.copy_card(id)
                 {
-                    self.copy_card(id);
+                    eprintln!("boltsnap daemon: copy shelf card: {error}");
                 }
             }
             WindowEvent::RedrawRequested => self.draw(event_loop),
