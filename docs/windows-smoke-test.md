@@ -50,5 +50,5 @@ production path).
     the daemon.
 16. Kill the daemon, restart it → orphaned `boltsnap-*` tempfiles from the
     previous run are cleaned (stderr reports counts when > 0).
-17. Installer (MSI or NSIS): installs per-user without admin, daemon starts
+17. NSIS installer: installs per-user without admin, daemon starts
     after setup and at next sign-in, uninstall removes it.

@@ -78,15 +78,66 @@ pub fn pixmap_to_argb8888(pm: &Pixmap, canvas: &mut [u8]) {
     }
 }
 
-/// Dim alpha over the screenshot outside the selection (0-255). Matches the
-/// egui selector's `from_rgba_unmultiplied(0, 0, 0, 110)`.
-const DIM_ALPHA: u8 = 110;
-/// Selection border width, px. Matches the egui selector.
-const BORDER_W: f32 = 1.5;
+#[derive(Clone, Copy)]
+pub struct OverlayStyle {
+    dim_alpha: u8,
+    selection_dim_alpha: u8,
+    border_rgb: (u8, u8, u8),
+    border_width: f32,
+    border_outline_alpha: u8,
+    border_outline_inset: f32,
+    border_outline_extra: f32,
+    handle_rgb: (u8, u8, u8),
+    handle_outline_alpha: u8,
+    handle_size: f32,
+    handle_outline: f32,
+}
+
+/// Linux screenshot selector appearance. Windows screenshot mode also uses this
+/// exact style so both platforms render the same pixels.
+pub const SCREENSHOT_OVERLAY_STYLE: OverlayStyle = OverlayStyle {
+    dim_alpha: 110,
+    selection_dim_alpha: 0,
+    border_rgb: (255, 255, 255),
+    border_width: 1.5,
+    border_outline_alpha: 150,
+    border_outline_inset: -1.0,
+    border_outline_extra: 2.0,
+    handle_rgb: (255, 255, 255),
+    handle_outline_alpha: 180,
+    handle_size: 10.0,
+    handle_outline: 1.0,
+};
+
+/// Windows recording selector appearance. Screenshot mode uses
+/// `SCREENSHOT_OVERLAY_STYLE` instead.
+pub const WINDOWS_RECORD_OVERLAY_STYLE: OverlayStyle = OverlayStyle {
+    dim_alpha: 110,
+    selection_dim_alpha: 24,
+    border_rgb: (255, 255, 255),
+    border_width: 1.5,
+    border_outline_alpha: 0,
+    border_outline_inset: 0.0,
+    border_outline_extra: 0.0,
+    handle_rgb: (255, 255, 255),
+    handle_outline_alpha: 240,
+    handle_size: 12.0,
+    handle_outline: 1.5,
+};
+
 /// Draw the selection overlay onto `pm` (which already contains the opaque
 /// screenshot). `sel` is the surface-space selection `(x, y, w, h)`; `None`
 /// means "no selection yet" — dim the whole surface.
+#[cfg(any(not(target_os = "windows"), test))]
 pub fn dim_and_restore(pm: &mut Pixmap, sel: Option<(f32, f32, f32, f32)>) {
+    dim_and_restore_with_style(pm, sel, SCREENSHOT_OVERLAY_STYLE);
+}
+
+pub fn dim_and_restore_with_style(
+    pm: &mut Pixmap,
+    sel: Option<(f32, f32, f32, f32)>,
+    style: OverlayStyle,
+) {
     let w = pm.width();
     let h = pm.height();
 
@@ -121,7 +172,7 @@ pub fn dim_and_restore(pm: &mut Pixmap, sel: Option<(f32, f32, f32, f32)>) {
     });
 
     let mut dim = Paint::default();
-    dim.set_color_rgba8(0, 0, 0, DIM_ALPHA);
+    dim.set_color_rgba8(0, 0, 0, style.dim_alpha);
     dim.anti_alias = false;
     if let Some(r) = Rect::from_xywh(0.0, 0.0, w as f32, h as f32) {
         pm.fill_rect(r, &dim, Transform::identity(), None);
@@ -139,29 +190,57 @@ pub fn dim_and_restore(pm: &mut Pixmap, sel: Option<(f32, f32, f32, f32)>) {
         let src = i * span;
         data[start..start + span].copy_from_slice(&saved[src..src + span]);
     }
+
+    if style.selection_dim_alpha > 0 {
+        let mut selection_dim = Paint::default();
+        selection_dim.set_color_rgba8(0, 0, 0, style.selection_dim_alpha);
+        selection_dim.anti_alias = false;
+        if let Some(rect) =
+            Rect::from_xywh(x0 as f32, y0 as f32, (x1 - x0) as f32, (y1 - y0) as f32)
+        {
+            pm.fill_rect(rect, &selection_dim, Transform::identity(), None);
+        }
+    }
 }
 
 /// Stroke the selection border: white, with a 1px darker outline just outside so
 /// it reads on light and dark screenshots.
+#[cfg(any(not(target_os = "windows"), test))]
 pub fn draw_border(pm: &mut Pixmap, sel: (f32, f32, f32, f32)) {
+    draw_border_with_style(pm, sel, SCREENSHOT_OVERLAY_STYLE);
+}
+
+pub fn draw_border_with_style(pm: &mut Pixmap, sel: (f32, f32, f32, f32), style: OverlayStyle) {
     let (x, y, w, h) = sel;
     if w < 1.0 || h < 1.0 {
         return;
     }
     let mut dark = Paint::default();
-    dark.set_color_rgba8(0, 0, 0, 150);
+    dark.set_color_rgba8(0, 0, 0, style.border_outline_alpha);
     dark.anti_alias = true;
-    let mut white = Paint::default();
-    white.set_color_rgba8(255, 255, 255, 255);
-    white.anti_alias = true;
-    // Dark outline slightly outside, then the white border on top.
-    for (inset, paint, wdt) in [(-1.0_f32, &dark, BORDER_W + 2.0), (0.0, &white, BORDER_W)] {
+    let mut accent = Paint::default();
+    accent.set_color_rgba8(
+        style.border_rgb.0,
+        style.border_rgb.1,
+        style.border_rgb.2,
+        255,
+    );
+    accent.anti_alias = true;
+    // Dark outline slightly outside, then the high-contrast border on top.
+    for (inset, paint, width) in [
+        (
+            style.border_outline_inset,
+            &dark,
+            style.border_width + style.border_outline_extra,
+        ),
+        (0.0, &accent, style.border_width),
+    ] {
         if let Some(r) = Rect::from_xywh(x + inset, y + inset, w - 2.0 * inset, h - 2.0 * inset) {
             let mut pb = PathBuilder::new();
             pb.push_rect(r);
             if let Some(path) = pb.finish() {
                 let stroke = Stroke {
-                    width: wdt,
+                    width,
                     ..Default::default()
                 };
                 pm.stroke_path(&path, paint, &stroke, Transform::identity(), None);
@@ -172,13 +251,18 @@ pub fn draw_border(pm: &mut Pixmap, sel: (f32, f32, f32, f32)) {
 
 /// Draw the 8 resize handles (corners + edge midpoints) as white squares with a
 /// dark outline, centered on the selection's corners/edge-midpoints.
+#[cfg(any(not(target_os = "windows"), test))]
 pub fn draw_handles(pm: &mut Pixmap, sel: (f32, f32, f32, f32)) {
+    draw_handles_with_style(pm, sel, SCREENSHOT_OVERLAY_STYLE);
+}
+
+pub fn draw_handles_with_style(pm: &mut Pixmap, sel: (f32, f32, f32, f32), style: OverlayStyle) {
     let (x, y, w, h) = sel;
     if w < 1.0 || h < 1.0 {
         return;
     }
-    const HS: f32 = 10.0; // handle square side
-    const RAD: f32 = 3.5; // corner radius — rounded "squircle" handles
+    let handle_size = style.handle_size;
+    let radius = handle_size * 0.35;
     let (l, t, r, b) = (x, y, x + w, y + h);
     let (cx, cy) = (x + w / 2.0, y + h / 2.0);
     let centers = [
@@ -192,25 +276,36 @@ pub fn draw_handles(pm: &mut Pixmap, sel: (f32, f32, f32, f32)) {
         (l, cy),
     ];
     let mut dark = Paint::default();
-    dark.set_color_rgba8(0, 0, 0, 180);
+    dark.set_color_rgba8(0, 0, 0, style.handle_outline_alpha);
     dark.anti_alias = true;
-    let mut white = Paint::default();
-    white.set_color_rgba8(255, 255, 255, 255);
-    white.anti_alias = true;
+    let mut accent = Paint::default();
+    accent.set_color_rgba8(
+        style.handle_rgb.0,
+        style.handle_rgb.1,
+        style.handle_rgb.2,
+        255,
+    );
+    accent.anti_alias = true;
     for (hx, hy) in centers {
         if let Some(path) = rounded_rect(
-            hx - HS / 2.0 - 1.0,
-            hy - HS / 2.0 - 1.0,
-            HS + 2.0,
-            HS + 2.0,
-            RAD + 1.0,
+            hx - handle_size / 2.0 - style.handle_outline,
+            hy - handle_size / 2.0 - style.handle_outline,
+            handle_size + 2.0 * style.handle_outline,
+            handle_size + 2.0 * style.handle_outline,
+            radius + style.handle_outline,
         ) {
             pm.fill_path(&path, &dark, FillRule::Winding, Transform::identity(), None);
         }
-        if let Some(path) = rounded_rect(hx - HS / 2.0, hy - HS / 2.0, HS, HS, RAD) {
+        if let Some(path) = rounded_rect(
+            hx - handle_size / 2.0,
+            hy - handle_size / 2.0,
+            handle_size,
+            handle_size,
+            radius,
+        ) {
             pm.fill_path(
                 &path,
-                &white,
+                &accent,
                 FillRule::Winding,
                 Transform::identity(),
                 None,
@@ -809,6 +904,85 @@ mod tests {
         );
         // Outside: dimmed by the ~43% black overlay.
         assert!(at(0, 0) < 200, "outside should be dimmed, got {}", at(0, 0));
+    }
+
+    #[test]
+    fn windows_record_overlay_dims_selection_less_than_overview() {
+        let mut default = Pixmap::new(100, 100).unwrap();
+        let mut windows = Pixmap::new(100, 100).unwrap();
+        for pixmap in [&mut default, &mut windows] {
+            for pixel in pixmap.data_mut().chunks_exact_mut(4) {
+                pixel.copy_from_slice(&[255, 255, 255, 255]);
+            }
+        }
+        let selection = Some((20.0, 20.0, 60.0, 60.0));
+        dim_and_restore(&mut default, selection);
+        dim_and_restore_with_style(&mut windows, selection, WINDOWS_RECORD_OVERLAY_STYLE);
+
+        let pixel = |pixmap: &Pixmap, x: u32, y: u32| {
+            let offset = ((y * pixmap.width() + x) * 4) as usize;
+            <[u8; 4]>::try_from(&pixmap.data()[offset..offset + 4]).unwrap()
+        };
+        assert_eq!(pixel(&default, 0, 0), [145, 145, 145, 255]);
+        assert_eq!(pixel(&windows, 0, 0), [145, 145, 145, 255]);
+        assert_eq!(pixel(&windows, 50, 50), [231, 231, 231, 255]);
+    }
+
+    #[test]
+    fn windows_record_border_is_single_and_handles_use_neutral_accent() {
+        let mut pm = Pixmap::new(120, 120).unwrap();
+        for pixel in pm.data_mut().chunks_exact_mut(4) {
+            pixel.copy_from_slice(&[64, 64, 64, 255]);
+        }
+        let selection = (30.0, 30.0, 60.0, 60.0);
+        draw_border_with_style(&mut pm, selection, WINDOWS_RECORD_OVERLAY_STYLE);
+
+        let pixel = |pixmap: &Pixmap, x: u32, y: u32| {
+            let offset = ((y * pixmap.width() + x) * 4) as usize;
+            <[u8; 4]>::try_from(&pixmap.data()[offset..offset + 4]).unwrap()
+        };
+        assert_eq!(pixel(&pm, 28, 60), [64, 64, 64, 255]);
+        assert!(pixel(&pm, 30, 60)[0] > 200);
+
+        draw_handles_with_style(&mut pm, selection, WINDOWS_RECORD_OVERLAY_STYLE);
+        assert_eq!(pixel(&pm, 30, 30), [255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn windows_screenshot_style_matches_linux_rendering_byte_for_byte() {
+        let mut linux = Pixmap::new(120, 100).unwrap();
+        for (index, pixel) in linux.data_mut().chunks_exact_mut(4).enumerate() {
+            let value = (index % 251) as u8;
+            pixel.copy_from_slice(&[value, 255 - value, value / 2, 255]);
+        }
+        let mut windows = linux.clone();
+        let selection = (24.0, 18.0, 72.0, 60.0);
+
+        dim_and_restore(&mut linux, Some(selection));
+        draw_border(&mut linux, selection);
+        draw_handles(&mut linux, selection);
+
+        dim_and_restore_with_style(&mut windows, Some(selection), SCREENSHOT_OVERLAY_STYLE);
+        draw_border_with_style(&mut windows, selection, SCREENSHOT_OVERLAY_STYLE);
+        draw_handles_with_style(&mut windows, selection, SCREENSHOT_OVERLAY_STYLE);
+
+        assert_eq!(windows.data(), linux.data());
+    }
+
+    #[test]
+    fn default_border_remains_white() {
+        let mut pm = Pixmap::new(120, 120).unwrap();
+        for pixel in pm.data_mut().chunks_exact_mut(4) {
+            pixel.copy_from_slice(&[0, 0, 0, 255]);
+        }
+        draw_border(&mut pm, (30.0, 30.0, 60.0, 60.0));
+
+        let offset = ((30 * pm.width() + 60) * 4) as usize;
+        let pixel = &pm.data()[offset..offset + 4];
+        assert!(pixel[0] > 180);
+        assert_eq!(pixel[0], pixel[1]);
+        assert_eq!(pixel[1], pixel[2]);
+        assert_eq!(pixel[3], 255);
     }
 
     #[test]

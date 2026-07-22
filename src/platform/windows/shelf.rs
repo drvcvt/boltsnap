@@ -279,7 +279,8 @@ impl ShelfApplication {
 
     fn attributes(&self) -> WindowAttributes {
         Window::default_attributes()
-            .with_title("")
+            .with_title("Boltsnap")
+            .with_window_icon(Some(crate::platform::windows::app_window_icon()))
             .with_decorations(false)
             .with_resizable(false)
             .with_skip_taskbar(true)

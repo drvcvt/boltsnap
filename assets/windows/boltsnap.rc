@@ -1,4 +1,5 @@
 1 24 "boltsnap.manifest"
+101 ICON "assets/windows/boltsnap.ico"
 
 1 VERSIONINFO
 FILEVERSION 0,4,6,0

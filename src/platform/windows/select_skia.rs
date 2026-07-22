@@ -4,13 +4,16 @@ use std::sync::Arc;
 use image::RgbaImage;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use softbuffer::{Context, Surface};
-use windows::Win32::Foundation::{POINT, RECT};
+use windows::Win32::Foundation::{COLORREF, POINT, RECT, SIZE};
 use windows::Win32::Graphics::Dwm::{
     DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND, DwmSetWindowAttribute,
 };
 use windows::Win32::Graphics::Gdi::{
-    CombineRgn, CreateRectRgn, CreateRoundRectRgn, DeleteObject, GetMonitorInfoW, HGDIOBJ,
-    MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint, RGN_OR, SetWindowRgn,
+    AC_SRC_ALPHA, AC_SRC_OVER, BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION, CombineRgn,
+    CreateCompatibleDC, CreateDIBSection, CreateRectRgn, CreateRoundRectRgn, DIB_RGB_COLORS,
+    DeleteDC, DeleteObject, GetDC, GetMonitorInfoW, HBITMAP, HDC, HGDIOBJ,
+    MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint, RGN_OR, ReleaseDC, SelectObject,
+    SetWindowRgn,
 };
 use windows::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
@@ -18,9 +21,9 @@ use windows::Win32::UI::HiDpi::{
 use windows::Win32::UI::WindowsAndMessaging::{
     GWL_EXSTYLE, GWL_STYLE, GetCursorPos, GetWindowLongPtrW, SWP_FRAMECHANGED, SWP_NOACTIVATE,
     SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowDisplayAffinity, SetWindowLongPtrW,
-    SetWindowPos, SetWindowTextW, WDA_EXCLUDEFROMCAPTURE, WS_CAPTION, WS_EX_APPWINDOW,
-    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU,
-    WS_THICKFRAME,
+    SetWindowPos, SetWindowTextW, ULW_ALPHA, UpdateLayeredWindow, WDA_EXCLUDEFROMCAPTURE,
+    WS_CAPTION, WS_EX_APPWINDOW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_MAXIMIZEBOX,
+    WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU, WS_THICKFRAME,
 };
 use winit::application::ApplicationHandler;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
@@ -37,6 +40,191 @@ use crate::selector::{edit, render};
 const HANDLE_RADIUS: f64 = 9.0;
 const MIN_SELECTION: f64 = 4.0;
 const DRAG_SLOP: f64 = 3.0;
+const SCREENSHOT_BACKGROUND_PERCENT: u16 = 80;
+
+fn screenshot_overlay(
+    base: &tiny_skia::Pixmap,
+    selection: Option<(f32, f32, f32, f32)>,
+) -> tiny_skia::Pixmap {
+    let width = base.width();
+    let height = base.height();
+    let mut frame = tiny_skia::Pixmap::new(width.max(1), height.max(1)).expect("overlay pixmap");
+    let selection = selection.and_then(|(x, y, w, h)| {
+        if w < 1.0 || h < 1.0 {
+            return None;
+        }
+        let x0 = (x.max(0.0).floor() as u32).min(width);
+        let y0 = (y.max(0.0).floor() as u32).min(height);
+        let x1 = ((x + w).max(0.0).ceil() as u32).min(width);
+        let y1 = ((y + h).max(0.0).ceil() as u32).min(height);
+        (x1 > x0 && y1 > y0).then_some((x0, y0, x1, y1))
+    });
+    for (index, (pixel, source)) in frame
+        .data_mut()
+        .chunks_exact_mut(4)
+        .zip(base.data().chunks_exact(4))
+        .enumerate()
+    {
+        let x = index as u32 % width;
+        let y = index as u32 / width;
+        let selected =
+            selection.is_some_and(|(x0, y0, x1, y1)| x >= x0 && x < x1 && y >= y0 && y < y1);
+        if selected {
+            pixel.copy_from_slice(source);
+        } else {
+            pixel.copy_from_slice(&[
+                (source[0] as u16 * SCREENSHOT_BACKGROUND_PERCENT / 100) as u8,
+                (source[1] as u16 * SCREENSHOT_BACKGROUND_PERCENT / 100) as u8,
+                (source[2] as u16 * SCREENSHOT_BACKGROUND_PERCENT / 100) as u8,
+                255,
+            ]);
+        }
+    }
+    frame
+}
+
+struct LayeredSurface {
+    memory_dc: HDC,
+    bitmap: HBITMAP,
+    previous: HGDIOBJ,
+    bits: *mut u8,
+    width: u32,
+    height: u32,
+}
+
+impl LayeredSurface {
+    fn new(width: u32, height: u32) -> DynResult<Self> {
+        let memory_dc = unsafe { CreateCompatibleDC(None) };
+        if memory_dc.0.is_null() {
+            return Err("CreateCompatibleDC failed for selector overlay".into());
+        }
+        let info = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: width as i32,
+                biHeight: -(height as i32),
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut bits = std::ptr::null_mut();
+        let bitmap =
+            match unsafe { CreateDIBSection(None, &info, DIB_RGB_COLORS, &mut bits, None, 0) } {
+                Ok(bitmap) => bitmap,
+                Err(error) => {
+                    unsafe {
+                        let _ = DeleteDC(memory_dc);
+                    }
+                    return Err(
+                        format!("CreateDIBSection failed for selector overlay: {error}").into(),
+                    );
+                }
+            };
+        let previous = unsafe { SelectObject(memory_dc, HGDIOBJ(bitmap.0)) };
+        if previous.0.is_null() || bits.is_null() {
+            unsafe {
+                let _ = DeleteObject(HGDIOBJ(bitmap.0));
+                let _ = DeleteDC(memory_dc);
+            }
+            return Err("SelectObject failed for selector overlay".into());
+        }
+        Ok(Self {
+            memory_dc,
+            bitmap,
+            previous,
+            bits: bits.cast(),
+            width,
+            height,
+        })
+    }
+
+    fn present(
+        &mut self,
+        window: &Window,
+        monitor: RECT,
+        frame: &tiny_skia::Pixmap,
+    ) -> DynResult<()> {
+        if frame.width() != self.width || frame.height() != self.height {
+            return Err("selector overlay dimensions changed".into());
+        }
+        let target = unsafe {
+            std::slice::from_raw_parts_mut(
+                self.bits,
+                self.width as usize * self.height as usize * 4,
+            )
+        };
+        for (source, destination) in frame.data().chunks_exact(4).zip(target.chunks_exact_mut(4)) {
+            destination.copy_from_slice(&[source[2], source[1], source[0], source[3]]);
+        }
+
+        let screen = unsafe { GetDC(None) };
+        if screen.0.is_null() {
+            return Err("GetDC failed for selector overlay".into());
+        }
+        let destination = POINT {
+            x: monitor.left,
+            y: monitor.top,
+        };
+        let size = SIZE {
+            cx: self.width as i32,
+            cy: self.height as i32,
+        };
+        let source = POINT::default();
+        let blend = BLENDFUNCTION {
+            BlendOp: AC_SRC_OVER as u8,
+            BlendFlags: 0,
+            SourceConstantAlpha: 255,
+            AlphaFormat: AC_SRC_ALPHA as u8,
+        };
+        let hwnd = window_hwnd(window)?;
+        let extended_style = unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) } as u32;
+        if extended_style & WS_EX_LAYERED.0 == 0 {
+            unsafe {
+                ReleaseDC(None, screen);
+            }
+            return Err(format!(
+                "selector overlay window is not layered (extended style {extended_style:#x})"
+            )
+            .into());
+        }
+        let result = unsafe {
+            UpdateLayeredWindow(
+                hwnd,
+                Some(screen),
+                Some(std::ptr::from_ref(&destination)),
+                Some(std::ptr::from_ref(&size)),
+                Some(self.memory_dc),
+                Some(std::ptr::from_ref(&source)),
+                COLORREF(0),
+                Some(std::ptr::from_ref(&blend)),
+                ULW_ALPHA,
+            )
+        };
+        unsafe {
+            ReleaseDC(None, screen);
+        }
+        result.map_err(|error| {
+            format!(
+                "UpdateLayeredWindow failed for {}x{} overlay at {},{} with style {extended_style:#x}: {error}",
+                self.width, self.height, monitor.left, monitor.top
+            )
+        })?;
+        Ok(())
+    }
+}
+
+impl Drop for LayeredSurface {
+    fn drop(&mut self) {
+        unsafe {
+            SelectObject(self.memory_dc, self.previous);
+            let _ = DeleteObject(HGDIOBJ(self.bitmap.0));
+            let _ = DeleteDC(self.memory_dc);
+        }
+    }
+}
 
 pub struct RecordSelectionResult {
     pub rect: Option<Rect>,
@@ -102,7 +290,9 @@ fn configure_utility_window_style(window: &Window, no_activate: bool) -> DynResu
             )?;
         }
         SetWindowTextW(hwnd, windows::core::w!(""))?;
-        let _ = SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE);
+        if std::env::var_os("BOLTSNAP_ALLOW_SELECTOR_CAPTURE").is_none() {
+            let _ = SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE);
+        }
     }
     let applied_window_style = unsafe { GetWindowLongPtrW(hwnd, GWL_STYLE) } as u32;
     let applied_style = unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) } as u32;
@@ -306,6 +496,7 @@ struct SelectorApplication {
     window: Option<Arc<Window>>,
     context: Option<Context<Arc<Window>>>,
     surface: Option<Surface<Arc<Window>, Arc<Window>>>,
+    layered_surface: Option<LayeredSurface>,
     mode: Mode,
     interaction: Option<Interaction>,
     cursor: (f64, f64),
@@ -335,6 +526,7 @@ impl SelectorApplication {
             window: None,
             context: None,
             surface: None,
+            layered_surface: None,
             mode: Mode::Idle,
             interaction: None,
             cursor: (0.0, 0.0),
@@ -347,6 +539,7 @@ impl SelectorApplication {
     fn attributes(&self) -> WindowAttributes {
         Window::default_attributes()
             .with_title("Boltsnap Selector")
+            .with_window_icon(Some(crate::platform::windows::app_window_icon()))
             .with_decorations(false)
             .with_resizable(false)
             .with_skip_taskbar(true)
@@ -509,15 +702,25 @@ impl SelectorApplication {
     fn draw(&mut self, event_loop: &ActiveEventLoop) {
         let width = self.image.width().max(1);
         let height = self.image.height().max(1);
-        let mut frame = self.base.clone();
         let selection = self
             .selection()
             .map(|rect| (rect.x as f32, rect.y as f32, rect.w as f32, rect.h as f32));
-        render::dim_and_restore(&mut frame, selection);
+        let overlay_style = if self.record_mode {
+            render::WINDOWS_RECORD_OVERLAY_STYLE
+        } else {
+            render::SCREENSHOT_OVERLAY_STYLE
+        };
+        let mut frame = if self.record_mode {
+            let mut frame = self.base.clone();
+            render::dim_and_restore_with_style(&mut frame, selection, overlay_style);
+            frame
+        } else {
+            screenshot_overlay(&self.base, selection)
+        };
         if let Some(selection) = selection {
-            render::draw_border(&mut frame, selection);
+            render::draw_border_with_style(&mut frame, selection, overlay_style);
             if matches!(self.mode, Mode::Editing { .. }) {
-                render::draw_handles(&mut frame, selection);
+                render::draw_handles_with_style(&mut frame, selection, overlay_style);
             }
             if self.record_mode {
                 render::draw_rec_pill(&mut frame, selection, width, height);
@@ -537,6 +740,18 @@ impl SelectorApplication {
         }
         if self.modifiers.alt_key() && !self.record_mode {
             render::draw_magnifier(&mut frame, &self.base, self.cursor, width, height);
+        }
+
+        if !self.record_mode {
+            let (Some(window), Some(surface)) =
+                (self.window.as_ref(), self.layered_surface.as_mut())
+            else {
+                return;
+            };
+            if let Err(error) = surface.present(window, self.monitor, &frame) {
+                self.fail(event_loop, error);
+            }
+            return;
         }
 
         let Some(surface) = self.surface.as_mut() else {
@@ -578,23 +793,36 @@ impl ApplicationHandler for SelectorApplication {
                 return;
             }
         };
-        let context = match Context::new(window.clone()) {
-            Ok(context) => context,
-            Err(error) => {
-                self.fail(event_loop, error);
-                return;
-            }
-        };
-        let surface = match Surface::new(&context, window.clone()) {
-            Ok(surface) => surface,
-            Err(error) => {
-                self.fail(event_loop, error);
-                return;
-            }
-        };
         if let Err(error) = configure_utility_window(&window) {
             self.fail(event_loop, error);
             return;
+        }
+        if self.record_mode {
+            let context = match Context::new(window.clone()) {
+                Ok(context) => context,
+                Err(error) => {
+                    self.fail(event_loop, error);
+                    return;
+                }
+            };
+            let surface = match Surface::new(&context, window.clone()) {
+                Ok(surface) => surface,
+                Err(error) => {
+                    self.fail(event_loop, error);
+                    return;
+                }
+            };
+            self.context = Some(context);
+            self.surface = Some(surface);
+        } else {
+            self.layered_surface =
+                match LayeredSurface::new(self.image.width(), self.image.height()) {
+                    Ok(surface) => Some(surface),
+                    Err(error) => {
+                        self.fail(event_loop, error);
+                        return;
+                    }
+                };
         }
         window.set_cursor(CursorIcon::Crosshair);
         window.set_visible(true);
@@ -602,11 +830,26 @@ impl ApplicationHandler for SelectorApplication {
             self.fail(event_loop, error);
             return;
         }
+        if !self.record_mode {
+            let hwnd = match window_hwnd(&window) {
+                Ok(hwnd) => hwnd,
+                Err(error) => {
+                    self.fail(event_loop, error);
+                    return;
+                }
+            };
+            let extended_style = unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) } as u32;
+            unsafe {
+                SetWindowLongPtrW(
+                    hwnd,
+                    GWL_EXSTYLE,
+                    (extended_style | WS_EX_LAYERED.0) as isize,
+                );
+            }
+        }
         window.focus_window();
         window.request_redraw();
         self.window = Some(window);
-        self.context = Some(context);
-        self.surface = Some(surface);
     }
 
     fn window_event(
@@ -659,4 +902,39 @@ fn contains(rect: (f64, f64, f64, f64), point: (f64, f64)) -> bool {
         && point.0 <= rect.0 + rect.2
         && point.1 >= rect.1
         && point.1 <= rect.1 + rect.3
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn screenshot_overlay_restores_original_inside_and_dims_outside() {
+        let mut base = tiny_skia::Pixmap::new(4, 3).unwrap();
+        for pixel in base.data_mut().chunks_exact_mut(4) {
+            pixel.copy_from_slice(&[180, 140, 100, 255]);
+        }
+        let frame = screenshot_overlay(&base, Some((1.0, 1.0, 2.0, 1.0)));
+
+        for y in 0..frame.height() {
+            for x in 0..frame.width() {
+                let offset = ((y * frame.width() + x) * 4) as usize;
+                let pixel = &frame.data()[offset..offset + 4];
+                if y == 1 && (1..3).contains(&x) {
+                    assert_eq!(pixel, &[180, 140, 100, 255]);
+                } else {
+                    assert_eq!(pixel, &[144, 112, 80, 255]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn screenshot_overlay_dims_entire_monitor_before_selection() {
+        let mut base = tiny_skia::Pixmap::new(1, 1).unwrap();
+        base.data_mut().copy_from_slice(&[180, 140, 100, 255]);
+        let frame = screenshot_overlay(&base, None);
+
+        assert_eq!(frame.data(), &[144, 112, 80, 255]);
+    }
 }
