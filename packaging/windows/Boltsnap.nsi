@@ -18,6 +18,9 @@ SetCompressor /SOLID lzma
 !ifndef LICENSE_FILE
   !error "LICENSE_FILE is required"
 !endif
+!ifndef APP_ICON
+  !error "APP_ICON is required"
+!endif
 
 !define PRODUCT_NAME "Boltsnap"
 !define PRODUCT_PUBLISHER "Boltsnap contributors"
@@ -31,6 +34,8 @@ InstallDirRegKey HKCU "Software\Boltsnap" "InstallLocation"
 BrandingText "Boltsnap"
 ShowInstDetails show
 ShowUnInstDetails show
+Icon "${APP_ICON}"
+UninstallIcon "${APP_ICON}"
 
 VIProductVersion "${PRODUCT_VERSION}.0"
 VIAddVersionKey /LANG=1033 "ProductName" "${PRODUCT_NAME}"
@@ -43,6 +48,8 @@ VIAddVersionKey /LANG=1033 "LegalCopyright" "MIT License"
 !define MUI_ABORTWARNING
 !define MUI_COMPONENTSPAGE_SMALLDESC
 !define MUI_FINISHPAGE_NOAUTOCLOSE
+!define MUI_ICON "${APP_ICON}"
+!define MUI_UNICON "${APP_ICON}"
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_LICENSE "${LICENSE_FILE}"
 !insertmacro MUI_PAGE_DIRECTORY

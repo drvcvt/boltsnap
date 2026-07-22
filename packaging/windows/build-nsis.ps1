@@ -16,6 +16,7 @@ $boltsnapStage = Join-Path $stageRoot "Boltsnap"
 $output = [System.IO.Path]::GetFullPath((Join-Path $repository $OutputDirectory))
 $source = Join-Path $PSScriptRoot "Boltsnap.nsi"
 $license = Join-Path $PSScriptRoot "License.rtf"
+$icon = Join-Path $repository "assets\windows\boltsnap.ico"
 $boltsnapExecutable = Join-Path $repository "target\release\boltsnap.exe"
 $boltsnapBackgroundExecutable = Join-Path $repository "target\release\boltsnap-background.exe"
 
@@ -30,7 +31,7 @@ if (-not $MakeNsis) {
         Join-Path ${env:ProgramFiles(x86)} "NSIS\makensis.exe"
     }
 }
-foreach ($required in @($source, $license, $MakeNsis, (Join-Path $repository "Cargo.toml"))) {
+foreach ($required in @($source, $license, $icon, $MakeNsis, (Join-Path $repository "Cargo.toml"))) {
     if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
         throw "Required file not found: $required"
     }
@@ -60,8 +61,11 @@ Copy-Item -LiteralPath $boltsnapBackgroundExecutable `
     -Destination (Join-Path $boltsnapStage "boltsnap-background.exe")
 
 $installer = Join-Path $output "Boltsnap-$Version-windows-x64-setup.exe"
+Get-ChildItem -LiteralPath $output -Filter "Boltsnap-*-windows-x64-setup.exe" -File |
+    Where-Object { $_.FullName -ne $installer } |
+    Remove-Item -Force
 & $MakeNsis "/V4" "/WX" "/DPRODUCT_VERSION=$Version" "/DOUTPUT_FILE=$installer" `
-    "/DBOLTSNAP_SOURCE_DIR=$boltsnapStage" "/DLICENSE_FILE=$license" $source
+    "/DBOLTSNAP_SOURCE_DIR=$boltsnapStage" "/DLICENSE_FILE=$license" "/DAPP_ICON=$icon" $source
 if ($LASTEXITCODE -ne 0) {
     throw "NSIS failed with exit code $LASTEXITCODE"
 }
