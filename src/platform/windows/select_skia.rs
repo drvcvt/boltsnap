@@ -40,6 +40,26 @@ const MIN_SELECTION: f64 = 4.0;
 const DRAG_SLOP: f64 = 3.0;
 const SCREENSHOT_BACKGROUND_PERCENT: u16 = 80;
 
+fn selection_cursor(
+    position: PhysicalPosition<f64>,
+    surface_width: u32,
+    surface_height: u32,
+) -> (f64, f64) {
+    let map_axis = |coordinate: f64, extent: u32| {
+        let extent = extent as f64;
+        let coordinate = coordinate.clamp(0.0, extent);
+        if extent > 1.0 && coordinate >= extent - 1.0 {
+            extent
+        } else {
+            coordinate
+        }
+    };
+    (
+        map_axis(position.x, surface_width),
+        map_axis(position.y, surface_height),
+    )
+}
+
 fn screenshot_overlay(
     base: &tiny_skia::Pixmap,
     selection: Option<(f32, f32, f32, f32)>,
@@ -643,10 +663,7 @@ impl SelectorApplication {
     }
 
     fn moved(&mut self, position: PhysicalPosition<f64>) {
-        self.cursor = (
-            position.x.clamp(0.0, self.image.width() as f64),
-            position.y.clamp(0.0, self.image.height() as f64),
-        );
+        self.cursor = selection_cursor(position, self.image.width(), self.image.height());
         match self.mode {
             Mode::Drawing { anchor, .. } => {
                 self.mode = Mode::Drawing {
@@ -850,6 +867,31 @@ fn contains(rect: (f64, f64, f64, f64), point: (f64, f64)) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fullscreen_drag_includes_last_windows_pixel() {
+        let start = selection_cursor(PhysicalPosition::new(0.0, 0.0), 1920, 1080);
+        let end = selection_cursor(PhysicalPosition::new(1919.0, 1079.0), 1920, 1080);
+        let selection = Rect::from_corners(start, end);
+
+        assert_eq!(
+            selection,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 1920.0,
+                h: 1080.0,
+            }
+        );
+    }
+
+    #[test]
+    fn selection_cursor_keeps_interior_coordinates() {
+        assert_eq!(
+            selection_cursor(PhysicalPosition::new(640.5, 360.5), 1920, 1080),
+            (640.5, 360.5)
+        );
+    }
 
     #[test]
     fn screenshot_overlay_restores_original_inside_and_dims_outside() {
