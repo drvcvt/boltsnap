@@ -320,11 +320,16 @@ retried or discarded instead of losing the recording.
 
 Video cards carry a **▶** badge; clicking one copies a file reference.
 
-On Linux recording requires `wf-recorder`; audio also requires `pactl`. On
-Windows recording is native: Windows Graphics Capture feeds Media Foundation
-H.264/AAC and WASAPI captures system audio and/or the microphone. Windows
-currently records one monitor or one region at a time; combined multi-monitor
-recording and `recording watch --json` remain explicit unsupported operations.
+On Linux recording requires `wf-recorder` and FFmpeg; audio also requires
+`pactl`. Boltsnap probes the primary GPU with a real frame and automatically
+uses NVIDIA NVENC (`h264_nvenc`) or AMD VA-API (`h264_vaapi` plus the matching
+DRM render node), with software x264 as the fallback. On Windows
+recording is native: Windows Graphics Capture feeds a hardware-accelerated
+Media Foundation H.264/AAC transcoder, so Windows selects the installed AMD or
+NVIDIA transform, while WASAPI captures system audio and/or the microphone.
+Windows currently records one monitor or one region at a time; combined
+multi-monitor recording and `recording watch --json` remain explicit
+unsupported operations.
 
 ```sh
 # Arch / Manjaro
@@ -355,11 +360,10 @@ and no video data or paths are sent through IPC.
 ```toml
 # ~/.config/boltsnap/config.toml
 
-# Video codec passed to wf-recorder (Linux; Windows always encodes H.264
-# through Media Foundation).
-# Default: h264_nvenc (NVIDIA hardware encoding)
-# Use libx264 if you have no NVENC GPU.
-record_codec = "libx264"
+# Video codec passed to wf-recorder (Linux; Windows selects an AMD/NVIDIA
+# Media Foundation H.264 hardware transform automatically).
+# Default: auto (NVIDIA NVENC, AMD VA-API, then libx264 fallback).
+record_codec = "auto"
 
 # Directory where finished .mp4 files are saved.
 # Default: same as save_dir
@@ -387,7 +391,9 @@ record_audio_enabled = true
 record_audio_source = "system-and-mic"
 ```
 
-`$BOLTSNAP_RECORD_CODEC` overrides `record_codec` from the environment.
+`$BOLTSNAP_RECORD_CODEC` overrides `record_codec` from the environment. Set
+either value to `auto` to rerun platform detection, or name a codec such as
+`h264_nvenc`, `h264_vaapi`, or `libx264` to force it.
 
 Audio sources follow the current default sink and microphone. Per-device
 pickers and volume controls are intentionally left to the desktop audio mixer.

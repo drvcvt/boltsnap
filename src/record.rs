@@ -166,11 +166,12 @@ pub fn to_global_geometry(
 pub fn wf_recorder_args(
     geo: &Geometry,
     codec: &str,
+    encoder_device: Option<&Path>,
     audio_source: Option<&str>,
     out: &Path,
 ) -> Vec<String> {
     let mut args = vec!["-g".into(), geo.to_arg(), "-c".into(), codec.into()];
-    args.extend(capture_profile_args(codec));
+    args.extend(capture_profile_args(codec, encoder_device));
     if let Some(source) = audio_source {
         args.push(format!("--audio={source}"));
     }
@@ -183,11 +184,12 @@ pub fn wf_recorder_args(
 pub fn wf_recorder_output_args(
     output: &str,
     codec: &str,
+    encoder_device: Option<&Path>,
     audio_source: Option<&str>,
     out: &Path,
 ) -> Vec<String> {
     let mut args = vec!["-o".into(), output.into(), "-c".into(), codec.into()];
-    args.extend(capture_profile_args(codec));
+    args.extend(capture_profile_args(codec, encoder_device));
     if let Some(source) = audio_source {
         args.push(format!("--audio={source}"));
     }
@@ -195,10 +197,18 @@ pub fn wf_recorder_output_args(
     args
 }
 
-fn capture_profile_args(codec: &str) -> Vec<String> {
+fn capture_profile_args(codec: &str, encoder_device: Option<&Path>) -> Vec<String> {
     let mut args = vec!["--no-dmabuf".into(), "-r".into(), "240".into()];
     if codec.ends_with("_nvenc") {
         for option in ["preset=p5", "tune=hq", "rc=vbr", "cq=16"] {
+            args.extend(["-p".into(), option.into()]);
+        }
+    } else if codec.ends_with("_vaapi") {
+        if let Some(device) = encoder_device {
+            args.extend(["-d".into(), device.to_string_lossy().into_owned()]);
+        }
+        args.extend(["-x".into(), "yuv420p".into()]);
+        for option in ["rc_mode=CQP", "qp=16"] {
             args.extend(["-p".into(), option.into()]);
         }
     }
@@ -296,7 +306,7 @@ mod tests {
             w: 1280,
             h: 720,
         };
-        let args = wf_recorder_args(&g, "h264_nvenc", None, &PathBuf::from("/tmp/r.mp4"));
+        let args = wf_recorder_args(&g, "h264_nvenc", None, None, &PathBuf::from("/tmp/r.mp4"));
         assert_eq!(
             args,
             vec![
@@ -323,8 +333,13 @@ mod tests {
 
     #[test]
     fn wf_output_args_shape() {
-        let args =
-            wf_recorder_output_args("DP-1", "h264_nvenc", None, &PathBuf::from("/tmp/r.mp4"));
+        let args = wf_recorder_output_args(
+            "DP-1",
+            "h264_nvenc",
+            None,
+            None,
+            &PathBuf::from("/tmp/r.mp4"),
+        );
         assert_eq!(
             args,
             vec![
@@ -359,6 +374,7 @@ mod tests {
                 h: 4,
             },
             "libx264",
+            None,
             Some("desk.monitor"),
             Path::new("/tmp/out.mp4"),
         );
@@ -367,7 +383,26 @@ mod tests {
 
     #[test]
     fn wf_recorder_output_without_audio_keeps_previous_arguments() {
-        let args = wf_recorder_output_args("DP-3", "libx264", None, Path::new("/tmp/out.mp4"));
+        let args =
+            wf_recorder_output_args("DP-3", "libx264", None, None, Path::new("/tmp/out.mp4"));
         assert!(!args.iter().any(|arg| arg.starts_with("--audio")));
+    }
+
+    #[test]
+    fn vaapi_profile_uses_the_detected_render_node() {
+        let args = wf_recorder_output_args(
+            "DP-3",
+            "h264_vaapi",
+            Some(Path::new("/dev/dri/renderD128")),
+            None,
+            Path::new("/tmp/out.mp4"),
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["-d", "/dev/dri/renderD128"])
+        );
+        assert!(args.windows(2).any(|pair| pair == ["-x", "yuv420p"]));
+        assert!(args.windows(2).any(|pair| pair == ["-p", "rc_mode=CQP"]));
+        assert!(args.windows(2).any(|pair| pair == ["-p", "qp=16"]));
     }
 }

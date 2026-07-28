@@ -176,7 +176,14 @@ fn compose_outputs(
     ensure_free_space(&tools.segment_dir, source_size(&ordered_paths)?)?;
     let output = work_path(&tools.segment_dir, "combined", None, "mp4");
     let filter = build_xstack_filter_for(&selected)?;
-    let args = build_combined_args(&ordered_paths, &filter, codec, &output);
+    let encoder_device = crate::platform::recording_codec::device_for_codec(codec);
+    let args = build_combined_args(
+        &ordered_paths,
+        &filter,
+        codec,
+        encoder_device.as_deref(),
+        &output,
+    );
     if let Err(error) = run_ffmpeg(&tools.ffmpeg, &args) {
         remove_work_file(&output);
         return Err(error);
@@ -332,16 +339,33 @@ fn build_combined_args(
     inputs: &[PathBuf],
     filter: &str,
     codec: &str,
+    encoder_device: Option<&Path>,
     output: &Path,
 ) -> Vec<String> {
     let mut args = vec!["-y".into()];
+    if codec.ends_with("_vaapi")
+        && let Some(device) = encoder_device
+    {
+        args.extend([
+            "-vaapi_device".into(),
+            device.to_string_lossy().into_owned(),
+        ]);
+    }
     for input in inputs {
         args.push("-i".into());
         args.push(input.to_string_lossy().into_owned());
     }
+    let filter = if codec.ends_with("_vaapi") {
+        format!(
+            "{},format=nv12,hwupload[v]",
+            filter.strip_suffix("[v]").unwrap_or(filter)
+        )
+    } else {
+        filter.to_string()
+    };
     args.extend([
         "-filter_complex".into(),
-        filter.into(),
+        filter,
         "-map".into(),
         "[v]".into(),
         "-c:v".into(),
@@ -364,6 +388,11 @@ pub fn quality_args(codec: &str) -> Vec<String> {
         .into_iter()
         .map(str::to_owned)
         .collect()
+    } else if codec.ends_with("_vaapi") {
+        ["-rc_mode", "CQP", "-qp", "16"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
     } else if matches!(codec, "libx264" | "libx265") {
         ["-preset", "veryfast", "-crf", "16"]
             .into_iter()
@@ -739,6 +768,7 @@ mod tests {
             &[PathBuf::from("left.mp4"), PathBuf::from("right.mp4")],
             "[0:v][1:v]xstack=inputs=2[v]",
             "libx264",
+            None,
             Path::new("combined.mp4"),
         );
         let audio_maps = args
@@ -899,7 +929,32 @@ mod tests {
             quality_args("libx264"),
             vec!["-preset", "veryfast", "-crf", "16"]
         );
+        assert_eq!(
+            quality_args("h264_vaapi"),
+            vec!["-rc_mode", "CQP", "-qp", "16"]
+        );
         assert_eq!(quality_args("vp9"), vec!["-q:v", "2"]);
+    }
+
+    #[test]
+    fn vaapi_combined_output_uploads_frames_to_the_selected_gpu() {
+        let args = build_combined_args(
+            &[PathBuf::from("left.mp4"), PathBuf::from("right.mp4")],
+            "[0:v][1:v]xstack=inputs=2[v]",
+            "h264_vaapi",
+            Some(Path::new("/dev/dri/renderD128")),
+            Path::new("combined.mp4"),
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| { pair == ["-vaapi_device", "/dev/dri/renderD128"] })
+        );
+        let filter = args
+            .windows(2)
+            .find(|pair| pair[0] == "-filter_complex")
+            .map(|pair| pair[1].as_str())
+            .unwrap();
+        assert_eq!(filter, "[0:v][1:v]xstack=inputs=2,format=nv12,hwupload[v]");
     }
 
     #[test]
