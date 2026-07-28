@@ -36,6 +36,7 @@ pub fn print_doctor() {
     println!("Capture: DXGI monitor/region, WGC window, GDI compatibility fallback");
     println!("Selector/shelf/tray: native Windows windows with shared design");
     println!("Recording: WGC + Media Foundation H.264/AAC + WASAPI audio");
+    println!("Encoder: Media Foundation selects an AMD/NVIDIA hardware transform");
     println!("Recording limits: one monitor at a time; live watch stream pending");
 }
 

@@ -69,6 +69,14 @@ pub fn print_doctor() {
         "  shelf socket:      {}",
         crate::ipc::socket_path().display()
     );
+    let encoder = crate::platform::recording_codec::auto_encoder();
+    println!();
+    println!("Recording:");
+    println!("  encoder:           {}", encoder.description);
+    println!("  codec:             {}", encoder.codec);
+    if let Some(device) = &encoder.device {
+        println!("  device:            {}", device.display());
+    }
 }
 
 pub fn self_test() -> DynResult<()> {

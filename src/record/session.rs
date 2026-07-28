@@ -293,13 +293,22 @@ fn spawn_segment_with(
 
     for output in outputs {
         let path = segment_path(&tools.segment_dir, output);
+        let encoder_device = crate::platform::recording_codec::device_for_codec(codec);
         let args = match (scope, output) {
-            (CaptureScope::Area(geometry), None) => {
-                wf_recorder_args(geometry, codec, audio_source, &path)
-            }
-            (CaptureScope::Outputs(_), Some(output)) => {
-                wf_recorder_output_args(output, codec, audio_source, &path)
-            }
+            (CaptureScope::Area(geometry), None) => wf_recorder_args(
+                geometry,
+                codec,
+                encoder_device.as_deref(),
+                audio_source,
+                &path,
+            ),
+            (CaptureScope::Outputs(_), Some(output)) => wf_recorder_output_args(
+                output,
+                codec,
+                encoder_device.as_deref(),
+                audio_source,
+                &path,
+            ),
             _ => unreachable!(),
         };
         match spawn(&tools.wf_recorder, &args) {

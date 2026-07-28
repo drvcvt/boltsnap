@@ -10,6 +10,12 @@ pub mod select_skia;
 pub mod shelf;
 pub mod tray;
 
+/// Windows Media Foundation receives H.264 settings and selects the installed
+/// AMD or NVIDIA hardware transform through MediaTranscoder.
+pub fn default_record_codec() -> String {
+    "h264".to_string()
+}
+
 pub(crate) fn app_window_icon() -> winit::window::Icon {
     let image =
         image::load_from_memory(include_bytes!("../../../assets/icons/boltsnap-app-64.png"))

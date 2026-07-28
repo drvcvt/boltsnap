@@ -280,21 +280,38 @@ fn default_save_dir() -> PathBuf {
     crate::paths::default_screenshot_dir()
 }
 
-/// The ffmpeg encoder passed to `wf-recorder -c`: CLI flag > $BOLTSNAP_RECORD_CODEC
-/// > config > `h264_nvenc` (NVENC default; users without NVENC set e.g. libx264).
+/// The ffmpeg encoder passed to `wf-recorder -c`: CLI flag >
+/// `$BOLTSNAP_RECORD_CODEC` > config > the platform detector. The value `auto`
+/// explicitly requests detection at any precedence level.
 pub fn resolve_record_codec(cli: Option<&str>, cfg: &Config) -> String {
+    resolve_record_codec_with(cli, cfg, crate::platform::default_record_codec)
+}
+
+fn resolve_record_codec_with(
+    cli: Option<&str>,
+    cfg: &Config,
+    detect_default: impl FnOnce() -> String,
+) -> String {
     if let Some(c) = cli {
-        return c.to_string();
+        if c != "auto" {
+            return c.to_string();
+        }
+        return detect_default();
     }
-    if let Ok(e) = env::var("BOLTSNAP_RECORD_CODEC") {
-        if !e.is_empty() {
+    if let Ok(e) = env::var("BOLTSNAP_RECORD_CODEC")
+        && !e.is_empty()
+    {
+        if e != "auto" {
             return e;
         }
+        return detect_default();
     }
-    if let Some(c) = &cfg.record_codec {
+    if let Some(c) = &cfg.record_codec
+        && c != "auto"
+    {
         return c.clone();
     }
-    "h264_nvenc".to_string()
+    detect_default()
 }
 
 /// Where confirmed recordings are saved: config `record_dir` (expanded) else the
@@ -524,19 +541,36 @@ unrelated = "keep-me"
     }
 
     #[test]
-    fn record_codec_defaults_to_nvenc() {
+    fn record_codec_preserves_overrides_and_uses_detected_default() {
         // BOLTSNAP_RECORD_CODEC is boltsnap-private (read by nothing else), so
         // removing it without restore is race-free and keeps the default assertion
         // self-contained.
         unsafe {
             env::remove_var("BOLTSNAP_RECORD_CODEC");
         }
-        assert_eq!(resolve_record_codec(None, &Config::default()), "h264_nvenc");
+        assert_eq!(
+            resolve_record_codec_with(None, &Config::default(), || "h264_vaapi".into()),
+            "h264_vaapi"
+        );
         let cfg = Config {
             record_codec: Some("libx264".into()),
             ..Config::default()
         };
-        assert_eq!(resolve_record_codec(None, &cfg), "libx264");
-        assert_eq!(resolve_record_codec(Some("hevc_nvenc"), &cfg), "hevc_nvenc");
+        assert_eq!(
+            resolve_record_codec_with(None, &cfg, || "h264_vaapi".into()),
+            "libx264"
+        );
+        assert_eq!(
+            resolve_record_codec_with(Some("hevc_nvenc"), &cfg, || "h264_vaapi".into()),
+            "hevc_nvenc"
+        );
+        let cfg = Config {
+            record_codec: Some("auto".into()),
+            ..Config::default()
+        };
+        assert_eq!(
+            resolve_record_codec_with(None, &cfg, || "h264_nvenc".into()),
+            "h264_nvenc"
+        );
     }
 }
