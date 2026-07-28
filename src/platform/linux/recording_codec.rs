@@ -28,7 +28,7 @@ pub struct EncoderChoice {
 static AUTO_ENCODER: OnceLock<EncoderChoice> = OnceLock::new();
 
 /// Detect the first hardware encoder that is both backed by a matching GPU and
-/// can encode a real frame. The primary DRM GPU wins on hybrid systems.
+/// can encode a real frame. NVIDIA wins on hybrid systems.
 pub fn auto_encoder() -> &'static EncoderChoice {
     AUTO_ENCODER.get_or_init(|| {
         let devices = discover_gpu_devices(Path::new("/sys/class/drm"), Path::new("/dev/dri"));
@@ -61,7 +61,7 @@ fn select_encoder(
     mut supported: impl FnMut(&str, Option<&Path>) -> bool,
 ) -> EncoderChoice {
     let mut ordered = devices.to_vec();
-    ordered.sort_by_key(|device| !device.primary);
+    ordered.sort_by_key(|device| (device.vendor != GpuVendor::Nvidia, !device.primary));
 
     for device in ordered {
         let (codec, encoder_device, description) = match device.vendor {
@@ -175,14 +175,14 @@ mod tests {
     }
 
     #[test]
-    fn primary_amd_wins_on_a_hybrid_system() {
+    fn nvidia_encoder_wins_on_a_hybrid_system() {
         let devices = vec![
             gpu(GpuVendor::Nvidia, false, Some("/dev/dri/renderD129")),
             gpu(GpuVendor::Amd, true, Some("/dev/dri/renderD128")),
         ];
         let choice = select_encoder(&devices, |_, _| true);
-        assert_eq!(choice.codec, "h264_vaapi");
-        assert_eq!(choice.device, Some("/dev/dri/renderD128".into()));
+        assert_eq!(choice.codec, "h264_nvenc");
+        assert_eq!(choice.device, None);
     }
 
     #[test]
