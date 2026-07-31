@@ -83,7 +83,7 @@ pub fn target_path(args: &Args) -> PathBuf {
     } else if args.save {
         default_save_path()
     } else {
-        cache_dir().join("last.png")
+        unique_path_in(&cache_dir(), "capture", "png")
     }
 }
 
@@ -141,12 +141,32 @@ pub fn temp_png(prefix: &str) -> PathBuf {
 /// A unique temp path `boltsnap-<prefix>-<pid>-<ts>-<seq>.<ext>` in the system temp
 /// dir. Generalizes `temp_png` for recordings (`mp4`) and their thumbnails.
 pub fn temp_file(prefix: &str, ext: &str) -> PathBuf {
-    env::temp_dir().join(format!(
+    unique_path_in(&env::temp_dir(), prefix, ext)
+}
+
+fn unique_path_in(dir: &Path, prefix: &str, ext: &str) -> PathBuf {
+    dir.join(format!(
         "boltsnap-{prefix}-{}-{}-{}.{ext}",
         std::process::id(),
         timestamp(),
         NEXT_PATH_ID.fetch_add(1, Ordering::Relaxed)
     ))
+}
+
+pub fn publish_last_png(png: &[u8]) -> io::Result<PathBuf> {
+    publish_last_png_at(&cache_dir(), png)
+}
+
+fn publish_last_png_at(dir: &Path, png: &[u8]) -> io::Result<PathBuf> {
+    fs::create_dir_all(dir)?;
+    let pending = unique_path_in(dir, "last", "png");
+    let last = dir.join("last.png");
+    fs::write(&pending, png)?;
+    if let Err(error) = fs::rename(&pending, &last) {
+        let _ = fs::remove_file(pending);
+        return Err(error);
+    }
+    Ok(last)
 }
 
 fn is_orphan_shelf_temp(name: &str) -> bool {
@@ -283,6 +303,40 @@ pub fn local_timestamp() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_capture_work_paths_are_unique() {
+        let args = Args::default();
+        let first = target_path(&args);
+        let second = target_path(&args);
+
+        assert_ne!(first, second);
+        assert_eq!(first.parent(), Some(cache_dir().as_path()));
+        assert!(
+            first
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("boltsnap-capture-")
+        );
+    }
+
+    #[test]
+    fn publishing_last_png_replaces_complete_file() {
+        let dir = env::temp_dir().join(format!(
+            "boltsnap-last-png-test-{}-{}",
+            std::process::id(),
+            timestamp()
+        ));
+        fs::create_dir(&dir).unwrap();
+
+        publish_last_png_at(&dir, b"first").unwrap();
+        publish_last_png_at(&dir, b"second").unwrap();
+
+        assert_eq!(fs::read(dir.join("last.png")).unwrap(), b"second");
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+        let _ = fs::remove_dir_all(dir);
+    }
 
     #[cfg(target_os = "linux")]
     #[test]

@@ -6,8 +6,19 @@ use std::process::{Command, Stdio};
 use crate::{Backend, DynResult};
 
 pub fn serve_wayland_clipboard(path: &Path) -> DynResult<()> {
+    serve_wayland_clipboard_file(path, false)
+}
+
+pub fn serve_wayland_clipboard_once(path: &Path) -> DynResult<()> {
+    serve_wayland_clipboard_file(path, true)
+}
+
+fn serve_wayland_clipboard_file(path: &Path, remove_after_read: bool) -> DynResult<()> {
     use wl_clipboard_rs::copy::{MimeType, Options, Source};
     let data = fs::read(path)?;
+    if remove_after_read {
+        let _ = fs::remove_file(path);
+    }
     let mut opts = Options::new();
     opts.foreground(true);
     let prepared = opts
@@ -76,6 +87,18 @@ pub fn copy_uri_to_clipboard(path: &Path) -> DynResult<()> {
 }
 
 pub fn copy_to_clipboard(path: &Path, backend: Backend) -> DynResult<Backend> {
+    copy_to_clipboard_with(path, backend, false)
+}
+
+pub fn copy_temporary_to_clipboard(path: &Path, backend: Backend) -> DynResult<Backend> {
+    copy_to_clipboard_with(path, backend, true)
+}
+
+fn copy_to_clipboard_with(
+    path: &Path,
+    backend: Backend,
+    remove_after_read: bool,
+) -> DynResult<Backend> {
     let backend = backend.resolved()?;
     match backend {
         Backend::Wayland => {
@@ -84,7 +107,11 @@ pub fn copy_to_clipboard(path: &Path, backend: Backend) -> DynResult<Backend> {
             let exe = env::current_exe()?;
             crate::paths::spawn_reaped(
                 Command::new(exe)
-                    .arg("__serve-clipboard")
+                    .arg(if remove_after_read {
+                        "__serve-clipboard-once"
+                    } else {
+                        "__serve-clipboard"
+                    })
                     .arg(path)
                     .stdin(Stdio::null())
                     .stdout(Stdio::null())
@@ -107,6 +134,9 @@ pub fn copy_to_clipboard(path: &Path, backend: Backend) -> DynResult<Backend> {
                     bytes,
                 })
                 .map_err(|e| format!("X11 clipboard set_image failed: {e}"))?;
+            if remove_after_read {
+                let _ = fs::remove_file(path);
+            }
         }
         Backend::Windows => return Err("Windows clipboard is unavailable on Linux".into()),
         Backend::Auto => unreachable!(),
