@@ -151,6 +151,10 @@ pub(crate) enum DaemonEvent {
         request: crate::ipc::Request,
         stream: UnixStream,
     },
+    AddPrepared {
+        result: Result<PreparedAdd, String>,
+        stream: UnixStream,
+    },
     ChildrenStopped {
         after: AfterStop,
         result: StopChildrenResult,
@@ -167,6 +171,13 @@ pub(crate) enum DaemonEvent {
         prefs: crate::config::RecordingPrefs,
         error: Option<String>,
     },
+}
+
+pub(crate) struct PreparedAdd {
+    path: std::path::PathBuf,
+    thumb: image::RgbaImage,
+    source: String,
+    output: Option<String>,
 }
 
 #[derive(Clone)]
@@ -255,19 +266,63 @@ fn shelf_commit_allowed(drag_active: bool) -> bool {
 }
 
 const MAX_VISIBLE_CARDS: usize = 5;
+const MAX_CACHED_CARDS: usize = 20;
+const MAX_CACHED_IMAGE_BYTES: u64 = 256 * 1024 * 1024;
 
 fn visible_cards(model: &ShelfModel) -> impl Iterator<Item = &Thumb> {
     model.newest_first().take(MAX_VISIBLE_CARDS)
+}
+
+fn shelf_cache_evictions_with_limits(
+    newest_first: &[(u64, CardKind, FileLifetime, u64)],
+    max_cards: usize,
+    max_image_bytes: u64,
+) -> Vec<u64> {
+    let mut cards = newest_first.len();
+    let mut image_bytes = newest_first
+        .iter()
+        .filter(|(_, kind, lifetime, _)| {
+            *kind == CardKind::Image && *lifetime == FileLifetime::Temporary
+        })
+        .map(|(_, _, _, bytes)| bytes)
+        .sum::<u64>();
+    let mut evictions = Vec::new();
+    for (id, kind, lifetime, bytes) in newest_first.iter().rev() {
+        if cards <= max_cards && image_bytes <= max_image_bytes {
+            break;
+        }
+        evictions.push(*id);
+        cards -= 1;
+        if *kind == CardKind::Image && *lifetime == FileLifetime::Temporary {
+            image_bytes = image_bytes.saturating_sub(*bytes);
+        }
+    }
+    evictions
 }
 
 fn ease_out_cubic(progress: f32) -> f32 {
     1.0 - (1.0 - progress.clamp(0.0, 1.0)).powi(3)
 }
 
-fn overflow_opacity(appear_progress: Option<f32>, disappear_progress: Option<f32>) -> Option<f32> {
-    appear_progress
-        .map(|progress| 1.0 - progress.clamp(0.0, 1.0))
-        .or_else(|| disappear_progress.map(|progress| progress.clamp(0.0, 1.0)))
+fn overflow_card_opacity(
+    position: usize,
+    appear_progress: Option<f32>,
+    disappear_progresses: &[f32],
+) -> Option<f32> {
+    let mut overflow = position.checked_sub(MAX_VISIBLE_CARDS)?;
+    if overflow == 0
+        && let Some(progress) = appear_progress
+    {
+        return Some(1.0 - progress.clamp(0.0, 1.0));
+    }
+    overflow = overflow.saturating_sub(usize::from(appear_progress.is_some()));
+    disappear_progresses
+        .get(overflow)
+        .map(|progress| progress.clamp(0.0, 1.0))
+}
+
+fn animated_item_limit(model_len: usize, appearing: bool, disappearing: usize) -> usize {
+    model_len.min(MAX_VISIBLE_CARDS + usize::from(appearing) + disappearing)
 }
 
 fn animated_card_layout(
@@ -397,12 +452,46 @@ fn spawn_client_reader(mut stream: UnixStream, tx: calloop::channel::Sender<Daem
     std::thread::spawn(move || {
         let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
         match crate::ipc::Request::read(&mut stream) {
+            Ok(crate::ipc::Request::Add {
+                source,
+                png,
+                output,
+            }) => {
+                let result = prepare_add(png, source, output);
+                let _ = tx.send(DaemonEvent::AddPrepared { result, stream });
+            }
             Ok(request) => {
                 let _ = tx.send(DaemonEvent::ClientRequest { request, stream });
             }
             Err(error) => eprintln!("boltsnap daemon: bad request: {error}"),
         }
     });
+}
+
+fn prepare_add(
+    png: Vec<u8>,
+    source: String,
+    output: Option<String>,
+) -> Result<PreparedAdd, String> {
+    if png.len() as u64 > MAX_CACHED_IMAGE_BYTES {
+        return Err("PNG exceeds the 256 MiB shelf cache limit".into());
+    }
+    let image = image::load_from_memory(&png)
+        .map_err(|error| format!("decode PNG: {error}"))?
+        .to_rgba8();
+    let path = crate::paths::temp_png("shelf");
+    std::fs::write(&path, png).map_err(|error| format!("write shelf tempfile: {error}"))?;
+    let thumb = crate::shelf::thumbnail::make_card_thumbnail(
+        &image,
+        crate::shelf::thumbnail::CARD_W,
+        crate::shelf::thumbnail::CARD_H,
+    );
+    Ok(PreparedAdd {
+        path,
+        thumb,
+        source,
+        output,
+    })
 }
 
 fn spawn_client_writer(mut stream: UnixStream, bytes: Vec<u8>) {
@@ -1130,11 +1219,14 @@ impl Daemon {
                 spawn_client_writer(stream, b"PONG".to_vec());
             }
             crate::ipc::Request::Add {
-                source,
-                png,
-                output,
+                source: _,
+                png: _,
+                output: _,
             } => {
-                self.add_png(&png, &source, output.as_deref(), &qh);
+                self.write_response(
+                    stream,
+                    crate::ipc::Response::error("add request was not prepared"),
+                );
             }
             crate::ipc::Request::RecordingStatus => {
                 self.write_response(
@@ -1247,37 +1339,60 @@ impl Daemon {
         spawn_client_writer(stream, response.encode());
     }
 
-    /// Ingest a PNG: persist a daemon-owned temp copy, scale a thumbnail, show it
-    /// on the currently focused monitor.
-    fn add_png(&mut self, png: &[u8], source: &str, output: Option<&str>, qh: &QueueHandle<Self>) {
-        let img = match image::load_from_memory(png) {
-            Ok(i) => i.to_rgba8(),
-            Err(e) => {
-                eprintln!("boltsnap daemon: bad PNG: {e}");
-                return;
-            }
-        };
-        // Daemon-owned temp file for drag URI delivery and clipboard fallback.
-        let path = crate::paths::temp_png("shelf");
-        if let Err(e) = std::fs::write(&path, png) {
-            eprintln!("boltsnap daemon: temp write failed: {e}");
-            return;
-        }
-        let thumb = crate::shelf::thumbnail::make_card_thumbnail(
-            &img,
-            crate::shelf::thumbnail::CARD_W,
-            crate::shelf::thumbnail::CARD_H,
-        );
+    fn add_prepared(&mut self, add: PreparedAdd, qh: &QueueHandle<Self>) {
         // A compositor can omit the terminal drag event and leave redraws
         // blocked. A fresh capture supersedes that stale interaction.
         if self.drag_source.is_some() {
             self.clear_drag();
         }
-        let id = self.model.add(path, thumb, source.to_string());
+        let id = self.model.add(add.path, add.thumb, add.source);
         self.start_anim(id, AnimKind::Appear);
+        self.trim_shelf_cache();
         self.relayout();
-        self.place_on_output(output, qh);
+        self.place_on_output(add.output.as_deref(), qh);
         self.draw(qh);
+    }
+
+    fn trim_shelf_cache(&mut self) {
+        let cards = self
+            .model
+            .newest_first()
+            .map(|card| {
+                let bytes =
+                    if card.kind == CardKind::Image && card.lifetime == FileLifetime::Temporary {
+                        std::fs::metadata(&card.png_path)
+                            .map(|metadata| metadata.len())
+                            .unwrap_or(0)
+                    } else {
+                        0
+                    };
+                (card.id, card.kind, card.lifetime, bytes)
+            })
+            .collect::<Vec<_>>();
+        for id in
+            shelf_cache_evictions_with_limits(&cards, MAX_CACHED_CARDS, MAX_CACHED_IMAGE_BYTES)
+        {
+            self.remove_card_now(id);
+        }
+    }
+
+    fn remove_card_now(&mut self, id: u64) -> bool {
+        let Some(card) = self.model.remove(id) else {
+            return false;
+        };
+        let _ = card.delete_file_on_dismiss();
+        self.anims.retain(|animation| animation.id != id);
+        self.saving_cards.remove(&id);
+        if self.hovered == Some(id) {
+            self.hovered = None;
+        }
+        if self.press.as_ref().is_some_and(|press| press.id == id) {
+            self.press = None;
+        }
+        if self.save_flash.is_some_and(|(saved, _)| saved == id) {
+            self.save_flash = None;
+        }
+        true
     }
 
     /// Copy the card under the cursor to the clipboard: an image as `image/png`,
@@ -1490,17 +1605,16 @@ impl Daemon {
                 AnimKind::Disappear => (1.0 - eased, 1.0 - eased),
             };
         }
-        if self
-            .model
-            .newest_first()
-            .nth(MAX_VISIBLE_CARDS)
-            .is_some_and(|card| card.id == id)
-            && let Some(opacity) = overflow_opacity(
-                self.active_appear_progress(),
-                self.active_disappear_progress(),
-            )
-        {
-            return (1.0, opacity);
+        if let Some(position) = self.model.newest_first().position(|card| card.id == id) {
+            let appear = self.active_appear_progress();
+            let disappearances = self.active_disappear_progresses();
+            if position >= MAX_VISIBLE_CARDS
+                && position
+                    < animated_item_limit(self.model.len(), appear.is_some(), disappearances.len())
+                && let Some(opacity) = overflow_card_opacity(position, appear, &disappearances)
+            {
+                return (1.0, opacity);
+            }
         }
         (1.0, 1.0)
     }
@@ -1516,17 +1630,24 @@ impl Daemon {
             })
     }
 
-    fn active_disappear_progress(&self) -> Option<f32> {
-        self.anims
+    fn active_disappear_progresses(&self) -> Vec<f32> {
+        let mut progresses = self
+            .anims
             .iter()
-            .rev()
-            .find(|anim| {
-                anim.kind == AnimKind::Disappear
-                    && visible_cards(&self.model).any(|card| card.id == anim.id)
-            })
+            .filter(|anim| anim.kind == AnimKind::Disappear)
             .map(|anim| {
                 ease_out_cubic(anim.start.elapsed().as_millis() as f32 / anim.kind.dur() as f32)
             })
+            .collect::<Vec<_>>();
+        progresses.sort_by(|left, right| right.total_cmp(left));
+        progresses
+    }
+
+    fn active_disappear_count(&self) -> usize {
+        self.anims
+            .iter()
+            .filter(|animation| animation.kind == AnimKind::Disappear)
+            .count()
     }
 
     fn animating(&self) -> bool {
@@ -1546,13 +1667,7 @@ impl Daemon {
             .retain(|a| a.start.elapsed().as_millis() < a.kind.dur());
         let mut removed = false;
         for (id, kind) in done {
-            if kind == AnimKind::Disappear
-                && let Some(t) = self.model.remove(id)
-            {
-                let _ = t.delete_file_on_dismiss();
-                if self.hovered == Some(id) {
-                    self.hovered = None;
-                }
+            if kind == AnimKind::Disappear && self.remove_card_now(id) {
                 removed = true;
             }
         }
@@ -1573,12 +1688,11 @@ impl Daemon {
     fn animated_layout(&self) -> Layout {
         let cfg = &self.cfg;
         let appear_progress = self.active_appear_progress();
-        let disappear_progress = self.active_disappear_progress();
-        let limit = MAX_VISIBLE_CARDS
-            + usize::from(
-                (appear_progress.is_some() || disappear_progress.is_some())
-                    && self.model.len() > MAX_VISIBLE_CARDS,
-            );
+        let limit = animated_item_limit(
+            self.model.len(),
+            appear_progress.is_some(),
+            self.active_disappear_count(),
+        );
         let items: Vec<(u64, u32, u32, f32)> = self
             .model
             .newest_first()
@@ -1598,6 +1712,10 @@ impl Daemon {
             })
             .collect();
         animated_card_layout(&items, cfg, appear_progress)
+    }
+
+    fn hit_test(&self, x: f64, y: f64) -> Option<Hit> {
+        self.animated_layout().hit(x, y, &self.cfg)
     }
 
     fn draw(&mut self, _qh: &QueueHandle<Self>) {
@@ -2211,6 +2329,23 @@ impl Daemon {
             DaemonEvent::ClientRequest { request, stream } => {
                 self.handle_client_request(request, stream);
             }
+            DaemonEvent::AddPrepared { result, stream } => {
+                let response = match (result, self.qh.clone()) {
+                    (Ok(add), Some(qh)) => {
+                        self.add_prepared(add, &qh);
+                        crate::ipc::Response::ok(None)
+                    }
+                    (Ok(add), None) => {
+                        let _ = std::fs::remove_file(add.path);
+                        crate::ipc::Response::error("shelf is not ready")
+                    }
+                    (Err(error), _) => {
+                        eprintln!("boltsnap daemon: {error}");
+                        crate::ipc::Response::error(error)
+                    }
+                };
+                self.write_response(stream, response);
+            }
             DaemonEvent::ChildrenStopped { after, result } => {
                 let (segments, error) = match result {
                     StopChildrenResult::Ready(segments) => (segments, None),
@@ -2439,6 +2574,7 @@ impl Daemon {
             added = true;
         }
         if added {
+            self.trim_shelf_cache();
             self.relayout();
             self.place_on_output(None, &qh);
             self.draw(&qh);
@@ -2781,7 +2917,7 @@ impl PointerHandler for Daemon {
                     }
                 }
                 PointerEventKind::Enter { .. } | PointerEventKind::Motion { .. } => {
-                    let now = self.layout.hit(x, y, &self.cfg).map(|h| match h {
+                    let now = self.hit_test(x, y).map(|h| match h {
                         Hit::Body(id) | Hit::Save(id) | Hit::Close(id) => id,
                     });
                     if now != self.hovered {
@@ -2813,7 +2949,7 @@ impl PointerHandler for Daemon {
                     }
                 }
                 PointerEventKind::Press { button, serial, .. } if button == BTN_LEFT => {
-                    if let Some(hit) = self.layout.hit(x, y, &self.cfg) {
+                    if let Some(hit) = self.hit_test(x, y) {
                         let id = match hit {
                             Hit::Body(i) | Hit::Save(i) | Hit::Close(i) => i,
                         };
@@ -2828,7 +2964,7 @@ impl PointerHandler for Daemon {
                     }
                 }
                 PointerEventKind::Press { button, .. } if button == BTN_RIGHT => {
-                    if let Some(hit) = self.layout.hit(x, y, &self.cfg) {
+                    if let Some(hit) = self.hit_test(x, y) {
                         let id = match hit {
                             Hit::Body(i) | Hit::Save(i) | Hit::Close(i) => i,
                         };
@@ -3073,6 +3209,75 @@ mod tests {
     use std::io::{Read, Write};
     use std::time::{Duration, Instant};
 
+    fn png_bytes() -> Vec<u8> {
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(image::RgbaImage::new(2, 2))
+            .write_to(&mut bytes, image::ImageFormat::Png)
+            .unwrap();
+        bytes.into_inner()
+    }
+
+    #[test]
+    fn cache_eviction_removes_oldest_until_count_and_image_bytes_fit() {
+        let newest_first = [
+            (5, CardKind::Image, FileLifetime::Temporary, 40),
+            (4, CardKind::Image, FileLifetime::Temporary, 40),
+            (3, CardKind::Video, FileLifetime::Permanent, 999),
+            (2, CardKind::Image, FileLifetime::Temporary, 40),
+            (1, CardKind::Image, FileLifetime::Temporary, 40),
+        ];
+
+        assert_eq!(
+            shelf_cache_evictions_with_limits(&newest_first, 4, 100),
+            vec![1, 2]
+        );
+    }
+
+    #[test]
+    fn invalid_png_preparation_returns_an_ingest_error() {
+        let result = prepare_add(vec![1, 2, 3], "area".into(), None);
+        let Err(error) = result else {
+            panic!("invalid PNG was accepted")
+        };
+        assert!(error.contains("decode PNG"), "{error}");
+    }
+
+    #[test]
+    fn add_is_prepared_before_it_reaches_the_ui_event_loop() {
+        let (tx, rx) = calloop::channel::channel();
+        let (server, mut client) = UnixStream::pair().unwrap();
+        spawn_client_reader(server, tx);
+        client
+            .write_all(
+                &crate::ipc::Request::Add {
+                    source: "area".into(),
+                    png: png_bytes(),
+                    output: Some("DP-3".into()),
+                }
+                .encode(),
+            )
+            .unwrap();
+
+        match receive_event(&rx) {
+            DaemonEvent::AddPrepared {
+                result: Ok(add), ..
+            } => {
+                assert_eq!(add.source, "area");
+                assert_eq!(add.output.as_deref(), Some("DP-3"));
+                assert_eq!(add.thumb.dimensions(), (190, 132));
+                assert!(add.path.is_file());
+                let _ = std::fs::remove_file(add.path);
+            }
+            _ => panic!("expected a prepared add event"),
+        }
+    }
+
+    #[test]
+    fn two_dismissals_render_two_cached_replacements() {
+        assert_eq!(animated_item_limit(8, false, 2), 7);
+        assert_eq!(animated_item_limit(8, true, 2), 8);
+    }
+
     #[test]
     fn active_drag_defers_shelf_commits() {
         assert!(!shelf_commit_allowed(true));
@@ -3139,10 +3344,26 @@ mod tests {
     }
 
     #[test]
-    fn overflow_card_crossfades_at_viewport_edge() {
-        assert_eq!(overflow_opacity(Some(0.25), None), Some(0.75));
-        assert_eq!(overflow_opacity(None, Some(0.25)), Some(0.25));
-        assert_eq!(overflow_opacity(None, None), None);
+    fn each_cached_replacement_uses_its_own_dismiss_progress() {
+        let dismissals = [0.8, 0.25];
+        assert_eq!(overflow_card_opacity(5, None, &dismissals), Some(0.8));
+        assert_eq!(overflow_card_opacity(6, None, &dismissals), Some(0.25));
+        assert_eq!(overflow_card_opacity(5, Some(0.4), &dismissals), Some(0.6));
+        assert_eq!(overflow_card_opacity(6, Some(0.4), &dismissals), Some(0.8));
+        assert_eq!(overflow_card_opacity(7, Some(0.4), &dismissals), Some(0.25));
+    }
+
+    #[test]
+    fn animated_layout_hit_tracks_the_card_on_screen() {
+        let cfg = LayoutConfig::default();
+        let items = [(2, 190, 132, 1.0), (1, 190, 132, 0.0)];
+        let animated = animated_card_layout(&items, &cfg, None);
+
+        assert_eq!(
+            animated.hit(60.0, 60.0, &cfg),
+            Some(Hit::Body(1)),
+            "input must follow the card after the first slot collapses"
+        );
     }
 
     #[test]
@@ -3182,7 +3403,7 @@ mod tests {
     fn partial_client_does_not_block_a_complete_client_or_drop_its_payload() {
         let (tx, rx) = calloop::channel::channel();
         let (slow_server, mut slow_client) = UnixStream::pair().unwrap();
-        let png = vec![0x5a; 256 * 1024];
+        let png = png_bytes();
         let mut encoded = Vec::new();
         crate::ipc::write_frame(&mut encoded, br#"{"cmd":"add","source":"area"}"#, &png).unwrap();
         let split = encoded.len() / 2;
@@ -3205,19 +3426,14 @@ mod tests {
 
         slow_client.write_all(&encoded[split..]).unwrap();
         match receive_event(&rx) {
-            DaemonEvent::ClientRequest {
-                request:
-                    crate::ipc::Request::Add {
-                        source,
-                        png: received,
-                        ..
-                    },
-                ..
+            DaemonEvent::AddPrepared {
+                result: Ok(add), ..
             } => {
-                assert_eq!(source, "area");
-                assert_eq!(received, png);
+                assert_eq!(add.source, "area");
+                assert_eq!(std::fs::read(&add.path).unwrap(), png);
+                let _ = std::fs::remove_file(add.path);
             }
-            _ => panic!("expected complete PNG request"),
+            _ => panic!("expected prepared PNG request"),
         }
     }
 
