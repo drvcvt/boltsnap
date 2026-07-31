@@ -1,6 +1,12 @@
 # Boltsnap Windows – verbindlicher Portierungsplan
 
-## Zielbild
+> [!IMPORTANT]
+> **Eingefroren seit 2026-07-27:** Linux ist die unterstützte Plattform.
+> Der experimentelle Windows-Backend-Code bleibt für Compile- und Unit-Tests im
+> gemeinsamen Repository, wird aber nicht aktiv gepflegt oder veröffentlicht.
+> Die Arbeit wird erst mit einem verfügbaren realen Windows-Tester fortgesetzt.
+
+## Zielbild (eingefroren)
 
 Boltsnap bleibt **ein gemeinsames Rust-Projekt und ein gemeinsames Produkt**.
 Es entstehen keine getrennten Quellbäume oder dauerhaft auseinanderlaufenden
@@ -50,7 +56,8 @@ Umgesetzt:
 - Named-Pipe-Server mit Benutzer-DACL und Named Mutex für Single Instance
 - Bild- und Datei-Clipboard sowie OLE-Datei-Drag-and-drop
 - Media-Foundation-H.264/AAC-Encoding mit WASAPI-Systemaudio und Mikrofon
-- Per-Monitor-DPI-Awareness-V2-Manifest und Windows-Release-CI
+- Per-Monitor-DPI-Awareness-V2-Manifest und inzwischen pausierte
+  Windows-Release-CI
 - NSIS-Installer ohne externe Programm-Bundles
 - unabhängiger Task-Scheduler-Autostart mit Neustart bei Fehlern
 
@@ -457,37 +464,20 @@ Windows-Support wird erst als fertig bezeichnet, wenn Capture, Clipboard,
 Ausgabepfade und Fehlerfälle auf realen Windows-Systemen erfolgreich geprüft
 wurden.
 
-## Lokale Entwicklungsanforderungen
+## Lokale Entwicklungsanforderungen (eingefroren)
 
-Vorhanden:
-
-- Windows 11 25H2 x64
-- Rust/Cargo 1.96.1 für `x86_64-pc-windows-msvc`
-- Git
-
-Noch erforderlich:
-
-- Visual Studio Build Tools mit „Desktop development with C++“
-- aktueller MSVC-x64/x86-Linker
-- Windows 11 SDK
-- optional Visual Studio Graphics Diagnostics und PIX für GPU-Analyse
+Aktuell steht kein reales Windows-Testsystem zur Verfügung. Für eine
+Wiederaufnahme sind mindestens Windows 10/11 x64, Rust mit
+`x86_64-pc-windows-msvc`, Visual Studio Build Tools mit „Desktop development
+with C++“ und ein aktuelles Windows SDK erforderlich.
 
 FFmpeg ist für die endgültige native Zielarchitektur keine Voraussetzung.
 
 ## Upstream-Integration
 
-- Basis ist `upstream/main` auf Commit `a746c37`.
-- Der Arbeitsbranch `windows` verfolgt `upstream/main`.
-- Vor jedem Capability-Schritt wird Upstream aktualisiert und anschließend
-  gezielt rebased.
-- Neue Linux-Änderungen werden nur einmal in den gemeinsamen Core oder das
-  Linux-Backend integriert; Windows implementiert denselben Vertrag separat.
-- Die Regeln aus `AGENTS.md` und `README.md#contributing` sind verbindlich.
-
-```powershell
-git fetch upstream
-git rebase upstream/main
-```
+Der Windows-Code bleibt in `main`; es gibt keinen separaten Arbeitsbranch oder
+Fork. Falls die Arbeit wiederaufgenommen wird, beginnt sie auf dem aktuellen
+`main` und folgt den Regeln aus `AGENTS.md` und `README.md#contributing`.
 
 ## Primärquellen
 
