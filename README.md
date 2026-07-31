@@ -4,14 +4,16 @@
 
 # Boltsnap
 
-Boltsnap is a native screenshot and screen-recording tool for Windows, Wayland,
-and X11. Capture, selection, the screenshot shelf, and clipboard handling run
-in-process.
+Boltsnap is a native screenshot and screen-recording tool for Wayland and X11.
+Capture, selection, the screenshot shelf, and clipboard handling run in-process.
 
-- Native capture on Windows, Wayland, and X11
-- In-process region selector on Windows and Wayland
-- Screenshot shelf on Windows and Wayland
+- Native capture on Wayland and X11
+- In-process region selector and screenshot shelf on Wayland
 - Pipe-friendly: `-o -` writes PNG to stdout
+
+The Windows backend remains in the repository as unmaintained experimental
+code. CI compile- and unit-tests it, but new releases do not ship Windows
+artifacts and Windows behavior is not manually verified.
 
 ## Screenshots
 
@@ -42,23 +44,11 @@ in [`benchmarks/full-capture-2026-07-21.md`](benchmarks/full-capture-2026-07-21.
 
 ## Install
 
-### Windows 10/11
+### Windows 10/11 (experimental, unmaintained)
 
-Download one of these from the
-[latest release](https://github.com/drvcvt/boltsnap/releases/latest):
-
-| File | Use it for |
-|------|------------|
-| `Boltsnap-X.Y.Z-windows-x64-setup.exe` | Regular interactive setup (NSIS) |
-| `boltsnap-vX.Y.Z-x86_64-windows.zip` | Portable use without installation |
-
-The NSIS installer is per-user, needs no administrator account, and contains
-Boltsnap only. It starts the shelf daemon after setup and at sign-in, adds a
-Start-menu shortcut, and can be removed from Windows **Installed apps**.
-
-After installation, **PrintScreen** or **Win+Shift+S** opens the area selector;
-**Alt+Shift+S** opens the recording selector. The shelf runs in the notification
-area and does not take focus or add a taskbar entry.
+Windows release artifacts are paused because there is no maintainer available
+to run the required real-system smoke tests. The backend remains available for
+source builds without support guarantees.
 
 To build on Windows, install the Rust MSVC toolchain, Visual Studio Build Tools
 with **Desktop development with C++**, and a current Windows SDK:
@@ -143,11 +133,11 @@ root anyway.
 
 Backends:
 
-| Backend | Capture        | Region select         | Clipboard          |
-|---------|----------------|-----------------------|--------------------|
-| Wayland | libwayshot     | in-process tiny-skia  | wl-clipboard-rs    |
-| X11     | x11rb GetImage | unavailable           | arboard            |
-| Windows | DXGI + WGC     | in-process tiny-skia  | Win32 + OLE        |
+| Backend | Status                     | Capture        | Region select         | Clipboard          |
+|---------|----------------------------|----------------|-----------------------|--------------------|
+| Wayland | Supported                  | libwayshot     | in-process tiny-skia  | wl-clipboard-rs    |
+| X11     | Supported                  | x11rb GetImage | unavailable           | arboard            |
+| Windows | Experimental, unmaintained | DXGI + WGC     | in-process tiny-skia  | Win32 + OLE        |
 
 ### Wayland compatibility
 
@@ -213,10 +203,10 @@ cargo test
 
 ## Screenshot shelf
 
-On Windows and supported Wayland compositors (Hyprland, Sway, Niri), an
-interactive capture appears as a small floating **thumbnail in the bottom-left
-corner**. It stays there until you use or dismiss it. Multiple screenshots
-stack with the newest one on top.
+On supported Wayland compositors (Hyprland, Sway, Niri), an interactive capture
+appears as a small floating **thumbnail in the bottom-left corner**. The
+experimental Windows backend contains the same shelf flow, but it is not
+currently verified. Multiple screenshots stack with the newest one on top.
 
 ```sh
 boltsnap area        # capture a region -> appears in the shelf
@@ -320,11 +310,10 @@ retried or discarded instead of losing the recording.
 
 Video cards carry a **▶** badge; clicking one copies a file reference.
 
-On Linux recording requires `wf-recorder`; audio also requires `pactl`. On
-Windows recording is native: Windows Graphics Capture feeds Media Foundation
-H.264/AAC and WASAPI captures system audio and/or the microphone. Windows
-currently records one monitor or one region at a time; combined multi-monitor
-recording and `recording watch --json` remain explicit unsupported operations.
+On Linux recording requires `wf-recorder`; audio also requires `pactl`. The
+unmaintained Windows backend contains native Windows Graphics Capture, Media
+Foundation H.264/AAC, and WASAPI recording code, but it is not currently
+manually verified or shipped.
 
 ```sh
 # Arch / Manjaro
@@ -394,10 +383,11 @@ pickers and volume controls are intentionally left to the desktop audio mixer.
 
 ## Contributing
 
-Boltsnap uses shared product logic with native Linux and Windows backends. New
-platform work must remain capability-based without weakening either path. Read
-[`AGENTS.md`](AGENTS.md) before starting; it contains the repository-wide agent
-and verification rules.
+Linux is Boltsnap's supported platform. The unmaintained experimental Windows
+backend stays in the same tree so shared contracts remain compile-tested; do
+not add Windows work without explicit maintainer approval and a real Windows
+tester. Read [`AGENTS.md`](AGENTS.md) before starting; it contains the
+repository-wide agent and verification rules.
 
 Keep this boundary:
 
@@ -423,10 +413,10 @@ Keep this boundary:
   that protects its shared contract. Do not hide shared-test failures behind
   platform `#[cfg]` attributes.
 
-Before merging, run `cargo fmt --check` and `cargo test`. Windows changes must
-also pass `cargo check --target x86_64-pc-windows-msvc` and be smoke-tested on a
-real Windows system. Update the backend table, prerequisites, and install notes
-before advertising a new capability as supported.
+Before merging, run `cargo fmt --check` and `cargo test`. Accepted Windows
+changes must also pass `cargo check --target x86_64-pc-windows-msvc` and be
+smoke-tested on a real Windows system. Automated CI alone is not evidence of
+Windows support.
 
 ## License
 

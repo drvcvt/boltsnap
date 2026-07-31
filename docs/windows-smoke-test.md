@@ -1,7 +1,8 @@
 # Windows smoke test
 
-Manual checklist for Windows 10/11. Run it before releases and after Windows
-backend changes — there is no automated UI testing, this list is the coverage.
+Manual checklist for Windows 10/11. Run it before restoring Windows releases
+and after any accepted Windows backend change. There is no automated UI
+testing; this list is the coverage.
 
 Setup: `cargo build --release`, then start the daemon (`boltsnap.exe daemon`
 from a terminal to see stderr, or `boltsnap-background.exe` for the silent

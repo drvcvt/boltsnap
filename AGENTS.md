@@ -15,11 +15,11 @@ These rules apply to the whole repository.
 
 ## Platform boundary
 
-Boltsnap ships native Linux and Windows backends. Wayland/X11 capture, Unix
-sockets, systemd startup, POSIX signals, `ksni`, and the
-`wf-recorder`/`pactl`/`hyprctl` integrations are Linux implementation details;
-Win32/DXGI/WGC capture, named pipes, Media Foundation, WASAPI, and the Task
-Scheduler autostart are Windows implementation details.
+Boltsnap supports Linux and retains an unmaintained experimental Windows
+backend. Wayland/X11 capture, Unix sockets, systemd startup, POSIX signals,
+`ksni`, and the `wf-recorder`/`pactl`/`hyprctl` integrations are Linux
+implementation details; Win32/DXGI/WGC capture, named pipes, Media Foundation,
+WASAPI, and the Task Scheduler autostart are Windows implementation details.
 
 - Keep portable policy and data code outside OS backends: CLI parsing, config
   values, image processing, protocol serialization, and pure calculations.
@@ -46,6 +46,9 @@ Scheduler autostart are Windows implementation details.
   [PORTING_PLAN.md](PORTING_PLAN.md). Do not implement items from that list —
   or any other new feature — without explicit maintainer approval: propose
   first, implement after agreement.
+- The Windows backend is frozen. Do not add Windows features or fixes without
+  explicit maintainer approval and a real Windows tester who will run
+  [docs/windows-smoke-test.md](docs/windows-smoke-test.md).
 
 ## Verification
 
@@ -57,5 +60,6 @@ Scheduler autostart are Windows implementation details.
   following [docs/windows-smoke-test.md](docs/windows-smoke-test.md).
 - Do not claim Windows support until capture, clipboard, output paths, and error
   handling have been smoke-tested on Windows.
+- Do not publish Windows release artifacts while the backend is unmaintained.
 - Update the README support matrix and platform prerequisites when capabilities
   change.
