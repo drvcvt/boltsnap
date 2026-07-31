@@ -56,7 +56,7 @@ use crate::record::session::{
     SessionPhase, StopChildrenJob, StopChildrenResult, StoppedSegment, spawn_segment, start_plan,
 };
 use crate::shelf::layout::{Hit, Layout, LayoutConfig, ThumbRect};
-use crate::shelf::model::{CardKind, FileLifetime, ShelfModel};
+use crate::shelf::model::{CardKind, FileLifetime, ShelfModel, Thumb};
 use crate::shelf::recording::{POPUP_H, POPUP_W, PopupButton};
 
 pub struct Daemon {
@@ -252,6 +252,80 @@ const ANIM_SCALE_MIN: f32 = 0.88;
 
 fn shelf_commit_allowed(drag_active: bool) -> bool {
     !drag_active
+}
+
+const MAX_VISIBLE_CARDS: usize = 5;
+
+fn visible_cards(model: &ShelfModel) -> impl Iterator<Item = &Thumb> {
+    model.newest_first().take(MAX_VISIBLE_CARDS)
+}
+
+fn ease_out_cubic(progress: f32) -> f32 {
+    1.0 - (1.0 - progress.clamp(0.0, 1.0)).powi(3)
+}
+
+fn overflow_opacity(appear_progress: Option<f32>, disappear_progress: Option<f32>) -> Option<f32> {
+    appear_progress
+        .map(|progress| 1.0 - progress.clamp(0.0, 1.0))
+        .or_else(|| disappear_progress.map(|progress| progress.clamp(0.0, 1.0)))
+}
+
+fn animated_card_layout(
+    items: &[(u64, u32, u32, f32)],
+    cfg: &LayoutConfig,
+    appear_progress: Option<f32>,
+) -> Layout {
+    if items.is_empty() {
+        return Layout::compute(&[], cfg);
+    }
+    let scroll = appear_progress
+        .filter(|_| items.len() > MAX_VISIBLE_CARDS)
+        .map(|progress| {
+            ((items[0].2 + cfg.gap) as f32 * (1.0 - progress.clamp(0.0, 1.0))).round() as u32
+        });
+    let widest = items
+        .iter()
+        .take(MAX_VISIBLE_CARDS)
+        .map(|(_, w, ..)| *w)
+        .max()
+        .unwrap_or(0);
+    let mut thumbs = Vec::with_capacity(items.len());
+    let mut y = cfg.pad;
+    for (i, (id, w, h, collapse)) in items.iter().enumerate() {
+        if i > 0 {
+            let gap_collapse = collapse.max(if i == 1 { items[0].3 } else { 0.0 });
+            y += (cfg.gap as f32 * (1.0 - gap_collapse)).round() as u32;
+        }
+        let height = (*h as f32 * (1.0 - collapse)).round() as u32;
+        thumbs.push(ThumbRect {
+            id: *id,
+            x: cfg.pad,
+            y: if i > 0 {
+                y.saturating_sub(scroll.unwrap_or(0))
+            } else {
+                y
+            },
+            w: *w,
+            h: height,
+        });
+        y += height;
+    }
+    let height = if items.len() > MAX_VISIBLE_CARDS {
+        cfg.pad * 2
+            + items
+                .iter()
+                .take(MAX_VISIBLE_CARDS)
+                .map(|(_, _, h, _)| *h)
+                .sum::<u32>()
+            + cfg.gap * (MAX_VISIBLE_CARDS as u32 - 1)
+    } else {
+        y + cfg.pad
+    };
+    Layout {
+        width: cfg.pad * 2 + widest,
+        height,
+        thumbs,
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1024,9 +1098,7 @@ impl Daemon {
 
     /// Recompute layout from the model and resize the layer surface to match.
     fn relayout(&mut self) {
-        let sizes: Vec<(u64, u32, u32)> = self
-            .model
-            .newest_first()
+        let sizes: Vec<(u64, u32, u32)> = visible_cards(&self.model)
             .map(|t| (t.id, t.thumb.width(), t.thumb.height()))
             .collect();
         self.layout = Layout::compute(&sizes, &self.cfg);
@@ -1196,6 +1268,11 @@ impl Daemon {
             crate::shelf::thumbnail::CARD_W,
             crate::shelf::thumbnail::CARD_H,
         );
+        // A compositor can omit the terminal drag event and leave redraws
+        // blocked. A fresh capture supersedes that stale interaction.
+        if self.drag_source.is_some() {
+            self.clear_drag();
+        }
         let id = self.model.add(path, thumb, source.to_string());
         self.start_anim(id, AnimKind::Appear);
         self.relayout();
@@ -1404,7 +1481,7 @@ impl Daemon {
                 continue;
             }
             let t = (a.start.elapsed().as_millis() as f32 / a.kind.dur() as f32).clamp(0.0, 1.0);
-            let eased = 1.0 - (1.0 - t).powi(3); // ease-out cubic
+            let eased = ease_out_cubic(t);
             let span = 1.0 - ANIM_SCALE_MIN;
             return match a.kind {
                 AnimKind::Appear => (ANIM_SCALE_MIN + span * eased, eased),
@@ -1413,7 +1490,43 @@ impl Daemon {
                 AnimKind::Disappear => (1.0 - eased, 1.0 - eased),
             };
         }
+        if self
+            .model
+            .newest_first()
+            .nth(MAX_VISIBLE_CARDS)
+            .is_some_and(|card| card.id == id)
+            && let Some(opacity) = overflow_opacity(
+                self.active_appear_progress(),
+                self.active_disappear_progress(),
+            )
+        {
+            return (1.0, opacity);
+        }
         (1.0, 1.0)
+    }
+
+    fn active_appear_progress(&self) -> Option<f32> {
+        let newest = self.model.newest_first().next()?.id;
+        self.anims
+            .iter()
+            .rev()
+            .find(|anim| anim.id == newest && anim.kind == AnimKind::Appear)
+            .map(|anim| {
+                ease_out_cubic(anim.start.elapsed().as_millis() as f32 / anim.kind.dur() as f32)
+            })
+    }
+
+    fn active_disappear_progress(&self) -> Option<f32> {
+        self.anims
+            .iter()
+            .rev()
+            .find(|anim| {
+                anim.kind == AnimKind::Disappear
+                    && visible_cards(&self.model).any(|card| card.id == anim.id)
+            })
+            .map(|anim| {
+                ease_out_cubic(anim.start.elapsed().as_millis() as f32 / anim.kind.dur() as f32)
+            })
     }
 
     fn animating(&self) -> bool {
@@ -1454,16 +1567,22 @@ impl Daemon {
         self.draw(qh);
     }
 
-    /// Layout for the current frame: like the settled layout, but each card with
-    /// an in-flight Disappear animation has its slot (height + the gap it owns)
-    /// collapsed by its eased progress. The shelf is bottom-anchored, so shrinking
-    /// the surface in lockstep makes the cards above slide down smoothly into the
-    /// freed space instead of snapping the instant the card is removed.
+    /// Layout for the current frame: disappearing slots collapse, while a sixth
+    /// card remains in the fixed-height viewport just long enough to scroll and
+    /// fade below it as the new card enters at the top.
     fn animated_layout(&self) -> Layout {
         let cfg = &self.cfg;
+        let appear_progress = self.active_appear_progress();
+        let disappear_progress = self.active_disappear_progress();
+        let limit = MAX_VISIBLE_CARDS
+            + usize::from(
+                (appear_progress.is_some() || disappear_progress.is_some())
+                    && self.model.len() > MAX_VISIBLE_CARDS,
+            );
         let items: Vec<(u64, u32, u32, f32)> = self
             .model
             .newest_first()
+            .take(limit)
             .map(|t| {
                 let collapse = self
                     .anims
@@ -1472,41 +1591,13 @@ impl Daemon {
                     .map(|a| {
                         let p = (a.start.elapsed().as_millis() as f32 / a.kind.dur() as f32)
                             .clamp(0.0, 1.0);
-                        1.0 - (1.0 - p).powi(3) // ease-out cubic, matches anim_factor
+                        ease_out_cubic(p)
                     })
                     .unwrap_or(0.0);
                 (t.id, t.thumb.width(), t.thumb.height(), collapse)
             })
             .collect();
-        if items.is_empty() {
-            return Layout::compute(&[], cfg);
-        }
-        let widest = items.iter().map(|(_, w, ..)| *w).max().unwrap_or(0);
-        let mut thumbs = Vec::with_capacity(items.len());
-        let mut y = cfg.pad;
-        for (i, (id, w, h, c)) in items.iter().enumerate() {
-            if i > 0 {
-                // The gap before card i collapses with card i (it leads the dead
-                // slot); when the newest card is the one leaving, the gap after it
-                // (before card 1) collapses with it instead.
-                let g = c.max(if i == 1 { items[0].3 } else { 0.0 });
-                y += (cfg.gap as f32 * (1.0 - g)).round() as u32;
-            }
-            let he = (*h as f32 * (1.0 - c)).round() as u32;
-            thumbs.push(ThumbRect {
-                id: *id,
-                x: cfg.pad,
-                y,
-                w: *w,
-                h: he,
-            });
-            y += he;
-        }
-        Layout {
-            width: cfg.pad * 2 + widest,
-            height: y + cfg.pad,
-            thumbs,
-        }
+        animated_card_layout(&items, cfg, appear_progress)
     }
 
     fn draw(&mut self, _qh: &QueueHandle<Self>) {
@@ -2986,6 +3077,72 @@ mod tests {
     fn active_drag_defers_shelf_commits() {
         assert!(!shelf_commit_allowed(true));
         assert!(shelf_commit_allowed(false));
+    }
+
+    #[test]
+    fn five_card_viewport_reveals_cached_card_after_removal() {
+        let mut model = ShelfModel::new();
+        let ids: Vec<_> = (0..6)
+            .map(|n| {
+                model.add(
+                    std::path::PathBuf::from(format!("/tmp/card-{n}.png")),
+                    image::RgbaImage::new(1, 1),
+                    "area".into(),
+                )
+            })
+            .collect();
+
+        let visible: Vec<_> = visible_cards(&model).map(|card| card.id).collect();
+        assert_eq!(visible, ids[1..].iter().rev().copied().collect::<Vec<_>>());
+        assert!(model.get(ids[0]).is_some(), "oldest card stays cached");
+
+        model.remove(ids[5]);
+        let visible: Vec<_> = visible_cards(&model).map(|card| card.id).collect();
+        assert_eq!(visible, ids[..5].iter().rev().copied().collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn overflow_insertion_scrolls_oldest_below_viewport() {
+        let cfg = LayoutConfig::default();
+        let items: Vec<_> = (1..=6).rev().map(|id| (id, 190, 132, 0.0)).collect();
+
+        let start = animated_card_layout(&items, &cfg, Some(0.0));
+        assert_eq!(start.height, 744);
+        assert_eq!(
+            start.thumbs.iter().map(|card| card.y).collect::<Vec<_>>(),
+            [22, 22, 164, 306, 448, 590]
+        );
+
+        let end = animated_card_layout(&items, &cfg, Some(1.0));
+        assert_eq!(end.height, 744);
+        assert_eq!(
+            end.thumbs.iter().map(|card| card.y).collect::<Vec<_>>(),
+            [22, 164, 306, 448, 590, 732]
+        );
+    }
+
+    #[test]
+    fn dismissal_pulls_cached_card_back_into_viewport() {
+        let cfg = LayoutConfig::default();
+        let start: Vec<_> = (1..=6).rev().map(|id| (id, 190, 132, 0.0)).collect();
+        let start = animated_card_layout(&start, &cfg, None);
+        assert_eq!(start.height, 744);
+        assert_eq!(start.thumbs[5].y, 732);
+
+        let end: Vec<_> = (1..=6)
+            .rev()
+            .map(|id| (id, 190, 132, f32::from(id == 5)))
+            .collect();
+        let end = animated_card_layout(&end, &cfg, None);
+        assert_eq!(end.height, 744);
+        assert_eq!(end.thumbs[5].y, 590);
+    }
+
+    #[test]
+    fn overflow_card_crossfades_at_viewport_edge() {
+        assert_eq!(overflow_opacity(Some(0.25), None), Some(0.75));
+        assert_eq!(overflow_opacity(None, Some(0.25)), Some(0.25));
+        assert_eq!(overflow_opacity(None, None), None);
     }
 
     #[test]
