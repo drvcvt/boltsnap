@@ -278,6 +278,14 @@ fn run() -> DynResult<()> {
                 .ok_or("__serve-clipboard needs a PNG path")?;
             return serve_wayland_clipboard(&path);
         }
+        #[cfg(target_os = "linux")]
+        "__serve-clipboard-once" => {
+            let path = args
+                .image
+                .clone()
+                .ok_or("__serve-clipboard-once needs a PNG path")?;
+            return crate::clipboard::serve_wayland_clipboard_once(&path);
+        }
         "__serve-clipboard-uri" => {
             // Detached child kept alive to serve Wayland file-reference paste.
             let path = args
@@ -463,13 +471,17 @@ fn recording_control(action: crate::record::session::RecordingAction) -> DynResu
 fn checked_recording_call(request: crate::ipc::Request) -> DynResult<crate::ipc::Response> {
     let response = crate::ipc::call_daemon(request)
         .map_err(|error| format!("recording daemon unavailable: {error}"))?;
+    require_daemon_success(response, "recording command failed").map_err(Into::into)
+}
+
+fn require_daemon_success(
+    response: crate::ipc::Response,
+    fallback: &str,
+) -> Result<crate::ipc::Response, String> {
     if response.ok {
         Ok(response)
     } else {
-        Err(response
-            .error
-            .unwrap_or_else(|| "recording command failed".into())
-            .into())
+        Err(response.error.unwrap_or_else(|| fallback.into()))
     }
 }
 
@@ -485,6 +497,9 @@ fn capture_flow(args: &Args) -> DynResult<()> {
     if matches!(mode, CaptureMode::Window | CaptureMode::ActiveWindow) {
         let _ = strip_uniform_border(&output);
     }
+    let default_png = (args.output.is_none() && !args.save)
+        .then(|| fs::read(&output))
+        .transpose()?;
 
     match decide_post_capture(args, resolved) {
         PostCapture::Stdout => unreachable!("handled above"),
@@ -501,7 +516,12 @@ fn capture_flow(args: &Args) -> DynResult<()> {
             );
         }
         PostCapture::CopyOnly => {
-            copy_to_clipboard(&output, resolved)?;
+            copy_temporary_capture(&output, resolved)?;
+            #[cfg(target_os = "linux")]
+            if let Some(png) = default_png {
+                crate::paths::publish_last_png(&png)?;
+                let _ = fs::remove_file(&output);
+            }
             println!(
                 "Boltsnap copied {} via {}: {}",
                 mode.label(),
@@ -510,11 +530,25 @@ fn capture_flow(args: &Args) -> DynResult<()> {
             );
         }
         PostCapture::Shelf { copy } => {
+            let png = match default_png {
+                Some(png) => png,
+                None => fs::read(&output)?,
+            };
             if copy {
-                copy_to_clipboard(&output, resolved)?;
+                if args.output.is_none() && !args.save {
+                    copy_temporary_capture(&output, resolved)?;
+                } else {
+                    copy_to_clipboard(&output, resolved)?;
+                }
             }
-            let png = fs::read(&output)?;
-            crate::ipc::send_to_shelf(crate::ipc::Request::Add {
+            #[cfg(target_os = "linux")]
+            if args.output.is_none() && !args.save {
+                crate::paths::publish_last_png(&png)?;
+                if !copy {
+                    let _ = fs::remove_file(&output);
+                }
+            }
+            send_shelf_add(crate::ipc::Request::Add {
                 source: mode.label().to_string(),
                 png,
                 output: capture_output,
@@ -524,6 +558,29 @@ fn capture_flow(args: &Args) -> DynResult<()> {
         }
     }
     Ok(())
+}
+
+fn send_shelf_add(request: crate::ipc::Request) -> DynResult<()> {
+    #[cfg(target_os = "linux")]
+    {
+        let response = crate::ipc::call_daemon(request)
+            .map_err(|error| format!("shelf daemon unavailable: {error}"))?;
+        require_daemon_success(response, "shelf ingest failed")?;
+    }
+    #[cfg(target_os = "windows")]
+    crate::ipc::send_to_shelf(request)?;
+    Ok(())
+}
+
+fn copy_temporary_capture(path: &std::path::Path, backend: Backend) -> DynResult<Backend> {
+    #[cfg(target_os = "linux")]
+    {
+        crate::clipboard::copy_temporary_to_clipboard(path, backend)
+    }
+    #[cfg(target_os = "windows")]
+    {
+        copy_to_clipboard(path, backend)
+    }
 }
 
 fn is_stdout_target(args: &Args) -> bool {
@@ -594,6 +651,16 @@ mod tests {
         )))
         .unwrap();
         assert_eq!(state, crate::record::session::PublicRecordingState::Idle);
+    }
+
+    #[test]
+    fn daemon_ingest_error_is_reported_to_capture_cli() {
+        let error = require_daemon_success(
+            crate::ipc::Response::error("decode PNG failed"),
+            "shelf ingest failed",
+        )
+        .unwrap_err();
+        assert_eq!(error, "decode PNG failed");
     }
 
     #[test]
