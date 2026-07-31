@@ -2,7 +2,7 @@
 name = "boltsnap"
 version = "1.0.1"
 edition = "2024"
-description = "Fast native screenshot and screen-recording tool for Linux and Windows."
+description = "Fast native screenshot and screen-recording tool for Linux."
 license = "MIT"
 readme = "README.md"
 keywords = ["screenshot", "wayland", "hyprland", "x11", "tiny-skia"]
