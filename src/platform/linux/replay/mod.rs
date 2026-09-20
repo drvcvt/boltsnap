@@ -38,6 +38,23 @@ pub struct Service {
     cancel_start: Arc<AtomicBool>,
 }
 
+/// A read-only view of whether a capture session is held, for the tray's
+/// on/off state. Cloneable and cheap so the daemon can ask on every menu build.
+#[derive(Clone)]
+pub struct Running(Arc<Mutex<Option<Session>>>);
+
+impl Running {
+    pub fn get(&self) -> bool {
+        self.0.lock().is_ok_and(|session| session.is_some())
+    }
+}
+
+impl Service {
+    pub fn running(&self) -> Running {
+        Running(self.session.clone())
+    }
+}
+
 impl Drop for Service {
     fn drop(&mut self) {
         self.stopping.store(true, Ordering::Relaxed);
@@ -249,10 +266,13 @@ fn watchdog(
             if guard.as_ref().is_none_or(|s| s.name != name) {
                 continue;
             }
-            guard.take();
+            let dead = guard.take();
             starting.store(true, Ordering::Relaxed);
             cancel_start.store(false, Ordering::Relaxed);
             drop(guard);
+            // Terminating the old pair can take a moment; the lock is already
+            // released so status and stop stay answerable meanwhile.
+            drop(dead);
             let restarted = start(settings, cancel_start.clone());
             let mut guard = owner.lock().unwrap();
             starting.store(false, Ordering::Relaxed);
@@ -406,8 +426,11 @@ fn start_capture(settings: Settings, cancel: &AtomicBool) -> Result<Session, Str
             "cfr",
             "-k",
             capture_codec,
+            // The buffer runs for as long as the user leaves it on, so its
+            // steady cost matters more than the last bit of fidelity: medium
+            // costs about a third less CPU than very_high for the same fps.
             "-q",
-            "very_high",
+            "medium",
             "-tune",
             "performance",
             "-keyint",

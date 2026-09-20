@@ -141,6 +141,8 @@ pub struct Daemon {
     persisted_prefs_generation: u64,
     prefs_writer: PrefsWriter,
     tray: Option<crate::tray::TrayPublisher>,
+    /// Whether the replay buffer is capturing, for the tray's on/off entry.
+    replay_running: Option<super::replay::Running>,
     thumbnails: thumbnail::Worker,
 }
 
@@ -162,6 +164,8 @@ pub(crate) enum DaemonEvent {
         output: String,
         reply: std::sync::mpsc::SyncSender<()>,
     },
+    /// The replay buffer came up or went away; the tray entry must follow.
+    ReplayStateChanged,
     ClientRequest {
         request: crate::ipc::Request,
         stream: UnixStream,
@@ -931,6 +935,7 @@ pub fn run_daemon(save_dir_cli: Option<std::path::PathBuf>) -> DynResult<()> {
         persisted_prefs_generation: 0,
         prefs_writer,
         tray: None,
+        replay_running: None,
         thumbnails,
     };
 
@@ -987,6 +992,8 @@ pub fn run_daemon(save_dir_cli: Option<std::path::PathBuf>) -> DynResult<()> {
     daemon.refresh_focus();
 
     let _replay = super::replay::serve(daemon.event_tx.clone())?;
+    daemon.replay_running = Some(_replay.running());
+    daemon.publish_tray_snapshot();
 
     while !daemon.exit {
         // Only active animations and recorders need periodic work. Pausing and
@@ -1124,6 +1131,7 @@ impl Daemon {
             prefs: self.recording_prefs.clone(),
             monitors: self.cached_monitors(),
             state: self.recording_snapshot().state,
+            replay_running: self.replay_running.as_ref().is_some_and(|r| r.get()),
         }
     }
 
@@ -1178,18 +1186,24 @@ impl Daemon {
         use crate::tray::TrayAction;
 
         match action {
-            TrayAction::ReplayStart | TrayAction::ReplayStop | TrayAction::ReplaySave => {
+            TrayAction::ReplayToggle | TrayAction::ReplaySave => {
+                // Starting waits for the capture to become ready, which takes
+                // seconds, so the whole toggle runs off the event loop and the
+                // tray is republished once the state has settled.
+                let running = self.replay_running.as_ref().is_some_and(|r| r.get());
                 let command = match action {
-                    TrayAction::ReplayStart => "start",
-                    TrayAction::ReplayStop => "stop",
+                    TrayAction::ReplayToggle if running => "stop",
+                    TrayAction::ReplayToggle => "start",
                     _ => "save",
                 };
+                let event_tx = self.event_tx.clone();
                 std::thread::spawn(move || {
                     if let Err(error) =
                         super::replay::call(&serde_json::json!({"version":1,"command":command}))
                     {
                         notify(&format!("Replay: {error}"));
                     }
+                    let _ = event_tx.send(DaemonEvent::ReplayStateChanged);
                 });
             }
             TrayAction::StartRegion => {
@@ -2623,6 +2637,7 @@ impl Daemon {
                     self.publish_tray_snapshot();
                 }
             }
+            DaemonEvent::ReplayStateChanged => self.publish_tray_snapshot(),
             DaemonEvent::Tray(action) => self.handle_tray_action(action),
             DaemonEvent::PrefsPersisted {
                 generation,
