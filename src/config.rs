@@ -22,6 +22,13 @@ pub enum RecordAudioSource {
     System,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RecordProfile {
+    #[default]
+    Quality,
+    Quiet,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecordingPrefs {
     pub default_target: RecordDefaultTarget,
@@ -51,6 +58,7 @@ impl Default for RecordingPrefs {
 pub struct Config {
     pub save_dir: Option<String>,
     pub record_codec: Option<String>,
+    record_profile: Option<String>,
     pub record_dir: Option<String>,
     record_default_target: Option<String>,
     record_both_mode: Option<String>,
@@ -58,9 +66,77 @@ pub struct Config {
     record_disk_add_to_shelf: Option<bool>,
     record_audio_enabled: Option<bool>,
     record_audio_source: Option<String>,
+    /// Font family for boltsnap's own chrome (selector overlay, shelf). Unset
+    /// follows the desktop font.
+    pub ui_font: Option<String>,
 }
 
 impl Config {
+    pub fn record_profile(&self) -> Result<RecordProfile, String> {
+        match self.record_profile.as_deref() {
+            None | Some("quality") => Ok(RecordProfile::Quality),
+            Some("quiet") => Ok(RecordProfile::Quiet),
+            _ => Err("record_profile must be \"quality\" or \"quiet\"".into()),
+        }
+    }
+
+    pub fn replay_settings() -> Result<boltsnap::replay::settings::Settings, String> {
+        let text = match std::fs::read_to_string(config_path()) {
+            Ok(text) => text,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
+            Err(error) => return Err(format!("read replay settings: {error}")),
+        };
+        Self::parse_replay_settings(&text)
+    }
+
+    fn parse_replay_settings(text: &str) -> Result<boltsnap::replay::settings::Settings, String> {
+        let value: toml::Value =
+            toml::from_str(text).map_err(|e| format!("invalid config: {e}"))?;
+        let mut settings = boltsnap::replay::settings::Settings::default();
+        let Some(value) = value.get("replay") else {
+            return Ok(settings);
+        };
+        if !value.is_table() {
+            return Err("replay must be a settings table".into());
+        }
+        let number = |key, default, min, max| -> Result<u64, String> {
+            let Some(value) = value.get(key) else {
+                return Ok(default);
+            };
+            let n = value
+                .as_integer()
+                .and_then(|n| u64::try_from(n).ok())
+                .ok_or_else(|| format!("invalid replay {key}"))?;
+            if n < min || n > max {
+                return Err(format!("replay {key} must be {min}..{max}"));
+            }
+            Ok(n)
+        };
+        settings.seconds = number("duration_seconds", 60, 1, 600)?;
+        settings.memory_mib = number("memory_mib", 512, 64, 4096)? as usize;
+        settings.fps = number("fps", 60, 1, 240)? as u32;
+        if let Some(value) = value.get("encoder") {
+            settings.encoder = value
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .ok_or("invalid replay encoder")?
+                .into();
+        }
+        if let Some(value) = value.get("output") {
+            settings.output = Some(
+                value
+                    .as_str()
+                    .filter(|s| !s.is_empty())
+                    .ok_or("invalid replay output")?
+                    .into(),
+            );
+        }
+        if let Some(value) = value.get("autostart") {
+            settings.autostart = value.as_bool().ok_or("invalid replay autostart")?;
+        }
+        Ok(settings)
+    }
+
     /// Parse config text. Unknown keys are ignored; a parse error logs and yields
     /// defaults (so a typo never bricks the daemon).
     pub fn parse(text: &str) -> Config {
@@ -71,6 +147,9 @@ impl Config {
                     .get("record_codec")
                     .and_then(|x| x.as_str())
                     .map(String::from),
+                record_profile: v
+                    .get("record_profile")
+                    .map(|x| x.as_str().unwrap_or("").to_owned()),
                 record_dir: v
                     .get("record_dir")
                     .and_then(|x| x.as_str())
@@ -92,6 +171,7 @@ impl Config {
                     .get("record_audio_source")
                     .and_then(|x| x.as_str())
                     .map(String::from),
+                ui_font: v.get("ui_font").and_then(|x| x.as_str()).map(String::from),
             },
             Err(e) => {
                 eprintln!("boltsnap: ignoring malformed config: {e}");
@@ -308,6 +388,57 @@ pub fn resolve_record_dir(cfg: &Config) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn record_profile_defaults_and_validation() {
+        use super::{Config, RecordProfile};
+        assert_eq!(
+            Config::parse("").record_profile().unwrap(),
+            RecordProfile::Quality
+        );
+        assert_eq!(
+            Config::parse("record_profile = 'quality'")
+                .record_profile()
+                .unwrap(),
+            RecordProfile::Quality
+        );
+        assert_eq!(
+            Config::parse("record_profile = 'quiet'")
+                .record_profile()
+                .unwrap(),
+            RecordProfile::Quiet
+        );
+        for text in [
+            "record_profile = 'typo'",
+            "record_profile = 60",
+            "record_profile = ''",
+        ] {
+            assert!(Config::parse(text).record_profile().is_err());
+        }
+    }
+
+    #[test]
+    fn replay_duration_defaults_and_limits_are_explicit() {
+        assert_eq!(
+            super::Config::parse_replay_settings("").unwrap().seconds,
+            60
+        );
+        assert_eq!(
+            super::Config::parse_replay_settings("[replay]\nduration_seconds = 30")
+                .unwrap()
+                .seconds,
+            30
+        );
+        for text in [
+            "[replay]\nduration_seconds = 0",
+            "[replay]\nduration_seconds = 601",
+            "[replay]\nmemory_mib = 0",
+            "[replay]\nautostart = 'yes'",
+            "replay = 1",
+        ] {
+            assert!(super::Config::parse_replay_settings(text).is_err());
+        }
+    }
+
     use super::*;
 
     fn temp_config(name: &str) -> PathBuf {

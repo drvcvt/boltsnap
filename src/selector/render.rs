@@ -2,7 +2,7 @@
 
 use std::sync::OnceLock;
 
-use ab_glyph::{Font, FontRef, PxScale, ScaleFont, point};
+use ab_glyph::{Font, FontVec, PxScale, ScaleFont, point};
 use image::{RgbaImage, imageops};
 use tiny_skia::{FillRule, Paint, PathBuilder, Pixmap, Rect, Stroke, Transform};
 
@@ -64,6 +64,58 @@ pub fn base_pixmap_from_image(img: &RgbaImage, w: u32, h: u32) -> Pixmap {
 pub fn transparent_base(w: u32, h: u32) -> Pixmap {
     // `Pixmap::new` zero-fills, i.e. premultiplied transparent black.
     Pixmap::new(w.max(1), h.max(1)).expect("pixmap alloc")
+}
+
+/// Reuses the frame allocation and the static dimmed background while dragging.
+/// The caller may paint controls into the returned frame; reset clears them.
+pub struct CachedOverlay {
+    dimmed: Pixmap,
+    frame: Pixmap,
+}
+
+impl CachedOverlay {
+    pub fn new(base: &Pixmap) -> Self {
+        let mut dimmed = base.clone();
+        dim_and_restore_with_style(&mut dimmed, None, SCREENSHOT_OVERLAY_STYLE);
+        Self {
+            frame: dimmed.clone(),
+            dimmed,
+        }
+    }
+
+    pub fn reset(&mut self, base: &Pixmap, sel: Option<(f32, f32, f32, f32)>) -> &mut Pixmap {
+        assert_eq!(
+            (base.width(), base.height()),
+            (self.dimmed.width(), self.dimmed.height())
+        );
+        self.frame.data_mut().copy_from_slice(self.dimmed.data());
+        if let Some((x0, y0, x1, y1)) = selection_bounds(sel, base.width(), base.height()) {
+            let stride = base.width() as usize * 4;
+            let span = (x1 - x0) as usize * 4;
+            for y in y0..y1 {
+                let start = y as usize * stride + x0 as usize * 4;
+                self.frame.data_mut()[start..start + span]
+                    .copy_from_slice(&base.data()[start..start + span]);
+            }
+        }
+        &mut self.frame
+    }
+}
+
+fn selection_bounds(
+    sel: Option<(f32, f32, f32, f32)>,
+    w: u32,
+    h: u32,
+) -> Option<(u32, u32, u32, u32)> {
+    let (sx, sy, sw, sh) = sel?;
+    if sw < 1.0 || sh < 1.0 {
+        return None;
+    }
+    let x0 = (sx.max(0.0).floor() as u32).min(w);
+    let y0 = (sy.max(0.0).floor() as u32).min(h);
+    let x1 = ((sx + sw).max(0.0).ceil() as u32).min(w);
+    let y1 = ((sy + sh).max(0.0).ceil() as u32).min(h);
+    (x1 > x0 && y1 > y0).then_some((x0, y0, x1, y1))
 }
 
 /// Convert a premultiplied-RGBA `Pixmap` to a premultiplied-BGRA `wl_shm`
@@ -129,7 +181,7 @@ pub const WINDOWS_RECORD_OVERLAY_STYLE: OverlayStyle = OverlayStyle {
 /// Draw the selection overlay onto `pm` (which already contains the opaque
 /// screenshot). `sel` is the surface-space selection `(x, y, w, h)`; `None`
 /// means "no selection yet" — dim the whole surface.
-#[cfg(any(not(target_os = "windows"), test))]
+#[cfg(test)]
 pub fn dim_and_restore(pm: &mut Pixmap, sel: Option<(f32, f32, f32, f32)>) {
     dim_and_restore_with_style(pm, sel, SCREENSHOT_OVERLAY_STYLE);
 }
@@ -145,16 +197,7 @@ pub fn dim_and_restore_with_style(
     // Integer pixel bounds of the selection interior, clamped to the surface.
     // floor/ceil so the bright region fully covers the selection. `None` when
     // there is no selection or it is sub-pixel.
-    let bounds = sel.and_then(|(sx, sy, sw, sh)| {
-        if sw < 1.0 || sh < 1.0 {
-            return None;
-        }
-        let x0 = (sx.max(0.0).floor() as u32).min(w);
-        let y0 = (sy.max(0.0).floor() as u32).min(h);
-        let x1 = ((sx + sw).max(0.0).ceil() as u32).min(w);
-        let y1 = ((sy + sh).max(0.0).ceil() as u32).min(h);
-        (x1 > x0 && y1 > y0).then_some((x0, y0, x1, y1))
-    });
+    let bounds = selection_bounds(sel, w, h);
 
     // Save the selection's bright pixels, then dim with a SINGLE full-surface
     // fill, then write the bright pixels back. One uniform fill (instead of four
@@ -315,14 +358,37 @@ pub fn draw_handles_with_style(pm: &mut Pixmap, sel: (f32, f32, f32, f32), style
     }
 }
 
-/// The badge font: a small embedded DejaVu Sans subset (printable ASCII + ×).
-/// Parsed once and cached.
-fn badge_font() -> &'static FontRef<'static> {
-    static FONT: OnceLock<FontRef<'static>> = OnceLock::new();
-    FONT.get_or_init(|| {
-        FontRef::try_from_slice(include_bytes!("../../assets/fonts/dejavu-badge.ttf"))
-            .expect("embedded badge font is valid")
-    })
+/// The font every overlay label is drawn with, at the two weights the desktop
+/// bar sets its labels in: Medium, and DemiBold for an active module. The
+/// platform layer installs the desktop UI font (`set_ui_font`) so the selector
+/// reads like the rest of the desktop; without one this is the embedded DejaVu
+/// Sans subset the shelf falls back to (printable ASCII + ×), which has one
+/// weight and so renders both the same.
+static UI_FONT: OnceLock<[FontVec; 2]> = OnceLock::new();
+
+/// Install the overlay fonts. Call before the first frame; later calls are ignored.
+pub fn set_ui_font(medium: FontVec, demibold: FontVec) {
+    let _ = UI_FONT.set([medium, demibold]);
+}
+
+fn ui_font(strong: bool) -> &'static FontVec {
+    let fonts = UI_FONT.get_or_init(|| {
+        [
+            crate::shelf::font::fallback_popup_font(),
+            crate::shelf::font::fallback_popup_font(),
+        ]
+    });
+    &fonts[usize::from(strong)]
+}
+
+/// Advance width of `label` at `px`, in pixels.
+fn text_width(label: &str, px: f32, strong: bool) -> f64 {
+    let font = ui_font(strong);
+    let scaled = font.as_scaled(PxScale::from(px));
+    label
+        .chars()
+        .map(|c| scaled.h_advance(font.glyph_id(c)))
+        .sum::<f32>() as f64
 }
 
 /// Build a rounded-rectangle path (corner radius clamped to half the smaller side).
@@ -343,9 +409,18 @@ fn rounded_rect(x: f32, y: f32, w: f32, h: f32, r: f32) -> Option<tiny_skia::Pat
 }
 
 /// Draw `text` anti-aliased in `rgb` with its left baseline at (`x`, `baseline`),
-/// compositing premultiplied src-over the pixmap.
-fn draw_text_aa(pm: &mut Pixmap, x: f32, baseline: f32, text: &str, px: f32, rgb: (u8, u8, u8)) {
-    let font = badge_font();
+/// compositing premultiplied src-over the pixmap. `strong` picks the DemiBold
+/// face the bar uses for an active label.
+fn draw_text_aa(
+    pm: &mut Pixmap,
+    x: f32,
+    baseline: f32,
+    text: &str,
+    px: f32,
+    rgb: (u8, u8, u8),
+    strong: bool,
+) {
+    let font = ui_font(strong);
     let scale = PxScale::from(px);
     let scaled = font.as_scaled(scale);
     let w = pm.width() as i32;
@@ -377,6 +452,180 @@ fn draw_text_aa(pm: &mut Pixmap, x: f32, baseline: f32, text: &str, px: f32, rgb
     }
 }
 
+// Overlay chrome speaks the desktop bar's language: a module is 22 px tall with
+// 6 px corners, a 15 px icon 6 px in front of a 12 px Medium label, 6 px of
+// padding on an icon edge and 8 px on a text edge. State is carried by a white
+// fill at a low alpha, by icon brightness and by label weight, never by borders
+// or boxes, and the record dot is the one place with hue.
+// The bar itself can be translucent because the compositor blurs what is behind
+// it. A layer-shell overlay gets no blur, so the same colour would just be a
+// window of unreadable text; floating chrome takes the opaque popup colour.
+const UI_SURFACE: (u8, u8, u8, u8) = (0x18, 0x18, 0x18, 0xff);
+const BAR_HOVER: (u8, u8, u8, u8) = (0xff, 0xff, 0xff, 0x18);
+const BAR_HOVER_SOFT: (u8, u8, u8, u8) = (0xff, 0xff, 0xff, 0x14);
+const BAR_ACTIVE: (u8, u8, u8, u8) = (0xff, 0xff, 0xff, 0x26);
+const UI_FOREGROUND: (u8, u8, u8) = (0xee, 0xee, 0xee);
+const UI_DIM: (u8, u8, u8) = (0x99, 0x99, 0x99);
+const UI_FAINT: (u8, u8, u8) = (0x88, 0x88, 0x88);
+const UI_RECORD: (u8, u8, u8) = (0xd9, 0x53, 0x4f);
+const UI_BLOCK_H: f64 = 22.0;
+const UI_TEXT_PX: f32 = 12.0;
+const UI_RADIUS: f32 = 6.0;
+const UI_ICON: f64 = 15.0;
+const UI_ICON_PAD: f64 = 6.0;
+const UI_TEXT_PAD: f64 = 8.0;
+const UI_CONTENT_GAP: f64 = 6.0;
+
+/// Fill a rounded rect with a straight (non-premultiplied) RGBA colour.
+fn fill_rounded(pm: &mut Pixmap, rect: (f64, f64, f64, f64), radius: f32, rgba: (u8, u8, u8, u8)) {
+    let mut paint = Paint::default();
+    paint.set_color_rgba8(rgba.0, rgba.1, rgba.2, rgba.3);
+    paint.anti_alias = true;
+    if let Some(path) = rounded_rect(
+        rect.0 as f32,
+        rect.1 as f32,
+        rect.2 as f32,
+        rect.3 as f32,
+        radius,
+    ) {
+        pm.fill_path(
+            &path,
+            &paint,
+            FillRule::Winding,
+            Transform::identity(),
+            None,
+        );
+    }
+}
+
+/// Baseline that centres `px`-sized text in a module of height `h` at `y`.
+fn centered_baseline(y: f64, h: f64, px: f32) -> f32 {
+    let scaled = ui_font(false).as_scaled(PxScale::from(px));
+    y as f32 + (h as f32 - (scaled.ascent() - scaled.descent())) / 2.0 + scaled.ascent()
+}
+
+/// The marks a module can carry in front of its label. Every module on the
+/// desktop bar has an icon, and Boltsnap ships no icon font, so the four the
+/// record toolbar needs are drawn as paths in a `UI_ICON`-square box, in the
+/// rounded, filled style of the bar's own set.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Icon {
+    /// `fiber_manual_record` — start a recording.
+    Record,
+    /// `content_cut` — cut a clip out of the replay buffer.
+    Cut,
+    /// `crop_free` — keep the recording frame on screen.
+    Crop,
+    /// `volume_up` / `volume_off` — record the audio source, or not.
+    Volume,
+    VolumeOff,
+}
+
+/// Icon stroke weight, matching the bar's Material Symbols at weight 600.
+const ICON_STROKE: f32 = 1.7;
+
+fn fill_icon(pm: &mut Pixmap, path: &tiny_skia::Path, rgb: (u8, u8, u8)) {
+    let mut paint = Paint::default();
+    paint.set_color_rgba8(rgb.0, rgb.1, rgb.2, 255);
+    paint.anti_alias = true;
+    pm.fill_path(path, &paint, FillRule::Winding, Transform::identity(), None);
+}
+
+fn stroke_icon(pm: &mut Pixmap, path: &tiny_skia::Path, rgb: (u8, u8, u8)) {
+    let mut paint = Paint::default();
+    paint.set_color_rgba8(rgb.0, rgb.1, rgb.2, 255);
+    paint.anti_alias = true;
+    let stroke = Stroke {
+        width: ICON_STROKE,
+        line_cap: tiny_skia::LineCap::Round,
+        line_join: tiny_skia::LineJoin::Round,
+        ..Default::default()
+    };
+    pm.stroke_path(path, &paint, &stroke, Transform::identity(), None);
+}
+
+/// Draw `icon` in `rgb` with the top-left of its 15 px box at (`x`, `y`).
+fn draw_icon(pm: &mut Pixmap, icon: Icon, x: f64, y: f64, rgb: (u8, u8, u8)) {
+    let (ox, oy) = (x as f32, y as f32);
+    match icon {
+        Icon::Record => {
+            if let Some(path) = circle_path(ox + 7.5, oy + 7.5, 4.0) {
+                fill_icon(pm, &path, rgb);
+            }
+        }
+        // Two blades crossing above two finger rings.
+        Icon::Cut => {
+            let mut pb = PathBuilder::new();
+            pb.move_to(ox + 4.8, oy + 10.2);
+            pb.line_to(ox + 11.6, oy + 2.0);
+            pb.move_to(ox + 10.2, oy + 10.2);
+            pb.line_to(ox + 3.4, oy + 2.0);
+            if let Some(path) = pb.finish() {
+                stroke_icon(pm, &path, rgb);
+            }
+            for cx in [4.0f32, 11.0] {
+                if let Some(path) = circle_path(ox + cx, oy + 11.8, 1.9) {
+                    stroke_icon(pm, &path, rgb);
+                }
+            }
+        }
+        // The four corners of a recording frame.
+        Icon::Crop => {
+            let mut pb = PathBuilder::new();
+            for (cx, cy, sx, sy) in [
+                (2.2f32, 2.2f32, 1.0f32, 1.0f32),
+                (12.8, 2.2, -1.0, 1.0),
+                (12.8, 12.8, -1.0, -1.0),
+                (2.2, 12.8, 1.0, -1.0),
+            ] {
+                pb.move_to(ox + cx, oy + cy + 3.4 * sy);
+                pb.line_to(ox + cx, oy + cy);
+                pb.line_to(ox + cx + 3.4 * sx, oy + cy);
+            }
+            if let Some(path) = pb.finish() {
+                stroke_icon(pm, &path, rgb);
+            }
+        }
+        // A speaker, with sound waves or a cross.
+        Icon::Volume | Icon::VolumeOff => {
+            let mut body = PathBuilder::new();
+            body.move_to(ox + 1.6, oy + 5.8);
+            body.line_to(ox + 4.6, oy + 5.8);
+            body.line_to(ox + 8.0, oy + 2.4);
+            body.line_to(ox + 8.0, oy + 12.6);
+            body.line_to(ox + 4.6, oy + 9.2);
+            body.line_to(ox + 1.6, oy + 9.2);
+            body.close();
+            if let Some(path) = body.finish() {
+                fill_icon(pm, &path, rgb);
+            }
+            let mut pb = PathBuilder::new();
+            if icon == Icon::Volume {
+                // A quadratic is within a fifth of a pixel of a ±55° arc, and
+                // its control point sits at r/cos(55°) along the bisector.
+                let (sin, cos) = 55f32.to_radians().sin_cos();
+                for r in [2.4f32, 4.6] {
+                    pb.move_to(ox + 8.6 + r * cos, oy + 7.5 - r * sin);
+                    pb.quad_to(
+                        ox + 8.6 + r / cos,
+                        oy + 7.5,
+                        ox + 8.6 + r * cos,
+                        oy + 7.5 + r * sin,
+                    );
+                }
+            } else {
+                pb.move_to(ox + 10.2, oy + 5.6);
+                pb.line_to(ox + 14.0, oy + 9.4);
+                pb.move_to(ox + 14.0, oy + 5.6);
+                pb.line_to(ox + 10.2, oy + 9.4);
+            }
+            if let Some(path) = pb.finish() {
+                stroke_icon(pm, &path, rgb);
+            }
+        }
+    }
+}
+
 /// Draw the `W×H` dimension badge: a rounded translucent pill with crisp,
 /// anti-aliased text. Placed by `edit::badge_rect` (above-left, flipping at edges).
 pub fn draw_badge(pm: &mut Pixmap, sel: (f32, f32, f32, f32), surf_w: u32, surf_h: u32) {
@@ -385,15 +634,13 @@ pub fn draw_badge(pm: &mut Pixmap, sel: (f32, f32, f32, f32), surf_w: u32, surf_
         return;
     }
     let label = format!("{}×{}", w.round() as i32, h.round() as i32);
-    let px = 17.0_f32;
-    let pad = 7.0_f64;
-    let font = badge_font();
-    let scaled = font.as_scaled(PxScale::from(px));
-    let text_w: f32 = label
-        .chars()
-        .map(|c| scaled.h_advance(font.glyph_id(c)))
-        .sum();
-    let text_h = scaled.ascent() - scaled.descent();
+    let scaled = ui_font(false).as_scaled(PxScale::from(UI_TEXT_PX));
+    let text_w = text_width(&label, UI_TEXT_PX, false);
+    let text_h = (scaled.ascent() - scaled.descent()) as f64;
+    // One bar module: 22 px tall with 8 px of side padding. `badge_rect` pads
+    // both axes by the same amount, so derive that from the height and widen the
+    // content box by whatever the sides are still short of.
+    let pad = ((UI_BLOCK_H - text_h) / 2.0).max(0.0);
     let rect = crate::selector::edit::Rect {
         x: x as f64,
         y: y as f64,
@@ -402,27 +649,22 @@ pub fn draw_badge(pm: &mut Pixmap, sel: (f32, f32, f32, f32), surf_w: u32, surf_
     };
     let (bx, by, bw, bh) = crate::selector::edit::badge_rect(
         rect,
-        text_w as f64,
-        text_h as f64,
+        text_w + 2.0 * (UI_TEXT_PAD - pad).max(0.0),
+        text_h,
         pad,
         6.0,
         surf_w as f64,
         surf_h as f64,
     );
-    let mut pill = Paint::default();
-    pill.set_color_rgba8(0x12, 0x12, 0x12, 230); // #121212, matching the quickshell bar
-    pill.anti_alias = true;
-    if let Some(path) = rounded_rect(bx as f32, by as f32, bw as f32, bh as f32, 7.0) {
-        pm.fill_path(&path, &pill, FillRule::Winding, Transform::identity(), None);
-    }
-    let baseline = by as f32 + pad as f32 + scaled.ascent();
+    fill_rounded(pm, (bx, by, bw, bh), UI_RADIUS, UI_SURFACE);
     draw_text_aa(
         pm,
-        bx as f32 + pad as f32,
-        baseline,
+        (bx + (bw - text_w) / 2.0) as f32,
+        centered_baseline(by, bh, UI_TEXT_PX),
         &label,
-        px,
-        (0xd0, 0xd0, 0xd0),
+        UI_TEXT_PX,
+        UI_FOREGROUND,
+        false,
     );
 }
 
@@ -456,7 +698,7 @@ pub fn rec_pill_rect(
     if w < 1.0 || h < 1.0 {
         return None;
     }
-    let font = badge_font();
+    let font = ui_font(false);
     let scaled = font.as_scaled(PxScale::from(REC_PX));
     let text_w: f32 = "REC"
         .chars()
@@ -490,7 +732,7 @@ pub fn record_frame_checkbox_rect(
     surf_h: u32,
 ) -> Option<(f64, f64, f64, f64)> {
     let (rx, ry, rw, rh) = rec_pill_rect(sel, surf_w, surf_h)?;
-    let font = badge_font();
+    let font = ui_font(false);
     let scaled = font.as_scaled(PxScale::from(FRAME_PX));
     let text_w: f32 = FRAME_LABEL
         .chars()
@@ -512,7 +754,7 @@ pub fn record_audio_button_rect(
 ) -> Option<(f64, f64, f64, f64)> {
     let rec = rec_pill_rect(sel, surf_w, surf_h)?;
     let frame = record_frame_checkbox_rect(sel, surf_w, surf_h)?;
-    let font = badge_font();
+    let font = ui_font(false);
     let scaled = font.as_scaled(PxScale::from(AUDIO_PX));
     let text_w: f32 = "AUDIO OFF"
         .chars()
@@ -545,6 +787,175 @@ pub fn record_audio_button_rect(
     None
 }
 
+pub struct RecordToolbar {
+    pub bounds: (f64, f64, f64, f64),
+    pub controls: [(f64, f64, f64, f64); 4],
+}
+
+// The record controls are a floating strip of bar modules, inset by the 6 px
+// the bar keeps at its own ends, so the strip is one bar module plus its
+// margins. Modules sit 2 px apart, exactly like the modules on the bar.
+const TB_PAD: f64 = 6.0;
+const TB_GAP: f64 = 2.0;
+const TB_CARD_RADIUS: f32 = 9.0;
+const TB_LABELS: [&str; 4] = ["REC", "Clip", "Frame", "Audio"];
+
+/// Left inset of a control's label, from the control's own left edge. Every
+/// control carries an icon, as every module on the bar does.
+fn tb_label_x() -> f64 {
+    UI_ICON_PAD + UI_ICON + UI_CONTENT_GAP
+}
+
+/// The mark a control shows; the audio toggle swaps glyph the way the bar's
+/// own microphone and volume modules do.
+fn tb_icon(control: usize, on: bool) -> Icon {
+    match control {
+        0 => Icon::Record,
+        1 => Icon::Cut,
+        2 => Icon::Crop,
+        _ if on => Icon::Volume,
+        _ => Icon::VolumeOff,
+    }
+}
+
+pub fn record_toolbar(
+    sel: (f32, f32, f32, f32),
+    surf_w: u32,
+    surf_h: u32,
+) -> Option<RecordToolbar> {
+    let (sx, sy, sw, sh) = sel;
+    if ![sx, sy, sw, sh].iter().all(|v| v.is_finite()) || sw < 1.0 || sh < 1.0 {
+        return None;
+    }
+    // Measured in DemiBold, the widest a label ever gets, so a module keeps its
+    // width when its state changes and the strip never shifts under the cursor.
+    let widths: [f64; 4] = std::array::from_fn(|i| {
+        (tb_label_x() + text_width(TB_LABELS[i], UI_TEXT_PX, true)).ceil() + UI_TEXT_PAD
+    });
+    // One strip if it fits, else a 2×2 grid, else a single column.
+    let (columns, column_widths, column_x, row_y, width, height) =
+        [4usize, 2, 1].into_iter().find_map(|columns| {
+            let rows = 4 / columns;
+            let column_widths: [f64; 4] = std::array::from_fn(|c| {
+                if c < columns {
+                    widths
+                        .iter()
+                        .skip(c)
+                        .step_by(columns)
+                        .copied()
+                        .fold(0.0, f64::max)
+                } else {
+                    0.0
+                }
+            });
+            let mut column_x = [0.0; 4];
+            let mut inner_w = 0.0;
+            for c in 0..columns {
+                if c > 0 {
+                    inner_w += TB_GAP;
+                }
+                column_x[c] = inner_w;
+                inner_w += column_widths[c];
+            }
+            let mut row_y = [0.0; 4];
+            let mut inner_h = 0.0;
+            for r in 0..rows {
+                if r > 0 {
+                    inner_h += TB_GAP;
+                }
+                row_y[r] = inner_h;
+                inner_h += UI_BLOCK_H;
+            }
+            let (width, height) = (inner_w + TB_PAD * 2.0, inner_h + TB_PAD * 2.0);
+            (width + 16.0 <= surf_w as f64 && height + 16.0 <= surf_h as f64).then_some((
+                columns,
+                column_widths,
+                column_x,
+                row_y,
+                width,
+                height,
+            ))
+        })?;
+    let mut x = (sx as f64).clamp(8.0, surf_w as f64 - width - 8.0);
+    let above = sy as f64 - height - 12.0;
+    let below = (sy + sh) as f64 + 12.0;
+    let y = if above >= 8.0 {
+        above
+    } else if below + height <= surf_h as f64 - 8.0 {
+        below
+    } else {
+        x = (sx as f64 + 12.0).clamp(8.0, surf_w as f64 - width - 8.0);
+        sy as f64 + 12.0
+    }
+    .clamp(8.0, surf_h as f64 - height - 8.0);
+    let controls = std::array::from_fn(|i| {
+        (
+            x + TB_PAD + column_x[i % columns],
+            y + TB_PAD + row_y[i / columns],
+            column_widths[i % columns],
+            UI_BLOCK_H,
+        )
+    });
+    Some(RecordToolbar {
+        bounds: (x, y, width, height),
+        controls,
+    })
+}
+
+pub fn draw_record_toolbar(
+    pm: &mut Pixmap,
+    toolbar: &RecordToolbar,
+    states: (bool, bool, bool),
+    hovered: Option<usize>,
+) {
+    let (clip_enabled, frame_enabled, audio_enabled) = states;
+    fill_rounded(pm, toolbar.bounds, TB_CARD_RADIUS, UI_SURFACE);
+    for (i, &(x, y, w, h)) in toolbar.controls.iter().enumerate() {
+        let enabled = i != 1 || clip_enabled;
+        let on = (i == 2 && frame_enabled) || (i == 3 && audio_enabled);
+        // Record keeps a resting fill as the primary action; every module takes
+        // the bar's white hover fill.
+        let fill = match (hovered == Some(i) && enabled, i == 0) {
+            (true, true) => Some(BAR_ACTIVE),
+            (true, false) => Some(BAR_HOVER),
+            (false, true) => Some(BAR_HOVER_SOFT),
+            (false, false) => None,
+        };
+        if let Some(rgba) = fill {
+            fill_rounded(pm, (x, y, w, h), UI_RADIUS, rgba);
+        }
+        // Record is the one place with hue. Elsewhere the icon says on or off
+        // the way the bar's own modules do, by going bright or dim, and an
+        // active module sets its label in DemiBold.
+        let (icon_rgb, strong) = match i {
+            0 => (UI_RECORD, true),
+            1 if enabled => (UI_FOREGROUND, false),
+            1 => (UI_FAINT, false),
+            _ if on => (UI_FOREGROUND, true),
+            _ => (UI_DIM, false),
+        };
+        draw_icon(
+            pm,
+            tb_icon(i, on),
+            x + UI_ICON_PAD,
+            y + (h - UI_ICON) / 2.0,
+            icon_rgb,
+        );
+        draw_text_aa(
+            pm,
+            (x + tb_label_x()) as f32,
+            centered_baseline(y, h, UI_TEXT_PX),
+            TB_LABELS[i],
+            UI_TEXT_PX,
+            // A label is always the bar's foreground; only an unavailable
+            // action dims, the way a disabled menu entry does.
+            if enabled { UI_FOREGROUND } else { UI_DIM },
+            strong,
+        );
+    }
+}
+
+#[allow(dead_code)]
 pub fn draw_record_audio_button(
     pm: &mut Pixmap,
     sel: (f32, f32, f32, f32),
@@ -582,7 +993,7 @@ pub fn draw_record_audio_button(
     ) {
         pm.fill_path(&path, &dot, FillRule::Winding, Transform::identity(), None);
     }
-    let font = badge_font();
+    let font = ui_font(false);
     let scaled = font.as_scaled(PxScale::from(AUDIO_PX));
     let text_h = scaled.ascent() - scaled.descent();
     let baseline = y as f32 + (h as f32 - text_h) / 2.0 + scaled.ascent();
@@ -593,9 +1004,11 @@ pub fn draw_record_audio_button(
         if enabled { "AUDIO ON" } else { "AUDIO OFF" },
         AUDIO_PX,
         text_rgb,
+        false,
     );
 }
 
+#[allow(dead_code)]
 pub fn draw_record_frame_checkbox(
     pm: &mut Pixmap,
     sel: (f32, f32, f32, f32),
@@ -664,7 +1077,7 @@ pub fn draw_record_frame_checkbox(
         );
     }
 
-    let font = badge_font();
+    let font = ui_font(false);
     let scaled = font.as_scaled(PxScale::from(FRAME_PX));
     let text_h = scaled.ascent() - scaled.descent();
     let baseline = y as f32 + ((h as f32 - text_h) / 2.0) + scaled.ascent();
@@ -675,6 +1088,7 @@ pub fn draw_record_frame_checkbox(
         FRAME_LABEL,
         FRAME_PX,
         (0xf0, 0xf0, 0xf0),
+        false,
     );
 }
 
@@ -683,12 +1097,13 @@ pub fn draw_record_frame_checkbox(
 /// flipping at edges) and reuses the badge font/text rendering. Red accent so it
 /// reads as record. Used by the record-mode selector instead of the W×H badge.
 /// The clickable hit-zone is `rec_pill_rect` (same box).
+#[allow(dead_code)]
 pub fn draw_rec_pill(pm: &mut Pixmap, sel: (f32, f32, f32, f32), surf_w: u32, surf_h: u32) {
     let Some((bx, by, bw, bh)) = rec_pill_rect(sel, surf_w, surf_h) else {
         return;
     };
     let label = "REC";
-    let font = badge_font();
+    let font = ui_font(false);
     let scaled = font.as_scaled(PxScale::from(REC_PX));
     let mut pill = Paint::default();
     pill.set_color_rgba8(0x12, 0x12, 0x12, 230); // #121212, matching the W×H badge
@@ -713,6 +1128,7 @@ pub fn draw_rec_pill(pm: &mut Pixmap, sel: (f32, f32, f32, f32), surf_w: u32, su
         label,
         REC_PX,
         (0xf0, 0xf0, 0xf0),
+        false,
     );
 }
 
@@ -829,6 +1245,35 @@ pub fn draw_magnifier(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn record_toolbar_keeps_controls_together_at_edges() {
+        for (width, height) in [(1920, 1080), (400, 300), (240, 200), (160, 240)] {
+            for sel in [
+                (0.0, 0.0, width as f32, height as f32),
+                (width as f32 - 30.0, height as f32 - 30.0, 20.0, 20.0),
+                (20.0, 70.0, 80.0, 40.0),
+            ] {
+                let toolbar = super::record_toolbar(sel, width, height).unwrap();
+                let (x, y, w, h) = toolbar.bounds;
+                assert!(
+                    x >= 8.0
+                        && y >= 8.0
+                        && x + w <= width as f64 - 8.0
+                        && y + h <= height as f64 - 8.0
+                );
+                for (i, &(bx, by, bw, bh)) in toolbar.controls.iter().enumerate() {
+                    assert!(bx >= x && by >= y && bx + bw <= x + w && by + bh <= y + h);
+                    for &(cx, cy, cw, ch) in &toolbar.controls[i + 1..] {
+                        assert!(bx + bw <= cx || cx + cw <= bx || by + bh <= cy || cy + ch <= by);
+                    }
+                }
+            }
+        }
+        let toolbar = super::record_toolbar((90.0, 90.0, 400.0, 200.0), 800, 500).unwrap();
+        assert_eq!(toolbar.bounds.0, 90.0);
+        assert!(toolbar.bounds.1 + toolbar.bounds.3 < 90.0);
+    }
+
     use super::*;
 
     #[test]
@@ -905,6 +1350,35 @@ mod tests {
         );
         // Outside: dimmed by the ~43% black overlay.
         assert!(at(0, 0) < 200, "outside should be dimmed, got {}", at(0, 0));
+    }
+
+    #[test]
+    fn cached_overlay_matches_original_across_moves_and_transparency() {
+        for alpha in [0, 128, 255] {
+            let mut base = Pixmap::new(80, 60).unwrap();
+            base.fill(tiny_skia::Color::from_rgba8(170, 90, 35, alpha));
+            let mut cache = CachedOverlay::new(&base);
+            for selection in [
+                None,
+                Some((12.5, 9.5, 35.0, 22.0)),
+                Some((-5.5, -3.0, 20.0, 90.0)),
+                Some((70.0, 50.0, 40.0, 20.0)),
+                Some((2.0, 2.0, 0.5, 10.0)),
+                None,
+            ] {
+                let mut expected = base.clone();
+                dim_and_restore(&mut expected, selection);
+                let actual = cache.reset(&base, selection);
+                assert_eq!(
+                    actual.data(),
+                    expected.data(),
+                    "alpha={alpha}, selection={selection:?}"
+                );
+                // Simulate controls drawn after the background pass. The next
+                // reset must remove their pixels even when the selection moves.
+                actual.data_mut()[0..4].fill(255);
+            }
+        }
     }
 
     #[test]

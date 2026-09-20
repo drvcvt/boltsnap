@@ -57,6 +57,9 @@ pub struct TraySnapshot {
 
 #[derive(Clone, Debug)]
 pub enum TrayAction {
+    ReplayStart,
+    ReplayStop,
+    ReplaySave,
     StartRegion,
     StartDefault,
     SetDefaultTarget(RecordDefaultTarget),
@@ -237,6 +240,31 @@ impl ksni::Tray for BoltsnapTray {
             })
             .collect();
         vec![
+            StandardItem {
+                label: "Clip fullscreen to shelf".into(),
+                activate: Box::new(|tray: &mut Self| tray.send(TrayAction::ReplaySave)),
+                ..Default::default()
+            }
+            .into(),
+            SubMenu {
+                label: "Replay buffer".into(),
+                submenu: vec![
+                    StandardItem {
+                        label: "Start".into(),
+                        activate: Box::new(|tray: &mut Self| tray.send(TrayAction::ReplayStart)),
+                        ..Default::default()
+                    }
+                    .into(),
+                    StandardItem {
+                        label: "Stop".into(),
+                        activate: Box::new(|tray: &mut Self| tray.send(TrayAction::ReplayStop)),
+                        ..Default::default()
+                    }
+                    .into(),
+                ],
+                ..Default::default()
+            }
+            .into(),
             StandardItem {
                 label: "Start region recording".into(),
                 enabled: model.start_region_enabled,

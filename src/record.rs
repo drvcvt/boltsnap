@@ -1,7 +1,7 @@
 //! Pure helpers for area recording (geometry mapping + wf-recorder argv). The
 //! live lifecycle (spawn, overlays, stop) lives in the shelf daemon.
 
-use crate::config::RecordDefaultTarget;
+use crate::config::{RecordDefaultTarget, RecordProfile};
 use std::path::Path;
 
 #[cfg(target_os = "linux")]
@@ -166,11 +166,12 @@ pub fn to_global_geometry(
 pub fn wf_recorder_args(
     geo: &Geometry,
     codec: &str,
+    profile: RecordProfile,
     audio_source: Option<&str>,
     out: &Path,
 ) -> Vec<String> {
     let mut args = vec!["-g".into(), geo.to_arg(), "-c".into(), codec.into()];
-    args.extend(capture_profile_args(codec));
+    args.extend(capture_profile_args(codec, profile));
     if let Some(source) = audio_source {
         args.push(format!("--audio={source}"));
     }
@@ -183,11 +184,12 @@ pub fn wf_recorder_args(
 pub fn wf_recorder_output_args(
     output: &str,
     codec: &str,
+    profile: RecordProfile,
     audio_source: Option<&str>,
     out: &Path,
 ) -> Vec<String> {
     let mut args = vec!["-o".into(), output.into(), "-c".into(), codec.into()];
-    args.extend(capture_profile_args(codec));
+    args.extend(capture_profile_args(codec, profile));
     if let Some(source) = audio_source {
         args.push(format!("--audio={source}"));
     }
@@ -195,8 +197,12 @@ pub fn wf_recorder_output_args(
     args
 }
 
-fn capture_profile_args(codec: &str) -> Vec<String> {
-    let mut args = vec!["--no-dmabuf".into(), "-r".into(), "240".into()];
+fn capture_profile_args(codec: &str, profile: RecordProfile) -> Vec<String> {
+    let fps = match profile {
+        RecordProfile::Quality => "240",
+        RecordProfile::Quiet => "60",
+    };
+    let mut args = vec!["--no-dmabuf".into(), "-r".into(), fps.into()];
     if codec.ends_with("_nvenc") {
         for option in ["preset=p5", "tune=hq", "rc=vbr", "cq=16"] {
             args.extend(["-p".into(), option.into()]);
@@ -296,7 +302,13 @@ mod tests {
             w: 1280,
             h: 720,
         };
-        let args = wf_recorder_args(&g, "h264_nvenc", None, &PathBuf::from("/tmp/r.mp4"));
+        let args = wf_recorder_args(
+            &g,
+            "h264_nvenc",
+            RecordProfile::Quality,
+            None,
+            &PathBuf::from("/tmp/r.mp4"),
+        );
         assert_eq!(
             args,
             vec![
@@ -322,9 +334,39 @@ mod tests {
     }
 
     #[test]
+    fn quiet_profile_reduces_fps_without_changing_encoder_quality_or_audio() {
+        for codec in ["h264_nvenc", "libx264"] {
+            let quality = wf_recorder_output_args(
+                "DP-1",
+                codec,
+                RecordProfile::Quality,
+                Some("desk.monitor"),
+                Path::new("out.mp4"),
+            );
+            let quiet = wf_recorder_output_args(
+                "DP-1",
+                codec,
+                RecordProfile::Quiet,
+                Some("desk.monitor"),
+                Path::new("out.mp4"),
+            );
+            let mut expected = quality;
+            let fps = expected.iter().position(|arg| arg == "-r").unwrap() + 1;
+            assert_eq!(expected[fps], "240");
+            expected[fps] = "60".into();
+            assert_eq!(quiet, expected);
+        }
+    }
+
+    #[test]
     fn wf_output_args_shape() {
-        let args =
-            wf_recorder_output_args("DP-1", "h264_nvenc", None, &PathBuf::from("/tmp/r.mp4"));
+        let args = wf_recorder_output_args(
+            "DP-1",
+            "h264_nvenc",
+            RecordProfile::Quality,
+            None,
+            &PathBuf::from("/tmp/r.mp4"),
+        );
         assert_eq!(
             args,
             vec![
@@ -359,6 +401,7 @@ mod tests {
                 h: 4,
             },
             "libx264",
+            RecordProfile::Quality,
             Some("desk.monitor"),
             Path::new("/tmp/out.mp4"),
         );
@@ -367,7 +410,13 @@ mod tests {
 
     #[test]
     fn wf_recorder_output_without_audio_keeps_previous_arguments() {
-        let args = wf_recorder_output_args("DP-3", "libx264", None, Path::new("/tmp/out.mp4"));
+        let args = wf_recorder_output_args(
+            "DP-3",
+            "libx264",
+            RecordProfile::Quality,
+            None,
+            Path::new("/tmp/out.mp4"),
+        );
         assert!(!args.iter().any(|arg| arg.starts_with("--audio")));
     }
 }

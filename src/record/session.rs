@@ -1,4 +1,5 @@
 use super::{Geometry, Monitor, resolve_record_outputs, wf_recorder_args, wf_recorder_output_args};
+use crate::config::RecordProfile;
 use crate::config::{RecordBothMode, RecordingPrefs};
 pub use crate::protocol::{PublicRecordingState, RecordingAction};
 use crate::record::audio::AudioCapture;
@@ -71,6 +72,7 @@ pub struct RecordingSession {
     pub scope: CaptureScope,
     pub monitors: Vec<Monitor>,
     pub codec: String,
+    pub profile: RecordProfile,
     pub both_mode: RecordBothMode,
     pub show_frame: bool,
     pub audio: Option<AudioCapture>,
@@ -87,6 +89,7 @@ impl RecordingSession {
         scope: CaptureScope,
         monitors: Vec<Monitor>,
         codec: String,
+        profile: RecordProfile,
         both_mode: RecordBothMode,
         show_frame: bool,
         audio: Option<AudioCapture>,
@@ -98,6 +101,7 @@ impl RecordingSession {
             scope,
             monitors,
             codec,
+            profile,
             both_mode,
             show_frame,
             audio,
@@ -120,6 +124,7 @@ impl RecordingSession {
             }),
             Vec::new(),
             "test".into(),
+            RecordProfile::Quality,
             RecordBothMode::Separate,
             false,
             None,
@@ -242,38 +247,47 @@ static SEGMENT_ID: AtomicU64 = AtomicU64::new(0);
 pub fn spawn_segment(
     scope: &CaptureScope,
     codec: &str,
+    profile: RecordProfile,
     audio_source: Option<&str>,
     tools: &RecorderTools,
 ) -> Result<Vec<ActiveRecorder>, String> {
-    spawn_segment_with(scope, codec, audio_source, tools, |program, args| {
-        let parent = unsafe { libc::getpid() };
-        let mut command = Command::new(program);
-        command
-            .args(args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::inherit());
-        unsafe {
-            command.pre_exec(move || {
-                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) != 0 {
-                    return Err(io::Error::last_os_error());
-                }
-                if libc::getppid() != parent {
-                    return Err(io::Error::new(
-                        io::ErrorKind::Interrupted,
-                        "boltsnap daemon exited while starting recorder",
-                    ));
-                }
-                Ok(())
-            });
-        }
-        command.spawn()
-    })
+    spawn_segment_with(
+        scope,
+        codec,
+        profile,
+        audio_source,
+        tools,
+        |program, args| {
+            let parent = unsafe { libc::getpid() };
+            let mut command = Command::new(program);
+            command
+                .args(args)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::inherit());
+            unsafe {
+                command.pre_exec(move || {
+                    if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) != 0 {
+                        return Err(io::Error::last_os_error());
+                    }
+                    if libc::getppid() != parent {
+                        return Err(io::Error::new(
+                            io::ErrorKind::Interrupted,
+                            "boltsnap daemon exited while starting recorder",
+                        ));
+                    }
+                    Ok(())
+                });
+            }
+            command.spawn()
+        },
+    )
 }
 
 fn spawn_segment_with(
     scope: &CaptureScope,
     codec: &str,
+    profile: RecordProfile,
     audio_source: Option<&str>,
     tools: &RecorderTools,
     mut spawn: impl FnMut(&Path, &[String]) -> io::Result<Child>,
@@ -295,10 +309,10 @@ fn spawn_segment_with(
         let path = segment_path(&tools.segment_dir, output);
         let args = match (scope, output) {
             (CaptureScope::Area(geometry), None) => {
-                wf_recorder_args(geometry, codec, audio_source, &path)
+                wf_recorder_args(geometry, codec, profile, audio_source, &path)
             }
             (CaptureScope::Outputs(_), Some(output)) => {
-                wf_recorder_output_args(output, codec, audio_source, &path)
+                wf_recorder_output_args(output, codec, profile, audio_source, &path)
             }
             _ => unreachable!(),
         };
@@ -764,12 +778,14 @@ while :; do sleep 1; done
         let tools = tools(&dir);
         let scope = CaptureScope::Outputs(vec!["DP-3".into(), "DP-1".into()]);
         let t0 = Instant::now();
-        let active = spawn_segment(&scope, "h264_nvenc", None, &tools).unwrap();
+        let active =
+            spawn_segment(&scope, "h264_nvenc", RecordProfile::Quiet, None, &tools).unwrap();
         assert_eq!(active.len(), 2);
         let mut session = RecordingSession::new(
             scope,
             Vec::new(),
             "h264_nvenc".into(),
+            RecordProfile::Quiet,
             RecordBothMode::Separate,
             false,
             None,
@@ -784,7 +800,14 @@ while :; do sleep 1; done
             let completed = stopped(std::mem::take(&mut session.active));
             session.finish_pause(completed).unwrap();
             if cycle < 2 {
-                let active = spawn_segment(&session.scope, &session.codec, None, &tools).unwrap();
+                let active = spawn_segment(
+                    &session.scope,
+                    &session.codec,
+                    session.profile,
+                    None,
+                    &tools,
+                )
+                .unwrap();
                 session
                     .resume(active, t0 + Duration::from_secs(cycle * 2 + 2))
                     .unwrap();
@@ -858,6 +881,7 @@ sleep 1
                 h: 10,
             }),
             "test",
+            RecordProfile::Quality,
             None,
             &tools,
         )
@@ -908,6 +932,7 @@ while :; do sleep 1; done
             spawn_segment_with(
                 &CaptureScope::Outputs(vec!["DP-3".into(), "DP-1".into()]),
                 "h264_nvenc",
+                RecordProfile::Quality,
                 None,
                 &tools,
                 |program, args| {
@@ -1037,6 +1062,7 @@ exec python3 -c 'import ctypes,signal,sys,time; value=ctypes.c_int(); ctypes.CDL
                 h: 10,
             }),
             "test",
+            RecordProfile::Quality,
             None,
             &tools,
         )

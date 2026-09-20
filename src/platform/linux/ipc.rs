@@ -4,7 +4,9 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-pub use crate::protocol::{RecordingSnapshot, Request, Response, read_frame, write_frame};
+pub use crate::protocol::{RecordingSnapshot, Request, Response};
+#[cfg(test)]
+pub use crate::protocol::{read_frame, write_frame};
 
 pub fn socket_path() -> PathBuf {
     if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR") {
@@ -68,14 +70,6 @@ fn ensure_daemon() -> io::Result<UnixStream> {
         io::ErrorKind::TimedOut,
         "daemon did not start",
     ))
-}
-
-/// Send a request to the shelf daemon, starting it if needed.
-pub fn send_to_shelf(req: Request) -> io::Result<()> {
-    let mut stream = ensure_daemon()?;
-    stream.write_all(&req.encode())?;
-    stream.flush()?;
-    Ok(())
 }
 
 pub fn call_daemon(req: Request) -> io::Result<Response> {

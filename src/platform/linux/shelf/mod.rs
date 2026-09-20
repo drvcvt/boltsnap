@@ -1,4 +1,8 @@
-mod font;
+pub(crate) mod font;
+mod limits;
+mod thumbnail;
+
+use limits::{ClientLimits, Limit, Permit};
 
 use std::os::unix::net::{UnixListener, UnixStream};
 
@@ -137,6 +141,7 @@ pub struct Daemon {
     persisted_prefs_generation: u64,
     prefs_writer: PrefsWriter,
     tray: Option<crate::tray::TrayPublisher>,
+    thumbnails: thumbnail::Worker,
 }
 
 pub(crate) enum AfterStop {
@@ -147,13 +152,26 @@ pub(crate) enum AfterStop {
 }
 
 pub(crate) enum DaemonEvent {
+    ThumbnailReady {
+        id: u64,
+        image: Option<image::RgbaImage>,
+        _permit: Option<Permit>,
+    },
+    ReplayClipReady {
+        path: std::path::PathBuf,
+        output: String,
+        reply: std::sync::mpsc::SyncSender<()>,
+    },
     ClientRequest {
         request: crate::ipc::Request,
         stream: UnixStream,
+        _permit: Permit,
     },
     AddPrepared {
         result: Result<PreparedAdd, String>,
         stream: UnixStream,
+        _client: Permit,
+        _image: Option<Permit>,
     },
     ChildrenStopped {
         after: AfterStop,
@@ -423,6 +441,12 @@ fn notify(body: &str) {
     }
 }
 
+fn media_open_command(path: &std::path::Path) -> std::process::Command {
+    let mut command = std::process::Command::new("xdg-open");
+    command.arg(path);
+    command
+}
+
 fn prepare_recording_cache() -> Result<(), String> {
     let dir = crate::paths::rec_dir();
     std::fs::create_dir_all(&dir).map_err(|error| format!("create recording cache: {error}"))?;
@@ -448,20 +472,75 @@ fn recording_action_label(action: RecordingAction) -> &'static str {
     }
 }
 
-fn spawn_client_reader(mut stream: UnixStream, tx: calloop::channel::Sender<DaemonEvent>) {
+fn reject_busy(mut stream: UnixStream) {
+    use std::io::Write;
+    // Never block calloop or create another thread just to reject excess work.
+    let _ = stream.set_nonblocking(true);
+    let _ = stream.write_all(&crate::ipc::Response::error("shelf is busy; retry shortly").encode());
+}
+
+fn spawn_client_reader(
+    mut stream: UnixStream,
+    tx: calloop::channel::Sender<DaemonEvent>,
+    limits: &ClientLimits,
+) {
+    let Some(client) = limits.readers.acquire() else {
+        reject_busy(stream);
+        return;
+    };
+    let images = limits.images.clone();
     std::thread::spawn(move || {
+        use std::io::Read;
         let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
-        match crate::ipc::Request::read(&mut stream) {
+        // Reserve before Request::read allocates the declared payload. The
+        // protocol decoder still validates both lengths and the full request.
+        let mut prefix = [0; 8];
+        if stream.read_exact(&mut prefix).is_err() {
+            return;
+        }
+        let image = if u32::from_be_bytes(prefix[4..].try_into().unwrap()) > 0 {
+            let Some(permit) = images.acquire() else {
+                reject_busy(stream);
+                return;
+            };
+            Some(permit)
+        } else {
+            None
+        };
+        let request = crate::ipc::Request::read(&mut prefix.as_slice().chain(&mut stream));
+        match request {
             Ok(crate::ipc::Request::Add {
                 source,
                 png,
                 output,
             }) => {
                 let result = prepare_add(png, source, output);
-                let _ = tx.send(DaemonEvent::AddPrepared { result, stream });
+                let _ = tx.send(DaemonEvent::AddPrepared {
+                    result,
+                    stream,
+                    _client: client,
+                    _image: image,
+                });
             }
             Ok(request) => {
-                let _ = tx.send(DaemonEvent::ClientRequest { request, stream });
+                if let crate::ipc::Request::RecordingThumb { id, thumb } = request {
+                    let Some(permit) = images.acquire() else {
+                        reject_busy(stream);
+                        return;
+                    };
+                    let image = thumbnail::load_legacy(&thumb).ok();
+                    let _ = tx.send(DaemonEvent::ThumbnailReady {
+                        id,
+                        image,
+                        _permit: Some(permit),
+                    });
+                    return;
+                }
+                let _ = tx.send(DaemonEvent::ClientRequest {
+                    request,
+                    stream,
+                    _permit: client,
+                });
             }
             Err(error) => eprintln!("boltsnap daemon: bad request: {error}"),
         }
@@ -476,9 +555,7 @@ fn prepare_add(
     if png.len() as u64 > MAX_CACHED_IMAGE_BYTES {
         return Err("PNG exceeds the 256 MiB shelf cache limit".into());
     }
-    let image = image::load_from_memory(&png)
-        .map_err(|error| format!("decode PNG: {error}"))?
-        .to_rgba8();
+    let image = decode_shelf_image(&png)?;
     let path = crate::paths::temp_png("shelf");
     std::fs::write(&path, png).map_err(|error| format!("write shelf tempfile: {error}"))?;
     let thumb = crate::shelf::thumbnail::make_card_thumbnail(
@@ -494,8 +571,35 @@ fn prepare_add(
     })
 }
 
+fn decode_shelf_image(png: &[u8]) -> Result<image::RgbaImage, String> {
+    use image::ImageDecoder;
+    let mut reader =
+        image::ImageReader::with_format(std::io::Cursor::new(png), image::ImageFormat::Png);
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(MAX_CACHED_IMAGE_BYTES);
+    reader.limits(limits);
+    let decoder = reader
+        .into_decoder()
+        .map_err(|e| format!("decode PNG: {e}"))?;
+    let (width, height) = decoder.dimensions();
+    // Covers RGBA conversion too, including small grayscale PNGs expanding to
+    // huge images. Accepts 8K and wide multi-monitor captures up to 64M pixels.
+    if u64::from(width) * u64::from(height) > MAX_CACHED_IMAGE_BYTES / 4 {
+        return Err("decode PNG: image exceeds the 64 megapixel limit".into());
+    }
+    image::DynamicImage::from_decoder(decoder)
+        .map(image::DynamicImage::into_rgba8)
+        .map_err(|e| format!("decode PNG: {e}"))
+}
+
 fn spawn_client_writer(mut stream: UnixStream, bytes: Vec<u8>) {
+    static WRITERS: std::sync::LazyLock<Limit> = std::sync::LazyLock::new(|| Limit::new(16));
+    let Some(permit) = WRITERS.acquire() else {
+        reject_busy(stream);
+        return;
+    };
     std::thread::spawn(move || {
+        let _permit = permit;
         use std::io::Write;
         let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(5)));
         let _ = stream.write_all(&bytes);
@@ -628,6 +732,16 @@ fn recording_controls_visible(phase: SessionPhase) -> bool {
     phase != SessionPhase::Discarding
 }
 
+fn dispatch_timeout(animating: bool, phase: Option<SessionPhase>) -> Option<std::time::Duration> {
+    if animating {
+        Some(std::time::Duration::from_millis(16))
+    } else if phase == Some(SessionPhase::Recording) {
+        Some(std::time::Duration::from_millis(250))
+    } else {
+        None
+    }
+}
+
 fn monitor_for_geometry<'a>(
     monitors: &'a [crate::record::Monitor],
     geo: &crate::record::Geometry,
@@ -644,22 +758,6 @@ fn monitor_for_geometry<'a>(
     })
 }
 
-fn spawn_recording_thumbnail(id: u64, video: std::path::PathBuf) {
-    let thumb = crate::paths::rec_file("rec-thumb", "png");
-    std::thread::spawn(move || {
-        let _ = std::process::Command::new("ffmpeg")
-            .args(["-y", "-i"])
-            .arg(&video)
-            .args(["-frames:v", "1", "-update", "1"])
-            .arg(&thumb)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
-        let _ = crate::ipc::send_to_shelf(crate::ipc::Request::RecordingThumb { id, thumb });
-    });
-}
-
 /// Name of the focused Hyprland monitor, via `hyprctl monitors -j`. `None` off
 /// Hyprland (then the compositor places the shelf on its default output).
 pub(crate) fn focused_monitor_name() -> Option<String> {
@@ -667,7 +765,12 @@ pub(crate) fn focused_monitor_name() -> Option<String> {
     if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_none()
         || !crate::paths::has_cmd("hyprctl")
     {
-        return None;
+        // No hyprctl: on Plasma ask KWin over D-Bus, elsewhere give up.
+        return if std::env::var("XDG_CURRENT_DESKTOP").is_ok_and(|d| d.contains("KDE")) {
+            crate::platform::portal::kwin_active_output_name()
+        } else {
+            None
+        };
     }
     let out = Command::new("hyprctl")
         .args(["monitors", "-j"])
@@ -768,6 +871,7 @@ pub fn run_daemon(save_dir_cli: Option<std::path::PathBuf>) -> DynResult<()> {
     let recording_prefs = config.recording_prefs();
     let (event_tx, event_rx) = calloop::channel::channel::<DaemonEvent>();
     let prefs_writer = PrefsWriter::spawn(event_tx.clone());
+    let thumbnails = thumbnail::Worker::spawn(event_tx.clone());
     let mut daemon = Daemon {
         registry_state: RegistryState::new(&globals),
         seat_state: SeatState::new(&globals, &qh),
@@ -827,6 +931,7 @@ pub fn run_daemon(save_dir_cli: Option<std::path::PathBuf>) -> DynResult<()> {
         persisted_prefs_generation: 0,
         prefs_writer,
         tray: None,
+        thumbnails,
     };
 
     // Populate output metadata (names) so we can place the shelf on the focused
@@ -860,11 +965,14 @@ pub fn run_daemon(save_dir_cli: Option<std::path::PathBuf>) -> DynResult<()> {
         .map_err(|e| format!("insert recording worker source: {e}"))?;
 
     let source = Generic::new(listener, Interest::READ, Mode::Level);
+    let client_limits = ClientLimits::default();
     handle
-        .insert_source(source, |_readiness, listener, daemon: &mut Daemon| {
+        .insert_source(source, move |_readiness, listener, daemon: &mut Daemon| {
             loop {
                 match listener.accept() {
-                    Ok((stream, _)) => spawn_client_reader(stream, daemon.event_tx.clone()),
+                    Ok((stream, _)) => {
+                        spawn_client_reader(stream, daemon.event_tx.clone(), &client_limits)
+                    }
                     Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
                     Err(e) => {
                         eprintln!("boltsnap daemon: accept error: {e}");
@@ -878,15 +986,15 @@ pub fn run_daemon(save_dir_cli: Option<std::path::PathBuf>) -> DynResult<()> {
 
     daemon.refresh_focus();
 
+    let _replay = super::replay::serve(daemon.event_tx.clone())?;
+
     while !daemon.exit {
-        // Tick ~60fps while a card is animating; otherwise a 250ms timeout, which
-        // also lets a counting recording catch whole-second boundaries for its
-        // MM:SS readout without burning CPU for the (possibly long) recording.
-        let timeout = if daemon.animating() {
-            std::time::Duration::from_millis(16)
-        } else {
-            std::time::Duration::from_millis(250)
-        };
+        // Only active animations and recorders need periodic work. Pausing and
+        // finalizing workers wake calloop through event_tx when they finish.
+        let timeout = dispatch_timeout(
+            daemon.animating(),
+            daemon.recording.as_ref().map(|s| s.phase),
+        );
         event_loop
             .dispatch(timeout, &mut daemon)
             .map_err(|e| format!("dispatch: {e}"))?;
@@ -922,6 +1030,7 @@ fn requested_audio(
 fn spawn_initial_segment(
     scope: &CaptureScope,
     codec: &str,
+    profile: crate::config::RecordProfile,
     tools: &RecorderTools,
     prefs: &crate::config::RecordingPrefs,
 ) -> Result<
@@ -937,6 +1046,7 @@ fn spawn_initial_segment(
     match spawn_segment(
         scope,
         codec,
+        profile,
         audio.as_ref().map(AudioCapture::source),
         tools,
     ) {
@@ -1068,6 +1178,20 @@ impl Daemon {
         use crate::tray::TrayAction;
 
         match action {
+            TrayAction::ReplayStart | TrayAction::ReplayStop | TrayAction::ReplaySave => {
+                let command = match action {
+                    TrayAction::ReplayStart => "start",
+                    TrayAction::ReplayStop => "stop",
+                    _ => "save",
+                };
+                std::thread::spawn(move || {
+                    if let Err(error) =
+                        super::replay::call(&serde_json::json!({"version":1,"command":command}))
+                    {
+                        notify(&format!("Replay: {error}"));
+                    }
+                });
+            }
             TrayAction::StartRegion => {
                 if self.recording.is_some() {
                     notify("A recording is already in progress");
@@ -1322,9 +1446,7 @@ impl Daemon {
                 };
                 self.write_response(stream, response);
             }
-            crate::ipc::Request::RecordingThumb { id, thumb } => {
-                self.update_recording_thumb(id, thumb, &qh);
-            }
+            crate::ipc::Request::RecordingThumb { .. } => {}
             crate::ipc::Request::StopRecording => {
                 let response = match self.handle_recording_action(RecordingAction::SaveShelf, &qh) {
                     Ok(()) => crate::ipc::Response::ok(Some(self.recording_snapshot())),
@@ -1414,6 +1536,16 @@ impl Daemon {
         }
     }
 
+    fn open_media_card(&self, id: u64) {
+        let Some(card) = self.model.get(id) else {
+            return;
+        };
+        let mut command = media_open_command(&card.png_path);
+        if let Err(error) = crate::paths::spawn_reaped(&mut command) {
+            eprintln!("boltsnap daemon: open media failed: {error}");
+        }
+    }
+
     /// Save the full-res file of card `id` and flash a ✓ on its Save button.
     /// Image cards go to `<save_dir>/boltsnap-<ts>.png`; video cards go to
     /// `<record_dir>/boltsnap-<ts>.<ext>` (ext from the source file, usually mp4).
@@ -1461,7 +1593,7 @@ impl Daemon {
     /// Act on a completed (non-drag) left click.
     fn on_click(&mut self, hit: Hit, redraw: &mut bool) {
         match hit {
-            Hit::Body(id) => self.copy_card(id),
+            Hit::Body(id) => self.open_media_card(id),
             Hit::Save(id) => {
                 self.save_card(id);
                 *redraw = true;
@@ -1811,18 +1943,22 @@ impl Daemon {
         prepare_recording_cache()?;
         let geo = crate::record::Geometry { x, y, w, h };
         let scope = CaptureScope::Area(geo);
-        let codec = crate::config::resolve_record_codec(None, &crate::config::Config::load());
+        let config = crate::config::Config::load();
+        let profile = config.record_profile()?;
+        let codec = crate::config::resolve_record_codec(None, &config);
         let tools = RecorderTools::default();
         let monitors = self.cached_monitors();
         let monitors = monitor_for_geometry(&monitors, &geo)
             .cloned()
             .into_iter()
             .collect();
-        let (active, audio) = spawn_initial_segment(&scope, &codec, &tools, &self.recording_prefs)?;
+        let (active, audio) =
+            spawn_initial_segment(&scope, &codec, profile, &tools, &self.recording_prefs)?;
         self.recording = Some(RecordingSession::new(
             scope,
             monitors,
             codec.clone(),
+            profile,
             crate::config::RecordBothMode::Separate,
             show_frame,
             audio,
@@ -1893,13 +2029,17 @@ impl Daemon {
             .map(|monitor| monitor.name.clone())
             .collect::<Vec<_>>();
         let scope = CaptureScope::Outputs(names.clone());
-        let codec = crate::config::resolve_record_codec(None, &crate::config::Config::load());
+        let config = crate::config::Config::load();
+        let profile = config.record_profile()?;
+        let codec = crate::config::resolve_record_codec(None, &config);
         let tools = RecorderTools::default();
-        let (active, audio) = spawn_initial_segment(&scope, &codec, &tools, &self.recording_prefs)?;
+        let (active, audio) =
+            spawn_initial_segment(&scope, &codec, profile, &tools, &self.recording_prefs)?;
         self.recording = Some(RecordingSession::new(
             scope,
             monitors,
             codec,
+            profile,
             both_mode,
             false,
             audio,
@@ -1969,7 +2109,7 @@ impl Daemon {
     }
 
     fn create_popup(&mut self, qh: &QueueHandle<Self>) -> Result<(), String> {
-        self.popup_font = font::load_popup_font();
+        self.popup_font = font::load_ui_font(crate::config::Config::load().ui_font.as_deref());
         let pool = SlotPool::new((POPUP_W * POPUP_H * 4) as usize, &self.shm)
             .map_err(|error| format!("allocate recording controls: {error}"))?;
         let surface = self.compositor.create_surface(qh);
@@ -2209,11 +2349,12 @@ impl Daemon {
                 self.stop_children(AfterStop::Pause, children);
             }
             RecordingAction::Resume => {
-                let (scope, codec, audio_source) = {
+                let (scope, codec, profile, audio_source) = {
                     let session = self.recording.as_ref().unwrap();
                     (
                         session.scope.clone(),
                         session.codec.clone(),
+                        session.profile,
                         session
                             .audio
                             .as_ref()
@@ -2223,6 +2364,7 @@ impl Daemon {
                 let active = match spawn_segment(
                     &scope,
                     &codec,
+                    profile,
                     audio_source.as_deref(),
                     &RecorderTools::default(),
                 ) {
@@ -2326,10 +2468,27 @@ impl Daemon {
 
     fn handle_daemon_event(&mut self, event: DaemonEvent) {
         match event {
-            DaemonEvent::ClientRequest { request, stream } => {
+            DaemonEvent::ThumbnailReady { id, image, _permit } => {
+                if let Some(image) = image
+                    && self.model.replace_thumb(id, image)
+                    && let Some(qh) = self.qh.clone()
+                {
+                    self.draw(&qh);
+                }
+            }
+            DaemonEvent::ClientRequest {
+                request,
+                stream,
+                _permit,
+            } => {
                 self.handle_client_request(request, stream);
             }
-            DaemonEvent::AddPrepared { result, stream } => {
+            DaemonEvent::AddPrepared {
+                result,
+                stream,
+                _client,
+                _image,
+            } => {
                 let response = match (result, self.qh.clone()) {
                     (Ok(add), Some(qh)) => {
                         self.add_prepared(add, &qh);
@@ -2383,6 +2542,18 @@ impl Daemon {
                     }
                     AfterStop::Discard => self.finish_discard(segments),
                 }
+            }
+            DaemonEvent::ReplayClipReady {
+                path,
+                output,
+                reply,
+            } => {
+                self.add_finalized_cards(vec![FinalizedClip {
+                    path,
+                    output: Some(output),
+                    permanent: false,
+                }]);
+                let _ = reply.send(());
             }
             DaemonEvent::Finalized(Ok(clips)) => {
                 let audio = self
@@ -2537,6 +2708,7 @@ impl Daemon {
             return;
         };
         let mut added = false;
+        let mut on_output = None;
         for clip in clips {
             if clip.permanent && !self.recording_prefs.disk_add_to_shelf {
                 continue;
@@ -2570,13 +2742,18 @@ impl Daemon {
                 },
             );
             self.start_anim(id, AnimKind::Appear);
-            spawn_recording_thumbnail(id, clip.path);
+            self.thumbnails.submit(id, clip.path);
+            on_output = clip.output.or(on_output);
             added = true;
         }
         if added {
             self.trim_shelf_cache();
             self.relayout();
-            self.place_on_output(None, &qh);
+            // Show the card on the display it was recorded from, the way a
+            // screenshot's card already follows its capture. Without this the
+            // shelf stays wherever it was last placed, so a clip taken on one
+            // monitor silently lands on the other one.
+            self.place_on_output(on_output.as_deref(), &qh);
             self.draw(&qh);
         }
     }
@@ -2638,28 +2815,6 @@ impl Daemon {
         self.popup = None;
         self.popup_pool = None;
         self.popup_configured = false;
-    }
-
-    /// Swap a recording card's placeholder for its real first-frame thumbnail,
-    /// posted via `RecordingThumb`. Missing/unreadable png → keep the placeholder.
-    fn update_recording_thumb(
-        &mut self,
-        id: u64,
-        thumb: std::path::PathBuf,
-        qh: &QueueHandle<Self>,
-    ) {
-        if let Ok(img) = image::open(&thumb) {
-            let card = crate::shelf::thumbnail::make_card_thumbnail(
-                &img.to_rgba8(),
-                crate::shelf::thumbnail::CARD_W,
-                crate::shelf::thumbnail::CARD_H,
-            );
-            if self.model.replace_thumb(id, card) {
-                self.draw(qh);
-            }
-        }
-        // The first-frame png was only needed to build the thumbnail.
-        let _ = std::fs::remove_file(&thumb);
     }
 
     fn is_popup_surface(&self, surface: &WlSurface) -> bool {
@@ -3218,6 +3373,36 @@ mod tests {
     }
 
     #[test]
+    fn grayscale_png_cannot_expand_beyond_rgba_pixel_budget() {
+        // Valid headers for 8193x8192 grayscale. Rejection must precede decoding
+        // the deliberately incomplete compressed body or allocating RGBA.
+        let png: &[u8] = &[
+            137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 32, 1, 0, 0, 32, 0,
+            8, 0, 0, 0, 0, 184, 3, 254, 187, 0, 0, 0, 10, 73, 68, 65, 84, 120, 156, 99, 96, 0, 0,
+            0, 2, 0, 1, 72, 175, 164, 113, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+        ];
+        assert!(
+            decode_shelf_image(png)
+                .unwrap_err()
+                .contains("64 megapixel")
+        );
+    }
+
+    #[test]
+    fn media_card_opener_uses_desktop_default() {
+        for name in [
+            "/tmp/example.png",
+            "/tmp/recording with spaces.mp4",
+            "/tmp/clip.webm",
+        ] {
+            let path = std::path::Path::new(name);
+            let command = media_open_command(path);
+            assert_eq!(command.get_program(), "xdg-open");
+            assert_eq!(command.get_args().collect::<Vec<_>>(), [path.as_os_str()]);
+        }
+    }
+
+    #[test]
     fn cache_eviction_removes_oldest_until_count_and_image_bytes_fit() {
         let newest_first = [
             (5, CardKind::Image, FileLifetime::Temporary, 40),
@@ -3243,10 +3428,95 @@ mod tests {
     }
 
     #[test]
+    fn idle_and_waiting_recordings_do_not_poll_but_active_recorders_do() {
+        assert_eq!(dispatch_timeout(false, None), None);
+        for phase in [
+            SessionPhase::Paused,
+            SessionPhase::Pausing,
+            SessionPhase::Finalizing,
+            SessionPhase::Discarding,
+        ] {
+            assert_eq!(dispatch_timeout(false, Some(phase)), None);
+        }
+        assert_eq!(
+            dispatch_timeout(false, Some(SessionPhase::Recording)),
+            Some(Duration::from_millis(250))
+        );
+        assert_eq!(
+            dispatch_timeout(true, None),
+            Some(Duration::from_millis(16))
+        );
+        assert_eq!(
+            dispatch_timeout(true, Some(SessionPhase::Recording)),
+            Some(Duration::from_millis(16))
+        );
+    }
+
+    #[test]
+    fn saturated_images_leave_control_requests_available_and_release_capacity() {
+        let limits = ClientLimits::default();
+        let first = limits.images.acquire().unwrap();
+        let second = limits.images.acquire().unwrap();
+        let (tx, rx) = calloop::channel::channel();
+        let (server, mut client) = UnixStream::pair().unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        spawn_client_reader(server, tx.clone(), &limits);
+        // Only send the prefix: rejection must precede reading/allocating 256 MiB.
+        client.write_all(&[0, 0, 0, 2, 16, 0, 0, 0]).unwrap();
+        let response = crate::ipc::Response::read(&mut client).unwrap();
+        assert!(!response.ok);
+        assert!(response.error.unwrap().contains("busy"));
+
+        let (server, mut control) = UnixStream::pair().unwrap();
+        spawn_client_reader(server, tx.clone(), &limits);
+        control
+            .write_all(&crate::ipc::Request::Ping.encode())
+            .unwrap();
+        assert!(matches!(
+            receive_event(&rx),
+            DaemonEvent::ClientRequest {
+                request: crate::ipc::Request::Ping,
+                ..
+            }
+        ));
+
+        drop(first);
+        let (server, mut client) = UnixStream::pair().unwrap();
+        spawn_client_reader(server, tx, &limits);
+        client
+            .write_all(
+                &crate::ipc::Request::Add {
+                    source: "test".into(),
+                    png: vec![1],
+                    output: None,
+                }
+                .encode(),
+            )
+            .unwrap();
+        let event = receive_event(&rx);
+        assert!(matches!(
+            &event,
+            DaemonEvent::AddPrepared { result: Err(_), .. }
+        ));
+        assert!(
+            limits.images.acquire().is_none(),
+            "queued events retain their reservation"
+        );
+        drop(event);
+        assert!(
+            limits.images.acquire().is_some(),
+            "failed work releases its reservation"
+        );
+        drop(second);
+    }
+
+    #[test]
     fn add_is_prepared_before_it_reaches_the_ui_event_loop() {
         let (tx, rx) = calloop::channel::channel();
         let (server, mut client) = UnixStream::pair().unwrap();
-        spawn_client_reader(server, tx);
+        spawn_client_reader(server, tx, &ClientLimits::default());
         client
             .write_all(
                 &crate::ipc::Request::Add {
@@ -3408,10 +3678,10 @@ mod tests {
         crate::ipc::write_frame(&mut encoded, br#"{"cmd":"add","source":"area"}"#, &png).unwrap();
         let split = encoded.len() / 2;
         slow_client.write_all(&encoded[..split]).unwrap();
-        spawn_client_reader(slow_server, tx.clone());
+        spawn_client_reader(slow_server, tx.clone(), &ClientLimits::default());
 
         let (fast_server, mut fast_client) = UnixStream::pair().unwrap();
-        spawn_client_reader(fast_server, tx);
+        spawn_client_reader(fast_server, tx, &ClientLimits::default());
         fast_client
             .write_all(&crate::ipc::Request::Ping.encode())
             .unwrap();

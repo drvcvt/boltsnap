@@ -13,7 +13,9 @@ mod shelf;
 pub(crate) use crate::platform::{capture, clipboard, ipc, paths, tray};
 pub(crate) use boltsnap::{image_model, protocol};
 
-use crate::capture::{capture, strip_uniform_border};
+use crate::capture::capture;
+#[cfg(target_os = "windows")]
+use crate::capture::strip_uniform_border;
 use crate::clipboard::{copy_to_clipboard, serve_wayland_clipboard, serve_wayland_uri_list};
 use crate::paths::*;
 
@@ -155,6 +157,7 @@ Usage:
   boltsnap daemon [--save-dir DIR]        run the screenshot shelf
   boltsnap record                         select an area and screen-record it
   boltsnap record full                    record the configured fullscreen target (no selector)
+  boltsnap replay start|stop|status|save    experimental Linux replay buffer
   boltsnap recording status --json
   boltsnap recording watch --json
   boltsnap recording show-controls
@@ -254,6 +257,8 @@ fn run() -> DynResult<()> {
         "self-test" => self_test(),
         "record" => record_flow(&args),
         "recording" => recording_command(&args),
+        #[cfg(target_os = "linux")]
+        "replay" => crate::platform::replay::cli(&args.tail),
         "stop" => recording_control(crate::record::session::RecordingAction::SaveShelf),
         "daemon" => crate::shelf::run_daemon(args.save_dir.clone()),
         #[cfg(target_os = "windows")]
@@ -316,11 +321,6 @@ fn record_flow(args: &Args) -> DynResult<()> {
         return Ok(());
     }
 
-    if !crate::paths::has_cmd("wf-recorder") {
-        return Err(
-            "wf-recorder not found — install it to record (e.g. pacman -S wf-recorder)".into(),
-        );
-    }
     // Optional target: `boltsnap record full` uses the daemon's configured
     // fullscreen target; absent or `area` opens the region selector.
     let target = args
@@ -329,11 +329,22 @@ fn record_flow(args: &Args) -> DynResult<()> {
         .and_then(|p| p.to_str())
         .unwrap_or("area");
     if matches!(target, "full" | "screen" | "fullscreen") {
+        require_recorder()?;
         checked_recording_call(crate::ipc::Request::StartDefaultRecording)?;
         return Ok(());
     }
     let mut prefs = crate::config::Config::load().recording_prefs();
-    let selection = crate::selector::run_select_record(prefs.show_frame, prefs.audio_enabled)?;
+    let mut selection = crate::selector::run_select_record(prefs.show_frame, prefs.audio_enabled)?;
+    let frozen = selection.frozen.take();
+    if selection.clip {
+        let frozen = frozen.ok_or("replay buffer is not ready")?;
+        let rect = selection.rect.ok_or("clip selection is missing")?;
+        frozen
+            .save(rect, selection.surface_size)
+            .inspect_err(|error| crate::platform::replay::notify_error(error))?;
+        return Ok(());
+    }
+    drop(frozen);
     if selection.show_frame != prefs.show_frame || selection.audio_enabled != prefs.audio_enabled {
         prefs.show_frame = selection.show_frame;
         prefs.audio_enabled = selection.audio_enabled;
@@ -342,7 +353,11 @@ fn record_flow(args: &Args) -> DynResult<()> {
     let Some(rect) = selection.rect else {
         return Ok(()); // cancelled
     };
-    let (ox, oy) = crate::shelf::focused_monitor_origin().unwrap_or((0, 0));
+    require_recorder()?;
+    let (ox, oy) = selection
+        .output_origin
+        .or_else(crate::shelf::focused_monitor_origin)
+        .unwrap_or((0, 0));
     let geo = crate::record::to_global_geometry(rect.x, rect.y, rect.w, rect.h, ox, oy);
     checked_recording_call(crate::ipc::Request::StartRecording {
         x: geo.x,
@@ -353,6 +368,15 @@ fn record_flow(args: &Args) -> DynResult<()> {
         audio_enabled: selection.audio_enabled,
     })?;
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn require_recorder() -> DynResult<()> {
+    if crate::paths::has_cmd("wf-recorder") {
+        Ok(())
+    } else {
+        Err("wf-recorder not found; install it to start a recording".into())
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -492,8 +516,41 @@ fn capture_flow(args: &Args) -> DynResult<()> {
         return capture_to_stdout(mode, args.backend, args.instant);
     }
 
+    #[cfg(target_os = "linux")]
+    if args.output.is_none() && !args.save && args.backend.resolved()? == Backend::Wayland {
+        let (resolved, capture_output, png) =
+            crate::capture::capture_png(mode, args.backend, args.instant, true)?;
+        let copy = matches!(
+            decide_post_capture(args, resolved),
+            PostCapture::Shelf { copy: true }
+        );
+        if copy {
+            // The clipboard helper outlives this CLI. Keep its uniquely-owned
+            // source; last.png can be replaced by another concurrent capture.
+            let output = target_path(args);
+            if let Some(parent) = output.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(&output, &png)?;
+            copy_temporary_capture(&output, resolved)?;
+        }
+        crate::paths::publish_last_png(&png)?;
+        send_shelf_add(crate::ipc::Request::Add {
+            source: mode.label().into(),
+            png,
+            output: capture_output,
+        })?;
+        println!(
+            "Boltsnap sent {} to shelf{}",
+            mode.label(),
+            if copy { " (copied)" } else { "" }
+        );
+        return Ok(());
+    }
+
     let output = target_path(args);
     let (resolved, capture_output) = capture(mode, &output, args.backend, args.instant)?;
+    #[cfg(target_os = "windows")]
     if matches!(mode, CaptureMode::Window | CaptureMode::ActiveWindow) {
         let _ = strip_uniform_border(&output);
     }
@@ -587,6 +644,14 @@ fn is_stdout_target(args: &Args) -> bool {
     args.output.as_deref().and_then(|p| p.to_str()) == Some("-")
 }
 
+#[cfg(target_os = "linux")]
+fn capture_to_stdout(mode: CaptureMode, backend: Backend, instant: bool) -> DynResult<()> {
+    let (_, _, bytes) = crate::capture::capture_png(mode, backend, instant, false)?;
+    std::io::stdout().lock().write_all(&bytes)?;
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
 fn capture_to_stdout(mode: CaptureMode, backend: Backend, instant: bool) -> DynResult<()> {
     let tmp = temp_png("stdout");
     capture(mode, &tmp, backend, instant)?;

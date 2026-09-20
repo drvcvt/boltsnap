@@ -46,7 +46,9 @@ pub fn print_doctor() {
     println!("  X11 area:          unavailable");
     println!("  X11 window:        in-process x11rb picker");
     println!("  X11 active win:    in-process via x11rb (_NET_ACTIVE_WINDOW)");
-    println!("  Wayland capture:   in-process via libwayshot (wlr-screencopy)");
+    println!(
+        "  Wayland capture:   in-process via libwayshot (wlr-screencopy), xdg-desktop-portal fallback (KWin)"
+    );
     println!("  Wayland area/win:  in-process selection overlay (tiny-skia)");
     println!("  Wayland active win: hyprctl on Hyprland");
     println!("  Clipboard:         in-process via arboard (X11) and wl-clipboard-rs (Wayland)");
@@ -198,20 +200,6 @@ pub fn clean_orphan_shelf_temps() -> usize {
 /// the system temp dir, which on this setup is tmpfs (RAM-backed).
 pub fn rec_dir() -> PathBuf {
     cache_dir().join("rec")
-}
-
-/// A unique recording path
-/// `<rec_dir>/boltsnap-<prefix>-<pid>-<ts>-<seq>.<ext>`, creating `rec_dir` if
-/// needed. Disk-backed (see `rec_dir`), unlike `temp_file`.
-pub fn rec_file(prefix: &str, ext: &str) -> PathBuf {
-    let dir = rec_dir();
-    let _ = fs::create_dir_all(&dir);
-    dir.join(format!(
-        "boltsnap-{prefix}-{}-{}-{}.{ext}",
-        std::process::id(),
-        timestamp(),
-        NEXT_PATH_ID.fetch_add(1, Ordering::Relaxed)
-    ))
 }
 
 /// Delete leftover recording files in `rec_dir`. Called at daemon startup: the
