@@ -53,12 +53,16 @@ pub struct TraySnapshot {
     pub prefs: RecordingPrefs,
     pub monitors: Vec<Monitor>,
     pub state: PublicRecordingState,
+    /// Whether the replay buffer is currently capturing.
+    pub replay_running: bool,
 }
 
 #[derive(Clone, Debug)]
 pub enum TrayAction {
-    ReplayStart,
-    ReplayStop,
+    /// Turn the replay buffer on or off. One entry rather than a Start/Stop
+    /// pair: the buffer is a thing that is either running or not, and its
+    /// checkmark says which.
+    ReplayToggle,
     ReplaySave,
     StartRegion,
     StartDefault,
@@ -70,6 +74,7 @@ pub enum TrayAction {
 }
 
 struct TrayMenuModel {
+    replay_running: bool,
     start_region_enabled: bool,
     start_default_enabled: bool,
     default_labels: Vec<String>,
@@ -118,6 +123,7 @@ fn menu_model(snapshot: &TraySnapshot) -> TrayMenuModel {
         RecordDefaultTarget::Both => snapshot.monitors.len(),
     };
     TrayMenuModel {
+        replay_running: snapshot.replay_running,
         start_region_enabled: snapshot.state == PublicRecordingState::Idle,
         start_default_enabled: snapshot.state == PublicRecordingState::Idle,
         default_labels: snapshot
@@ -246,22 +252,15 @@ impl ksni::Tray for BoltsnapTray {
                 ..Default::default()
             }
             .into(),
-            SubMenu {
+            CheckmarkItem {
                 label: "Replay buffer".into(),
-                submenu: vec![
-                    StandardItem {
-                        label: "Start".into(),
-                        activate: Box::new(|tray: &mut Self| tray.send(TrayAction::ReplayStart)),
-                        ..Default::default()
-                    }
-                    .into(),
-                    StandardItem {
-                        label: "Stop".into(),
-                        activate: Box::new(|tray: &mut Self| tray.send(TrayAction::ReplayStop)),
-                        ..Default::default()
-                    }
-                    .into(),
-                ],
+                checked: model.replay_running,
+                activate: Box::new(|tray: &mut Self| {
+                    // Reflect the new state at once; the daemon publishes the
+                    // real one when the capture has actually come up or gone.
+                    tray.snapshot.replay_running = !tray.snapshot.replay_running;
+                    tray.send(TrayAction::ReplayToggle);
+                }),
                 ..Default::default()
             }
             .into(),
@@ -421,7 +420,16 @@ mod tests {
                 },
             ],
             state,
+            replay_running: false,
         }
+    }
+
+    #[test]
+    fn replay_entry_follows_the_buffer_state() {
+        assert!(!menu_model(&snapshot(PublicRecordingState::Idle)).replay_running);
+        let mut running = snapshot(PublicRecordingState::Idle);
+        running.replay_running = true;
+        assert!(menu_model(&running).replay_running);
     }
 
     #[test]
