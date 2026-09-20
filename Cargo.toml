@@ -26,6 +26,9 @@ toml = "0.8"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libwayshot = "0.7"
+# Portal screenshot fallback + KWin active-output lookup on compositors
+# without wlr-screencopy (KDE Plasma).
+zbus = "5"
 wl-clipboard-rs = "0.9"
 smithay-client-toolkit = "0.19"
 wayland-client = "0.31"

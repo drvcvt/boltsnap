@@ -24,8 +24,8 @@ pub fn make_card_thumbnail(src: &RgbaImage, card_w: u32, card_h: u32) -> RgbaIma
         let ch = ((w as f32 / card_aspect).round() as u32).clamp(1, h);
         (0, (h - ch) / 2, w, ch)
     };
-    let cropped = imageops::crop_imm(src, x, y, cw, ch).to_image();
-    imageops::resize(&cropped, card_w, card_h, FilterType::Triangle)
+    let cropped = imageops::crop_imm(src, x, y, cw, ch);
+    imageops::resize(&*cropped, card_w, card_h, FilterType::Triangle)
 }
 
 #[cfg(test)]

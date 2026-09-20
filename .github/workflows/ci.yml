@@ -31,6 +31,33 @@ jobs:
 
       - run: cargo test --locked
 
+  replay-worker:
+    name: Replay worker (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install media dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config clang libclang-dev libavformat-dev libavcodec-dev libavutil-dev ffmpeg
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src/platform/linux/replay/worker -> target
+
+      - run: cargo fmt --manifest-path src/platform/linux/replay/worker/Cargo.toml --check
+      - run: cargo test --manifest-path src/platform/linux/replay/worker/Cargo.toml --locked
+      - run: cargo build --manifest-path src/platform/linux/replay/worker/Cargo.toml --locked
+      - run: python3 src/platform/linux/replay/worker/tests/probe.py --worker src/platform/linux/replay/worker/target/debug/boltsnap-replay-worker
+      - run: python3 src/platform/linux/replay/worker/tests/live.py --worker src/platform/linux/replay/worker/target/debug/boltsnap-replay-worker
+
   windows:
     name: Windows (test)
     runs-on: windows-2022

@@ -41,6 +41,18 @@ use wayland_client::{
 
 use crate::DynResult;
 
+/// Draw the overlay's labels in the desktop UI font, the same one the shelf
+/// resolves, so selector and shelf read as one surface set. Idempotent.
+pub fn install_ui_font() {
+    let family = crate::config::Config::load().ui_font;
+    // The bar sets its labels in Medium and its active modules in DemiBold.
+    let (medium, demibold) = crate::platform::linux::shelf::font::load_ui_font_weights(
+        family.as_deref(),
+        (500.0, 600.0),
+    );
+    render::set_ui_font(medium, demibold);
+}
+
 /// Drop-in replacement for `crate::select::run_select_with_parallel_capture`:
 /// same signature, same parallel-capture overlap. Opens a fullscreen
 /// wlr-layer-shell overlay on the focused output, renders the frozen screenshot
@@ -55,7 +67,7 @@ where
 {
     // Start the screenshot grab so it overlaps with Wayland init below.
     let capture_handle = thread::spawn(capture);
-    let mut sel = run_selector(instant, false, true, true, Some(capture_handle))?;
+    let mut sel = run_selector(instant, false, true, true, Some(capture_handle), None)?;
     Ok(sel.result.take())
 }
 
@@ -69,17 +81,32 @@ pub struct RecordSelectionResult {
     pub rect: Option<edit::Rect>,
     pub show_frame: bool,
     pub audio_enabled: bool,
+    pub clip: bool,
+    pub surface_size: (u32, u32),
+    pub output_origin: Option<(i32, i32)>,
+    pub frozen: Option<super::replay::FrozenSelection>,
 }
 
 pub fn run_select_record(
     initial_show_frame: bool,
     initial_audio_enabled: bool,
 ) -> DynResult<RecordSelectionResult> {
-    let mut sel = run_selector(false, true, initial_show_frame, initial_audio_enabled, None)?;
+    let mut sel = run_selector(
+        false,
+        true,
+        initial_show_frame,
+        initial_audio_enabled,
+        None,
+        super::replay::preview_target(),
+    )?;
     Ok(RecordSelectionResult {
         rect: sel.result_rect.take(),
         show_frame: sel.show_frame,
         audio_enabled: sel.audio_enabled,
+        clip: sel.result_clip,
+        surface_size: (sel.surf_w, sel.surf_h),
+        output_origin: sel.output_origin,
+        frozen: sel.frozen.take(),
     })
 }
 
@@ -94,7 +121,10 @@ fn run_selector(
     show_frame: bool,
     audio_enabled: bool,
     capture_handle: Option<thread::JoinHandle<Result<RgbaImage, String>>>,
+    replay: Option<super::replay::PreviewTarget>,
 ) -> DynResult<Selector> {
+    install_ui_font();
+
     let conn = Connection::connect_to_env()?;
     let (globals, mut event_queue) = registry_queue_init::<Selector>(&conn)?;
     let qh = event_queue.handle();
@@ -117,6 +147,7 @@ fn run_selector(
         keyboard: None,
         image: None,
         base: None,
+        overlay: None,
         surf_w: 0,
         surf_h: 0,
         configured: false,
@@ -134,6 +165,11 @@ fn run_selector(
         show_frame,
         audio_enabled,
         result_rect: None,
+        result_clip: false,
+        replay_output: replay.as_ref().map(|r| r.output.clone()),
+        frozen: None,
+        clip_reported: false,
+        output_origin: None,
     };
 
     // Discover outputs (names) so we can target the focused monitor. This
@@ -153,7 +189,24 @@ fn run_selector(
     // Create the fullscreen overlay on the focused output. Always pass a
     // concrete output: Hyprland may fail to map a layer surface with a null
     // output (see the shelf null-output note).
-    let output = sel.focused_output();
+    let output = if let Some(name) = &sel.replay_output {
+        Some(
+            sel.output_state
+                .outputs()
+                .find(|output| {
+                    sel.output_state
+                        .info(output)
+                        .is_some_and(|info| info.name.as_deref() == Some(name))
+                })
+                .ok_or("replay monitor disconnected")?,
+        )
+    } else {
+        sel.focused_output()
+    };
+    sel.output_origin = output
+        .as_ref()
+        .and_then(|o| sel.output_state.info(o))
+        .map(|info| info.logical_position.unwrap_or(info.location));
     let surface = sel.compositor.create_surface(&qh);
     let layer = sel.layer_shell.create_layer_surface(
         &qh,
@@ -169,8 +222,42 @@ fn run_selector(
     layer.commit();
     sel.layer = Some(layer);
 
+    let mut events = calloop::EventLoop::<Selector>::try_new()?;
+    calloop_wayland_source::WaylandSource::new(conn, event_queue)
+        .insert(events.handle())
+        .map_err(|e| format!("selector event source: {e}"))?;
+    if let Some(target) = replay {
+        let (sender, receiver) =
+            calloop::channel::channel::<Option<super::replay::FrozenSelection>>();
+        events
+            .handle()
+            .insert_source(receiver, |event, _, sel| {
+                if let calloop::channel::Event::Msg(Some(mut frozen)) = event {
+                    if sel.replay_output.as_deref() != Some(frozen.output.as_str()) {
+                        return;
+                    }
+                    sel.image = frozen.preview.take();
+                    sel.base = Some(match sel.image.as_ref() {
+                        Some(image) => render::base_pixmap_from_image(
+                            image,
+                            sel.surf_w.max(1),
+                            sel.surf_h.max(1),
+                        ),
+                        None => return,
+                    });
+                    sel.overlay = sel.base.as_ref().map(render::CachedOverlay::new);
+                    sel.frozen = Some(frozen);
+                    sel.clip_reported = false;
+                    sel.request_redraw();
+                }
+            })
+            .map_err(|e| format!("replay preview source: {e}"))?;
+        thread::spawn(move || {
+            let _ = sender.send(super::replay::FrozenSelection::prepare(&target));
+        });
+    }
     while !sel.done {
-        event_queue.blocking_dispatch(&mut sel)?;
+        events.dispatch(None, &mut sel)?;
     }
 
     Ok(sel)
@@ -191,6 +278,7 @@ struct Selector {
     image: Option<RgbaImage>,
     /// Display base layer, sized to the surface (built on first configure).
     base: Option<tiny_skia::Pixmap>,
+    overlay: Option<render::CachedOverlay>,
     surf_w: u32,
     surf_h: u32,
     configured: bool,
@@ -223,13 +311,21 @@ struct Selector {
     audio_enabled: bool,
     /// The confirmed selection rect (surface px), set on confirm in record mode.
     result_rect: Option<edit::Rect>,
+    result_clip: bool,
+    replay_output: Option<String>,
+    frozen: Option<super::replay::FrozenSelection>,
+    /// Whether a press on an unavailable Clip has already been reported.
+    clip_reported: bool,
+    output_origin: Option<(i32, i32)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RecordControlHit {
+    Clip,
     Audio,
     Frame,
     Record,
+    Background,
 }
 
 fn contains(rect: (f64, f64, f64, f64), point: (f64, f64)) -> bool {
@@ -242,19 +338,20 @@ fn record_control_hit(
     surf_h: u32,
     point: (f64, f64),
 ) -> Option<RecordControlHit> {
-    if render::record_audio_button_rect(sel, surf_w, surf_h)
-        .is_some_and(|rect| contains(rect, point))
-    {
-        Some(RecordControlHit::Audio)
-    } else if render::record_frame_checkbox_rect(sel, surf_w, surf_h)
-        .is_some_and(|rect| contains(rect, point))
-    {
-        Some(RecordControlHit::Frame)
-    } else if render::rec_pill_rect(sel, surf_w, surf_h).is_some_and(|rect| contains(rect, point)) {
-        Some(RecordControlHit::Record)
-    } else {
-        None
-    }
+    let toolbar = render::record_toolbar(sel, surf_w, surf_h)?;
+    toolbar
+        .controls
+        .iter()
+        .position(|&rect| contains(rect, point))
+        .map(|i| {
+            [
+                RecordControlHit::Record,
+                RecordControlHit::Clip,
+                RecordControlHit::Frame,
+                RecordControlHit::Audio,
+            ][i]
+        })
+        .or_else(|| contains(toolbar.bounds, point).then_some(RecordControlHit::Background))
 }
 
 #[derive(Clone, Copy)]
@@ -323,7 +420,11 @@ impl Selector {
         if !self.configured {
             return;
         }
-        let (Some(layer), Some(base)) = (self.layer.as_ref(), self.base.as_ref()) else {
+        let (Some(layer), Some(base), Some(overlay)) = (
+            self.layer.as_ref(),
+            self.base.as_ref(),
+            self.overlay.as_mut(),
+        ) else {
             return;
         };
         // `base` is built once from the captured image at the surface size on the
@@ -342,37 +443,33 @@ impl Selector {
             }
         };
 
-        let mut frame = base.clone();
-        render::dim_and_restore(&mut frame, sel);
+        let frame = overlay.reset(base, sel);
         if let Some(s) = sel {
-            render::draw_border(&mut frame, s);
+            render::draw_border(frame, s);
             if matches!(self.mode, Mode::Editing { .. }) {
-                render::draw_handles(&mut frame, s);
+                render::draw_handles(frame, s);
             }
             if self.record_mode {
-                render::draw_rec_pill(&mut frame, s, self.surf_w, self.surf_h);
-                render::draw_record_frame_checkbox(
-                    &mut frame,
-                    s,
-                    self.surf_w,
-                    self.surf_h,
-                    self.show_frame,
-                );
-                render::draw_record_audio_button(
-                    &mut frame,
-                    s,
-                    self.surf_w,
-                    self.surf_h,
-                    self.audio_enabled,
-                );
+                if let Some(toolbar) = render::record_toolbar(s, self.surf_w, self.surf_h) {
+                    let hovered = toolbar
+                        .controls
+                        .iter()
+                        .position(|&rect| contains(rect, self.cursor));
+                    render::draw_record_toolbar(
+                        frame,
+                        &toolbar,
+                        (self.frozen.is_some(), self.show_frame, self.audio_enabled),
+                        hovered,
+                    );
+                }
             } else {
-                render::draw_badge(&mut frame, s, self.surf_w, self.surf_h);
+                render::draw_badge(frame, s, self.surf_w, self.surf_h);
             }
         }
         // The magnifier samples the frozen screenshot; there is none in record
         // mode (transparent base), so it is only useful for screenshots.
         if self.alt_held && !self.record_mode {
-            render::draw_magnifier(&mut frame, base, self.cursor, self.surf_w, self.surf_h);
+            render::draw_magnifier(frame, base, self.cursor, self.surf_w, self.surf_h);
         }
 
         let stride = (w * 4) as i32;
@@ -385,7 +482,7 @@ impl Selector {
             Ok(v) => v,
             Err(_) => return,
         };
-        render::pixmap_to_argb8888(&frame, canvas);
+        render::pixmap_to_argb8888(frame, canvas);
         let surface = layer.wl_surface();
         surface.damage_buffer(0, 0, w as i32, h as i32);
         // Throttle to the compositor's frame clock: request a callback and hold
@@ -516,13 +613,18 @@ impl LayerShellHandler for Selector {
         };
         self.surf_w = w;
         self.surf_h = h;
-        if self.base.is_none() {
+        if self
+            .base
+            .as_ref()
+            .is_none_or(|base| base.width() != w || base.height() != h)
+        {
             self.base = Some(match self.image.as_ref() {
                 Some(img) => render::base_pixmap_from_image(img, w, h),
                 // Record mode (no screenshot): a transparent base so the dim
                 // overlay shows a translucent backdrop with a clear selection.
                 None => render::transparent_base(w, h),
             });
+            self.overlay = self.base.as_ref().map(render::CachedOverlay::new);
         }
         self.configured = true;
         self.draw();
@@ -589,19 +691,44 @@ impl PointerHandler for Selector {
                 }
             }
             let (x, y) = ev.position;
+            let previous_cursor = self.cursor;
             self.cursor = (x, y);
+            if self.record_mode
+                && let Mode::Editing { rect } = self.mode
+            {
+                let sel = (rect.x as f32, rect.y as f32, rect.w as f32, rect.h as f32);
+                redraw |= record_control_hit(sel, self.surf_w, self.surf_h, previous_cursor)
+                    != record_control_hit(sel, self.surf_w, self.surf_h, self.cursor);
+            }
             match ev.kind {
                 PointerEventKind::Press { button, .. } if button == BTN_LEFT => {
                     match self.mode {
                         Mode::Editing { rect } => {
-                            // Record mode: the REC pill is a Start button. A press
-                            // inside it confirms the selection (begins recording)
-                            // rather than being treated as a click outside the rect
-                            // (which would reset the selection).
+                            // Toolbar clicks do not alter the selection.
                             if self.record_mode {
                                 let sel =
                                     (rect.x as f32, rect.y as f32, rect.w as f32, rect.h as f32);
                                 match record_control_hit(sel, self.surf_w, self.surf_h, (x, y)) {
+                                    Some(RecordControlHit::Clip) => {
+                                        if self.frozen.is_some() {
+                                            self.result_clip = true;
+                                            self.confirm_rect(rect);
+                                        } else if !self.clip_reported {
+                                            // A control that does nothing when
+                                            // pressed is worse than one that
+                                            // says why. Once per selection, so
+                                            // repeated presses do not stack up.
+                                            self.clip_reported = true;
+                                            crate::platform::replay::notify_error(
+                                                if self.replay_output.is_some() {
+                                                    "Replay preview is unavailable or still loading. REC remains available."
+                                                } else {
+                                                    "No replay buffer to clip from. Start it from the tray menu (Replay buffer \u{2192} Start) or with `boltsnap replay start`."
+                                                },
+                                            );
+                                        }
+                                        return;
+                                    }
                                     Some(RecordControlHit::Audio) => {
                                         self.audio_enabled = !self.audio_enabled;
                                         self.interaction = None;
@@ -618,6 +745,7 @@ impl PointerHandler for Selector {
                                         self.confirm_rect(rect);
                                         return;
                                     }
+                                    Some(RecordControlHit::Background) => return,
                                     None => {}
                                 }
                             }
@@ -843,11 +971,21 @@ mod tests {
     #[test]
     fn audio_control_hit_does_not_confirm() {
         let sel = (80.0, 80.0, 200.0, 120.0);
-        let audio = render::record_audio_button_rect(sel, 400, 300).unwrap();
+        let toolbar = render::record_toolbar(sel, 400, 300).unwrap();
+        let audio = toolbar.controls[3];
         let center = (audio.0 + audio.2 / 2.0, audio.1 + audio.3 / 2.0);
         assert_eq!(
             record_control_hit(sel, 400, 300, center),
             Some(RecordControlHit::Audio)
+        );
+        assert_eq!(
+            record_control_hit(
+                sel,
+                400,
+                300,
+                (toolbar.bounds.0 + 2.0, toolbar.bounds.1 + 2.0)
+            ),
+            Some(RecordControlHit::Background)
         );
     }
 }

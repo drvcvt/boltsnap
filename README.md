@@ -10,6 +10,7 @@ Capture, selection, the screenshot shelf, and clipboard handling run in-process.
 - Native capture on Wayland and X11
 - In-process region selector and screenshot shelf on Wayland
 - Pipe-friendly: `-o -` writes PNG to stdout
+- Experimental Linux / Hyprland [replay clips](docs/replay.md): fullscreen or retrospective area clips into the shelf
 
 The Windows backend remains in the repository as unmaintained experimental
 code. CI compile- and unit-tests it, but new releases do not ship Windows
@@ -139,6 +140,11 @@ Backends:
 | X11     | Supported                  | x11rb GetImage | unavailable           | arboard            |
 | Windows | Experimental, unmaintained | DXGI + WGC     | in-process tiny-skia  | Win32 + OLE        |
 
+Replay capture currently has an experimental Hyprland adapter. It additionally
+requires the separate replay worker, FFmpeg and GPU Screen Recorder with native
+KMS permission. X11, other Wayland compositors and Windows have no replay adapter
+yet. See [setup, controls and limitations](docs/replay.md).
+
 ### Wayland compatibility
 
 Boltsnap supports Wayland protocols, not a specific compositor framework:
@@ -178,8 +184,8 @@ boltsnap area --no-copy -o -            # PNG to stdout
 boltsnap doctor                         # check helpers + capabilities
 ```
 
-Boltsnap does not bundle or launch an editor. Pipe PNG output to any external
-program when annotation is needed:
+Boltsnap does not bundle an editor. Linux shelf images open in the desktop's
+default image app; pipe PNG output when an explicit editor is preferred:
 
 ```sh
 boltsnap area --no-copy -o - | eddy -f -
@@ -216,7 +222,8 @@ boltsnap window      # pick a window -> shelf
 
 Each thumbnail responds to:
 
-- **Click** — copy the PNG to the clipboard (then paste with Ctrl+V).
+- **Click** — on Linux, open images and videos in the desktop's default app; on Windows, copy the image or video file reference.
+- **Right-click** (Linux) — copy the image or video file reference.
 - **Drag** — start a drag-and-drop into another app; the drop offers both the
   image (`image/png`) and a file path (`text/uri-list`) for maximum
   compatibility, including many XWayland apps. If the drop isn't accepted
@@ -263,8 +270,9 @@ Override precedence (highest to lowest):
 3. Config file — `~/.config/boltsnap/config.toml`
 4. Built-in default
 
-Clicking a shelf card copies an image or video file reference. The **Save**
-button writes it to the configured save directory.
+Clicking a Linux image or video card opens it in the desktop's default app.
+Right-click copies the media. The **Save** button writes it to the
+configured save directory.
 
 ## Screen recording
 
@@ -308,7 +316,8 @@ ordinary path that re-encodes; it uses high-quality settings intended to be
 visually lossless. Failed saves keep their source segments so they can be
 retried or discarded instead of losing the recording.
 
-Video cards carry a **▶** badge; clicking one copies a file reference.
+Video cards carry a **▶** badge; on Linux, clicking one opens the video in the
+desktop default app. Right-click copies its file reference.
 
 On Linux recording requires `wf-recorder`; audio also requires `pactl`. The
 unmaintained Windows backend contains native Windows Graphics Capture, Media
@@ -350,6 +359,11 @@ and no video data or paths are sent through IPC.
 # Use libx264 if you have no NVENC GPU.
 record_codec = "libx264"
 
+# Live recording profile (Linux): "quality" = 240 fps (default), "quiet" = 60 fps.
+# Encoder quality settings stay the same. Takes effect on the next recording;
+# pause/resume keeps its original profile. Replay has its own fps setting.
+record_profile = "quality"
+
 # Directory where finished .mp4 files are saved.
 # Default: same as save_dir
 record_dir = "~/Videos/boltsnap"
@@ -382,6 +396,15 @@ Audio sources follow the current default sink and microphone. Per-device
 pickers and volume controls are intentionally left to the desktop audio mixer.
 
 ## Contributing
+
+The Linux performance changes and their local validation are recorded in
+[the performance report](docs/performance.md).
+
+Replay uses an isolated experimental
+[media worker](src/platform/linux/replay/worker/README.md), launched by the Linux
+shelf daemon. It has its own build and media tests. Changes to replay must also
+run the worker unit tests and synthetic `probe.py` / `live.py` integration tests;
+see [replay setup](docs/replay.md).
 
 Linux is Boltsnap's supported platform. The unmaintained experimental Windows
 backend stays in the same tree so shared contracts remain compile-tested; do
