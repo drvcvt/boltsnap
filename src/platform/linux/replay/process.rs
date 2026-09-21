@@ -50,6 +50,25 @@ pub fn output_bounded(
     timeout: Duration,
     limit: usize,
 ) -> Result<Output, String> {
+    output_with_interval(command, timeout, limit, Duration::from_millis(20))
+}
+
+/// Short startup helpers should not inherit the media probe's 20 ms polling floor.
+pub fn output_setup(command: &mut Command) -> Result<Output, String> {
+    output_with_interval(
+        command.stdin(Stdio::null()),
+        Duration::from_millis(500),
+        64 * 1024,
+        Duration::from_millis(1),
+    )
+}
+
+fn output_with_interval(
+    command: &mut Command,
+    timeout: Duration,
+    limit: usize,
+    interval: Duration,
+) -> Result<Output, String> {
     let mut child = spawn(command.stdout(Stdio::piped()).stderr(Stdio::piped()), None)
         .map_err(|e| format!("start media capability probe: {e}"))?;
     let read = |pipe: Box<dyn Read + Send>| {
@@ -70,9 +89,7 @@ pub fn output_bounded(
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break Ok(status),
-            Ok(None) if started.elapsed() < timeout => {
-                std::thread::sleep(Duration::from_millis(20))
-            }
+            Ok(None) if started.elapsed() < timeout => std::thread::sleep(interval),
             result => {
                 terminate(&mut child);
                 break Err(match result {

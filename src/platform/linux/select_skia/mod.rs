@@ -1,7 +1,10 @@
 //! New region selector on raw SCTK (wlr-layer-shell) + tiny-skia, behind `--new`.
 //! Parallel to `src/select.rs` (egui); same public signature so it is a drop-in.
 
-use crate::selector::{edit, render};
+use crate::selector::{
+    edit, render,
+    scene::{Scene, SceneCache},
+};
 
 use std::thread;
 
@@ -28,7 +31,10 @@ use smithay_client_toolkit::{
             LayerSurfaceConfigure,
         },
     },
-    shm::{Shm, ShmHandler, slot::SlotPool},
+    shm::{
+        Shm, ShmHandler,
+        slot::{Buffer, SlotPool},
+    },
 };
 use wayland_client::{
     Connection, QueueHandle,
@@ -44,6 +50,7 @@ use crate::DynResult;
 /// Draw the overlay's labels in the desktop UI font, the same one the shelf
 /// resolves, so selector and shelf read as one surface set. Idempotent.
 pub fn install_ui_font() {
+    let _timing = super::timing::Span::new("font");
     let family = crate::config::Config::load().ui_font;
     // The bar sets its labels in Medium and its active modules in DemiBold.
     let (medium, demibold) = crate::platform::linux::shelf::font::load_ui_font_weights(
@@ -53,22 +60,30 @@ pub fn install_ui_font() {
     render::set_ui_font(medium, demibold);
 }
 
-/// Drop-in replacement for `crate::select::run_select_with_parallel_capture`:
-/// same signature, same parallel-capture overlap. Opens a fullscreen
-/// wlr-layer-shell overlay on the focused output, renders the frozen screenshot
-/// with a draggable selection via tiny-skia, and returns the cropped image on
-/// confirm (or `None` on Esc/cancel).
+/// Frozen image and the output layout it was captured from. The selector must
+/// never display these pixels on a freshly queried, potentially different output.
+pub struct CapturedOutput {
+    pub image: RgbaImage,
+    pub name: String,
+    pub origin: (i32, i32),
+    pub logical_size: (u32, u32),
+    pub transform: wl_output::Transform,
+}
+
 pub fn run_select_with_parallel_capture<F>(
     capture: F,
     instant: bool,
-) -> DynResult<Option<RgbaImage>>
+) -> DynResult<Option<(RgbaImage, Option<String>)>>
 where
-    F: FnOnce() -> Result<RgbaImage, String> + Send + 'static,
+    F: FnOnce() -> Result<CapturedOutput, String> + Send + 'static,
 {
     // Start the screenshot grab so it overlaps with Wayland init below.
     let capture_handle = thread::spawn(capture);
     let mut sel = run_selector(instant, false, true, true, Some(capture_handle), None)?;
-    Ok(sel.result.take())
+    Ok(sel
+        .result
+        .take()
+        .map(|image| (image, sel.target_name.take())))
 }
 
 /// Record-mode selector: opens the SAME overlay with the same draw/resize/move
@@ -120,13 +135,15 @@ fn run_selector(
     record_mode: bool,
     show_frame: bool,
     audio_enabled: bool,
-    capture_handle: Option<thread::JoinHandle<Result<RgbaImage, String>>>,
+    capture_handle: Option<thread::JoinHandle<Result<CapturedOutput, String>>>,
     replay: Option<super::replay::PreviewTarget>,
 ) -> DynResult<Selector> {
-    install_ui_font();
+    let font_handle = thread::spawn(install_ui_font);
+    let timing = super::timing::Span::new("selector_setup");
 
     let conn = Connection::connect_to_env()?;
     let (globals, mut event_queue) = registry_queue_init::<Selector>(&conn)?;
+    super::timing::mark("selector_wayland_connected");
     let qh = event_queue.handle();
 
     let compositor = CompositorState::bind(&globals, &qh)?;
@@ -148,6 +165,8 @@ fn run_selector(
         image: None,
         base: None,
         overlay: None,
+        buffers: Vec::new(),
+        committed_generation: None,
         surf_w: 0,
         surf_h: 0,
         configured: false,
@@ -170,6 +189,10 @@ fn run_selector(
         frozen: None,
         clip_reported: false,
         output_origin: None,
+        target_name: replay.as_ref().map(|r| r.output.clone()),
+        captured_layout: None,
+        target_output: None,
+        failure: None,
     };
 
     // Discover outputs (names) so we can target the focused monitor. This
@@ -183,13 +206,15 @@ fn run_selector(
         let image = handle
             .join()
             .map_err(|_| "capture worker panicked".to_string())??;
-        sel.image = Some(image);
+        sel.target_name = Some(image.name);
+        sel.captured_layout = Some((image.origin, image.logical_size, image.transform));
+        sel.image = Some(image.image);
     }
 
     // Create the fullscreen overlay on the focused output. Always pass a
     // concrete output: Hyprland may fail to map a layer surface with a null
     // output (see the shelf null-output note).
-    let output = if let Some(name) = &sel.replay_output {
+    let output = if let Some(name) = &sel.target_name {
         Some(
             sel.output_state
                 .outputs()
@@ -198,7 +223,7 @@ fn run_selector(
                         .info(output)
                         .is_some_and(|info| info.name.as_deref() == Some(name))
                 })
-                .ok_or("replay monitor disconnected")?,
+                .ok_or("capture monitor disconnected")?,
         )
     } else {
         sel.focused_output()
@@ -207,13 +232,18 @@ fn run_selector(
         .as_ref()
         .and_then(|o| sel.output_state.info(o))
         .map(|info| info.logical_position.unwrap_or(info.location));
+    sel.target_output = output;
+    if !sel.target_layout_valid() {
+        return Err("capture monitor layout changed during capture".into());
+    }
+    font_handle.join().map_err(|_| "font worker panicked")?;
     let surface = sel.compositor.create_surface(&qh);
     let layer = sel.layer_shell.create_layer_surface(
         &qh,
         surface,
         Layer::Overlay,
         Some("boltsnap-select"),
-        output.as_ref(),
+        sel.target_output.as_ref(),
     );
     layer.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
     layer.set_size(0, 0); // fill the output; real size arrives in configure
@@ -221,6 +251,7 @@ fn run_selector(
     layer.set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
     layer.commit();
     sel.layer = Some(layer);
+    drop(timing);
 
     let mut events = calloop::EventLoop::<Selector>::try_new()?;
     calloop_wayland_source::WaylandSource::new(conn, event_queue)
@@ -245,7 +276,11 @@ fn run_selector(
                         ),
                         None => return,
                     });
-                    sel.overlay = sel.base.as_ref().map(render::CachedOverlay::new);
+                    sel.overlay = sel.base.as_ref().map(SceneCache::new);
+                    sel.committed_generation = None;
+                    for buffer in &mut sel.buffers {
+                        buffer.generation = None;
+                    }
                     sel.frozen = Some(frozen);
                     sel.clip_reported = false;
                     sel.request_redraw();
@@ -258,9 +293,22 @@ fn run_selector(
     }
     while !sel.done {
         events.dispatch(None, &mut sel)?;
+        // wl_buffer.release is handled inside SCTK, independently of frame callbacks.
+        if !sel.done && sel.needs_redraw && !sel.frame_pending {
+            sel.draw();
+        }
     }
 
+    if let Some(error) = &sel.failure {
+        return Err(error.clone().into());
+    }
     Ok(sel)
+}
+
+struct FrameBuffer {
+    buffer: Buffer,
+    generation: Option<u64>,
+    size: (u32, u32),
 }
 
 struct Selector {
@@ -278,7 +326,9 @@ struct Selector {
     image: Option<RgbaImage>,
     /// Display base layer, sized to the surface (built on first configure).
     base: Option<tiny_skia::Pixmap>,
-    overlay: Option<render::CachedOverlay>,
+    overlay: Option<SceneCache>,
+    buffers: Vec<FrameBuffer>,
+    committed_generation: Option<u64>,
     surf_w: u32,
     surf_h: u32,
     configured: bool,
@@ -317,6 +367,10 @@ struct Selector {
     /// Whether a press on an unavailable Clip has already been reported.
     clip_reported: bool,
     output_origin: Option<(i32, i32)>,
+    target_name: Option<String>,
+    captured_layout: Option<((i32, i32), (u32, u32), wl_output::Transform)>,
+    target_output: Option<wl_output::WlOutput>,
+    failure: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -385,6 +439,23 @@ const DRAG_SLOP: f64 = 3.0;
 impl Selector {
     /// Pick a concrete `wl_output` on the focused monitor (Hyprland), falling
     /// back to the first output. Mirrors the shelf's `target_output`.
+    fn target_layout_valid(&self) -> bool {
+        let Some(output) = &self.target_output else {
+            return true;
+        };
+        let Some(info) = self.output_state.info(output) else {
+            return false;
+        };
+        self.captured_layout
+            .is_none_or(|(origin, size, transform)| {
+                info.transform == transform
+                    && info.logical_position.unwrap_or(info.location) == origin
+                    && info
+                        .logical_size
+                        .is_none_or(|s| s == (size.0 as i32, size.1 as i32))
+            })
+    }
+
     fn focused_output(&self) -> Option<wl_output::WlOutput> {
         let outputs: Vec<_> = self.output_state.outputs().collect();
         if outputs.len() <= 1 {
@@ -415,9 +486,9 @@ impl Selector {
     }
 
     /// Render the current frame (screenshot + dim + optional selection) into a
-    /// fresh wl_shm buffer and commit it.
+    /// reusable wl_shm buffer and commit only changed regions.
     fn draw(&mut self) {
-        if !self.configured {
+        if !self.configured || self.done {
             return;
         }
         let (Some(layer), Some(base), Some(overlay)) = (
@@ -443,55 +514,92 @@ impl Selector {
             }
         };
 
-        let frame = overlay.reset(base, sel);
-        if let Some(s) = sel {
-            render::draw_border(frame, s);
-            if matches!(self.mode, Mode::Editing { .. }) {
-                render::draw_handles(frame, s);
-            }
-            if self.record_mode {
-                if let Some(toolbar) = render::record_toolbar(s, self.surf_w, self.surf_h) {
-                    let hovered = toolbar
-                        .controls
-                        .iter()
-                        .position(|&rect| contains(rect, self.cursor));
-                    render::draw_record_toolbar(
-                        frame,
-                        &toolbar,
-                        (self.frozen.is_some(), self.show_frame, self.audio_enabled),
-                        hovered,
-                    );
-                }
-            } else {
-                render::draw_badge(frame, s, self.surf_w, self.surf_h);
-            }
+        let hovered = sel
+            .and_then(|s| render::record_toolbar(s, w, h))
+            .and_then(|t| {
+                t.controls
+                    .iter()
+                    .position(|&rect| contains(rect, self.cursor))
+            });
+        overlay.update(
+            base,
+            Scene {
+                selection: sel,
+                editing: matches!(self.mode, Mode::Editing { .. }),
+                record: self.record_mode,
+                toggles: if self.record_mode {
+                    (self.frozen.is_some(), self.show_frame, self.audio_enabled)
+                } else {
+                    (false, false, false)
+                },
+                hovered: self.record_mode.then_some(hovered).flatten(),
+                magnifier: (self.alt_held && !self.record_mode).then_some(self.cursor),
+            },
+        );
+        if self.committed_generation == Some(overlay.generation()) {
+            self.needs_redraw = false;
+            return;
         }
-        // The magnifier samples the frozen screenshot; there is none in record
-        // mode (transparent base), so it is only useful for screenshots.
-        if self.alt_held && !self.record_mode {
-            render::draw_magnifier(frame, base, self.cursor, self.surf_w, self.surf_h);
-        }
-
-        let stride = (w * 4) as i32;
-        let (buffer, canvas) = match self.pool.create_buffer(
-            w as i32,
-            h as i32,
-            stride,
-            wayland_client::protocol::wl_shm::Format::Argb8888,
-        ) {
-            Ok(v) => v,
-            Err(_) => return,
+        // Retire differently sized slots only after release. They count toward
+        // the same three-slot cap even during rapid compositor resizes.
+        self.buffers
+            .retain(|slot| slot.size == (w, h) || slot.buffer.canvas(&mut self.pool).is_none());
+        let free = self
+            .buffers
+            .iter()
+            .position(|b| b.size == (w, h) && b.buffer.canvas(&mut self.pool).is_some());
+        let index = match free {
+            Some(index) => index,
+            None if self.buffers.len() < 3 => {
+                let created = self.pool.create_buffer(
+                    w as i32,
+                    h as i32,
+                    (w * 4) as i32,
+                    wayland_client::protocol::wl_shm::Format::Argb8888,
+                );
+                let (buffer, _) = match created {
+                    Ok(v) => v,
+                    Err(error) => {
+                        self.failure = Some(format!("selector buffer: {error}"));
+                        self.done = true;
+                        return;
+                    }
+                };
+                self.buffers.push(FrameBuffer {
+                    buffer,
+                    generation: None,
+                    size: (w, h),
+                });
+                self.buffers.len() - 1
+            }
+            None => {
+                self.needs_redraw = true;
+                return;
+            }
         };
-        render::pixmap_to_argb8888(frame, canvas);
+        let slot = &mut self.buffers[index];
+        let repair = overlay.damage_since(slot.generation);
+        let Some(canvas) = slot.buffer.canvas(&mut self.pool) else {
+            self.needs_redraw = true;
+            return;
+        };
+        overlay.copy_regions(canvas, &repair);
+        slot.generation = Some(overlay.generation());
         let surface = layer.wl_surface();
-        surface.damage_buffer(0, 0, w as i32, h as i32);
-        // Throttle to the compositor's frame clock: request a callback and hold
-        // further redraws until it fires (see `request_redraw` / `frame`). Caps
-        // commits to the refresh rate and lets the SlotPool reuse one buffer
-        // instead of growing unboundedly during a fast drag.
+        if let Err(error) = slot.buffer.attach_to(surface) {
+            self.failure = Some(format!("selector attach: {error}"));
+            self.done = true;
+            return;
+        }
+        for (x0, y0, x1, y1) in overlay.damage_since(self.committed_generation) {
+            surface.damage_buffer(x0 as i32, y0 as i32, (x1 - x0) as i32, (y1 - y0) as i32);
+        }
         surface.frame(&self.qh, surface.clone());
-        let _ = buffer.attach_to(surface);
         layer.commit();
+        if self.committed_generation.is_none() {
+            super::timing::mark("selector_first_commit");
+        }
+        self.committed_generation = Some(overlay.generation());
         self.frame_pending = true;
         self.needs_redraw = false;
     }
@@ -500,6 +608,7 @@ impl Selector {
     /// finish. Otherwise crop the full-res capture to `rect`, or return to Idle
     /// if the rect is sub-pixel.
     fn confirm_rect(&mut self, rect: edit::Rect) {
+        super::timing::mark("selection_confirmed");
         if self.record_mode {
             // Reject a sub-pixel selection rather than confirming an empty rect.
             if rect.w < MIN_SEL || rect.h < MIN_SEL {
@@ -526,6 +635,7 @@ impl Selector {
         ) {
             Some((x, y, w, h)) => {
                 self.result = Some(image::imageops::crop_imm(img, x, y, w, h).to_image());
+                super::timing::mark("crop_ready");
                 self.done = true;
             }
             None => {
@@ -554,7 +664,7 @@ impl CompositorHandler for Selector {
     ) {
     }
     fn frame(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlSurface, _: u32) {
-        // A committed frame was presented; allow the next draw and run any
+        // The compositor is ready for another frame (not presentation proof). Run any
         // redraw that was coalesced while we waited for this callback.
         self.frame_pending = false;
         if self.needs_redraw {
@@ -584,8 +694,23 @@ impl OutputHandler for Selector {
         &mut self.output_state
     }
     fn new_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
-    fn update_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
-    fn output_destroyed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
+    fn update_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {
+        if !self.target_layout_valid() {
+            self.failure = Some("capture monitor layout changed".into());
+            self.done = true;
+        }
+    }
+    fn output_destroyed(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        output: wl_output::WlOutput,
+    ) {
+        if self.target_output.as_ref() == Some(&output) {
+            self.failure = Some("capture monitor disconnected".into());
+            self.done = true;
+        }
+    }
 }
 
 impl LayerShellHandler for Selector {
@@ -601,6 +726,11 @@ impl LayerShellHandler for Selector {
         configure: LayerSurfaceConfigure,
         _: u32,
     ) {
+        if !self.target_layout_valid() {
+            self.failure = Some("capture monitor layout changed".into());
+            self.done = true;
+            return;
+        }
         let w = if configure.new_size.0 != 0 {
             configure.new_size.0
         } else {
@@ -624,10 +754,17 @@ impl LayerShellHandler for Selector {
                 // overlay shows a translucent backdrop with a clear selection.
                 None => render::transparent_base(w, h),
             });
-            self.overlay = self.base.as_ref().map(render::CachedOverlay::new);
+            self.overlay = self.base.as_ref().map(SceneCache::new);
+            for slot in &mut self.buffers {
+                slot.generation = None;
+            }
+            self.committed_generation = None;
+        }
+        if !self.configured {
+            super::timing::mark("selector_configured");
         }
         self.configured = true;
-        self.draw();
+        self.request_redraw();
     }
 }
 
@@ -983,7 +1120,10 @@ mod tests {
                 sel,
                 400,
                 300,
-                (toolbar.bounds.0 + 2.0, toolbar.bounds.1 + 2.0)
+                (
+                    toolbar.bounds.0 + toolbar.bounds.2 / 2.0,
+                    (toolbar.bounds.1 + toolbar.controls[0].1) / 2.0,
+                )
             ),
             Some(RecordControlHit::Background)
         );

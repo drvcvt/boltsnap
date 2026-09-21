@@ -1,9 +1,11 @@
 pub mod capture;
 pub mod clipboard;
+pub(crate) mod image_transfer;
 pub mod ipc;
 pub mod paths;
 pub mod portal;
 pub mod replay;
 pub mod select_skia;
 pub mod shelf;
+pub(crate) mod timing;
 pub mod tray;

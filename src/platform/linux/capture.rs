@@ -37,7 +37,7 @@ pub fn capture_png(
     Ok((backend, output, bytes))
 }
 
-fn capture_image(
+pub(crate) fn capture_image(
     mode: CaptureMode,
     backend: Backend,
     instant: bool,
@@ -52,6 +52,7 @@ fn capture_image(
     };
     // Match the previous RGB output before evaluating a window border, without
     // encoding and decoding an intermediate file.
+    let _timing = super::timing::Span::new("rgb_and_trim");
     let image = DynamicImage::ImageRgba8(image).into_rgb8();
     let image = if trim && matches!(mode, CaptureMode::Window | CaptureMode::ActiveWindow) {
         strip_uniform_border(image)
@@ -291,7 +292,9 @@ fn x11_pick_window_id() -> DynResult<Option<u32>> {
 }
 
 fn capture_wayland(mode: CaptureMode, instant: bool) -> DynResult<(RgbaImage, Option<String>)> {
+    let _timing = super::timing::Span::new("capture_wayland_total");
     let capture_output = crate::platform::shelf::focused_monitor_name();
+    super::timing::mark("target_resolved");
     match mode {
         CaptureMode::Full => {
             let img = wayland_full_image()?;
@@ -311,13 +314,15 @@ fn capture_wayland(mode: CaptureMode, instant: bool) -> DynResult<(RgbaImage, Op
         CaptureMode::Area | CaptureMode::Window => {
             // Run libwayshot capture on a worker so it overlaps with the
             // selector's Wayland init. Capture only the focused output.
-            let grab = || -> Result<RgbaImage, String> {
+            let grab = move || -> Result<super::select_skia::CapturedOutput, String> {
                 let conn = libwayshot::WayshotConnection::new()
                     .map_err(|e| format!("wayland connection failed: {e}"))?;
-                let out_info = pick_focused_wl_output(&conn)
+                super::timing::mark("wayshot_connected");
+                let out_info = pick_focused_wl_output(&conn, capture_output.as_deref())
                     .map_err(|e| format!("output pick failed: {e}"))?;
-                match conn.screenshot_outputs(std::slice::from_ref(&out_info), false) {
-                    Ok(img) => Ok(img.to_rgba8()),
+                super::timing::mark("capture_start");
+                let image = match conn.screenshot_outputs(std::slice::from_ref(&out_info), false) {
+                    Ok(img) => img.into_rgba8(),
                     Err(err) => {
                         // No wlr-screencopy (KWin): grab the whole desktop
                         // through the portal and cut out the focused output.
@@ -327,14 +332,28 @@ fn capture_wayland(mode: CaptureMode, instant: bool) -> DynResult<(RgbaImage, Op
                             )
                         })?;
                         let outputs = conn.get_all_outputs();
-                        Ok(crop_to_output(full, &outputs, &out_info))
+                        crop_to_output(full, &outputs, &out_info)
                     }
-                }
+                };
+                super::timing::mark("capture_ready");
+                Ok(super::select_skia::CapturedOutput {
+                    image,
+                    name: out_info.name,
+                    transform: out_info.transform,
+                    origin: (
+                        out_info.logical_region.inner.position.x,
+                        out_info.logical_region.inner.position.y,
+                    ),
+                    logical_size: (
+                        out_info.logical_region.inner.size.width,
+                        out_info.logical_region.inner.size.height,
+                    ),
+                })
             };
             let cropped =
                 crate::platform::select_skia::run_select_with_parallel_capture(grab, instant)?
                     .ok_or("selection cancelled")?;
-            Ok((cropped, capture_output))
+            Ok(cropped)
         }
     }
 }
@@ -345,6 +364,7 @@ fn capture_wayland(mode: CaptureMode, instant: bool) -> DynResult<(RgbaImage, Op
 // "good enough" for everyone else (still way better than stitching).
 fn pick_focused_wl_output(
     conn: &libwayshot::WayshotConnection,
+    focused: Option<&str>,
 ) -> DynResult<libwayshot::output::OutputInfo> {
     let outputs = conn.get_all_outputs();
     if outputs.is_empty() {
@@ -353,7 +373,7 @@ fn pick_focused_wl_output(
     if outputs.len() == 1 {
         return Ok(outputs[0].clone());
     }
-    if let Some(name) = crate::platform::shelf::focused_monitor_name() {
+    if let Some(name) = focused {
         if let Some(o) = outputs.iter().find(|o| o.name == name) {
             return Ok(o.clone());
         }
@@ -367,7 +387,7 @@ fn wayland_full_image() -> Result<RgbaImage, String> {
         .map_err(|e| format!("wayland connection failed: {e}"))
         .and_then(|conn| {
             conn.screenshot_all(false)
-                .map(|img| img.to_rgba8())
+                .map(|img| img.into_rgba8())
                 .map_err(|e| format!("wayshot screenshot_all failed: {e}"))
         });
     wayshot.or_else(|err| {
@@ -382,27 +402,49 @@ fn crop_to_output(
     outputs: &[libwayshot::output::OutputInfo],
     target: &libwayshot::output::OutputInfo,
 ) -> RgbaImage {
-    let (right, bottom) = outputs.iter().fold((0i64, 0i64), |(r, b), o| {
-        let reg = &o.logical_region.inner;
-        (
-            r.max(i64::from(reg.position.x) + i64::from(reg.size.width)),
-            b.max(i64::from(reg.position.y) + i64::from(reg.size.height)),
-        )
-    });
-    if right <= 0 || bottom <= 0 {
+    let regions: Vec<_> = outputs
+        .iter()
+        .map(|o| {
+            let r = &o.logical_region.inner;
+            (r.position.x, r.position.y, r.size.width, r.size.height)
+        })
+        .collect();
+    let r = &target.logical_region.inner;
+    let Some((x, y, w, h)) = portal_crop_bounds(
+        full.dimensions(),
+        &regions,
+        (r.position.x, r.position.y, r.size.width, r.size.height),
+    ) else {
         return full;
-    }
-    let sx = f64::from(full.width()) / right as f64;
-    let sy = f64::from(full.height()) / bottom as f64;
-    let reg = &target.logical_region.inner;
-    let x = (f64::from(reg.position.x) * sx).round().max(0.0) as u32;
-    let y = (f64::from(reg.position.y) * sy).round().max(0.0) as u32;
-    let w = ((f64::from(reg.size.width) * sx).round() as u32).min(full.width().saturating_sub(x));
-    let h = ((f64::from(reg.size.height) * sy).round() as u32).min(full.height().saturating_sub(y));
-    if w == 0 || h == 0 {
-        return full;
-    }
+    };
     imageops::crop_imm(&full, x, y, w, h).to_image()
+}
+
+fn portal_crop_bounds(
+    image: (u32, u32),
+    regions: &[(i32, i32, u32, u32)],
+    target: (i32, i32, u32, u32),
+) -> Option<(u32, u32, u32, u32)> {
+    let left = regions.iter().map(|r| i64::from(r.0)).min()?;
+    let top = regions.iter().map(|r| i64::from(r.1)).min()?;
+    let right = regions
+        .iter()
+        .map(|r| i64::from(r.0) + i64::from(r.2))
+        .max()?;
+    let bottom = regions
+        .iter()
+        .map(|r| i64::from(r.1) + i64::from(r.3))
+        .max()?;
+    if right <= left || bottom <= top {
+        return None;
+    }
+    let sx = f64::from(image.0) / (right - left) as f64;
+    let sy = f64::from(image.1) / (bottom - top) as f64;
+    let x = (((i64::from(target.0) - left) as f64 * sx).round().max(0.0) as u32).min(image.0);
+    let y = (((i64::from(target.1) - top) as f64 * sy).round().max(0.0) as u32).min(image.1);
+    let w = ((f64::from(target.2) * sx).round() as u32).min(image.0 - x);
+    let h = ((f64::from(target.3) * sy).round() as u32).min(image.1 - y);
+    (w > 0 && h > 0).then_some((x, y, w, h))
 }
 
 fn parse_geometry(geometry: &str) -> DynResult<libwayshot::region::LogicalRegion> {
@@ -465,7 +507,7 @@ fn geometry_from_json_arrays(at: &[Value], size: &[Value]) -> Option<String> {
 
 fn run_capture(cmd: &mut Command) -> DynResult<Vec<u8>> {
     let debug = format!("{:?}", cmd);
-    let out = cmd.output()?;
+    let out = super::replay::process::output_setup(cmd)?;
     if out.status.success() {
         Ok(out.stdout)
     } else {
@@ -479,6 +521,29 @@ fn run_capture(cmd: &mut Command) -> DynResult<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn owned_rgba_is_reused_and_portal_crop_handles_negative_origins() {
+        let rgba = image::RgbaImage::new(23, 17);
+        let allocation = rgba.as_ptr();
+        let owned = image::DynamicImage::ImageRgba8(rgba).into_rgba8();
+        assert_eq!(owned.as_ptr(), allocation);
+        let left = (-1920, -1080, 1920, 1080);
+        let right = (0, -1080, 1920, 1080);
+        assert_eq!(
+            super::portal_crop_bounds((3840, 1080), &[left, right], left),
+            Some((0, 0, 1920, 1080))
+        );
+        assert_eq!(
+            super::portal_crop_bounds((7680, 2160), &[left, right], right),
+            Some((3840, 0, 3840, 2160))
+        );
+        assert_eq!(
+            super::portal_crop_bounds((1920, 1080), &[(0, 0, 1920, 1080)], (0, 0, 1920, 1080)),
+            Some((0, 0, 1920, 1080))
+        );
+        assert_eq!(super::portal_crop_bounds((1, 1), &[], left), None);
+    }
+
     #[test]
     fn border_trimming_preserves_pixels_and_uniform_images() {
         let border = image::Rgb([30, 30, 30]);
