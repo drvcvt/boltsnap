@@ -156,7 +156,6 @@ pub fn save(
         filter.push_str(",hwupload");
     }
     command.args([
-        "-re",
         "-i",
         "pipe:0",
         "-map",
@@ -175,11 +174,11 @@ pub fn save(
         "0",
     ]);
     if encoder.ends_with("_vulkan") || encoder.ends_with("_nvenc") {
-        command.args(["-qp", "22"]);
+        command.args(["-qp", "18"]);
     } else if encoder.ends_with("_vaapi") {
-        command.args(["-global_quality", "22"]);
+        command.args(["-global_quality", "18"]);
     } else if encoder == "libx264" || encoder == "libx265" {
-        command.args(["-preset", "fast", "-crf", "20"]);
+        command.args(["-preset", "veryfast", "-crf", "18"]);
     }
     command
         .args(["-c:a", "copy", "-f", "matroska", "pipe:1"])

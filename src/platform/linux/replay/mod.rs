@@ -426,11 +426,10 @@ fn start_capture(settings: Settings, cancel: &AtomicBool) -> Result<Session, Str
             "cfr",
             "-k",
             capture_codec,
-            // The buffer runs for as long as the user leaves it on, so its
-            // steady cost matters more than the last bit of fidelity: medium
-            // costs about a third less CPU than very_high for the same fps.
+            // The frozen selector is decoded from this stream too. Keep text
+            // legible; the cheaper medium preset visibly degrades the preview.
             "-q",
-            "medium",
+            "very_high",
             "-tune",
             "performance",
             "-keyint",

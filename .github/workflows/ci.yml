@@ -50,6 +50,8 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
+          # Generated FFmpeg bindings depend on the distro's native ABI.
+          prefix-key: replay-${{ matrix.os }}-v1
           workspaces: src/platform/linux/replay/worker -> target
 
       - run: cargo fmt --manifest-path src/platform/linux/replay/worker/Cargo.toml --check

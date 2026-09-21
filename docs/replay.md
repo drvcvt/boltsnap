@@ -84,10 +84,12 @@ and process overhead are additional memory, so `memory_mib` is not a total RSS
 limit. The preview decodes only the final GOP and transfers a bounded PNG.
 
 Only one selection/export is accepted at a time. A selection expires after
-120 seconds. Region export runs at approximately playback speed, with limited
-CPU threads and reduced scheduling priority. A 60-second region clip can
-therefore take about 60 seconds to appear in the shelf. Full-display remux is
-not paced. Stop cancels the capture and any unfinished export; a partial file
+120 seconds. Region export uses limited CPU threads and reduced scheduling
+priority but runs as fast as the decoder and encoder allow. It is no longer
+paced to the clip duration. The shelf receives the completed file immediately
+after export. Full-display remux still avoids encoding. Capture uses the
+very-high quality preset because the selector also displays a decoded buffer
+frame; region export uses QP/CRF 18 to limit the additional encoding loss. Stop cancels the capture and any unfinished export; a partial file
 can remain for recovery. Completed clips are privately created in the recording
 cache and published without replacing existing files. Existing cache and disk
 reserve checks apply; concurrent ordinary recording is not a shared disk
