@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import socket
+import shutil
 import struct
 import subprocess
 import tempfile
@@ -28,8 +29,28 @@ def main():
         "-sc_threshold", "0", "-flags", "+cgop", "-c:a", "aac", "-f", "nut", "-write_index", "0",
         "-syncpoints", "none", "-strict", "experimental", "-flush_packets", "1", "pipe:1"], stdout=subprocess.PIPE,
         stderr=(directory / "producer.log").open("wb"))
+    # Hold only the crop encoder at startup. Export exclusion must be tested
+    # deterministically, even when a small clip finishes in less than 300 ms.
+    gate = directory / "encoder-gate"
+    gate.mkdir()
+    started, release = directory / "crop-started", directory / "crop-release"
+    wrapper = gate / "ffmpeg"
+    wrapper.write_text(f"""#!/usr/bin/env python3
+import os, sys, time
+from pathlib import Path
+if '-vf' in sys.argv and sys.argv[sys.argv.index('-vf') + 1].startswith('crop='):
+    assert '-re' not in sys.argv and '-readrate' not in sys.argv, 'export must not be paced'
+    Path({str(started)!r}).touch()
+    deadline = time.monotonic() + 10
+    while not Path({str(release)!r}).exists():
+        if time.monotonic() > deadline: sys.exit(2)
+        time.sleep(0.01)
+os.execv({shutil.which('ffmpeg')!r}, ['ffmpeg'] + sys.argv[1:])
+""")
+    wrapper.chmod(0o755)
+    environment = dict(os.environ, PATH=str(gate) + os.pathsep + os.environ["PATH"])
     worker = subprocess.Popen([str(args.worker.resolve()), "live", name, str(directory), "3", "64", args.encoder],
-        stdin=producer.stdout, stderr=(directory / "worker.log").open("wb"))
+        stdin=producer.stdout, stderr=(directory / "worker.log").open("wb"), env=environment)
     producer.stdout.close()
 
     def call(command, **fields):
@@ -72,11 +93,19 @@ def main():
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             export = pool.submit(call, "save", snapshot=frozen["snapshot"],
                                  crop={"x": 64, "y": 48, "width": 320, "height": 180})
-            time.sleep(0.3)
+            deadline = time.monotonic() + 10
+            while not started.exists():
+                assert not export.done(), export.result() if export.done() else None
+                assert time.monotonic() < deadline, "crop encoder did not start"
+                time.sleep(0.01)
             status = call("status")
             assert status["ready"] and status["busy"], status
             assert not call("save")["ok"]
+            export_started = time.monotonic()
+            release.touch()
             cropped = export.result(timeout=30)
+            export_seconds = time.monotonic() - export_started
+            print(f"crop: {cropped['duration_us'] / 1_000_000:.2f}s video in {export_seconds:.3f}s", flush=True)
         assert cropped["ok"], cropped
         assert cropped["duration_us"] == frozen["duration_us"], (frozen, cropped)
         assert not call("save", snapshot=frozen["snapshot"])["ok"]
@@ -94,7 +123,7 @@ def main():
             assert video["avg_frame_rate"] == "60/1", video
             assert int(video["nb_read_frames"]) == round(result["duration_us"] * 60 / 1_000_000), video
             assert any(s["codec_type"] == "audio" for s in streams)
-        (directory / "report.json").write_text(json.dumps({"frozen": frozen, "cropped": cropped, "full": full}, indent=2))
+        (directory / "report.json").write_text(json.dumps({"frozen": frozen, "cropped": cropped, "full": full, "crop_export_seconds": export_seconds}, indent=2))
         assert call("stop")["ok"]
         worker.wait(timeout=5)
         print("passed: live buffer, frozen crop, concurrent status, export limit, stale snapshot, full clip, audio, decode")
