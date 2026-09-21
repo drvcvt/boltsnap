@@ -13,7 +13,11 @@ fn parse_gsettings_font(output: &str) -> Option<String> {
 
 fn parse_fc_match(output: &str) -> Option<(PathBuf, u32)> {
     let (path, index) = output.lines().next()?.split_once('\t')?;
-    (!path.is_empty()).then_some((PathBuf::from(path), index.trim().parse().ok()?))
+    // Fontconfig uses FreeType's packed index: low 16 bits select the face,
+    // high bits select a named variable instance. ab_glyph needs only the face;
+    // our UI loaders explicitly set the weight axis below.
+    let face = index.trim().parse::<u32>().ok()? & 0xffff;
+    (!path.is_empty()).then_some((PathBuf::from(path), face))
 }
 
 /// Ask fontconfig which face backs `query`. One `fc-match` costs about 10 ms,
@@ -49,10 +53,14 @@ fn ui_font_bytes(family: Option<&str>) -> Option<(Vec<u8>, u32)> {
 /// Load the family boltsnap's chrome is configured with, falling back to the
 /// desktop font when the config names none.
 pub fn load_ui_font(family: Option<&str>) -> FontVec {
-    family
+    let mut font = family
         .filter(|family| !family.is_empty())
         .and_then(load_fontconfig_font)
-        .unwrap_or_else(load_popup_font)
+        .unwrap_or_else(load_popup_font);
+    // Variable files can default to Thin (Outfit does). Match the selector's
+    // Medium text instead of relying on the font's default variation instance.
+    font.set_variation(b"wght", 500.0);
+    font
 }
 
 /// The chrome font at two variable weights, resolving fontconfig and reading
@@ -115,6 +123,18 @@ mod tests {
         assert_eq!(
             parse_fc_match("/usr/share/fonts/inter/Inter.ttc\t2\n"),
             Some((PathBuf::from("/usr/share/fonts/inter/Inter.ttc"), 2))
+        );
+    }
+
+    #[test]
+    fn fontconfig_named_instance_preserves_collection_face() {
+        assert_eq!(
+            parse_fc_match("/fonts/Outfit.ttf\t262144\n"),
+            Some((PathBuf::from("/fonts/Outfit.ttf"), 0))
+        );
+        assert_eq!(
+            parse_fc_match("/fonts/Variable.ttc\t196612\n"),
+            Some((PathBuf::from("/fonts/Variable.ttc"), 4))
         );
     }
 
