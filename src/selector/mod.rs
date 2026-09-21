@@ -1,3 +1,4 @@
+pub mod desktop;
 pub mod edit;
 pub mod render;
 

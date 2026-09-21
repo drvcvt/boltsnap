@@ -136,7 +136,7 @@ Backends:
 
 | Backend | Status                     | Capture        | Region select         | Clipboard          |
 |---------|----------------------------|----------------|-----------------------|--------------------|
-| Wayland | Supported                  | libwayshot     | in-process tiny-skia  | wl-clipboard-rs    |
+| Wayland | Supported                  | libwayshot     | across monitors, tiny-skia | wl-clipboard-rs    |
 | X11     | Supported                  | x11rb GetImage | unavailable           | arboard            |
 | Windows | Experimental, unmaintained | DXGI + WGC     | in-process tiny-skia  | Win32 + OLE        |
 
@@ -164,6 +164,12 @@ The following compositor stacks are tested:
 
 Other Wayland compositors may work if they expose the required protocols;
 using wlroots or Smithay alone is not a compatibility guarantee.
+
+Screenshot region selection freezes all monitors and allows a single selection
+across monitor boundaries, including offset and differently scaled outputs.
+The saved image uses the highest output scale; gaps between monitors are black.
+Recording and replay selection remain on their target monitor. If an output is
+connected, disconnected, or rearranged during selection, retry the capture.
 
 Screenshot capture and clipboard handling need no CLI helpers. `hyprctl` is
 optional and supplies active-window geometry on Hyprland; other Wayland

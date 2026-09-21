@@ -7,6 +7,7 @@ pub type Region = (u32, u32, u32, u32); // exclusive right/bottom
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Scene {
+    pub chrome_viewport: Option<super::desktop::Viewport>,
     pub selection: Option<(f32, f32, f32, f32)>,
     pub editing: bool,
     pub record: bool,
@@ -58,6 +59,36 @@ fn selection(s: &Scene, w: u32, h: u32) -> Option<Region> {
     bounds((x as f64, y as f64, rw as f64, rh as f64), 0.0, w, h)
 }
 
+fn badge_bounds(
+    s: &Scene,
+    sel: (f32, f32, f32, f32),
+    w: u32,
+    h: u32,
+) -> Option<(f64, f64, f64, f64)> {
+    let (x, y, bw, bh) = render::badge_bounds(sel, w, h)?;
+    let Some((vx, vy, vw, vh)) = s.chrome_viewport else {
+        return Some((x, y, bw, bh));
+    };
+    Some((
+        x.clamp(vx as f64, (vx as f64 + vw as f64 - bw).max(vx as f64)),
+        y.clamp(vy as f64, (vy as f64 + vh as f64 - bh).max(vy as f64)),
+        bw,
+        bh,
+    ))
+}
+
+fn loupe_position(s: &Scene, cursor: (f64, f64), w: u32, h: u32) -> (f64, f64) {
+    let (x, y, w, h) = s.chrome_viewport.unwrap_or((0, 0, w, h));
+    let (lx, ly) = super::edit::magnifier_placement(
+        (cursor.0 - x as f64, cursor.1 - y as f64),
+        120.0,
+        24.0,
+        w as f64,
+        h as f64,
+    );
+    (lx + x as f64, ly + y as f64)
+}
+
 fn decorations(s: &Scene, w: u32, h: u32) -> Vec<Region> {
     let mut regions = Vec::new();
     let mut add = |r, pad| {
@@ -81,14 +112,14 @@ fn decorations(s: &Scene, w: u32, h: u32) -> Vec<Region> {
         let panel = if s.record {
             render::record_toolbar(sel, w, h).map(|t| t.bounds)
         } else {
-            render::badge_bounds(sel, w, h)
+            badge_bounds(s, sel, w, h)
         };
         if let Some(r) = panel {
             add(r, 2.0);
         }
     }
     if let Some(cursor) = s.magnifier {
-        let (x, y) = super::edit::magnifier_placement(cursor, 120.0, 24.0, w as f64, h as f64);
+        let (x, y) = loupe_position(s, cursor, w, h);
         add((x.round(), y.round(), 120.0, 120.0), 3.0);
     }
     regions
@@ -132,12 +163,20 @@ pub fn paint(frame: &mut Pixmap, base: &Pixmap, scene: &Scene) {
             if let Some(toolbar) = render::record_toolbar(sel, w, h) {
                 render::draw_record_toolbar(frame, &toolbar, scene.toggles, scene.hovered);
             }
-        } else {
+        } else if scene.chrome_viewport.is_none() {
             render::draw_badge(frame, sel, w, h);
+        } else {
+            if let Some(bounds) = badge_bounds(scene, sel, w, h) {
+                render::draw_badge_at(frame, sel, bounds);
+            }
         }
     }
     if let Some(cursor) = scene.magnifier {
-        render::draw_magnifier(frame, base, cursor, w, h);
+        if scene.chrome_viewport.is_none() {
+            render::draw_magnifier(frame, base, cursor, w, h);
+        } else {
+            render::draw_magnifier_at(frame, base, cursor, loupe_position(scene, cursor, w, h));
+        }
     }
 }
 
@@ -218,15 +257,34 @@ impl SceneCache {
             h,
         )
     }
+    #[allow(dead_code)] // Used by the standalone renderer benchmark.
     pub fn copy_regions(&self, canvas: &mut [u8], regions: &[Region]) {
+        self.copy_viewport(
+            canvas,
+            regions,
+            (0, 0, self.frame().width(), self.frame().height()),
+        );
+    }
+
+    pub fn copy_viewport(
+        &self,
+        canvas: &mut [u8],
+        regions: &[Region],
+        viewport: super::desktop::Viewport,
+    ) {
+        let (vx, vy, width, _) = viewport;
         let stride = self.frame().width() as usize * 4;
-        for &(x0, y0, x1, y1) in regions {
+        for &region in regions {
+            let Some((x0, y0, x1, y1)) = super::desktop::local_damage(viewport, region) else {
+                continue;
+            };
             for y in y0..y1 {
-                let start = y as usize * stride + x0 as usize * 4;
-                let end = y as usize * stride + x1 as usize * 4;
+                let start = (y + vy) as usize * stride + (x0 + vx) as usize * 4;
+                let end = start + (x1 - x0) as usize * 4;
+                let dest = (y as usize * width as usize + x0 as usize) * 4;
                 for (src, dst) in self.frame().data()[start..end]
                     .chunks_exact(4)
-                    .zip(canvas[start..end].chunks_exact_mut(4))
+                    .zip(canvas[dest..dest + end - start].chunks_exact_mut(4))
                 {
                     dst.copy_from_slice(&[src[2], src[1], src[0], src[3]]);
                 }
@@ -258,6 +316,7 @@ mod tests {
             for i in 0..160 {
                 seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
                 let scene = Scene {
+                    chrome_viewport: None,
                     selection: (i % 17 != 0).then_some((
                         (seed % 570) as f32 - 20.25,
                         (seed % 300) as f32 - 10.5,
@@ -298,10 +357,69 @@ mod tests {
         }
     }
     #[test]
+    fn independent_monitor_buffers_match_desktop_through_damage_history() {
+        let mut base = Pixmap::new(640, 360).unwrap();
+        base.fill(tiny_skia::Color::from_rgba8(17, 61, 203, 255));
+        let mut cache = SceneCache::new(&base);
+        let views = [(0, 0, 320, 280), (320, 80, 320, 280)];
+        let mut slots = views.map(|(_, _, w, h)| (None, vec![0; (w * h * 4) as usize]));
+        for i in 0..60 {
+            cache.update(
+                &base,
+                Scene {
+                    chrome_viewport: Some(views[i % 2]),
+                    selection: Some((100. + i as f32, 120., 360., 100.)),
+                    editing: i % 3 == 0,
+                    record: false,
+                    toggles: (false, false, false),
+                    hovered: None,
+                    magnifier: (i % 4 == 0).then_some((310., 200.)),
+                },
+            );
+            for (v, &(x, y, w, h)) in views.iter().enumerate() {
+                // One output misses more than the eight-frame damage history.
+                if v == 1 && i % 13 != 0 {
+                    continue;
+                }
+                let (generation, canvas) = &mut slots[v];
+                cache.copy_viewport(canvas, &cache.damage_since(*generation), views[v]);
+                *generation = Some(cache.generation());
+                let mut reference = vec![0; 640 * 360 * 4];
+                render::pixmap_to_argb8888(cache.frame(), &mut reference);
+                for row in 0..h as usize {
+                    let start = ((y as usize + row) * 640 + x as usize) * 4;
+                    assert_eq!(
+                        &canvas[row * w as usize * 4..(row + 1) * w as usize * 4],
+                        &reference[start..start + w as usize * 4]
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn chrome_stays_inside_offset_monitor() {
+        let scene = Scene {
+            chrome_viewport: Some((320, 80, 320, 280)),
+            selection: Some((200., 30., 250., 180.)),
+            editing: true,
+            record: false,
+            toggles: (false, false, false),
+            hovered: None,
+            magnifier: None,
+        };
+        let (x, y, w, h) = badge_bounds(&scene, scene.selection.unwrap(), 640, 360).unwrap();
+        assert!(x >= 320. && y >= 80. && x + w <= 640. && y + h <= 360.);
+        let (x, y) = loupe_position(&scene, (630., 350.), 640, 360);
+        assert!(x >= 320. && y >= 80. && x + 120. <= 640. && y + 120. <= 360.);
+    }
+
+    #[test]
     fn small_drag_does_not_damage_selection_interior() {
         let base = Pixmap::new(3840, 2160).unwrap();
         let mut cache = SceneCache::new(&base);
         let mut scene = Scene {
+            chrome_viewport: None,
             selection: Some((100., 100., 3000., 1600.)),
             editing: true,
             record: false,
