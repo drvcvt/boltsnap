@@ -83,6 +83,37 @@ impl CachedOverlay {
         }
     }
 
+    pub fn reset_regions(
+        &mut self,
+        base: &Pixmap,
+        sel: Option<(f32, f32, f32, f32)>,
+        regions: &[(u32, u32, u32, u32)],
+    ) -> &mut Pixmap {
+        let selected = selection_bounds(sel, base.width(), base.height());
+        let stride = base.width() as usize * 4;
+        for &(x0, y0, x1, y1) in regions {
+            for y in y0..y1 {
+                let start = y as usize * stride + x0 as usize * 4;
+                let end = y as usize * stride + x1 as usize * 4;
+                self.frame.data_mut()[start..end].copy_from_slice(&self.dimmed.data()[start..end]);
+                if let Some((sx0, sy0, sx1, sy1)) = selected {
+                    let (left, right) = (x0.max(sx0), x1.min(sx1));
+                    if y >= sy0 && y < sy1 && left < right {
+                        let start = y as usize * stride + left as usize * 4;
+                        let end = y as usize * stride + right as usize * 4;
+                        self.frame.data_mut()[start..end].copy_from_slice(&base.data()[start..end]);
+                    }
+                }
+            }
+        }
+        &mut self.frame
+    }
+
+    pub fn frame(&self) -> &Pixmap {
+        &self.frame
+    }
+
+    #[allow(dead_code)] // Full-frame reference and conservative fallback.
     pub fn reset(&mut self, base: &Pixmap, sel: Option<(f32, f32, f32, f32)>) -> &mut Pixmap {
         assert_eq!(
             (base.width(), base.height()),
@@ -121,6 +152,7 @@ fn selection_bounds(
 /// Convert a premultiplied-RGBA `Pixmap` to a premultiplied-BGRA `wl_shm`
 /// Argb8888 (little-endian) buffer: swap R and B, keep A. `canvas` must be the
 /// same pixel count as the pixmap (4 bytes per pixel).
+#[allow(dead_code)] // Windows and full-frame reference.
 pub fn pixmap_to_argb8888(pm: &Pixmap, canvas: &mut [u8]) {
     for (src, dst) in pm.data().chunks_exact(4).zip(canvas.chunks_exact_mut(4)) {
         dst[0] = src[2]; // B
@@ -452,14 +484,8 @@ fn draw_text_aa(
     }
 }
 
-// Overlay chrome speaks the desktop bar's language: a module is 22 px tall with
-// 6 px corners, a 15 px icon 6 px in front of a 12 px Medium label, 6 px of
-// padding on an icon edge and 8 px on a text edge. State is carried by a white
-// fill at a low alpha, by icon brightness and by label weight, never by borders
-// or boxes, and the record dot is the one place with hue.
-// The bar itself can be translucent because the compositor blurs what is behind
-// it. A layer-shell overlay gets no blur, so the same colour would just be a
-// window of unreadable text; floating chrome takes the opaque popup colour.
+// Floating chrome uses the bar's colours, with larger text and minimal padding.
+// Keep the background opaque: the selector surface has no compositor blur.
 const UI_SURFACE: (u8, u8, u8, u8) = (0x18, 0x18, 0x18, 0xff);
 const BAR_HOVER: (u8, u8, u8, u8) = (0xff, 0xff, 0xff, 0x18);
 const BAR_HOVER_SOFT: (u8, u8, u8, u8) = (0xff, 0xff, 0xff, 0x14);
@@ -468,13 +494,14 @@ const UI_FOREGROUND: (u8, u8, u8) = (0xee, 0xee, 0xee);
 const UI_DIM: (u8, u8, u8) = (0x99, 0x99, 0x99);
 const UI_FAINT: (u8, u8, u8) = (0x88, 0x88, 0x88);
 const UI_RECORD: (u8, u8, u8) = (0xd9, 0x53, 0x4f);
-const UI_BLOCK_H: f64 = 22.0;
-const UI_TEXT_PX: f32 = 12.0;
+const UI_BLOCK_H: f64 = 24.0;
+const UI_TEXT_PX: f32 = 21.0;
+const UI_BADGE_H: f64 = 22.0;
 const UI_RADIUS: f32 = 6.0;
-const UI_ICON: f64 = 15.0;
-const UI_ICON_PAD: f64 = 6.0;
-const UI_TEXT_PAD: f64 = 8.0;
-const UI_CONTENT_GAP: f64 = 6.0;
+const UI_ICON: f64 = 18.0;
+const UI_ICON_PAD: f64 = 5.0;
+const UI_TEXT_PAD: f64 = 3.0;
+const UI_CONTENT_GAP: f64 = 5.0;
 
 /// Fill a rounded rect with a straight (non-premultiplied) RGBA colour.
 fn fill_rounded(pm: &mut Pixmap, rect: (f64, f64, f64, f64), radius: f32, rgba: (u8, u8, u8, u8)) {
@@ -504,25 +531,17 @@ fn centered_baseline(y: f64, h: f64, px: f32) -> f32 {
     y as f32 + (h as f32 - (scaled.ascent() - scaled.descent())) / 2.0 + scaled.ascent()
 }
 
-/// The marks a module can carry in front of its label. Every module on the
-/// desktop bar has an icon, and Boltsnap ships no icon font, so the four the
-/// record toolbar needs are drawn as paths in a `UI_ICON`-square box, in the
-/// rounded, filled style of the bar's own set.
+/// Toolbar icons drawn locally, with thick strokes and rounded contours.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Icon {
-    /// `fiber_manual_record` — start a recording.
     Record,
-    /// `content_cut` — cut a clip out of the replay buffer.
     Cut,
-    /// `crop_free` — keep the recording frame on screen.
     Crop,
-    /// `volume_up` / `volume_off` — record the audio source, or not.
     Volume,
     VolumeOff,
 }
 
-/// Icon stroke weight, matching the bar's Material Symbols at weight 600.
-const ICON_STROKE: f32 = 1.7;
+const ICON_STROKE: f32 = 2.4;
 
 fn fill_icon(pm: &mut Pixmap, path: &tiny_skia::Path, rgb: (u8, u8, u8)) {
     let mut paint = Paint::default();
@@ -544,27 +563,27 @@ fn stroke_icon(pm: &mut Pixmap, path: &tiny_skia::Path, rgb: (u8, u8, u8)) {
     pm.stroke_path(path, &paint, &stroke, Transform::identity(), None);
 }
 
-/// Draw `icon` in `rgb` with the top-left of its 15 px box at (`x`, `y`).
+/// Draw `icon` in `rgb` with the top-left of its 18 px box at (`x`, `y`).
 fn draw_icon(pm: &mut Pixmap, icon: Icon, x: f64, y: f64, rgb: (u8, u8, u8)) {
     let (ox, oy) = (x as f32, y as f32);
     match icon {
         Icon::Record => {
-            if let Some(path) = circle_path(ox + 7.5, oy + 7.5, 4.0) {
+            if let Some(path) = circle_path(ox + 9.0, oy + 9.0, 4.5) {
                 fill_icon(pm, &path, rgb);
             }
         }
         // Two blades crossing above two finger rings.
         Icon::Cut => {
             let mut pb = PathBuilder::new();
-            pb.move_to(ox + 4.8, oy + 10.2);
-            pb.line_to(ox + 11.6, oy + 2.0);
-            pb.move_to(ox + 10.2, oy + 10.2);
-            pb.line_to(ox + 3.4, oy + 2.0);
+            pb.move_to(ox + 5.6, oy + 12.0);
+            pb.line_to(ox + 13.5, oy + 2.5);
+            pb.move_to(ox + 12.4, oy + 12.0);
+            pb.line_to(ox + 4.5, oy + 2.5);
             if let Some(path) = pb.finish() {
                 stroke_icon(pm, &path, rgb);
             }
-            for cx in [4.0f32, 11.0] {
-                if let Some(path) = circle_path(ox + cx, oy + 11.8, 1.9) {
+            for cx in [4.5f32, 13.5] {
+                if let Some(path) = circle_path(ox + cx, oy + 13.5, 2.4) {
                     stroke_icon(pm, &path, rgb);
                 }
             }
@@ -573,14 +592,15 @@ fn draw_icon(pm: &mut Pixmap, icon: Icon, x: f64, y: f64, rgb: (u8, u8, u8)) {
         Icon::Crop => {
             let mut pb = PathBuilder::new();
             for (cx, cy, sx, sy) in [
-                (2.2f32, 2.2f32, 1.0f32, 1.0f32),
-                (12.8, 2.2, -1.0, 1.0),
-                (12.8, 12.8, -1.0, -1.0),
-                (2.2, 12.8, 1.0, -1.0),
+                (2.5f32, 2.5f32, 1.0f32, 1.0f32),
+                (15.5, 2.5, -1.0, 1.0),
+                (15.5, 15.5, -1.0, -1.0),
+                (2.5, 15.5, 1.0, -1.0),
             ] {
-                pb.move_to(ox + cx, oy + cy + 3.4 * sy);
-                pb.line_to(ox + cx, oy + cy);
-                pb.line_to(ox + cx + 3.4 * sx, oy + cy);
+                pb.move_to(ox + cx, oy + cy + 4.0 * sy);
+                pb.line_to(ox + cx, oy + cy + 2.5 * sy);
+                pb.quad_to(ox + cx, oy + cy, ox + cx + 2.5 * sx, oy + cy);
+                pb.line_to(ox + cx + 4.0 * sx, oy + cy);
             }
             if let Some(path) = pb.finish() {
                 stroke_icon(pm, &path, rgb);
@@ -589,35 +609,34 @@ fn draw_icon(pm: &mut Pixmap, icon: Icon, x: f64, y: f64, rgb: (u8, u8, u8)) {
         // A speaker, with sound waves or a cross.
         Icon::Volume | Icon::VolumeOff => {
             let mut body = PathBuilder::new();
-            body.move_to(ox + 1.6, oy + 5.8);
-            body.line_to(ox + 4.6, oy + 5.8);
-            body.line_to(ox + 8.0, oy + 2.4);
-            body.line_to(ox + 8.0, oy + 12.6);
-            body.line_to(ox + 4.6, oy + 9.2);
-            body.line_to(ox + 1.6, oy + 9.2);
+            body.move_to(ox + 2.5, oy + 6.0);
+            body.line_to(ox + 4.0, oy + 6.0);
+            body.quad_to(ox + 4.5, oy + 6.0, ox + 5.0, oy + 5.5);
+            body.line_to(ox + 8.0, oy + 3.0);
+            body.quad_to(ox + 9.5, oy + 1.8, ox + 9.5, oy + 3.8);
+            body.line_to(ox + 9.5, oy + 14.2);
+            body.quad_to(ox + 9.5, oy + 16.2, ox + 8.0, oy + 15.0);
+            body.line_to(ox + 5.0, oy + 12.5);
+            body.quad_to(ox + 4.5, oy + 12.0, ox + 4.0, oy + 12.0);
+            body.line_to(ox + 2.5, oy + 12.0);
+            body.quad_to(ox + 1.0, oy + 12.0, ox + 1.0, oy + 10.5);
+            body.line_to(ox + 1.0, oy + 7.5);
+            body.quad_to(ox + 1.0, oy + 6.0, ox + 2.5, oy + 6.0);
             body.close();
             if let Some(path) = body.finish() {
                 fill_icon(pm, &path, rgb);
             }
             let mut pb = PathBuilder::new();
             if icon == Icon::Volume {
-                // A quadratic is within a fifth of a pixel of a ±55° arc, and
-                // its control point sits at r/cos(55°) along the bisector.
-                let (sin, cos) = 55f32.to_radians().sin_cos();
-                for r in [2.4f32, 4.6] {
-                    pb.move_to(ox + 8.6 + r * cos, oy + 7.5 - r * sin);
-                    pb.quad_to(
-                        ox + 8.6 + r / cos,
-                        oy + 7.5,
-                        ox + 8.6 + r * cos,
-                        oy + 7.5 + r * sin,
-                    );
-                }
+                pb.move_to(ox + 12.0, oy + 6.8);
+                pb.quad_to(ox + 14.0, oy + 9.0, ox + 12.0, oy + 11.2);
+                pb.move_to(ox + 14.5, oy + 4.5);
+                pb.quad_to(ox + 18.5, oy + 9.0, ox + 14.5, oy + 13.5);
             } else {
-                pb.move_to(ox + 10.2, oy + 5.6);
-                pb.line_to(ox + 14.0, oy + 9.4);
-                pb.move_to(ox + 14.0, oy + 5.6);
-                pb.line_to(ox + 10.2, oy + 9.4);
+                pb.move_to(ox + 12.5, oy + 7.0);
+                pb.line_to(ox + 16.0, oy + 10.5);
+                pb.move_to(ox + 16.0, oy + 7.0);
+                pb.line_to(ox + 12.5, oy + 10.5);
             }
             if let Some(path) = pb.finish() {
                 stroke_icon(pm, &path, rgb);
@@ -628,34 +647,42 @@ fn draw_icon(pm: &mut Pixmap, icon: Icon, x: f64, y: f64, rgb: (u8, u8, u8)) {
 
 /// Draw the `W×H` dimension badge: a rounded translucent pill with crisp,
 /// anti-aliased text. Placed by `edit::badge_rect` (above-left, flipping at edges).
-pub fn draw_badge(pm: &mut Pixmap, sel: (f32, f32, f32, f32), surf_w: u32, surf_h: u32) {
+pub fn badge_bounds(
+    sel: (f32, f32, f32, f32),
+    surf_w: u32,
+    surf_h: u32,
+) -> Option<(f64, f64, f64, f64)> {
     let (x, y, w, h) = sel;
     if w < 1.0 || h < 1.0 {
-        return;
+        return None;
     }
     let label = format!("{}×{}", w.round() as i32, h.round() as i32);
     let scaled = ui_font(false).as_scaled(PxScale::from(UI_TEXT_PX));
     let text_w = text_width(&label, UI_TEXT_PX, false);
     let text_h = (scaled.ascent() - scaled.descent()) as f64;
-    // One bar module: 22 px tall with 8 px of side padding. `badge_rect` pads
-    // both axes by the same amount, so derive that from the height and widen the
-    // content box by whatever the sides are still short of.
-    let pad = ((UI_BLOCK_H - text_h) / 2.0).max(0.0);
-    let rect = crate::selector::edit::Rect {
-        x: x as f64,
-        y: y as f64,
-        w: w as f64,
-        h: h as f64,
-    };
-    let (bx, by, bw, bh) = crate::selector::edit::badge_rect(
-        rect,
+    let pad = ((UI_BADGE_H - text_h) / 2.0).max(0.0);
+    Some(crate::selector::edit::badge_rect(
+        crate::selector::edit::Rect {
+            x: x as f64,
+            y: y as f64,
+            w: w as f64,
+            h: h as f64,
+        },
         text_w + 2.0 * (UI_TEXT_PAD - pad).max(0.0),
         text_h,
         pad,
         6.0,
         surf_w as f64,
         surf_h as f64,
-    );
+    ))
+}
+
+pub fn draw_badge(pm: &mut Pixmap, sel: (f32, f32, f32, f32), surf_w: u32, surf_h: u32) {
+    let Some((bx, by, bw, bh)) = badge_bounds(sel, surf_w, surf_h) else {
+        return;
+    };
+    let label = format!("{}×{}", sel.2.round() as i32, sel.3.round() as i32);
+    let text_w = text_width(&label, UI_TEXT_PX, false);
     fill_rounded(pm, (bx, by, bw, bh), UI_RADIUS, UI_SURFACE);
     draw_text_aa(
         pm,
@@ -792,12 +819,14 @@ pub struct RecordToolbar {
     pub controls: [(f64, f64, f64, f64); 4],
 }
 
-// The record controls are a floating strip of bar modules, inset by the 6 px
-// the bar keeps at its own ends, so the strip is one bar module plus its
-// margins. Modules sit 2 px apart, exactly like the modules on the bar.
-const TB_PAD: f64 = 6.0;
-const TB_GAP: f64 = 2.0;
+// Keep 24 px click targets, but let the 21 px labels fill them. Only a
+// single pixel separates the controls from the surrounding toolbar surface.
+const TB_PAD: f64 = 1.0;
+const TB_GAP: f64 = 4.0;
 const TB_CARD_RADIUS: f32 = 9.0;
+// Concentric outer/inner corners keep active fills inside the toolbar contour.
+const TB_CONTROL_RADIUS: f32 = TB_CARD_RADIUS - TB_PAD as f32;
+const TB_TEXT_PAD: f64 = 6.0;
 const TB_LABELS: [&str; 4] = ["REC", "Clip", "Frame", "Audio"];
 
 /// Left inset of a control's label, from the control's own left edge. Every
@@ -830,7 +859,7 @@ pub fn record_toolbar(
     // Measured in DemiBold, the widest a label ever gets, so a module keeps its
     // width when its state changes and the strip never shifts under the cursor.
     let widths: [f64; 4] = std::array::from_fn(|i| {
-        (tb_label_x() + text_width(TB_LABELS[i], UI_TEXT_PX, true)).ceil() + UI_TEXT_PAD
+        (tb_label_x() + text_width(TB_LABELS[i], UI_TEXT_PX, true)).ceil() + TB_TEXT_PAD
     });
     // One strip if it fits, else a 2×2 grid, else a single column.
     let (columns, column_widths, column_x, row_y, width, height) =
@@ -922,7 +951,7 @@ pub fn draw_record_toolbar(
             (false, false) => None,
         };
         if let Some(rgba) = fill {
-            fill_rounded(pm, (x, y, w, h), UI_RADIUS, rgba);
+            fill_rounded(pm, (x, y, w, h), TB_CONTROL_RADIUS, rgba);
         }
         // Record is the one place with hue. Elsewhere the icon says on or off
         // the way the bar's own modules do, by going bright or dim, and an
@@ -1245,6 +1274,30 @@ pub fn draw_magnifier(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn toolbar_highlights_stay_inside_outer_contour() {
+        for (width, height) in [(800, 500), (240, 200), (160, 240)] {
+            for offset in [0.0, 0.25, 0.5, 0.75] {
+                let toolbar =
+                    record_toolbar((20.0 + offset, 150.0 + offset, 80.0, 40.0), width, height)
+                        .unwrap();
+                let mut outline = Pixmap::new(width, height).unwrap();
+                fill_rounded(&mut outline, toolbar.bounds, TB_CARD_RADIUS, UI_SURFACE);
+                for hovered in 0..4 {
+                    let mut rendered = Pixmap::new(width, height).unwrap();
+                    draw_record_toolbar(&mut rendered, &toolbar, (true, true, true), Some(hovered));
+                    for (base, drawn) in outline.pixels().iter().zip(rendered.pixels()) {
+                        assert_eq!(
+                            drawn.alpha(),
+                            base.alpha(),
+                            "highlight changes the toolbar's antialiased contour"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn record_toolbar_keeps_controls_together_at_edges() {
         for (width, height) in [(1920, 1080), (400, 300), (240, 200), (160, 240)] {

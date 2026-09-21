@@ -398,7 +398,10 @@ pickers and volume controls are intentionally left to the desktop audio mixer.
 ## Contributing
 
 The Linux performance changes and their local validation are recorded in
-[the performance report](docs/performance.md).
+[the performance report](docs/performance.md). The subsequent screenshot,
+selector rendering and compact UI work is documented in
+[the screenshot performance report](docs/screenshot-performance.md), including
+benchmarks and the raw-pixel transport that remains opt-in after measurement.
 
 Replay uses an isolated experimental
 [media worker](src/platform/linux/replay/worker/README.md), launched by the Linux

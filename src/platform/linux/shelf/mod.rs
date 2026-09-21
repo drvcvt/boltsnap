@@ -79,6 +79,7 @@ pub struct Daemon {
     /// `wlr-layer-shell` forbids attaching a buffer before the first configure.
     shelf_configured: bool,
     shelf_pending_draw: bool,
+    pending_image_traces: Vec<u64>,
     /// Themed pointer so we can set an explicit cursor over the shelf instead of
     /// inheriting whatever shape the previously-focused window left (e.g. a
     /// terminal's I-beam).
@@ -198,8 +199,17 @@ pub(crate) enum DaemonEvent {
 pub(crate) struct PreparedAdd {
     path: std::path::PathBuf,
     thumb: image::RgbaImage,
+    trace: Option<u64>,
     source: String,
     output: Option<String>,
+}
+
+impl Drop for PreparedAdd {
+    fn drop(&mut self) {
+        if !self.path.as_os_str().is_empty() {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -502,7 +512,14 @@ fn spawn_client_reader(
         if stream.read_exact(&mut prefix).is_err() {
             return;
         }
-        let image = if u32::from_be_bytes(prefix[4..].try_into().unwrap()) > 0 {
+        let header_len = u32::from_be_bytes(prefix[..4].try_into().unwrap()) as usize;
+        let payload_len = u32::from_be_bytes(prefix[4..].try_into().unwrap()) as usize;
+        if header_len > crate::protocol::MAX_HEADER_BYTES
+            || payload_len > crate::protocol::MAX_PAYLOAD_BYTES
+        {
+            return;
+        }
+        let image = if payload_len > 0 {
             let Some(permit) = images.acquire() else {
                 reject_busy(stream);
                 return;
@@ -511,14 +528,71 @@ fn spawn_client_reader(
         } else {
             None
         };
-        let request = crate::ipc::Request::read(&mut prefix.as_slice().chain(&mut stream));
+        let mut header = vec![0; header_len];
+        if stream.read_exact(&mut header).is_err() {
+            return;
+        }
+        let value = serde_json::from_slice::<serde_json::Value>(&header).ok();
+        if value
+            .as_ref()
+            .is_some_and(|v| v["cmd"] == super::image_transfer::COMMAND)
+        {
+            let Some(image) = image.or_else(|| images.acquire()) else {
+                reject_busy(stream);
+                return;
+            };
+            let result = (|| -> Result<PreparedAdd, String> {
+                use std::io::Write;
+                if payload_len != 0 {
+                    return Err("pixel offer must not contain a payload".into());
+                }
+                super::image_transfer::same_user(&stream).map_err(|e| e.to_string())?;
+                let metadata = super::image_transfer::Metadata::parse(value.as_ref().unwrap())
+                    .map_err(|e| e.to_string())?;
+                stream
+                    .set_write_timeout(Some(std::time::Duration::from_secs(5)))
+                    .map_err(|e| e.to_string())?;
+                crate::protocol::write_frame(
+                    &mut stream,
+                    serde_json::json!({"ready":super::image_transfer::COMMAND})
+                        .to_string()
+                        .as_bytes(),
+                    &[],
+                )
+                .map_err(|e| e.to_string())?;
+                stream.flush().map_err(|e| e.to_string())?;
+                let fd = super::image_transfer::receive_fd(&stream).map_err(|e| e.to_string())?;
+                let pixels = super::image_transfer::Pixels::map(fd, metadata.len)
+                    .map_err(|e| e.to_string())?;
+                super::timing::mark_request("pixels_received", metadata.trace);
+                prepare_pixels(metadata, &pixels)
+            })();
+            let _ = tx.send(DaemonEvent::AddPrepared {
+                result,
+                stream,
+                _client: client,
+                _image: Some(image),
+            });
+            return;
+        }
+        let request = crate::ipc::Request::read(
+            &mut prefix
+                .as_slice()
+                .chain(header.as_slice())
+                .chain(&mut stream),
+        );
         match request {
             Ok(crate::ipc::Request::Add {
                 source,
                 png,
                 output,
             }) => {
-                let result = prepare_add(png, source, output);
+                let trace = value.as_ref().and_then(|v| v["trace"].as_u64());
+                let _timing = super::timing::Span::for_request("shelf_png_prepare", trace);
+                let result = prepare_add(png, source, output).map(|mut add| {
+                    add.trace = trace;
+                    add
+                });
                 let _ = tx.send(DaemonEvent::AddPrepared {
                     result,
                     stream,
@@ -560,8 +634,7 @@ fn prepare_add(
         return Err("PNG exceeds the 256 MiB shelf cache limit".into());
     }
     let image = decode_shelf_image(&png)?;
-    let path = crate::paths::temp_png("shelf");
-    std::fs::write(&path, png).map_err(|error| format!("write shelf tempfile: {error}"))?;
+    let path = write_temp_png("shelf", &png)?;
     let thumb = crate::shelf::thumbnail::make_card_thumbnail(
         &image,
         crate::shelf::thumbnail::CARD_W,
@@ -570,9 +643,97 @@ fn prepare_add(
     Ok(PreparedAdd {
         path,
         thumb,
+        trace: None,
         source,
         output,
     })
+}
+
+fn write_temp_png(prefix: &str, png: &[u8]) -> Result<std::path::PathBuf, String> {
+    use std::io::Write;
+    let path = crate::paths::temp_png(prefix);
+    // Never truncate an existing file or follow a symlink in the temporary dir.
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .map_err(|e| format!("create {prefix} PNG: {e}"))?;
+    if let Err(e) = file.write_all(png) {
+        let _ = std::fs::remove_file(&path);
+        return Err(format!("write {prefix} PNG: {e}"));
+    }
+    Ok(path)
+}
+
+fn prepare_pixels(
+    metadata: super::image_transfer::Metadata,
+    pixels: &super::image_transfer::Pixels,
+) -> Result<PreparedAdd, String> {
+    prepare_pixels_with(
+        metadata,
+        pixels,
+        |png| {
+            crate::paths::publish_last_png(png)
+                .map(|_| ())
+                .map_err(|e| format!("publish last PNG: {e}"))
+        },
+        |path| {
+            super::clipboard::copy_temporary_to_clipboard(path, crate::Backend::Wayland)
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        },
+    )
+}
+
+fn prepare_pixels_with(
+    metadata: super::image_transfer::Metadata,
+    pixels: &super::image_transfer::Pixels,
+    publish: impl FnOnce(&[u8]) -> Result<(), String>,
+    copy: impl FnOnce(&std::path::Path) -> Result<(), String>,
+) -> Result<PreparedAdd, String> {
+    use image::ImageEncoder;
+    let _timing = super::timing::Span::for_request("shelf_pixels_prepare", metadata.trace);
+    let image = image::ImageBuffer::<image::Rgb<u8>, _>::from_raw(
+        metadata.width,
+        metadata.height,
+        pixels.bytes(),
+    )
+    .ok_or("invalid RGB image")?;
+    let thumb = crate::shelf::thumbnail::make_rgb_card_thumbnail(
+        &image,
+        crate::shelf::thumbnail::CARD_W,
+        crate::shelf::thumbnail::CARD_H,
+    );
+    super::timing::mark_request("thumbnail_ready", metadata.trace);
+    let mut png = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut png)
+        .write_image(
+            pixels.bytes(),
+            metadata.width,
+            metadata.height,
+            image::ExtendedColorType::Rgb8,
+        )
+        .map_err(|e| format!("encode shelf PNG: {e}"))?;
+    let add = PreparedAdd {
+        path: write_temp_png("shelf", &png)?,
+        thumb,
+        trace: metadata.trace,
+        source: metadata.source,
+        output: metadata.output,
+    };
+    super::timing::mark_request("png_written", metadata.trace);
+    publish(&png)?;
+    if metadata.copy {
+        let clipboard = write_temp_png("clipboard", &png)
+            .map_err(|e| format!("last PNG saved, shelf item not added: {e}"))?;
+        if let Err(e) = copy(&clipboard) {
+            let _ = std::fs::remove_file(&clipboard);
+            return Err(format!(
+                "last PNG saved, clipboard helper failed, shelf item not added: {e}"
+            ));
+        }
+    }
+    Ok(add)
 }
 
 fn decode_shelf_image(png: &[u8]) -> Result<image::RgbaImage, String> {
@@ -776,10 +937,9 @@ pub(crate) fn focused_monitor_name() -> Option<String> {
             None
         };
     }
-    let out = Command::new("hyprctl")
-        .args(["monitors", "-j"])
-        .output()
-        .ok()?;
+    let out =
+        super::replay::process::output_setup(Command::new("hyprctl").args(["monitors", "-j"]))
+            .ok()?;
     if !out.status.success() {
         return None;
     }
@@ -796,10 +956,9 @@ pub(crate) fn focused_monitor_origin() -> Option<(i32, i32)> {
     {
         return None;
     }
-    let out = Command::new("hyprctl")
-        .args(["monitors", "-j"])
-        .output()
-        .ok()?;
+    let out =
+        super::replay::process::output_setup(Command::new("hyprctl").args(["monitors", "-j"]))
+            .ok()?;
     if !out.status.success() {
         return None;
     }
@@ -888,6 +1047,7 @@ pub fn run_daemon(save_dir_cli: Option<std::path::PathBuf>) -> DynResult<()> {
         output_name: None,
         shelf_configured: false,
         shelf_pending_draw: false,
+        pending_image_traces: Vec::new(),
         pointer: None,
         keyboard: None,
         ddm,
@@ -1475,13 +1635,23 @@ impl Daemon {
         spawn_client_writer(stream, response.encode());
     }
 
-    fn add_prepared(&mut self, add: PreparedAdd, qh: &QueueHandle<Self>) {
+    fn add_prepared(&mut self, mut add: PreparedAdd, qh: &QueueHandle<Self>) {
         // A compositor can omit the terminal drag event and leave redraws
         // blocked. A fresh capture supersedes that stale interaction.
         if self.drag_source.is_some() {
             self.clear_drag();
         }
-        let id = self.model.add(add.path, add.thumb, add.source);
+        let id = self.model.add(
+            std::mem::take(&mut add.path),
+            std::mem::take(&mut add.thumb),
+            std::mem::take(&mut add.source),
+        );
+        if let Some(trace) = add.trace {
+            if self.pending_image_traces.len() == MAX_CACHED_CARDS {
+                self.pending_image_traces.remove(0);
+            }
+            self.pending_image_traces.push(trace);
+        }
         self.start_anim(id, AnimKind::Appear);
         self.trim_shelf_cache();
         self.relayout();
@@ -1932,8 +2102,13 @@ impl Daemon {
 
         let surface = layer.wl_surface();
         surface.damage_buffer(0, 0, w as i32, h as i32);
-        let _ = buffer.attach_to(surface);
+        if buffer.attach_to(surface).is_err() {
+            return;
+        }
         layer.commit();
+        for trace in self.pending_image_traces.drain(..) {
+            super::timing::mark_request("shelf_commit", Some(trace));
+        }
     }
 
     // ----- Recording lifecycle -------------------------------------------
@@ -2505,11 +2680,13 @@ impl Daemon {
             } => {
                 let response = match (result, self.qh.clone()) {
                     (Ok(add), Some(qh)) => {
+                        let trace = add.trace;
                         self.add_prepared(add, &qh);
+                        super::timing::mark_request("shelf_model_ack", trace);
                         crate::ipc::Response::ok(None)
                     }
                     (Ok(add), None) => {
-                        let _ = std::fs::remove_file(add.path);
+                        let _ = std::fs::remove_file(&add.path);
                         crate::ipc::Response::error("shelf is not ready")
                     }
                     (Err(error), _) => {
@@ -3388,6 +3565,102 @@ mod tests {
     }
 
     #[test]
+    fn pixels_prepare_preserves_rgb_and_unpublished_file_ownership() {
+        use super::super::image_transfer::{Metadata, Pixels, sealed_pixels};
+        let rgb =
+            image::RgbImage::from_fn(64, 48, |x, y| image::Rgb([x as u8, y as u8, (x + y) as u8]));
+        let pixels = Pixels::map(sealed_pixels(rgb.as_raw()).unwrap(), rgb.as_raw().len()).unwrap();
+        let metadata = || Metadata::new(64, 48, "area".into(), Some("DP-3".into()), false).unwrap();
+        let add = prepare_pixels_with(
+            metadata(),
+            &pixels,
+            |png| {
+                assert_eq!(image::load_from_memory(png).unwrap().into_rgb8(), rgb);
+                Ok(())
+            },
+            |_| panic!("copy disabled"),
+        )
+        .unwrap();
+        assert_eq!(image::open(&add.path).unwrap().into_rgb8(), rgb);
+        assert_eq!(
+            add.thumb,
+            crate::shelf::thumbnail::make_card_thumbnail(
+                &image::DynamicImage::ImageRgb8(rgb).into_rgba8(),
+                190,
+                132
+            )
+        );
+        let path = add.path.clone();
+        drop(add);
+        assert!(!path.exists(), "an unpublished item owns its file");
+        assert!(
+            prepare_pixels_with(
+                metadata(),
+                &pixels,
+                |_| Err("injected publish failure".into()),
+                |_| panic!()
+            )
+            .is_err()
+        );
+        let mut copy_meta = metadata();
+        copy_meta.copy = true;
+        let mut copy_path = None;
+        let result = prepare_pixels_with(
+            copy_meta,
+            &pixels,
+            |_| Ok(()),
+            |path| {
+                copy_path = Some(path.to_owned());
+                assert!(path.is_file());
+                Err("injected helper failure".into())
+            },
+        );
+        assert!(result.err().unwrap().contains("last PNG saved"));
+        assert!(!copy_path.unwrap().exists());
+    }
+
+    #[test]
+    fn pixel_offer_reserves_shared_capacity_before_ready_and_releases_after_bad_fd() {
+        use super::super::image_transfer::{COMMAND, Metadata};
+        use std::io::Write;
+        let limits = ClientLimits::default();
+        let first = limits.images.acquire().unwrap();
+        let (tx, rx) = calloop::channel::channel();
+        let (server, mut client) = UnixStream::pair().unwrap();
+        client
+            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+            .unwrap();
+        spawn_client_reader(server, tx.clone(), &limits);
+        let meta = Metadata::new(1, 1, "area".into(), None, false).unwrap();
+        // Exercise a fragmented header, not just one socket write.
+        let mut offer = Vec::new();
+        crate::protocol::write_frame(&mut offer, &meta.header(), &[]).unwrap();
+        for byte in offer {
+            client.write_all(&[byte]).unwrap();
+        }
+        let (header, _) = crate::protocol::read_frame(&mut client).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&header).unwrap()["ready"],
+            COMMAND
+        );
+        assert!(limits.images.acquire().is_none());
+        let (server, mut excess) = UnixStream::pair().unwrap();
+        spawn_client_reader(server, tx, &limits);
+        crate::protocol::write_frame(&mut excess, &meta.header(), &[]).unwrap();
+        assert!(!crate::protocol::Response::read(&mut excess).unwrap().ok);
+        client.write_all(b"P").unwrap(); // no FD
+        let event = receive_event(&rx);
+        assert!(matches!(
+            &event,
+            DaemonEvent::AddPrepared { result: Err(_), .. }
+        ));
+        assert!(limits.images.acquire().is_none());
+        drop(event);
+        assert!(limits.images.acquire().is_some());
+        drop(first);
+    }
+
+    #[test]
     fn grayscale_png_cannot_expand_beyond_rgba_pixel_budget() {
         // Valid headers for 8193x8192 grayscale. Rejection must precede decoding
         // the deliberately incomplete compressed body or allocating RGBA.
@@ -3551,7 +3824,7 @@ mod tests {
                 assert_eq!(add.output.as_deref(), Some("DP-3"));
                 assert_eq!(add.thumb.dimensions(), (190, 132));
                 assert!(add.path.is_file());
-                let _ = std::fs::remove_file(add.path);
+                let _ = std::fs::remove_file(&add.path);
             }
             _ => panic!("expected a prepared add event"),
         }
@@ -3716,7 +3989,7 @@ mod tests {
             } => {
                 assert_eq!(add.source, "area");
                 assert_eq!(std::fs::read(&add.path).unwrap(), png);
-                let _ = std::fs::remove_file(add.path);
+                let _ = std::fs::remove_file(&add.path);
             }
             _ => panic!("expected prepared PNG request"),
         }

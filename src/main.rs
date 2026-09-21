@@ -239,6 +239,8 @@ fn parse_args(raw: &[String]) -> DynResult<Args> {
 }
 
 fn main() {
+    #[cfg(target_os = "linux")]
+    crate::platform::timing::mark("process_entry");
     if let Err(err) = run() {
         eprintln!("boltsnap: {err}");
         std::process::exit(2);
@@ -518,12 +520,40 @@ fn capture_flow(args: &Args) -> DynResult<()> {
 
     #[cfg(target_os = "linux")]
     if args.output.is_none() && !args.save && args.backend.resolved()? == Backend::Wayland {
-        let (resolved, capture_output, png) =
-            crate::capture::capture_png(mode, args.backend, args.instant, true)?;
+        let (resolved, capture_output, image) =
+            crate::capture::capture_image(mode, args.backend, args.instant, true)?;
         let copy = matches!(
             decide_post_capture(args, resolved),
             PostCapture::Shelf { copy: true }
         );
+        let image = image.into_rgb8();
+        // Measured desktop regressions keep the raw transport experimental.
+        if std::env::var("BOLTSNAP_RAW_TRANSFER").as_deref() == Ok("1")
+            && crate::platform::image_transfer::try_add(
+                &image,
+                mode.label(),
+                capture_output.clone(),
+                copy,
+            )?
+        {
+            println!(
+                "Boltsnap sent {} to shelf{}",
+                mode.label(),
+                if copy {
+                    " (clipboard helper started)"
+                } else {
+                    ""
+                }
+            );
+            return Ok(());
+        }
+        // Default PNG transport, also used after an older daemon closes the
+        // nonmutating raw offer. No image has been accepted on that path yet.
+        let encoding = crate::platform::timing::Span::new("png_encode");
+        let mut png = Vec::new();
+        image::DynamicImage::ImageRgb8(image)
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)?;
+        drop(encoding);
         if copy {
             // The clipboard helper outlives this CLI. Keep its uniquely-owned
             // source; last.png can be replaced by another concurrent capture.
@@ -620,6 +650,7 @@ fn capture_flow(args: &Args) -> DynResult<()> {
 fn send_shelf_add(request: crate::ipc::Request) -> DynResult<()> {
     #[cfg(target_os = "linux")]
     {
+        let _timing = crate::platform::timing::Span::new("png_transfer_and_shelf_ack");
         let response = crate::ipc::call_daemon(request)
             .map_err(|error| format!("shelf daemon unavailable: {error}"))?;
         require_daemon_success(response, "shelf ingest failed")?;

@@ -35,7 +35,7 @@ fn systemd_start_args() -> [&'static str; 4] {
 }
 
 /// Connect to the daemon, asking the user service manager to start it if needed.
-fn ensure_daemon() -> io::Result<UnixStream> {
+pub(super) fn ensure_daemon() -> io::Result<UnixStream> {
     if let Ok(s) = UnixStream::connect(socket_path()) {
         return Ok(s);
     }
@@ -75,7 +75,21 @@ fn ensure_daemon() -> io::Result<UnixStream> {
 pub fn call_daemon(req: Request) -> io::Result<Response> {
     let mut stream = ensure_daemon()?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-    stream.write_all(&req.encode())?;
+    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+    match &req {
+        Request::Add {
+            source,
+            png,
+            output,
+        } => {
+            // Frame the existing PNG directly instead of copying it into a
+            // second header+payload Vec. Old daemons ignore the optional trace.
+            let header = serde_json::json!({"cmd":"add","source":source,"output":output,
+                "trace":super::timing::request_id()});
+            crate::protocol::write_frame(&mut stream, header.to_string().as_bytes(), png)?;
+        }
+        _ => stream.write_all(&req.encode())?,
+    }
     stream.flush()?;
     Response::read(&mut stream)
 }

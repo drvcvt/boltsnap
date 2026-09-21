@@ -10,9 +10,25 @@ pub const CARD_H: u32 = 132;
 /// exactly (card_w, card_h). Cropping before resizing avoids scaling huge full
 /// screenshots down to an oversized intermediate image on the hot shelf path.
 pub fn make_card_thumbnail(src: &RgbaImage, card_w: u32, card_h: u32) -> RgbaImage {
+    thumbnail(src, card_w, card_h)
+}
+
+pub fn make_rgb_card_thumbnail(
+    src: &image::ImageBuffer<image::Rgb<u8>, &[u8]>,
+    card_w: u32,
+    card_h: u32,
+) -> RgbaImage {
+    image::DynamicImage::ImageRgb8(thumbnail(src, card_w, card_h)).into_rgba8()
+}
+
+fn thumbnail<I>(src: &I, card_w: u32, card_h: u32) -> image::ImageBuffer<I::Pixel, Vec<u8>>
+where
+    I: image::GenericImageView,
+    I::Pixel: image::Pixel<Subpixel = u8> + 'static,
+{
     let (w, h) = src.dimensions();
     if w == 0 || h == 0 || card_w == 0 || card_h == 0 {
-        return RgbaImage::new(card_w.max(1), card_h.max(1));
+        return image::ImageBuffer::new(card_w.max(1), card_h.max(1));
     }
 
     let src_aspect = w as f32 / h as f32;

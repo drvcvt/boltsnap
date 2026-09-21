@@ -19,10 +19,12 @@ fn parse_fc_match(output: &str) -> Option<(PathBuf, u32)> {
 /// Ask fontconfig which face backs `query`. One `fc-match` costs about 10 ms,
 /// so callers that need more than one instance of a face resolve it once.
 fn fontconfig_source(query: &str) -> Option<(PathBuf, u32)> {
-    let output = Command::new("fc-match")
-        .args(["-f", "%{file}\t%{index}\n", query])
-        .output()
-        .ok()?;
+    let output = super::super::replay::process::output_setup(Command::new("fc-match").args([
+        "-f",
+        "%{file}\t%{index}\n",
+        query,
+    ]))
+    .ok()?;
     if !output.status.success() {
         return None;
     }
@@ -72,13 +74,15 @@ pub fn load_ui_font_weights(family: Option<&str>, weights: (f32, f32)) -> (FontV
 
 /// The desktop's configured UI family, when the desktop names one.
 fn desktop_font_family() -> Option<String> {
-    Command::new("gsettings")
-        .args(["get", "org.gnome.desktop.interface", "font-name"])
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .and_then(|output| String::from_utf8(output.stdout).ok())
-        .and_then(|output| parse_gsettings_font(&output))
+    super::super::replay::process::output_setup(Command::new("gsettings").args([
+        "get",
+        "org.gnome.desktop.interface",
+        "font-name",
+    ]))
+    .ok()
+    .filter(|output| output.status.success())
+    .and_then(|output| String::from_utf8(output.stdout).ok())
+    .and_then(|output| parse_gsettings_font(&output))
 }
 
 pub fn load_popup_font() -> FontVec {

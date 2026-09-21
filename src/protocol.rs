@@ -3,8 +3,8 @@ use std::path::PathBuf;
 
 use serde_json::{Value, json};
 
-const MAX_HEADER_BYTES: usize = 64 * 1024;
-pub(crate) const MAX_PAYLOAD_BYTES: usize = 256 * 1024 * 1024;
+pub const MAX_HEADER_BYTES: usize = 64 * 1024;
+pub const MAX_PAYLOAD_BYTES: usize = 256 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PublicRecordingState {
