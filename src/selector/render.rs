@@ -681,6 +681,14 @@ pub fn draw_badge(pm: &mut Pixmap, sel: (f32, f32, f32, f32), surf_w: u32, surf_
     let Some((bx, by, bw, bh)) = badge_bounds(sel, surf_w, surf_h) else {
         return;
     };
+    draw_badge_at(pm, sel, (bx, by, bw, bh));
+}
+
+pub fn draw_badge_at(
+    pm: &mut Pixmap,
+    sel: (f32, f32, f32, f32),
+    (bx, by, bw, bh): (f64, f64, f64, f64),
+) {
     let label = format!("{}×{}", sel.2.round() as i32, sel.3.round() as i32);
     let text_w = text_width(&label, UI_TEXT_PX, false);
     fill_rounded(pm, (bx, by, bw, bh), UI_RADIUS, UI_SURFACE);
@@ -1189,10 +1197,20 @@ pub fn draw_magnifier(
     surf_w: u32,
     surf_h: u32,
 ) {
-    use crate::selector::edit::{magnifier_placement, magnifier_source};
+    let position = crate::selector::edit::magnifier_placement(
+        cursor,
+        120.0,
+        24.0,
+        surf_w as f64,
+        surf_h as f64,
+    );
+    draw_magnifier_at(pm, base, cursor, position);
+}
+
+pub fn draw_magnifier_at(pm: &mut Pixmap, base: &Pixmap, cursor: (f64, f64), (lx, ly): (f64, f64)) {
+    use crate::selector::edit::magnifier_source;
     const LOUPE: u32 = 120;
     const SAMPLE: u32 = 30;
-    let (lx, ly) = magnifier_placement(cursor, LOUPE as f64, 24.0, surf_w as f64, surf_h as f64);
     let (lx, ly) = (lx.round() as u32, ly.round() as u32);
     let (sx, sy, sw, sh) = magnifier_source(cursor, SAMPLE, base.width(), base.height());
     if sw == 0 || sh == 0 {

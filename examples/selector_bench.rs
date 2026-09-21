@@ -8,6 +8,8 @@ mod image_model;
 mod shelf {
     pub use crate::font;
 }
+#[path = "../src/selector/desktop.rs"]
+pub mod desktop;
 #[path = "../src/selector/edit.rs"]
 pub mod edit;
 #[path = "../src/selector/render.rs"]
@@ -41,6 +43,7 @@ fn main() {
                         0.
                     };
                     let state = Scene {
+                        chrome_viewport: None,
                         selection: Some((40. + offset, 90., w as f32 * 0.7, h as f32 * 0.7)),
                         editing: true,
                         record: scenario == "hover",
@@ -95,6 +98,7 @@ fn main() {
         cache.update(
             &base,
             Scene {
+                chrome_viewport: None,
                 selection: Some((100., 180., 740., 280.)),
                 editing: true,
                 record: true,
