@@ -275,3 +275,25 @@ Maintainer decisions needed:
   Combined 3840x1080 through gsr stop hangs. Ignored test
   `live_smooth_cursor_recording` reproduces it (`BOLTSNAP_LIVE_OUTPUT`,
   `BOLTSNAP_LIVE_REGION`).
+
+## Performance review, 2026-09-23 (evening)
+
+Measured (light, read-only or tiny synthetic runs):
+- Daemon idle: 0 CPU ticks in 10 s, 13 MB RSS, about 0.2 wakeups/s.
+- Replay under full game GPU load: gsr about 10 % of one core, worker 0.4 %.
+- `boltsnap full` 3840x1080: capture 28-39 ms (outliers to 130 ms under game
+  load), RGB drop 7 ms, PNG encode 13 ms (already the fast fdeflate mode).
+- Hyprland socket 0.15 ms vs hyprctl 4.1 ms.
+- sendcmd cursor rendering was quadratic (10 min 240 FPS: > 10 min vs 16 s
+  baseline); the raw-frame pipe renderer is linear (1 min 2.9 s, 10 min 29.4 s
+  at 320x180).
+
+Fixed: video cards on the focused monitor, linear cursor rendering with a single
+decode for Combined, selector renders only when an output can take a frame,
+Hyprland socket IPC, parallel focus query, faster RGB drop and card thumbnails,
+frame-callback shelf animations, one-shot save checkmark, cached controls font,
+no `date` spawn.
+
+Not done: sending the card thumbnail from the CLI (saves the 31 ms PNG decode in
+the daemon; protocol change, needs approval), parallel cursor tracker start
+(a few ms in practice), second ffprobe per finalize.
