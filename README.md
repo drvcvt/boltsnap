@@ -359,9 +359,9 @@ frame instead. Boltsnap follows the pointer through the
 recording; the critically damped spring (no overshoot) removes small jitter and
 lets fast moves glide, with a short motion blur. Mellow trails more, quick
 follows closely. The cursor is part of the video, so saving only remuxes, as
-with the system cursor. Single outputs, areas and both outputs (Separate and
-Combined) are covered; across two outputs the cursor glides over the border.
-Replay clips keep the system cursor.
+with the system cursor. Single outputs, areas, both outputs (Separate and
+Combined) and the replay buffer are covered; across two outputs the cursor
+glides over the border.
 
 Build the plugin and put it beside the `boltsnap` binary (packaged installs may
 use `../lib/boltsnap/` relative to it):
@@ -374,15 +374,15 @@ cp src/platform/linux/gsr_cursor/target/release/libboltsnap_gsr_cursor.so ~/.car
 Beside each recorded clip `X.mp4` Boltsnap keeps `X.cursor.json` (raw pointer
 samples in clip pixels, format `boltsnap.cursor` v1, `cursor_in_video: true`)
 for editors, e.g. to follow the cursor when zooming. It moves and is deleted
-with the clip. There is no cursor-free copy of the
+with the clip. Replay clips have none. There is no cursor-free copy of the
 video, so editors cannot re-render or drop the cursor.
 
 Limits: the drawn cursor is always Boltsnap's arrow at `XCURSOR_SIZE`. Hyprland
 0.56 can only copy SHM cursor images and stops that capture for other cursors,
 so shape changes (I-beam, hand) and clicks are not shown. The compositor must
 offer the EXT cursor session and the plugin must be installed; otherwise
-starting a smooth recording fails with a message instead of recording
-without a cursor. The mode is fixed when a recording starts.
+starting a smooth recording or replay fails with a message instead of recording
+without a cursor. The mode is fixed when a recording or the replay buffer starts.
 
 ### Recording controls and shell integration
 
@@ -434,7 +434,7 @@ record_default_target = "focused"
 # Default: separate
 record_both_mode = "separate"
 
-# Pointer in recordings (Linux, gpu-screen-recorder): "system"
+# Pointer in recordings and replay (Linux, gpu-screen-recorder): "system"
 # records the compositor's cursor as is. "mellow" and "quick" draw a
 # spring-smoothed arrow (XCURSOR_SIZE) live through the gsr plugin
 # libboltsnap_gsr_cursor.so, see "Smooth cursor". Tray: Recording > Cursor.

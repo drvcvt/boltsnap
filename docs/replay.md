@@ -77,6 +77,12 @@ Without `output`, replay uses the recording preference's named display, or the
 focused display at startup. A preference to record both displays still starts
 one focused replay display. Restart replay after changing configuration.
 
+The top-level `record_cursor` applies to replay too: `mellow` and `quick` run
+GPU Screen Recorder with `-cursor no` and the smooth-cursor plugin
+`libboltsnap_gsr_cursor.so` (installed beside Boltsnap, see the README's
+"Smooth cursor"), so replay clips contain the smoothed arrow. The mode is read
+when replay starts. Replay clips have no `X.cursor.json`.
+
 One third of the packet budget belongs to the live ring, one to a frozen export,
 and one to its anonymous in-memory source file. Packet buffers are reference
 counted during snapshot creation. Preview decoding, encoder surfaces, libraries
