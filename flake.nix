@@ -37,6 +37,16 @@
         ];
 
         rpath = lib.makeLibraryPath runtimeLibs;
+
+        # gpu-screen-recorder plugin that draws the smooth cursor while recording.
+        cursorPlugin = pkgs.rustPlatform.buildRustPackage {
+          pname = "boltsnap-gsr-cursor";
+          version = "0.1.0";
+          src = ./.;
+          cargoRoot = "src/platform/linux/gsr_cursor";
+          buildAndTestSubdir = "src/platform/linux/gsr_cursor";
+          cargoLock.lockFile = ./src/platform/linux/gsr_cursor/Cargo.lock;
+        };
       in
       {
         packages.default = pkgs.rustPlatform.buildRustPackage {
@@ -47,6 +57,12 @@
 
           nativeBuildInputs = with pkgs; [ pkg-config makeWrapper ];
           buildInputs = runtimeLibs;
+
+          # Looked up as ../lib/boltsnap/ relative to the binary.
+          postInstall = ''
+            mkdir -p $out/lib/boltsnap
+            ln -s ${cursorPlugin}/lib/libboltsnap_gsr_cursor.so $out/lib/boltsnap/
+          '';
 
           # No helper PATH wrapping needed — boltsnap is fully in-process now.
           postFixup = ''

@@ -1215,7 +1215,7 @@ fn spawn_initial_segment(
         codec,
         profile,
         audio.as_ref().map_or(&[][..], AudioCapture::inputs),
-        prefs.cursor != crate::config::RecordCursor::System,
+        prefs.cursor,
         tools,
     ) {
         Ok(active) => Ok((active, audio)),
@@ -2585,7 +2585,7 @@ impl Daemon {
                     &session.codec,
                     session.profile,
                     session.audio.as_ref().map_or(&[][..], AudioCapture::inputs),
-                    session.cursor != crate::config::RecordCursor::System,
+                    session.cursor,
                     &RecorderTools::default(),
                 ) {
                     Ok(active) => active,
@@ -2888,7 +2888,6 @@ impl Daemon {
             codec: session.codec.clone(),
             destination,
             cursor: session.cursor,
-            fps: session.profile.fps(),
             region: match &session.scope {
                 CaptureScope::Area(geometry) => Some(*geometry),
                 CaptureScope::Outputs(_) => None,

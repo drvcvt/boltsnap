@@ -22,9 +22,8 @@ pub struct FinalizeRequest {
     pub both_mode: RecordBothMode,
     pub codec: String,
     pub destination: SaveDestination,
-    /// Smooth modes draw the recorded cursor track onto the clip.
+    /// Smooth modes keep the recorded pointer track as `X.cursor.json`.
     pub cursor: RecordCursor,
-    pub fps: u32,
     /// Recorded region for area recordings, in logical coordinates.
     pub region: Option<super::Geometry>,
 }
@@ -62,21 +61,20 @@ pub fn finalize_recording(
     }
 
     let combined = req.both_mode == RecordBothMode::Combined && req.segments.len() > 1;
-    // Tracks must be read before concatenation removes their segments.
+    // Tracks must be read before concatenation removes their segments. They
+    // only feed `X.cursor.json`; the cursor itself is already in the video.
     let mut tracks = BTreeMap::new();
     if req.cursor != RecordCursor::System {
         for (output, segments) in &req.segments {
             let Some((origin, _)) = cursor_frame(&req, output.as_deref(), combined) else {
                 continue;
             };
-            match super::cursor_render::load(segments, origin, &tools.ffmpeg) {
+            match super::cursor_sidecar::load(segments, origin, &tools.ffmpeg) {
                 Ok(Some(logical)) => {
                     tracks.insert(output.clone(), logical.samples);
                 }
                 Ok(None) => {}
-                Err(error) => {
-                    return Err(failure(format!("read cursor track: {error}"), req.segments));
-                }
+                Err(error) => eprintln!("boltsnap: read cursor track: {error}"),
             }
         }
     }
@@ -93,57 +91,31 @@ pub fn finalize_recording(
     }
 
     if req.both_mode == RecordBothMode::Combined && ready.len() > 1 {
-        let merged = super::cursor::merge(&tracks.values().cloned().collect::<Vec<_>>());
-        tracks.clear();
-        // With a cursor track, one decode feeds both the clean composite and
-        // the cursor clip instead of composing and then re-encoding again.
-        let composed = if merged.is_empty() {
-            compose_outputs(&ready, &req.monitors, &req.codec, tools)
-        } else {
-            render_combined(&req, &ready, &merged, tools)
-        };
-        match composed {
+        match compose_outputs(&ready, &req.monitors, &req.codec, tools) {
             Ok(path) => {
-                for input in ready.values().flatten() {
-                    remove_work_file(input);
-                }
                 ready.clear();
                 ready.insert(None, vec![path]);
             }
-            Err(error) if !merged.is_empty() => {
-                return Err(failure(
-                    format!(
-                        "cursor rendering failed: {error}; the per-output recordings without cursor are kept"
-                    ),
-                    ready,
-                ));
-            }
             Err(error) => return Err(failure(error, ready)),
+        }
+        let merged = super::cursor::merge(&tracks.values().cloned().collect::<Vec<_>>());
+        tracks.clear();
+        if !merged.is_empty() {
+            tracks.insert(None, merged);
         }
     }
 
     for (output, samples) in tracks {
-        let Some(clean) = ready.get(&output).and_then(|paths| paths.first()).cloned() else {
+        let Some(clip) = ready.get(&output).and_then(|paths| paths.first()) else {
             continue;
         };
-        match render_cursor(&req, output.as_deref(), combined, &clean, &samples, tools) {
-            Ok(clip) => {
-                ready.insert(output, vec![clip]);
-            }
-            Err(error) => {
-                // The cursor-free video stays recoverable; nothing is delivered
-                // without the requested cursor.
-                return Err(failure(
-                    format!(
-                        "cursor rendering failed: {error}; the recording without cursor is kept at {}",
-                        clean.display()
-                    ),
-                    ready,
-                ));
-            }
+        if let Err(error) =
+            write_cursor_track(&req, output.as_deref(), combined, clip, &samples, tools)
+        {
+            eprintln!("boltsnap: {} has no cursor track: {error}", clip.display());
         }
     }
-    super::cursor_render::remove_segment_files(&originals);
+    super::cursor_sidecar::remove_segment_files(&originals);
 
     match req.destination {
         SaveDestination::Shelf => Ok(clips_from(&ready, false)),
@@ -182,85 +154,26 @@ fn cursor_frame(
     }
 }
 
-fn render_cursor(
+/// Write `X.cursor.json` for a finished clip; `samples` are logical units
+/// relative to the clip origin.
+fn write_cursor_track(
     req: &FinalizeRequest,
     output: Option<&str>,
     combined: bool,
-    clean: &Path,
+    clip: &Path,
     samples: &[super::cursor::Sample],
     tools: &RecorderTools,
-) -> Result<PathBuf, String> {
+) -> Result<(), String> {
     let (_, logical_width) = cursor_frame(req, output, combined).ok_or("missing clip layout")?;
-    let probe = super::cursor_render::probe(clean, &tools.ffmpeg)?;
+    let probe = super::cursor_sidecar::probe(clip, &tools.ffmpeg)?;
     let factor = f64::from(probe.width) / logical_width;
-    let clip = work_path(&tools.segment_dir, "cursor", output, "mp4");
-    ensure_free_space(&tools.segment_dir, source_size(&[clean.to_path_buf()])?)?;
-    let decode = ["-i", &clean.to_string_lossy(), "-map", "0:v:0"].map(str::to_owned);
-    super::cursor_render::render(
-        super::cursor_render::Job {
-            decode: decode.to_vec(),
-            audio: clean,
-            size: (probe.width, probe.height),
-            clip: &clip,
-            existing_clean: Some(clean),
-        },
-        &super::cursor_render::to_pixels(samples, factor),
-        probe.duration,
-        req.fps,
-        req.cursor,
+    super::cursor_sidecar::write(
+        clip,
+        &super::cursor_sidecar::to_pixels(samples, factor),
+        (probe.width, probe.height),
         factor,
-        &req.codec,
-        &tools.ffmpeg,
-    )?;
-    Ok(clip)
-}
-
-/// Compose the outputs with the cursor drawn in, writing the clean composite as
-/// the clip's sidecar from the same decode.
-fn render_combined(
-    req: &FinalizeRequest,
-    ready: &BTreeMap<Option<String>, Vec<PathBuf>>,
-    samples: &[super::cursor::Sample],
-    tools: &RecorderTools,
-) -> Result<PathBuf, String> {
-    let (paths, filter, size) = combined_layout(ready, &req.monitors)?;
-    let (_, logical_width) = cursor_frame(req, None, true).ok_or("missing clip layout")?;
-    let factor = f64::from(size.0) / logical_width;
-    let duration = paths
-        .iter()
-        .map(|path| super::cursor_render::probe(path, &tools.ffmpeg).map(|p| p.duration))
-        .collect::<Result<Vec<_>, _>>()?
-        .into_iter()
-        .fold(0.0, f64::max);
-    ensure_free_space(&tools.segment_dir, 2 * source_size(&paths)?)?;
-    let clip = work_path(&tools.segment_dir, "cursor", None, "mp4");
-    let mut decode = Vec::new();
-    for path in &paths {
-        decode.extend(["-i".to_owned(), path.to_string_lossy().into_owned()]);
-    }
-    decode.extend([
-        "-filter_complex".into(),
-        filter,
-        "-map".into(),
-        "[v]".into(),
-    ]);
-    super::cursor_render::render(
-        super::cursor_render::Job {
-            decode,
-            audio: &paths[0],
-            size,
-            clip: &clip,
-            existing_clean: None,
-        },
-        &super::cursor_render::to_pixels(samples, factor),
-        duration,
-        req.fps,
         req.cursor,
-        factor,
-        &req.codec,
-        &tools.ffmpeg,
-    )?;
-    Ok(clip)
+    )
 }
 
 fn failure(
@@ -338,11 +251,11 @@ fn finalize_group(
     Ok(final_path)
 }
 
-/// Inputs in layout order, the xstack filter labelled `[v]` and canvas size.
+/// Inputs in layout order and the xstack filter labelled `[v]`.
 fn combined_layout(
     ready: &BTreeMap<Option<String>, Vec<PathBuf>>,
     monitors: &[Monitor],
-) -> Result<(Vec<PathBuf>, String, (u32, u32)), String> {
+) -> Result<(Vec<PathBuf>, String), String> {
     let selected: Vec<&Monitor> = monitors
         .iter()
         .filter(|monitor| ready.contains_key(&Some(monitor.name.clone())))
@@ -355,21 +268,7 @@ fn combined_layout(
         .map(|monitor| ready[&Some(monitor.name.clone())][0].clone())
         .collect();
     let filter = build_xstack_filter_for(&selected)?;
-    Ok((paths, filter, xstack_canvas(&selected)))
-}
-
-/// Canvas size of `build_xstack_filter_for`'s layout.
-fn xstack_canvas(monitors: &[&Monitor]) -> (u32, u32) {
-    let scale = monitors.iter().map(|m| m.scale).fold(1.0_f64, f64::max);
-    let min_x = monitors.iter().map(|m| m.x).min().unwrap_or(0);
-    let min_y = monitors.iter().map(|m| m.y).min().unwrap_or(0);
-    monitors.iter().fold((0, 0), |(w, h), m| {
-        let right = ((m.x - min_x) as f64 * scale).round() as u32
-            + ((f64::from(m.width) / m.scale) * scale).round() as u32;
-        let bottom = ((m.y - min_y) as f64 * scale).round() as u32
-            + ((f64::from(m.height) / m.scale) * scale).round() as u32;
-        (w.max(right), h.max(bottom))
-    })
+    Ok((paths, filter))
 }
 
 fn compose_outputs(
@@ -378,7 +277,7 @@ fn compose_outputs(
     codec: &str,
     tools: &RecorderTools,
 ) -> Result<PathBuf, String> {
-    let (ordered_paths, filter, _) = combined_layout(ready, monitors)?;
+    let (ordered_paths, filter) = combined_layout(ready, monitors)?;
     ensure_free_space(&tools.segment_dir, source_size(&ordered_paths)?)?;
     let output = work_path(&tools.segment_dir, "combined", None, "mp4");
     let args = build_combined_args(&ordered_paths, &filter, codec, &output);
@@ -480,7 +379,7 @@ fn move_to_disk_with(
 
 /// Cursor sidecars follow their clip; a failure keeps the clip saved.
 fn move_sidecars(source: &Path, destination: &Path) {
-    if let Err(error) = super::cursor_render::move_sidecars(source, destination) {
+    if let Err(error) = super::cursor_sidecar::move_sidecars(source, destination) {
         eprintln!("boltsnap: saved {}, but {error}", destination.display());
     }
 }
@@ -585,7 +484,7 @@ fn build_combined_args(
 
 /// Device for encoders that take hardware frames, which need an upload after
 /// software filters.
-pub(crate) fn hardware_device(codec: &str) -> Option<&'static str> {
+fn hardware_device(codec: &str) -> Option<&'static str> {
     match codec.rsplit('_').next() {
         Some("vulkan") => Some("vulkan=hw"),
         Some("vaapi") => Some("vaapi=hw"),
@@ -933,7 +832,6 @@ mod tests {
             codec: "h264_nvenc".into(),
             destination,
             cursor: RecordCursor::System,
-            fps: 60,
             region: None,
         }
     }

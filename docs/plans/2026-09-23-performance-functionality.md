@@ -176,6 +176,10 @@ cleanup. Superseded if Phase 4 removes the replay cursor setting.
 
 ## Phase 4: cursor smoothing, Screen Studio style
 
+Superseded 2026-09-24: the save-time renderer below was replaced by a live
+gpu-screen-recorder plugin, and `X.clean.mp4` is gone; see
+[2026-09-24-live-cursor-plugin.md](2026-09-24-live-cursor-plugin.md).
+
 Needs approval. The current experiment smooths live with an 8 ms lookahead at
 60 FPS and burns ~3 cores; the effect is barely visible and it cannot be enabled
 from the tray with the current config. Screen Studio instead records the cursor

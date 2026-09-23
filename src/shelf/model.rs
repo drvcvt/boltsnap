@@ -31,7 +31,6 @@ impl Thumb {
         if self.lifetime == FileLifetime::Temporary {
             if self.kind == CardKind::Video {
                 let _ = std::fs::remove_file(crate::record::cursor::sidecar_path(&self.png_path));
-                let _ = std::fs::remove_file(crate::record::cursor::clean_path(&self.png_path));
             }
             std::fs::remove_file(&self.png_path)
         } else {

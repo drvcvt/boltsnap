@@ -351,23 +351,38 @@ pacman -S gpu-screen-recorder libpulse
 
 ### Smooth cursor
 
-Inspired by Screen Studio: with `record_cursor = "mellow"` or `"quick"` the
-cursor is not burned into the capture. Boltsnap records its position through the
-`ext-image-copy-capture-v1` cursor session and renders a critically damped
-spring (no overshoot) at save time, so small jitter disappears and fast moves
-glide. Mellow trails more, quick follows closely. Saving re-encodes the clip once
-with the recording encoder.
+Inspired by Screen Studio: with `record_cursor = "mellow"` or `"quick"`
+gpu-screen-recorder leaves out the system cursor and a small gsr plugin
+(`libboltsnap_gsr_cursor.so`) draws a spring-smoothed arrow into every captured
+frame instead. Boltsnap follows the pointer through the
+`ext-image-copy-capture-v1` cursor session and feeds it to the plugin while
+recording; the critically damped spring (no overshoot) removes small jitter and
+lets fast moves glide, with a short motion blur. Mellow trails more, quick
+follows closely. The cursor is part of the video, so saving only remuxes, as
+with the system cursor. Single outputs, areas and both outputs (Separate and
+Combined) are covered; across two outputs the cursor glides over the border.
+Replay clips keep the system cursor.
 
-Beside each clip `X.mp4` Boltsnap keeps `X.clean.mp4` (the same video without
-cursor) and `X.cursor.json` (raw pointer samples in clip pixels, format
-`boltsnap.cursor` v1). Editors can re-render or drop the cursor from these; both
-files move and are deleted with the clip.
+Build the plugin and put it beside the `boltsnap` binary (packaged installs may
+use `../lib/boltsnap/` relative to it):
 
-Limits: the drawn cursor is always the theme's arrow. Hyprland 0.56 can only copy
-SHM cursor images and stops that capture for other cursors, so shape changes
-(I-beam, hand) and clicks are not recorded. Replay clips keep the system cursor.
-The compositor must offer the EXT cursor session; otherwise starting a smooth
-recording fails with a message instead of recording without a cursor.
+```sh
+cargo build --release --locked --manifest-path src/platform/linux/gsr_cursor/Cargo.toml
+cp src/platform/linux/gsr_cursor/target/release/libboltsnap_gsr_cursor.so ~/.cargo/bin/
+```
+
+Beside each recorded clip `X.mp4` Boltsnap keeps `X.cursor.json` (raw pointer
+samples in clip pixels, format `boltsnap.cursor` v1, `cursor_in_video: true`)
+for editors, e.g. to follow the cursor when zooming. It moves and is deleted
+with the clip. There is no cursor-free copy of the
+video, so editors cannot re-render or drop the cursor.
+
+Limits: the drawn cursor is always Boltsnap's arrow at `XCURSOR_SIZE`. Hyprland
+0.56 can only copy SHM cursor images and stops that capture for other cursors,
+so shape changes (I-beam, hand) and clicks are not shown. The compositor must
+offer the EXT cursor session and the plugin must be installed; otherwise
+starting a smooth recording fails with a message instead of recording
+without a cursor. The mode is fixed when a recording starts.
 
 ### Recording controls and shell integration
 
@@ -419,10 +434,10 @@ record_default_target = "focused"
 # Default: separate
 record_both_mode = "separate"
 
-# Pointer in recordings (Linux, gpu-screen-recorder): "system" records the
-# compositor's cursor as is. "mellow" and "quick" record without it plus a
-# separate pointer track, then draw a spring-smoothed arrow from the Xcursor
-# theme (XCURSOR_THEME/XCURSOR_SIZE) on save. Tray: Recording > Cursor.
+# Pointer in recordings (Linux, gpu-screen-recorder): "system"
+# records the compositor's cursor as is. "mellow" and "quick" draw a
+# spring-smoothed arrow (XCURSOR_SIZE) live through the gsr plugin
+# libboltsnap_gsr_cursor.so, see "Smooth cursor". Tray: Recording > Cursor.
 # Default: system
 record_cursor = "system"
 

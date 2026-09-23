@@ -1,9 +1,12 @@
-//! Records the pointer track beside a cursor-free recording segment.
+//! Follows the pointer for smooth-cursor recordings: feeds the gsr plugins
+//! live and records the track beside the segment for `X.cursor.json`.
 
 use crate::record::Geometry;
 use crate::record::cursor::TRACK_HEADER;
+use crate::record::cursor_motion::feed_line;
 use std::fs::File;
 use std::io::{BufWriter, Write};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -46,17 +49,91 @@ pub fn track_path(segment: &Path) -> PathBuf {
     PathBuf::from(name)
 }
 
-/// Open the cursor session and start writing `path`. Returns once the session
-/// exists, so an unsupported compositor fails the recording start instead of
-/// producing a video without a cursor.
-pub fn start(source: Source, path: PathBuf) -> Result<Tracker, String> {
+/// File name of the gpu-screen-recorder plugin that draws the smooth cursor.
+pub const PLUGIN: &str = "libboltsnap_gsr_cursor.so";
+
+/// The plugin beside the running binary, or in `../lib/boltsnap/` for
+/// packaged installs.
+pub fn plugin_path() -> Result<PathBuf, String> {
+    let exe = std::env::current_exe().map_err(|error| error.to_string())?;
+    let dir = exe.parent().unwrap_or(Path::new("."));
+    plugin_in(dir).ok_or_else(|| {
+        format!(
+            "smooth cursor needs {PLUGIN} beside boltsnap ({})",
+            dir.display()
+        )
+    })
+}
+
+fn plugin_in(dir: &Path) -> Option<PathBuf> {
+    [dir.join(PLUGIN), dir.join("../lib/boltsnap").join(PLUGIN)]
+        .into_iter()
+        .find(|path| path.is_file())
+}
+
+/// Pipes from a segment's trackers to its gsr plugins: every tracker writes to
+/// every plugin, so each plugin follows the pointer across all recorded outputs.
+pub struct Feeds {
+    /// Read ends, one per plugin, inherited by gsr.
+    pub readers: Vec<OwnedFd>,
+    writers: Arc<[File]>,
+}
+
+impl Feeds {
+    pub fn new(count: usize) -> Result<Self, String> {
+        let mut readers = Vec::with_capacity(count);
+        let mut writers = Vec::with_capacity(count);
+        for _ in 0..count {
+            let mut fds = [0; 2];
+            if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+                return Err(format!("cursor feed: {}", std::io::Error::last_os_error()));
+            }
+            let (reader, writer) =
+                unsafe { (OwnedFd::from_raw_fd(fds[0]), File::from_raw_fd(fds[1])) };
+            // A stalled plugin must never block the tracker.
+            unsafe {
+                libc::fcntl(writer.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK);
+            }
+            readers.push(reader);
+            writers.push(writer);
+        }
+        Ok(Self {
+            readers,
+            writers: writers.into(),
+        })
+    }
+}
+
+/// Logical rectangle of the tracked output.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Area {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+}
+
+/// Open the cursor session, feed `feeds` as tracker `index` and record `track`.
+/// Returns once the session exists, so an unsupported compositor fails the
+/// recording start instead of producing a video without a cursor.
+pub fn start(
+    source: Source,
+    index: usize,
+    track: Option<PathBuf>,
+    feeds: &Feeds,
+) -> Result<(Tracker, Area), String> {
     let stop = Arc::new(AtomicBool::new(false));
     let (ready_tx, ready) = mpsc::sync_channel(1);
     let flag = stop.clone();
+    let writers = feeds.writers.clone();
     let thread = std::thread::Builder::new()
         .name("cursor-track".into())
         .spawn(move || {
-            if let Err(error) = run(&source, &path, &flag, &ready_tx) {
+            let sinks = Sinks {
+                index,
+                writers,
+                track: None,
+            };
+            if let Err(error) = run(&source, track.as_deref(), sinks, &flag, &ready_tx) {
                 let _ = ready_tx.try_send(Err(error.clone()));
                 eprintln!("boltsnap daemon: cursor track stopped: {error}");
             }
@@ -67,17 +144,48 @@ pub fn start(source: Source, path: PathBuf) -> Result<Tracker, String> {
         thread: Some(thread),
     };
     match ready.recv_timeout(Duration::from_secs(3)) {
-        Ok(Ok(())) => Ok(tracker),
+        Ok(Ok(area)) => Ok((tracker, area)),
         Ok(Err(error)) => Err(format!("smooth cursor unavailable: {error}")),
         Err(_) => Err("smooth cursor unavailable: cursor session did not start".into()),
     }
 }
 
+/// Where a tracker's events go.
+struct Sinks {
+    index: usize,
+    writers: Arc<[File]>,
+    track: Option<BufWriter<File>>,
+}
+
+impl Sinks {
+    fn event(&mut self, us: u64, line: &str, position: Option<(f64, f64)>) {
+        let feed = feed_line(self.index, us, position);
+        for mut writer in self.writers.iter() {
+            // Lines are shorter than PIPE_BUF, so writes are atomic between
+            // trackers. A full or closed pipe drops the line.
+            let _ = writer.write(feed.as_bytes());
+        }
+        self.record(|track| writeln!(track, "{us} {line}"));
+    }
+
+    /// Write to the track file. A failing file only costs `X.cursor.json`,
+    /// never the live cursor.
+    fn record(&mut self, write: impl FnOnce(&mut BufWriter<File>) -> std::io::Result<()>) {
+        if let Some(track) = &mut self.track
+            && let Err(error) = write(track)
+        {
+            eprintln!("boltsnap daemon: cursor track file: {error}");
+            self.track = None;
+        }
+    }
+}
+
 fn run(
     source: &Source,
-    path: &Path,
+    track: Option<&Path>,
+    mut sinks: Sinks,
     stop: &AtomicBool,
-    ready: &mpsc::SyncSender<Result<(), String>>,
+    ready: &mpsc::SyncSender<Result<Area, String>>,
 ) -> Result<(), String> {
     let clock = Clock::now()?;
     let options = libway::CaptureOptions {
@@ -105,40 +213,53 @@ fn run(
     let mut stream = connection
         .cursor_positions(output.id, options)
         .map_err(|e| e.to_string())?;
-    let mut file = BufWriter::new(File::create(path).map_err(|e| e.to_string())?);
-    writeln!(
-        file,
-        "{TRACK_HEADER}\noutput {} {}",
-        output.logical.x, output.logical.y
-    )
-    .map_err(|e| e.to_string())?;
-    let _ = ready.try_send(Ok(()));
+    if let Some(path) = track {
+        let mut file = BufWriter::new(File::create(path).map_err(|e| e.to_string())?);
+        writeln!(
+            file,
+            "{TRACK_HEADER}\noutput {} {}",
+            output.logical.x, output.logical.y
+        )
+        .map_err(|e| e.to_string())?;
+        sinks.track = Some(file);
+    }
+    let (ox, oy) = (f64::from(output.logical.x), f64::from(output.logical.y));
+    let _ = ready.try_send(Ok(Area {
+        x: ox,
+        y: oy,
+        width: f64::from(output.logical.width),
+    }));
     let mut flushed = Instant::now();
     while !stop.load(Ordering::Relaxed) {
-        let line = match stream
+        match stream
             .poll_event(Duration::from_millis(50))
             .map_err(|e| e.to_string())?
         {
+            // Visibility follows positions; enter only goes to the track file.
             Some(libway::CursorEvent::Enter { received_at }) => {
-                format!("{} e", clock.us(received_at))
+                let us = clock.us(received_at);
+                sinks.record(|track| writeln!(track, "{us} e"));
             }
             Some(libway::CursorEvent::Leave { received_at }) => {
-                format!("{} l", clock.us(received_at))
+                sinks.event(clock.us(received_at), "l", None);
             }
             Some(libway::CursorEvent::Position { x, y, received_at }) => {
-                format!("{} p {x} {y}", clock.us(received_at))
+                let (x, y) = (f64::from(x), f64::from(y));
+                sinks.event(
+                    clock.us(received_at),
+                    &format!("p {x} {y}"),
+                    Some((ox + x, oy + y)),
+                );
             }
-            Some(libway::CursorEvent::Image { .. }) | None => String::new(),
-        };
-        if !line.is_empty() {
-            writeln!(file, "{line}").map_err(|e| e.to_string())?;
+            Some(libway::CursorEvent::Image { .. }) | None => {}
         }
         if flushed.elapsed() > Duration::from_millis(250) {
-            file.flush().map_err(|e| e.to_string())?;
+            sinks.record(|track| track.flush());
             flushed = Instant::now();
         }
     }
-    file.flush().map_err(|e| e.to_string())
+    sinks.record(|track| track.flush());
+    Ok(())
 }
 
 /// Converts `Instant`s to CLOCK_MONOTONIC microseconds, the clock of gsr's
@@ -183,6 +304,44 @@ mod tests {
             track_path(Path::new("/tmp/seg.mkv")),
             PathBuf::from("/tmp/seg.mkv.cursor")
         );
+    }
+
+    #[test]
+    fn every_plugin_feed_gets_every_tracker_event_without_blocking() {
+        let feeds = Feeds::new(2).unwrap();
+        let mut sinks = Sinks {
+            index: 1,
+            writers: feeds.writers.clone(),
+            track: None,
+        };
+        sinks.event(7, "p 1 2", Some((1921.0, 2.0)));
+        for reader in &feeds.readers {
+            let mut buffer = [0u8; 64];
+            let n = unsafe { libc::read(reader.as_raw_fd(), buffer.as_mut_ptr().cast(), 64) };
+            assert_eq!(&buffer[..n as usize], b"1 7 p 1921 2\n");
+        }
+        // Nobody reads: a full pipe drops lines instead of stalling the tracker.
+        for _ in 0..20_000 {
+            sinks.event(8, "l", None);
+        }
+    }
+
+    #[test]
+    fn plugin_is_found_beside_the_binary_or_in_lib() {
+        let root = std::env::temp_dir().join(format!("boltsnap-plugin-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let bin = root.join("bin");
+        std::fs::create_dir_all(root.join("lib/boltsnap")).unwrap();
+        std::fs::create_dir_all(&bin).unwrap();
+        assert_eq!(plugin_in(&bin), None);
+        std::fs::write(root.join("lib/boltsnap").join(PLUGIN), b"").unwrap();
+        assert_eq!(
+            plugin_in(&bin),
+            Some(bin.join("../lib/boltsnap").join(PLUGIN))
+        );
+        std::fs::write(bin.join(PLUGIN), b"").unwrap();
+        assert_eq!(plugin_in(&bin), Some(bin.join(PLUGIN)));
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

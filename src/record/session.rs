@@ -1,11 +1,12 @@
 use super::{Geometry, Monitor, resolve_record_outputs, wf_recorder_args, wf_recorder_output_args};
 use crate::config::RecordProfile;
-use crate::config::{RecordBothMode, RecordingPrefs};
+use crate::config::{RecordBothMode, RecordCursor, RecordingPrefs};
 pub use crate::protocol::{PublicRecordingState, RecordingAction};
 use crate::record::audio::AudioCapture;
 use std::collections::BTreeMap;
 use std::fs;
 use std::io;
+use std::os::fd::AsRawFd;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -48,7 +49,7 @@ pub struct ActiveRecorder {
     pub output: Option<String>,
     pub path: PathBuf,
     pub child: Child,
-    /// Pointer track for cursor-free segments; held only to stop it on drop.
+    /// Pointer tracker of a smooth-cursor segment; held only to stop it on drop.
     #[allow(dead_code)]
     pub cursor: Option<crate::platform::cursor_track::Tracker>,
 }
@@ -281,48 +282,47 @@ impl RecordingSession {
 
 static SEGMENT_ID: AtomicU64 = AtomicU64::new(0);
 
-/// `smooth_cursor` records without the pointer plus a separate cursor track per
-/// segment; it requires gpu-screen-recorder.
+/// Smooth `cursor` modes record without the system pointer; the gsr plugin
+/// draws the smoothed cursor live and a track per segment feeds
+/// `X.cursor.json`. They require gpu-screen-recorder.
 pub fn spawn_segment(
     scope: &CaptureScope,
     codec: &str,
     profile: RecordProfile,
     audio: &[String],
-    smooth_cursor: bool,
+    cursor: RecordCursor,
     tools: &RecorderTools,
 ) -> Result<Vec<ActiveRecorder>, String> {
-    spawn_segment_with(
-        scope,
-        codec,
-        profile,
-        audio,
-        smooth_cursor,
-        tools,
-        |program, args| {
-            let parent = unsafe { libc::getpid() };
-            let mut command = Command::new(program);
-            command
-                .args(args)
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::inherit());
-            unsafe {
-                command.pre_exec(move || {
-                    if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) != 0 {
-                        return Err(io::Error::last_os_error());
-                    }
-                    if libc::getppid() != parent {
-                        return Err(io::Error::new(
-                            io::ErrorKind::Interrupted,
-                            "boltsnap daemon exited while starting recorder",
-                        ));
-                    }
-                    Ok(())
-                });
-            }
-            command.spawn()
-        },
-    )
+    spawn_segment_with(scope, codec, profile, audio, cursor, tools, |command| {
+        let parent = unsafe { libc::getpid() };
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit());
+        unsafe {
+            command.pre_exec(move || {
+                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) != 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                if libc::getppid() != parent {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Interrupted,
+                        "boltsnap daemon exited while starting recorder",
+                    ));
+                }
+                Ok(())
+            });
+        }
+        command.spawn()
+    })
+}
+
+/// Cursor trackers and plugin feeds of one smooth-cursor segment.
+struct SmoothCursor {
+    plugin: PathBuf,
+    feeds: crate::platform::cursor_track::Feeds,
+    trackers: Vec<Option<crate::platform::cursor_track::Tracker>>,
+    areas: Vec<crate::platform::cursor_track::Area>,
 }
 
 fn spawn_segment_with(
@@ -330,11 +330,12 @@ fn spawn_segment_with(
     codec: &str,
     profile: RecordProfile,
     audio: &[String],
-    smooth_cursor: bool,
+    cursor: RecordCursor,
     tools: &RecorderTools,
-    mut spawn: impl FnMut(&Path, &[String]) -> io::Result<Child>,
+    mut spawn: impl FnMut(&mut Command) -> io::Result<Child>,
 ) -> Result<Vec<ActiveRecorder>, String> {
-    use crate::platform::gsr;
+    use crate::platform::{cursor_track, gsr};
+    use crate::record::cursor_motion::{PLUGIN_ENV, PluginConfig, cursor_size};
     fs::create_dir_all(&tools.segment_dir)
         .map_err(|error| format!("create recording cache: {error}"))?;
     let outputs: Vec<Option<&str>> = match scope {
@@ -353,44 +354,56 @@ fn spawn_segment_with(
     if gsr_codec.is_none() && audio.len() > 1 {
         return Err("wf-recorder records a single audio source".into());
     }
-    if gsr_codec.is_none() && smooth_cursor {
+    let smooth = cursor != RecordCursor::System;
+    if gsr_codec.is_none() && smooth {
         return Err("smooth cursor requires gpu-screen-recorder".into());
     }
+    let extension = if gsr_codec.is_some() { "mkv" } else { "mp4" };
+    let paths: Vec<PathBuf> = outputs
+        .iter()
+        .map(|output| segment_path(&tools.segment_dir, *output, extension))
+        .collect();
+    // Trackers start before capture so the initial position is known.
+    let mut smooth = if smooth {
+        let plugin = cursor_track::plugin_path()?;
+        let feeds = cursor_track::Feeds::new(outputs.len())?;
+        let mut trackers = Vec::with_capacity(outputs.len());
+        let mut areas = Vec::with_capacity(outputs.len());
+        for (index, (output, path)) in outputs.iter().zip(&paths).enumerate() {
+            let source = match (scope, output) {
+                (CaptureScope::Area(geometry), _) => cursor_track::Source::Region(*geometry),
+                (_, Some(output)) => cursor_track::Source::Output((*output).to_owned()),
+                _ => unreachable!(),
+            };
+            let (tracker, area) =
+                cursor_track::start(source, index, Some(cursor_track::track_path(path)), &feeds)?;
+            trackers.push(Some(tracker));
+            areas.push(area);
+        }
+        Some(SmoothCursor {
+            plugin,
+            feeds,
+            trackers,
+            areas,
+        })
+    } else {
+        None
+    };
     let mut active = Vec::with_capacity(outputs.len());
 
-    for output in outputs {
-        let mut cursor = None;
-        let (program, args, path) = match (&tools.gsr, &gsr_codec) {
+    for (index, (output, path)) in outputs.into_iter().zip(paths).enumerate() {
+        let (program, args) = match (&tools.gsr, &gsr_codec) {
             (Some(program), Some(codec)) => {
-                let path = segment_path(&tools.segment_dir, output, "mkv");
                 let target = match (scope, output) {
                     (CaptureScope::Area(geometry), None) => gsr::Target::Region(geometry),
                     (CaptureScope::Outputs(_), Some(output)) => gsr::Target::Output(output),
                     _ => unreachable!(),
                 };
-                if smooth_cursor {
-                    use crate::platform::cursor_track;
-                    let source = match (scope, output) {
-                        (CaptureScope::Area(geometry), _) => {
-                            cursor_track::Source::Region(*geometry)
-                        }
-                        (_, Some(output)) => cursor_track::Source::Output(output.to_owned()),
-                        _ => unreachable!(),
-                    };
-                    // Start before capture so the initial position is recorded.
-                    match cursor_track::start(source, cursor_track::track_path(&path)) {
-                        Ok(tracker) => cursor = Some(tracker),
-                        Err(error) => {
-                            stop_and_reap(active);
-                            return Err(error);
-                        }
-                    }
-                }
-                let args = gsr::args(&target, codec, profile.fps(), audio, !smooth_cursor, &path);
-                (program, args, path)
+                let plugin = smooth.as_ref().map(|smooth| smooth.plugin.as_path());
+                let args = gsr::args(&target, codec, profile.fps(), audio, plugin, &path);
+                (program, args)
             }
             _ => {
-                let path = segment_path(&tools.segment_dir, output, "mp4");
                 let source = audio.first().map(String::as_str);
                 let args = match (scope, output) {
                     (CaptureScope::Area(geometry), None) => {
@@ -401,15 +414,49 @@ fn spawn_segment_with(
                     }
                     _ => unreachable!(),
                 };
-                (&tools.wf_recorder, args, path)
+                (&tools.wf_recorder, args)
             }
         };
-        match spawn(program, &args) {
+        let mut command = Command::new(program);
+        command.args(&args);
+        let mut tracker = None;
+        if let Some(smooth) = &mut smooth {
+            let fd = smooth.feeds.readers[index].as_raw_fd();
+            let (origin, width) = match scope {
+                CaptureScope::Area(geometry) => (
+                    (f64::from(geometry.x), f64::from(geometry.y)),
+                    f64::from(geometry.w),
+                ),
+                CaptureScope::Outputs(_) => {
+                    let area = smooth.areas[index];
+                    ((area.x, area.y), area.width)
+                }
+            };
+            let config = PluginConfig {
+                fd,
+                preset: cursor.key().into(),
+                size: cursor_size(),
+                origin,
+                width,
+            };
+            command.env(PLUGIN_ENV, config.to_env());
+            unsafe {
+                // Only the recorder inherits its feed.
+                command.pre_exec(move || {
+                    if libc::fcntl(fd, libc::F_SETFD, 0) != 0 {
+                        return Err(io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+            tracker = smooth.trackers[index].take();
+        }
+        match spawn(&mut command) {
             Ok(child) => active.push(ActiveRecorder {
                 output: output.map(str::to_owned),
                 path,
                 child,
-                cursor,
+                cursor: tracker,
             }),
             Err(error) => {
                 stop_and_reap(active);
@@ -894,7 +941,7 @@ while :; do sleep 1; done
             "h264_nvenc",
             RecordProfile::Quiet,
             &[],
-            false,
+            RecordCursor::System,
             &tools,
         )
         .unwrap();
@@ -923,7 +970,7 @@ while :; do sleep 1; done
                     &session.codec,
                     session.profile,
                     &[],
-                    false,
+                    RecordCursor::System,
                     &tools,
                 )
                 .unwrap();
@@ -1003,7 +1050,7 @@ sleep 1
             "test",
             RecordProfile::Quality,
             &[],
-            false,
+            RecordCursor::System,
             &tools,
         )
         .unwrap();
@@ -1056,18 +1103,19 @@ while :; do sleep 1; done
                 "h264_nvenc",
                 RecordProfile::Quality,
                 &[],
-                false,
+                RecordCursor::System,
                 &tools,
-                |program, args| {
+                |command| {
                     spawns += 1;
                     if spawns == 2 {
                         Err(io::Error::new(io::ErrorKind::NotFound, "test failure"))
                     } else {
+                        let args: Vec<_> = command.get_args().collect();
                         let path = PathBuf::from(
-                            &args[args.iter().position(|arg| arg == "-f").unwrap() + 1],
+                            args[args.iter().position(|arg| *arg == "-f").unwrap() + 1],
                         );
                         let child = Command::new("sh")
-                            .arg(program)
+                            .arg(command.get_program())
                             .args(args)
                             .stdin(Stdio::null())
                             .stdout(Stdio::null())
@@ -1225,7 +1273,7 @@ exec python3 -c 'import ctypes,signal,sys,time; value=ctypes.c_int(); ctypes.CDL
             "test",
             RecordProfile::Quality,
             &[],
-            false,
+            RecordCursor::System,
             &tools,
         )
         .unwrap();
@@ -1339,8 +1387,10 @@ exec python3 -c 'import ctypes,signal,sys,time; value=ctypes.c_int(); ctypes.CDL
         assert!(plan.notice.unwrap().contains("one"));
     }
 
-    /// Records the live desktop: two cursor-free segments with tracks, then a
-    /// Mellow render. Prints the clip paths for inspection.
+    /// Records the live desktop: two segments with the Mellow cursor drawn by
+    /// the gsr plugin (copy libboltsnap_gsr_cursor.so beside the test binary in
+    /// target/debug/deps), then saves them.
+    /// Prints the clip paths for inspection.
     #[test]
     #[ignore = "records the live desktop; set BOLTSNAP_LIVE_OUTPUT"]
     fn live_smooth_cursor_recording() {
@@ -1376,8 +1426,15 @@ exec python3 -c 'import ctypes,signal,sys,time; value=ctypes.c_int(); ctypes.CDL
         };
         let mut segments: BTreeMap<Option<String>, Vec<PathBuf>> = BTreeMap::new();
         for _ in 0..2 {
-            let active =
-                spawn_segment(&scope, &codec, RecordProfile::Quality, &[], true, &tools).unwrap();
+            let active = spawn_segment(
+                &scope,
+                &codec,
+                RecordProfile::Quality,
+                &[],
+                RecordCursor::Mellow,
+                &tools,
+            )
+            .unwrap();
             std::thread::sleep(Duration::from_secs(3));
             let job = StopChildrenJob { children: active };
             job.interrupt().unwrap();
@@ -1414,7 +1471,6 @@ exec python3 -c 'import ctypes,signal,sys,time; value=ctypes.c_int(); ctypes.CDL
                 codec,
                 destination: SaveDestination::Shelf,
                 cursor: crate::config::RecordCursor::Mellow,
-                fps: 240,
                 region,
             },
             &tools,

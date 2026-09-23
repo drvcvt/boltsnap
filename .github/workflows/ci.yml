@@ -68,6 +68,32 @@ jobs:
       - run: python3 src/platform/linux/replay/worker/tests/probe.py --worker src/platform/linux/replay/worker/target/debug/boltsnap-replay-worker
       - run: python3 src/platform/linux/replay/worker/tests/live.py --worker src/platform/linux/replay/worker/target/debug/boltsnap-replay-worker
 
+  gsr-cursor-plugin:
+    name: Smooth cursor gsr plugin
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install GL runtime for the offscreen draw check
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libegl1 libgl1 libegl-mesa0 libgl1-mesa-dri
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src/platform/linux/gsr_cursor -> target
+
+      - run: cargo fmt --manifest-path src/platform/linux/gsr_cursor/Cargo.toml --check
+      - run: cargo clippy --manifest-path src/platform/linux/gsr_cursor/Cargo.toml --locked --all-targets -- -D warnings
+      # Includes the surfaceless EGL (llvmpipe) draw check.
+      - run: cargo test --manifest-path src/platform/linux/gsr_cursor/Cargo.toml --locked -- --include-ignored
+      - run: cargo build --manifest-path src/platform/linux/gsr_cursor/Cargo.toml --locked --release
+
   windows:
     name: Windows (test)
     runs-on: windows-2022
