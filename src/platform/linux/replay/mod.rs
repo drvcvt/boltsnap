@@ -18,6 +18,9 @@ use super::shelf::DaemonEvent;
 struct Session {
     capture: Child,
     worker: Child,
+    /// Feeds the smooth-cursor plugin in `capture`; stops with the session.
+    #[allow(dead_code)]
+    cursor: Option<super::cursor_track::Tracker>,
     name: String,
     output: String,
     output_limit: u64,
@@ -327,6 +330,48 @@ fn start(settings: Settings, cancel: Arc<AtomicBool>) -> Result<Session, String>
     result.recv().map_err(|_| "replay startup thread exited")?
 }
 
+/// For smooth cursor modes: leave out the system pointer, load the gsr plugin
+/// and feed it from a tracker of `output`. The feeds must live until gsr is
+/// spawned.
+fn smooth_cursor(
+    command: &mut Command,
+    cursor: crate::config::RecordCursor,
+    output: &str,
+) -> Result<Option<(super::cursor_track::Tracker, super::cursor_track::Feeds)>, String> {
+    use super::cursor_track;
+    use crate::record::cursor_motion::{PLUGIN_ENV, PluginConfig, cursor_size};
+    use std::os::fd::AsRawFd;
+    use std::os::unix::process::CommandExt;
+    if cursor == crate::config::RecordCursor::System {
+        return Ok(None);
+    }
+    let plugin = cursor_track::plugin_path()?;
+    let feeds = cursor_track::Feeds::new(1)?;
+    let (tracker, area) =
+        cursor_track::start(cursor_track::Source::Output(output.into()), 0, None, &feeds)?;
+    let fd = feeds.readers[0].as_raw_fd();
+    let config = PluginConfig {
+        fd,
+        preset: cursor.key().into(),
+        size: cursor_size(),
+        origin: (area.x, area.y),
+        width: area.width,
+    };
+    command
+        .args(["-cursor", "no", "-p"])
+        .arg(plugin)
+        .env(PLUGIN_ENV, config.to_env());
+    unsafe {
+        command.pre_exec(move || {
+            if libc::fcntl(fd, libc::F_SETFD, 0) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    Ok(Some((tracker, feeds)))
+}
+
 fn start_capture(settings: Settings, cancel: &AtomicBool) -> Result<Session, String> {
     let info = super::hypr::json("monitors").ok_or("could not query replay monitor")?;
     let monitors = crate::record::parse_hyprland_monitors(&info)?;
@@ -448,11 +493,15 @@ fn start_capture(settings: Settings, cancel: &AtomicBool) -> Result<Session, Str
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(capture_log());
+    let cursor = crate::config::Config::load().recording_prefs().cursor;
+    let smooth = smooth_cursor(&mut command, cursor, &monitor.name)?;
     if cancel.load(Ordering::Relaxed) {
         return Err("replay start cancelled".into());
     }
     let mut capture = process::spawn(&mut command, None)
         .map_err(|e| format!("GPU Screen Recorder unavailable: {e}"))?;
+    // gsr holds its own copy of the feed now.
+    let cursor = smooth.map(|(tracker, _feeds)| tracker);
     let input = capture.stdout.take().ok_or("capture pipe missing")?;
     let name = format!(
         "worker-{}-{}",
@@ -485,6 +534,7 @@ fn start_capture(settings: Settings, cancel: &AtomicBool) -> Result<Session, Str
     let mut session = Session {
         capture,
         worker,
+        cursor,
         name,
         output: monitor.name.clone(),
         output_limit: (settings.memory_mib * 1024 * 1024 / 3) as u64,

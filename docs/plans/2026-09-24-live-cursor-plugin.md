@@ -306,7 +306,7 @@ Commit B, "Smooth cursor in the replay buffer": `replay/mod.rs`
 ## 5. Implementation notes
 
 - Baseline before the change: `cargo test --locked` 271 + 22 passed, 4 ignored;
-  clippy 32 warnings. After: 271 + 22 passed, 2 ignored (the synthetic render
+  clippy 32 warnings. After: 273 + 22 passed (two new tracker tests), 2 ignored (the synthetic render
   test and the arrow preview are gone); clippy 31 (no new ones). Plugin crate:
   14 tests plus the GL check, clippy clean.
 - GL check (`cargo test -- --ignored` in the plugin crate) passes locally on
@@ -327,3 +327,6 @@ Commit B, "Smooth cursor in the replay buffer": `replay/mod.rs`
   positions as output-buffer pixels while the Hyprland source sends logical
   ones; the mapping follows the handoff (logical), verified only at scale 1.
 - `flake.nix` was not built locally (no Nix on this machine).
+- Replay: `smooth_cursor()` in `replay/mod.rs` adds `-cursor no -p <plugin>`,
+  the env and the inherited feed to the capture command; the tracker lives in
+  `Session.cursor`. Not live-tested (starting replay records the desktop).
