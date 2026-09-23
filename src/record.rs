@@ -198,11 +198,7 @@ pub fn wf_recorder_output_args(
 }
 
 fn capture_profile_args(codec: &str, profile: RecordProfile) -> Vec<String> {
-    let fps = match profile {
-        RecordProfile::Quality => "240",
-        RecordProfile::Quiet => "60",
-    };
-    let mut args = vec!["--no-dmabuf".into(), "-r".into(), fps.into()];
+    let mut args = vec!["--no-dmabuf".into(), "-r".into(), profile.fps().to_string()];
     if codec.ends_with("_nvenc") {
         for option in ["preset=p5", "tune=hq", "rc=vbr", "cq=16"] {
             args.extend(["-p".into(), option.into()]);

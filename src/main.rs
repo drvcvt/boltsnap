@@ -374,10 +374,10 @@ fn record_flow(args: &Args) -> DynResult<()> {
 
 #[cfg(target_os = "linux")]
 fn require_recorder() -> DynResult<()> {
-    if crate::paths::has_cmd("wf-recorder") {
+    if crate::paths::has_cmd("gpu-screen-recorder") || crate::paths::has_cmd("wf-recorder") {
         Ok(())
     } else {
-        Err("wf-recorder not found; install it to start a recording".into())
+        Err("no screen recorder found; install gpu-screen-recorder to start a recording".into())
     }
 }
 

@@ -1,5 +1,6 @@
 pub mod capture;
 pub mod clipboard;
+pub mod gsr;
 pub(crate) mod image_transfer;
 pub mod ipc;
 pub mod paths;

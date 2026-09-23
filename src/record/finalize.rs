@@ -122,7 +122,8 @@ fn finalize_group(
             ));
         }
     }
-    if segments.len() == 1 {
+    // gsr writes crash-safe Matroska segments; clips are always MP4.
+    if segments.len() == 1 && segments[0].extension().is_some_and(|ext| ext == "mp4") {
         return Ok(segments[0].clone());
     }
 
@@ -335,13 +336,28 @@ fn build_combined_args(
     output: &Path,
 ) -> Vec<String> {
     let mut args = vec!["-y".into()];
+    // GPU encoders that take hardware frames need an upload after xstack.
+    let device = match codec.rsplit('_').next() {
+        Some("vulkan") => Some("vulkan=hw"),
+        Some("vaapi") => Some("vaapi=hw"),
+        _ => None,
+    };
+    let filter = match device {
+        Some(device) => {
+            args.extend(["-init_hw_device".into(), device.into()]);
+            args.extend(["-filter_hw_device".into(), "hw".into()]);
+            let stacked = filter.strip_suffix("[v]").unwrap_or(filter);
+            format!("{stacked},format=nv12,hwupload[v]")
+        }
+        None => filter.to_owned(),
+    };
     for input in inputs {
         args.push("-i".into());
         args.push(input.to_string_lossy().into_owned());
     }
     args.extend([
         "-filter_complex".into(),
-        filter.into(),
+        filter,
         "-map".into(),
         "[v]".into(),
         "-c:v".into(),
@@ -364,6 +380,16 @@ pub fn quality_args(codec: &str) -> Vec<String> {
         .into_iter()
         .map(str::to_owned)
         .collect()
+    } else if codec.ends_with("_vulkan") {
+        ["-rc_mode", "cqp", "-qp", "18"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
+    } else if codec.ends_with("_vaapi") {
+        ["-rc_mode", "CQP", "-qp", "18"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
     } else if matches!(codec, "libx264" | "libx265") {
         ["-preset", "veryfast", "-crf", "16"]
             .into_iter()
@@ -625,6 +651,7 @@ mod tests {
 
     fn tools(dir: &Path, ffmpeg: &Path) -> RecorderTools {
         RecorderTools {
+            gsr: None,
             wf_recorder: "unused".into(),
             ffmpeg: ffmpeg.into(),
             segment_dir: dir.into(),
@@ -748,6 +775,39 @@ mod tests {
         assert_eq!(audio_maps.len(), 1);
         assert_eq!(audio_maps[0][1], "0:a?");
         assert!(args.windows(2).any(|pair| pair == ["-c:a", "copy"]));
+    }
+
+    #[test]
+    fn gpu_combined_encode_uploads_after_xstack() {
+        let args = build_combined_args(
+            &[PathBuf::from("left.mkv"), PathBuf::from("right.mkv")],
+            "[0:v][1:v]xstack=inputs=2[v]",
+            "h264_vulkan",
+            Path::new("combined.mp4"),
+        );
+        assert_eq!(
+            args[..5],
+            [
+                "-y",
+                "-init_hw_device",
+                "vulkan=hw",
+                "-filter_hw_device",
+                "hw"
+            ]
+        );
+        assert!(args.contains(&"[0:v][1:v]xstack=inputs=2,format=nv12,hwupload[v]".to_owned()));
+        assert!(args.windows(2).any(|pair| pair == ["-rc_mode", "cqp"]));
+        let software = build_combined_args(
+            &[PathBuf::from("left.mkv"), PathBuf::from("right.mkv")],
+            "[0:v][1:v]xstack=inputs=2[v]",
+            "h264_nvenc",
+            Path::new("combined.mp4"),
+        );
+        assert!(
+            !software
+                .iter()
+                .any(|arg| arg.contains("hwupload") || arg == "-init_hw_device")
+        );
     }
 
     #[test]
@@ -941,6 +1001,26 @@ mod tests {
     fn recording_cache_requires_less_than_two_gibibytes() {
         assert!(require_recording_cache_limit(RECORDING_CACHE_LIMIT_BYTES).is_err());
         assert!(require_recording_cache_limit(RECORDING_CACHE_LIMIT_BYTES - 1).is_ok());
+    }
+
+    #[test]
+    fn single_matroska_segment_is_remuxed_to_mp4() {
+        let dir = temp_dir("single-mkv");
+        let segment = file(&dir.join("one.mkv"), b"video");
+        let ffmpeg = fake_ffmpeg(&dir, true);
+        let clips = finalize_recording(
+            request(
+                BTreeMap::from([(None, vec![segment.clone()])]),
+                RecordBothMode::Separate,
+                SaveDestination::Shelf,
+            ),
+            &tools(&dir, &ffmpeg),
+        )
+        .unwrap();
+        assert_eq!(clips[0].path.extension().unwrap(), "mp4");
+        assert!(clips[0].path.is_file());
+        assert!(!segment.exists());
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]

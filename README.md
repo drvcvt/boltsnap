@@ -105,7 +105,7 @@ The tagged release binaries can lag behind `main` — for the current shelf and
 screen-recording features, build from source:
 
 ```sh
-sudo pacman -S --needed rust wayland libxkbcommon pkgconf base-devel wf-recorder
+sudo pacman -S --needed rust wayland libxkbcommon pkgconf base-devel gpu-screen-recorder
 git clone https://github.com/drvcvt/boltsnap
 cd boltsnap
 cargo install --path .        # -> ~/.cargo/bin/boltsnap
@@ -158,7 +158,7 @@ Boltsnap supports Wayland protocols, not a specific compositor framework:
 | Feature | Required protocol |
 |---------|-------------------|
 | Direct screenshots | `ext-image-copy-capture-v1` + `ext-image-capture-source-v1`, or `wlr-screencopy-unstable-v1` |
-| Recording via wf-recorder | `wlr-screencopy-unstable-v1` |
+| Recording via gpu-screen-recorder | KMS capture (gsr-kms-server); the wf-recorder fallback needs `wlr-screencopy-unstable-v1` |
 | Region selector and screenshot shelf | `wlr-layer-shell-unstable-v1` |
 | Clipboard | `ext-data-control-v1` or `wlr-data-control-unstable-v1` |
 
@@ -184,7 +184,7 @@ connected, disconnected, or rearranged during selection, retry the capture.
 Screenshot capture and clipboard handling need no CLI helpers. `hyprctl` is
 optional and supplies active-window geometry on Hyprland; other Wayland
 compositors fall back to the in-process selector for window mode. Recording
-uses `wf-recorder` and FFmpeg.
+uses GPU Screen Recorder (wf-recorder when it is not installed) and FFmpeg.
 
 ## Usage
 
@@ -335,14 +335,18 @@ retried or discarded instead of losing the recording.
 Video cards carry a **▶** badge; on Linux, clicking one opens the video in the
 desktop default app. Right-click copies its file reference.
 
-On Linux recording requires `wf-recorder`; audio also requires `pactl`. The
+On Linux recording uses GPU Screen Recorder (`gpu-screen-recorder`) with a
+hardware encoder: NVENC/VA-API when available, otherwise Vulkan video. Without
+it Boltsnap falls back to `wf-recorder`. Audio also requires `pactl`. With both
+outputs in Combined mode each output is recorded separately and composed on save
+with the same encoder. The
 unmaintained Windows backend contains native Windows Graphics Capture, Media
 Foundation H.264/AAC, and WASAPI recording code, but it is not currently
 manually verified or shipped.
 
 ```sh
 # Arch / Manjaro
-pacman -S wf-recorder libpulse
+pacman -S gpu-screen-recorder libpulse
 ```
 
 ### Recording controls and shell integration
@@ -369,11 +373,13 @@ and no video data or paths are sent through IPC.
 ```toml
 # ~/.config/boltsnap/config.toml
 
-# Video codec passed to wf-recorder (Linux; Windows always encodes H.264
-# through Media Foundation).
-# Default: h264_nvenc (NVIDIA hardware encoding)
-# Use libx264 if you have no NVENC GPU.
-record_codec = "libx264"
+# Recording encoder (Linux; Windows always encodes H.264 through Media
+# Foundation). Default "auto": hardware H.264 through gpu-screen-recorder
+# (NVENC or VA-API, else Vulkan video). Explicit FFmpeg names such as
+# "h264_vulkan", "hevc_nvenc" or "libx264" (CPU) select one encoder without
+# fallback. wf-recorder, used only without gpu-screen-recorder, maps "auto" to
+# h264_nvenc.
+record_codec = "auto"
 
 # Live recording profile (Linux): "quality" = 240 fps (default), "quiet" = 60 fps.
 # Encoder quality settings stay the same. Takes effect on the next recording;

@@ -50,7 +50,7 @@ pub enum Request {
         audio_enabled: bool,
     },
     /// Start a fullscreen recording of a whole output (Hyprland monitor name) via
-    /// `wf-recorder -o`. No overlay; stop is keyboard-only and auto-finalizes.
+    /// the whole output. No overlay; stop is keyboard-only and auto-finalizes.
     StartRecordingOutput {
         name: String,
     },

@@ -1,6 +1,6 @@
 # Performance and functionality fixes, 2026-09-23
 
-Status: plan, not started. Linux only; the Windows backend stays frozen.
+Status: in progress (Phases 0, 1 and the cursor removal done). Linux only; the Windows backend stays frozen.
 Each phase is one capability and lands as its own commit(s). Phases 1 and 4
 change user-visible behavior and need explicit maintainer approval before code.
 
@@ -115,6 +115,24 @@ test scripts parse `-o` in addition to `-f`.
   concat, save to shelf and disk, gsr killed mid-recording -> auto-pause.
 - Combined save no longer re-encodes (finalize time near file copy time).
 - README support matrix and prerequisites list gpu-screen-recorder.
+
+### Implementation notes, 2026-09-23
+
+- Encoder discovery uses `gpu-screen-recorder --info` (vendor + codec list,
+  ~0.5 s, warmed at daemon start and cached) instead of the replay worker probe.
+  The session stores the FFmpeg encoder name (`h264_nvenc`, `h264_vaapi`,
+  `h264_vulkan`, `libx264`); gsr receives the mapped `-k` value.
+- Segments are Matroska: MP4 + AAC dropped one audio packet at start
+  (`failed to write frame index 1 to muxer`), Opus in MP4 broke entirely, MKV
+  had no errors. Finalize remuxes single MKV segments to MP4 (stream copy).
+- Multi-source capture is **not** used. gsr 6.1.2 hung on start or stop in 10 of
+  12 two-output runs at 240 FPS and 4 of 6 at 200 FPS here (240 Hz + 200 Hz
+  outputs), even at 120 FPS once. Combined keeps one gsr per output; finalize
+  composes with the session encoder (`h264_vulkan` + `hwupload`, CQP 18).
+  Measured: 5 s of 2x1080p240 composed in 2.6 s, PSNR 54-55 dB per half.
+- Live argv checks, DP-3 240 FPS + system/mic audio: ~45 % CPU, 973 frames in
+  ~4.05 s; region 800x600@240 on DP-1: 746 frames / 3 s; two segments concat
+  to MP4 without errors.
 
 ## Phase 2: screenshot path
 

@@ -29,6 +29,15 @@ pub enum RecordProfile {
     Quiet,
 }
 
+impl RecordProfile {
+    pub fn fps(self) -> u32 {
+        match self {
+            RecordProfile::Quality => 240,
+            RecordProfile::Quiet => 60,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecordingPrefs {
     pub default_target: RecordDefaultTarget,
@@ -360,8 +369,8 @@ fn default_save_dir() -> PathBuf {
     crate::paths::default_screenshot_dir()
 }
 
-/// The ffmpeg encoder passed to `wf-recorder -c`: CLI flag > $BOLTSNAP_RECORD_CODEC
-/// > config > `h264_nvenc` (NVENC default; users without NVENC set e.g. libx264).
+/// Requested recording encoder: CLI flag > $BOLTSNAP_RECORD_CODEC > config > `auto`
+/// (hardware H.264 through gpu-screen-recorder; `h264_nvenc` for wf-recorder).
 pub fn resolve_record_codec(cli: Option<&str>, cfg: &Config) -> String {
     if let Some(c) = cli {
         return c.to_string();
@@ -374,7 +383,7 @@ pub fn resolve_record_codec(cli: Option<&str>, cfg: &Config) -> String {
     if let Some(c) = &cfg.record_codec {
         return c.clone();
     }
-    "h264_nvenc".to_string()
+    "auto".to_string()
 }
 
 /// Where confirmed recordings are saved: config `record_dir` (expanded) else the
@@ -655,14 +664,14 @@ unrelated = "keep-me"
     }
 
     #[test]
-    fn record_codec_defaults_to_nvenc() {
+    fn record_codec_defaults_to_auto() {
         // BOLTSNAP_RECORD_CODEC is boltsnap-private (read by nothing else), so
         // removing it without restore is race-free and keeps the default assertion
         // self-contained.
         unsafe {
             env::remove_var("BOLTSNAP_RECORD_CODEC");
         }
-        assert_eq!(resolve_record_codec(None, &Config::default()), "h264_nvenc");
+        assert_eq!(resolve_record_codec(None, &Config::default()), "auto");
         let cfg = Config {
             record_codec: Some("libx264".into()),
             ..Config::default()
