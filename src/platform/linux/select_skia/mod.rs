@@ -544,6 +544,16 @@ impl Selector {
         if !self.configured || self.done {
             return;
         }
+        // Pointer events arrive far faster than frames (1000 Hz mice). Render
+        // the scene only when some output can take a frame; `needs_redraw`
+        // stays set so its frame callback draws the latest state.
+        if !self
+            .views
+            .iter()
+            .any(|view| view.needs_redraw && !view.frame_pending)
+        {
+            return;
+        }
         let (Some(base), Some(overlay)) = (self.base.as_ref(), self.overlay.as_mut()) else {
             return;
         };
