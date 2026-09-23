@@ -1,5 +1,7 @@
 use std::collections::VecDeque;
+use std::sync::Arc;
 
+#[derive(Clone)]
 pub struct Entry<T> {
     pub payload: T,
     pub keyframe: bool,
@@ -8,6 +10,7 @@ pub struct Entry<T> {
     pub bytes: usize,
 }
 
+#[derive(Clone)]
 struct Gop<T> {
     start_us: i64,
     packets: VecDeque<Entry<T>>,
@@ -15,7 +18,7 @@ struct Gop<T> {
 }
 
 pub struct Ring<T> {
-    video: VecDeque<Gop<T>>,
+    video: VecDeque<Arc<Gop<T>>>,
     audio: VecDeque<Entry<T>>,
     duration_us: i64,
     limit: usize,
@@ -27,7 +30,7 @@ pub struct Ring<T> {
     evicted_gops: u64,
 }
 
-impl<T> Ring<T> {
+impl<T: Clone> Ring<T> {
     pub fn new(duration_us: i64, limit: usize) -> Result<Self, String> {
         if duration_us <= 0 || limit == 0 {
             return Err("duration and memory budget must be positive".into());
@@ -69,11 +72,11 @@ impl<T> Ring<T> {
         }
 
         if video && entry.keyframe {
-            self.video.push_back(Gop {
+            self.video.push_back(Arc::new(Gop {
                 start_us: entry.start_us,
                 packets: VecDeque::new(),
                 bytes: 0,
-            });
+            }));
         }
         if self.video.is_empty() {
             return Ok(());
@@ -106,7 +109,9 @@ impl<T> Ring<T> {
         self.peak_bytes = self.peak_bytes.max(self.bytes);
         if video {
             self.end_us = Some(entry.end_us);
-            let gop = self.video.back_mut().expect("nonempty video ring");
+            // A frozen snapshot shares completed GOPs. Only the active GOP
+            // needs copying, once, when ingest first appends after a snapshot.
+            let gop = Arc::make_mut(self.video.back_mut().expect("nonempty video ring"));
             gop.bytes += entry.bytes;
             gop.packets.push_back(entry);
         } else {
@@ -149,10 +154,12 @@ impl<T> Ring<T> {
         self.video.iter().flat_map(|gop| &gop.packets)
     }
 
-    pub fn snapshot<E>(&self, mut reference: impl FnMut(&T) -> Result<T, E>) -> Result<Self, E> {
-        let mut copy = Self {
-            video: VecDeque::new(),
-            audio: VecDeque::new(),
+    /// Share immutable video GOPs; audio descriptors are copied independently.
+    /// Appending and eviction cannot change a previously returned snapshot.
+    pub fn snapshot(&self) -> Self {
+        Self {
+            video: self.video.clone(),
+            audio: self.audio.clone(),
             duration_us: self.duration_us,
             limit: self.limit,
             bytes: self.bytes,
@@ -161,29 +168,7 @@ impl<T> Ring<T> {
             last_audio_us: self.last_audio_us,
             end_us: self.end_us,
             evicted_gops: self.evicted_gops,
-        };
-        let mut packet = |entry: &Entry<T>| -> Result<Entry<T>, E> {
-            Ok(Entry {
-                payload: reference(&entry.payload)?,
-                keyframe: entry.keyframe,
-                start_us: entry.start_us,
-                end_us: entry.end_us,
-                bytes: entry.bytes,
-            })
-        };
-        for gop in &self.video {
-            copy.video.push_back(Gop {
-                start_us: gop.start_us,
-                packets: gop
-                    .packets
-                    .iter()
-                    .map(&mut packet)
-                    .collect::<Result<_, _>>()?,
-                bytes: gop.bytes,
-            });
         }
-        copy.audio = self.audio.iter().map(packet).collect::<Result<_, _>>()?;
-        Ok(copy)
     }
 
     pub fn tail_snapshot(
@@ -272,7 +257,7 @@ mod tests {
             true,
         )
         .unwrap();
-        let frozen = ring.snapshot(|p| Ok::<_, String>(p.clone())).unwrap();
+        let frozen = ring.snapshot();
         ring.push(
             Entry {
                 payload: Arc::new([4, 5, 6]),
@@ -291,14 +276,39 @@ mod tests {
             &payload
         ));
         assert_eq!(Arc::strong_count(&payload), 2);
-        assert!(
-            frozen
-                .snapshot(|_| Err::<Arc<[i32; 3]>, _>("reference failed"))
-                .is_err()
-        );
-        assert_eq!(Arc::strong_count(&payload), 2);
         drop(frozen);
         assert_eq!(Arc::strong_count(&payload), 1);
+    }
+
+    #[test]
+    fn snapshot_shares_gops_and_only_copies_the_active_gop_on_append() {
+        let mut ring = Ring::new(60_000_000, 100_000).unwrap();
+        for n in 0..8 {
+            ring.push(entry(n, n % 4 == 0, 20), true).unwrap();
+            ring.push(entry(n, false, 10), false).unwrap();
+        }
+        let frozen = ring.snapshot();
+        assert!(Arc::ptr_eq(&ring.video[0], &frozen.video[0]));
+        assert!(Arc::ptr_eq(&ring.video[1], &frozen.video[1]));
+        ring.push(entry(8, false, 20), true).unwrap();
+        assert!(Arc::ptr_eq(&ring.video[0], &frozen.video[0]));
+        assert!(!Arc::ptr_eq(&ring.video[1], &frozen.video[1]));
+        let active = Arc::as_ptr(&ring.video[1]);
+        ring.push(entry(9, false, 20), true).unwrap();
+        assert_eq!(active, Arc::as_ptr(&ring.video[1]));
+        ring.push(entry(8, false, 10), false).unwrap();
+        assert_eq!(frozen.video().count(), 8);
+        assert_eq!(frozen.audio().count(), 8);
+        assert_eq!(frozen.bounds().unwrap(), (0, 8_000_000));
+        assert_eq!(frozen.bytes(), 240);
+        assert_eq!(ring.video().count(), 10);
+        assert_eq!(ring.audio().count(), 9);
+        assert_eq!(ring.bytes(), 290);
+        // Eviction and new keyframes preserve the shared snapshot too.
+        ring.push(entry(70, true, 20), true).unwrap();
+        assert_eq!(ring.video().count(), 1);
+        assert_eq!(frozen.video().count(), 8);
+        assert_eq!(frozen.audio().count(), 8);
     }
 
     #[test]
