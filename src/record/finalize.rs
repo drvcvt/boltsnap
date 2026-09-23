@@ -93,17 +93,32 @@ pub fn finalize_recording(
     }
 
     if req.both_mode == RecordBothMode::Combined && ready.len() > 1 {
-        match compose_outputs(&ready, &req.monitors, &req.codec, tools) {
+        let merged = super::cursor::merge(&tracks.values().cloned().collect::<Vec<_>>());
+        tracks.clear();
+        // With a cursor track, one decode feeds both the clean composite and
+        // the cursor clip instead of composing and then re-encoding again.
+        let composed = if merged.is_empty() {
+            compose_outputs(&ready, &req.monitors, &req.codec, tools)
+        } else {
+            render_combined(&req, &ready, &merged, tools)
+        };
+        match composed {
             Ok(path) => {
+                for input in ready.values().flatten() {
+                    remove_work_file(input);
+                }
                 ready.clear();
                 ready.insert(None, vec![path]);
             }
+            Err(error) if !merged.is_empty() => {
+                return Err(failure(
+                    format!(
+                        "cursor rendering failed: {error}; the per-output recordings without cursor are kept"
+                    ),
+                    ready,
+                ));
+            }
             Err(error) => return Err(failure(error, ready)),
-        }
-        let merged = super::cursor::merge(&tracks.values().cloned().collect::<Vec<_>>());
-        tracks.clear();
-        if !merged.is_empty() {
-            tracks.insert(None, merged);
         }
     }
 
@@ -180,12 +195,65 @@ fn render_cursor(
     let factor = f64::from(probe.width) / logical_width;
     let clip = work_path(&tools.segment_dir, "cursor", output, "mp4");
     ensure_free_space(&tools.segment_dir, source_size(&[clean.to_path_buf()])?)?;
+    let decode = ["-i", &clean.to_string_lossy(), "-map", "0:v:0"].map(str::to_owned);
     super::cursor_render::render(
-        clean,
-        &clip,
+        super::cursor_render::Job {
+            decode: decode.to_vec(),
+            audio: clean,
+            size: (probe.width, probe.height),
+            clip: &clip,
+            existing_clean: Some(clean),
+        },
         &super::cursor_render::to_pixels(samples, factor),
-        (probe.width, probe.height),
         probe.duration,
+        req.fps,
+        req.cursor,
+        factor,
+        &req.codec,
+        &tools.ffmpeg,
+    )?;
+    Ok(clip)
+}
+
+/// Compose the outputs with the cursor drawn in, writing the clean composite as
+/// the clip's sidecar from the same decode.
+fn render_combined(
+    req: &FinalizeRequest,
+    ready: &BTreeMap<Option<String>, Vec<PathBuf>>,
+    samples: &[super::cursor::Sample],
+    tools: &RecorderTools,
+) -> Result<PathBuf, String> {
+    let (paths, filter, size) = combined_layout(ready, &req.monitors)?;
+    let (_, logical_width) = cursor_frame(req, None, true).ok_or("missing clip layout")?;
+    let factor = f64::from(size.0) / logical_width;
+    let duration = paths
+        .iter()
+        .map(|path| super::cursor_render::probe(path, &tools.ffmpeg).map(|p| p.duration))
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .fold(0.0, f64::max);
+    ensure_free_space(&tools.segment_dir, 2 * source_size(&paths)?)?;
+    let clip = work_path(&tools.segment_dir, "cursor", None, "mp4");
+    let mut decode = Vec::new();
+    for path in &paths {
+        decode.extend(["-i".to_owned(), path.to_string_lossy().into_owned()]);
+    }
+    decode.extend([
+        "-filter_complex".into(),
+        filter,
+        "-map".into(),
+        "[v]".into(),
+    ]);
+    super::cursor_render::render(
+        super::cursor_render::Job {
+            decode,
+            audio: &paths[0],
+            size,
+            clip: &clip,
+            existing_clean: None,
+        },
+        &super::cursor_render::to_pixels(samples, factor),
+        duration,
         req.fps,
         req.cursor,
         factor,
@@ -270,12 +338,11 @@ fn finalize_group(
     Ok(final_path)
 }
 
-fn compose_outputs(
+/// Inputs in layout order, the xstack filter labelled `[v]` and canvas size.
+fn combined_layout(
     ready: &BTreeMap<Option<String>, Vec<PathBuf>>,
     monitors: &[Monitor],
-    codec: &str,
-    tools: &RecorderTools,
-) -> Result<PathBuf, String> {
+) -> Result<(Vec<PathBuf>, String, (u32, u32)), String> {
     let selected: Vec<&Monitor> = monitors
         .iter()
         .filter(|monitor| ready.contains_key(&Some(monitor.name.clone())))
@@ -283,13 +350,37 @@ fn compose_outputs(
     if selected.len() != ready.len() {
         return Err("combined recording is missing monitor layout data".into());
     }
-    let ordered_paths: Vec<PathBuf> = selected
+    let paths = selected
         .iter()
         .map(|monitor| ready[&Some(monitor.name.clone())][0].clone())
         .collect();
+    let filter = build_xstack_filter_for(&selected)?;
+    Ok((paths, filter, xstack_canvas(&selected)))
+}
+
+/// Canvas size of `build_xstack_filter_for`'s layout.
+fn xstack_canvas(monitors: &[&Monitor]) -> (u32, u32) {
+    let scale = monitors.iter().map(|m| m.scale).fold(1.0_f64, f64::max);
+    let min_x = monitors.iter().map(|m| m.x).min().unwrap_or(0);
+    let min_y = monitors.iter().map(|m| m.y).min().unwrap_or(0);
+    monitors.iter().fold((0, 0), |(w, h), m| {
+        let right = ((m.x - min_x) as f64 * scale).round() as u32
+            + ((f64::from(m.width) / m.scale) * scale).round() as u32;
+        let bottom = ((m.y - min_y) as f64 * scale).round() as u32
+            + ((f64::from(m.height) / m.scale) * scale).round() as u32;
+        (w.max(right), h.max(bottom))
+    })
+}
+
+fn compose_outputs(
+    ready: &BTreeMap<Option<String>, Vec<PathBuf>>,
+    monitors: &[Monitor],
+    codec: &str,
+    tools: &RecorderTools,
+) -> Result<PathBuf, String> {
+    let (ordered_paths, filter, _) = combined_layout(ready, monitors)?;
     ensure_free_space(&tools.segment_dir, source_size(&ordered_paths)?)?;
     let output = work_path(&tools.segment_dir, "combined", None, "mp4");
-    let filter = build_xstack_filter_for(&selected)?;
     let args = build_combined_args(&ordered_paths, &filter, codec, &output);
     if let Err(error) = run_ffmpeg(&tools.ffmpeg, &args) {
         remove_work_file(&output);

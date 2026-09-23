@@ -1,7 +1,6 @@
 //! Export-time cursor rendering: recorded cursor tracks, spring smoothing and
 //! the FFmpeg overlay script. Platform-neutral; capture lives in the OS backend.
 
-use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 /// Sidecars beside a clip `X.mp4`: the cursor-free video `X.clean.mp4`.
@@ -269,32 +268,113 @@ impl Spring {
     }
 }
 
-/// FFmpeg `sendcmd` script moving `overlay@cursor` to each frame's position.
-/// `hotspot` is subtracted so the image's hotspot lands on the position.
-pub fn overlay_script(positions: &[Option<(f64, f64)>], fps: u32, hotspot: (f64, f64)) -> String {
-    let mut script = String::new();
-    let mut last = None;
-    for (frame, position) in positions.iter().enumerate() {
-        // Hidden cursors move far outside the frame instead of toggling inputs.
-        let (x, y) = position
-            .map(|(x, y)| {
-                (
-                    (x - hotspot.0).round() as i64,
-                    (y - hotspot.1).round() as i64,
-                )
+/// Cursor image converted once to the video's YUV space.
+pub struct Sprite {
+    width: usize,
+    height: usize,
+    /// Per pixel: luma, Cb, Cr and alpha (0-255).
+    pixels: Vec<[f32; 4]>,
+}
+
+impl Sprite {
+    /// `rgba` is straight alpha. `bt709` picks the matrix (else BT.601);
+    /// `full` picks full instead of limited range.
+    pub fn new(rgba: &[u8], width: usize, height: usize, bt709: bool, full: bool) -> Self {
+        let (kr, kb) = if bt709 {
+            (0.2126, 0.0722)
+        } else {
+            (0.299, 0.114)
+        };
+        let (y_scale, y_offset, c_scale) = if full {
+            (255.0, 0.0, 255.0)
+        } else {
+            (219.0, 16.0, 224.0)
+        };
+        let pixels = rgba
+            .chunks_exact(4)
+            .take(width * height)
+            .map(|p| {
+                let [r, g, b] = [p[0], p[1], p[2]].map(|c| f32::from(c) / 255.0);
+                let y = kr * r + (1.0 - kr - kb) * g + kb * b;
+                let cb = (b - y) / (2.0 * (1.0 - kb));
+                let cr = (r - y) / (2.0 * (1.0 - kr));
+                [
+                    y_offset + y_scale * y,
+                    128.0 + c_scale * cb,
+                    128.0 + c_scale * cr,
+                    f32::from(p[3]),
+                ]
             })
-            .unwrap_or((-100_000, -100_000));
-        if last == Some((x, y)) {
-            continue;
+            .collect();
+        Self {
+            width,
+            height,
+            pixels,
         }
-        last = Some((x, y));
-        let seconds = frame as f64 / f64::from(fps);
-        let _ = writeln!(
-            script,
-            "{seconds:.6} overlay@cursor x {x}, overlay@cursor y {y};"
-        );
     }
-    script
+
+    fn at(&self, x: i64, y: i64) -> Option<[f32; 4]> {
+        (x >= 0 && y >= 0 && (x as usize) < self.width && (y as usize) < self.height)
+            .then(|| self.pixels[y as usize * self.width + x as usize])
+    }
+}
+
+/// Bytes of one yuv420p frame.
+pub fn yuv420_len(width: usize, height: usize) -> usize {
+    width * height + 2 * width.div_ceil(2) * height.div_ceil(2)
+}
+
+/// Alpha-blend `sprite` with its top-left at (`left`, `top`) into a yuv420p
+/// frame, clipped to the frame. Chroma averages the covered 2x2 luma block.
+pub fn blend_yuv420(
+    frame: &mut [u8],
+    width: usize,
+    height: usize,
+    sprite: &Sprite,
+    left: i64,
+    top: i64,
+) {
+    let mix = |dst: u8, src: f32, alpha: f32| {
+        (src * alpha + f32::from(dst) * (1.0 - alpha))
+            .round()
+            .clamp(0.0, 255.0) as u8
+    };
+    let (w, h) = (width as i64, height as i64);
+    let x0 = left.max(0);
+    let y0 = top.max(0);
+    let x1 = (left + sprite.width as i64).min(w);
+    let y1 = (top + sprite.height as i64).min(h);
+    if x0 >= x1 || y0 >= y1 {
+        return;
+    }
+    for y in y0..y1 {
+        for x in x0..x1 {
+            if let Some([luma, _, _, a]) = sprite.at(x - left, y - top) {
+                let i = (y * w + x) as usize;
+                frame[i] = mix(frame[i], luma, a / 255.0);
+            }
+        }
+    }
+    let (cw, ch) = (width.div_ceil(2) as i64, height.div_ceil(2) as i64);
+    let (u_plane, v_plane) = (width * height, width * height + (cw * ch) as usize);
+    for cy in y0 / 2..=(y1 - 1) / 2 {
+        for cx in x0 / 2..=(x1 - 1) / 2 {
+            let (mut coverage, mut cb, mut cr) = (0.0, 0.0, 0.0);
+            for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                if let Some([_, u, v, a]) = sprite.at(cx * 2 + dx - left, cy * 2 + dy - top) {
+                    coverage += a;
+                    cb += u * a;
+                    cr += v * a;
+                }
+            }
+            if coverage > 0.0 && cx < cw && cy < ch {
+                let i = (cy * cw + cx) as usize;
+                let alpha = coverage / (4.0 * 255.0);
+                frame[u_plane + i] = mix(frame[u_plane + i], cb / coverage, alpha);
+                frame[v_plane + i] = mix(frame[v_plane + i], cr / coverage, alpha);
+            }
+        }
+    }
 }
 
 /// Raw samples as the `boltsnap.cursor` v1 JSON sidecar read by Eddy.
@@ -499,23 +579,62 @@ mod tests {
     }
 
     #[test]
-    fn overlay_script_emits_changes_only_and_hides_off_frame() {
-        let script = overlay_script(
-            &[
-                Some((10.0, 20.0)),
-                Some((10.2, 20.2)),
-                None,
-                Some((4.0, 4.0)),
-            ],
-            4,
-            (2.0, 1.0),
+    fn sprite_uses_the_bt709_limited_range_matrix() {
+        let sprite = Sprite::new(
+            &[255, 255, 255, 255, 0, 0, 0, 128, 255, 0, 0, 255],
+            3,
+            1,
+            true,
+            false,
         );
+        let [y, cb, cr, a] = sprite.pixels[0];
         assert_eq!(
-            script,
-            "0.000000 overlay@cursor x 8, overlay@cursor y 19;\n\
-             0.500000 overlay@cursor x -100000, overlay@cursor y -100000;\n\
-             0.750000 overlay@cursor x 2, overlay@cursor y 3;\n"
+            (y.round(), cb.round(), cr.round(), a),
+            (235.0, 128.0, 128.0, 255.0)
         );
+        assert_eq!(sprite.pixels[1][0].round(), 16.0);
+        assert_eq!(sprite.pixels[1][3], 128.0);
+        // BT.709 red: Y 63, Cb 102, Cr 240 in limited range.
+        let red = sprite.pixels[2].map(f32::round);
+        assert_eq!(&red[..3], &[63.0, 102.0, 240.0]);
+    }
+
+    #[test]
+    fn blend_writes_luma_and_chroma_and_clips_at_edges() {
+        let (w, h) = (6, 4);
+        let mut frame = vec![0u8; yuv420_len(w, h)];
+        frame[w * h..].fill(128);
+        // 2x2 opaque white sprite at (1, 1): covers luma (1..3, 1..3), which
+        // touches chroma pixels (0, 0), (1, 0), (0, 1), (1, 1).
+        let sprite = Sprite::new(&[255; 16], 2, 2, true, false);
+        blend_yuv420(&mut frame, w, h, &sprite, 1, 1);
+        let luma = |x: usize, y: usize| frame[y * w + x];
+        assert_eq!(
+            (luma(0, 0), luma(1, 1), luma(2, 2), luma(3, 2)),
+            (0, 235, 235, 0)
+        );
+        // White keeps chroma neutral.
+        assert!(frame[w * h..].iter().all(|c| *c == 128));
+        let mut edge = vec![16u8; yuv420_len(w, h)];
+        blend_yuv420(&mut edge, w, h, &sprite, 5, 3);
+        assert_eq!(edge[3 * w + 5], 235);
+        blend_yuv420(&mut edge, w, h, &sprite, -9, 2);
+        blend_yuv420(&mut edge, w, h, &sprite, 6, 0);
+        assert_eq!(edge.iter().filter(|v| **v == 235).count(), 1);
+    }
+
+    #[test]
+    fn blend_mixes_partial_alpha_and_averages_chroma_coverage() {
+        let (w, h) = (2, 2);
+        let mut frame = vec![0u8; yuv420_len(w, h)];
+        frame[4..].fill(128);
+        // One half-transparent pure red pixel in the 2x2 block.
+        let sprite = Sprite::new(&[255, 0, 0, 128], 1, 1, true, false);
+        blend_yuv420(&mut frame, w, h, &sprite, 0, 0);
+        let red_luma = 16.0f32 + 219.0 * 0.2126;
+        assert_eq!(frame[0], (red_luma * 128.0 / 255.0).round() as u8);
+        // Coverage is a quarter of half alpha: Cr moves an eighth toward 240.
+        assert_eq!(frame[5], (240.0f32 * 0.125 + 128.0 * 0.875).round() as u8);
     }
 
     #[test]
