@@ -20,7 +20,7 @@ jobs:
             libxkbcommon-dev libxkbcommon-x11-dev \
             libwayland-dev wayland-protocols \
             libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
-            libgl1-mesa-dev libegl1-mesa-dev \
+            libgl1-mesa-dev libegl1-mesa-dev libgbm-dev \
             libfontconfig1-dev
 
       - uses: dtolnay/rust-toolchain@stable
@@ -30,6 +30,14 @@ jobs:
       - run: cargo fmt --check
 
       - run: cargo test --locked
+
+      - run: python3 tools/sync-libway.py --check
+      - run: cargo fmt --manifest-path vendor/libway/Cargo.toml --check
+      - run: cargo test --manifest-path vendor/libway/Cargo.toml --locked --no-default-features
+      - run: cargo test --manifest-path vendor/libway/Cargo.toml --locked --all-features
+      - run: cargo build --locked --bin boltsnap
+      - name: Boltsnap capture against an isolated Wayland server
+        run: LIBWAY_TEST_BOLTSNAP="$PWD/target/debug/boltsnap" cargo test --manifest-path vendor/libway/Cargo.toml --locked --test consumer -- --ignored
 
   replay-worker:
     name: Replay worker (${{ matrix.os }})

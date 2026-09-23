@@ -1,0 +1,19 @@
+[package]
+name = "libway-capture-benchmark"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[features]
+gpu = ["libway/gpu", "dep:gbm"]
+
+[dependencies]
+libway = { path = ".." }
+libwayshot = "=0.7.3"
+wayland-client = "0.31.14"
+wayland-server = "0.31.14"
+wayland-protocols = { version = "0.32.12", features = ["server", "staging", "unstable"] }
+wayland-protocols-wlr = { version = "0.3.12", features = ["server"] }
+memmap2 = "0.9"
+libc = "0.2"
+gbm = { version = "0.18", default-features = false, optional = true }

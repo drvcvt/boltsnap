@@ -325,7 +325,7 @@ dependencies = [
  "image",
  "ksni",
  "libc",
- "libwayshot",
+ "libway",
  "raw-window-handle",
  "serde_json",
  "smithay-client-toolkit",
@@ -1029,30 +1029,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gbm"
-version = "0.18.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce852e998d3ca5e4a97014fb31c940dc5ef344ec7d364984525fd11e8a547e6a"
-dependencies = [
- "bitflags 2.11.1",
- "drm",
- "drm-fourcc",
- "gbm-sys",
- "libc",
- "wayland-backend",
- "wayland-server",
-]
-
-[[package]]
-name = "gbm-sys"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c13a5f2acc785d8fb6bf6b7ab6bfb0ef5dad4f4d97e8e70bb8e470722312f76f"
-dependencies = [
- "libc",
-]
-
-[[package]]
 name = "gdk"
 version = "0.18.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1211,26 +1187,6 @@ dependencies = [
  "libc",
  "system-deps",
  "winapi",
-]
-
-[[package]]
-name = "gl"
-version = "0.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a94edab108827d67608095e269cf862e60d920f144a5026d3dbcfd8b877fb404"
-dependencies = [
- "gl_generator",
-]
-
-[[package]]
-name = "gl_generator"
-version = "0.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1a95dfc23a2b4a9a2f5ab41d194f8bfda3cabec42af4e39f08c339eb2a0c124d"
-dependencies = [
- "khronos_api",
- "log",
- "xml-rs",
 ]
 
 [[package]]
@@ -1516,12 +1472,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "khronos_api"
-version = "3.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
-
-[[package]]
 name = "ksni"
 version = "0.3.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1597,21 +1547,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "libwayshot"
-version = "0.7.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b90b306f57277d75087b3efcc727163ad291552fab45de5ac3def7677ea8937c"
+name = "libway"
+version = "0.1.0"
 dependencies = [
- "drm",
- "gbm",
- "gl",
  "image",
+ "libc",
  "memmap2 0.9.10",
- "r-egl-wayland",
- "rustix 1.1.4",
- "thiserror 2.0.18",
- "tracing",
- "wayland-backend",
  "wayland-client",
  "wayland-protocols",
  "wayland-protocols-wlr",
@@ -2503,28 +2444,6 @@ name = "r-efi"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
-
-[[package]]
-name = "r-egl"
-version = "0.7.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "74c68c047fb54b1eb9a0e751d9b238ff41195a4fcdae90ddc6b43b5903e2b09b"
-dependencies = [
- "libc",
- "pkg-config",
-]
-
-[[package]]
-name = "r-egl-wayland"
-version = "0.7.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a9b502a04cf38d8ab73fded506bb3a84999fc6cfea9801d1b459402a79f963d4"
-dependencies = [
- "r-egl",
- "wayland-backend",
- "wayland-client",
- "wayland-protocols",
-]
 
 [[package]]
 name = "raw-window-handle"
@@ -3474,28 +3393,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "wayland-server"
-version = "0.31.13"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cc1846eb04c49182e04f4a099e2a830a2b745610bbc1d61246e206f29c7000a0"
-dependencies = [
- "bitflags 2.11.1",
- "downcast-rs",
- "rustix 1.1.4",
- "wayland-backend",
- "wayland-scanner",
-]
-
-[[package]]
 name = "wayland-sys"
 version = "0.31.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d8eab23fefc9e41f8e841df4a9c707e8a8c4ed26e944ef69297184de2785e3be"
 dependencies = [
  "dlib",
- "libc",
  "log",
- "memoffset",
  "once_cell",
  "pkg-config",
 ]
@@ -4126,12 +4030,6 @@ checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
 dependencies = [
  "bytemuck",
 ]
-
-[[package]]
-name = "xml-rs"
-version = "0.8.28"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3ae8337f8a065cfc972643663ea4279e04e7256de865aa66fe25cec5fb912d3f"
 
 [[package]]
 name = "zbus"

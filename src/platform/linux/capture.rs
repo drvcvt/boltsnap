@@ -301,57 +301,62 @@ fn capture_wayland(mode: CaptureMode, instant: bool) -> DynResult<(RgbaImage, Op
             Ok((img, capture_output))
         }
         CaptureMode::ActiveWindow => {
-            let conn = libwayshot::WayshotConnection::new()
+            let options = libway::CaptureOptions::default();
+            let mut conn = libway::Connection::connect(&options)
                 .map_err(|e| format!("wayland connection failed: {e}"))?;
             let geometry = hyprland_active_window_geometry()?
                 .ok_or("active-window on Wayland requires Hyprland (hyprctl)")?;
             let region = parse_geometry(&geometry)?;
             let img = conn
-                .screenshot(region, false)
-                .map_err(|e| format!("wayshot screenshot active failed: {e}"))?;
-            Ok((img.into_rgba8(), capture_output))
+                .capture_region(region, &options)
+                .map_err(|e| format!("libway screenshot active failed: {e}"))?;
+            Ok((img.image, capture_output))
         }
         CaptureMode::Area | CaptureMode::Window => {
             // Freeze the complete desktop before mapping any selector surfaces.
             let grab = move || -> Result<super::select_skia::CapturedDesktop, String> {
-                let conn = libwayshot::WayshotConnection::new()
+                let options = libway::CaptureOptions::default();
+                let mut conn = libway::Connection::connect(&options)
                     .map_err(|e| format!("wayland connection failed: {e}"))?;
-                super::timing::mark("wayshot_connected");
-                let outputs = conn.get_all_outputs();
-                let monitors: Vec<_> = outputs
-                    .iter()
-                    .map(|o| {
-                        let r = &o.logical_region.inner;
-                        super::select_skia::CapturedMonitor {
-                            name: o.name.clone(),
-                            transform: o.transform,
-                            origin: (r.position.x, r.position.y),
-                            logical_size: (r.size.width, r.size.height),
-                        }
-                    })
-                    .collect();
+                super::timing::mark("libway_connected");
+                let outputs = conn.outputs(&options).map_err(|e| e.to_string())?;
+                let monitors: Vec<_> = outputs.iter().map(captured_monitor).collect();
                 let regions: Vec<_> = monitors
                     .iter()
                     .map(|m| (m.origin.0, m.origin.1, m.logical_size.0, m.logical_size.1))
                     .collect();
                 let (_, _, width, height) = crate::selector::desktop::bounds(&regions)
                     .ok_or("invalid or oversized desktop layout")?;
-                // libwayshot composes at the highest output scale.
+                // Compose all outputs at the highest logical-to-pixel scale.
                 let scale = outputs
                     .iter()
-                    .map(|o| {
-                        o.physical_size.height as f64 / o.logical_region.inner.size.height as f64
-                    })
+                    .map(libway::Output::scale)
                     .fold(1.0_f64, f64::max);
                 if f64::from(width) * f64::from(height) * scale * scale > 64_000_000.0 {
                     return Err("desktop capture exceeds 64 million pixels".into());
                 }
                 super::timing::mark("capture_start");
-                let image = match conn.screenshot_outputs(&outputs, false) {
-                    Ok(img) => img.into_rgba8(),
-                    Err(err) => super::portal::screenshot().map_err(|pe| {
-                        format!("wayshot desktop failed: {err}; portal fallback failed: {pe}")
-                    })?,
+                let image = match conn.capture_desktop(&options) {
+                    Ok(desktop) => {
+                        if desktop.outputs != outputs {
+                            return Err("desktop layout changed during capture; retry".into());
+                        }
+                        desktop.image
+                    }
+                    Err(libway::Error::LayoutChanged | libway::Error::OutputGone) => {
+                        return Err("desktop layout changed during capture; retry".into());
+                    }
+                    Err(err) => {
+                        let image = super::portal::screenshot().map_err(|pe| {
+                            format!("libway desktop failed: {err}; portal fallback failed: {pe}")
+                        })?;
+                        if conn.outputs(&options).map_err(|e| e.to_string())? != outputs {
+                            return Err(
+                                "desktop layout changed during portal capture; retry".into()
+                            );
+                        }
+                        image
+                    }
                 };
                 super::timing::mark("capture_ready");
                 Ok(super::select_skia::CapturedDesktop {
@@ -368,22 +373,42 @@ fn capture_wayland(mode: CaptureMode, instant: bool) -> DynResult<(RgbaImage, Op
     }
 }
 
-/// Whole-desktop capture: libwayshot (wlr-screencopy) first, portal second.
+fn captured_monitor(output: &libway::Output) -> super::select_skia::CapturedMonitor {
+    use libway::Transform as T;
+    use wayland_client::protocol::wl_output::Transform as W;
+    super::select_skia::CapturedMonitor {
+        name: output.name.clone(),
+        origin: (output.logical.x, output.logical.y),
+        logical_size: (output.logical.width, output.logical.height),
+        transform: match output.transform {
+            T::Normal => W::Normal,
+            T::Rotate90 => W::_90,
+            T::Rotate180 => W::_180,
+            T::Rotate270 => W::_270,
+            T::Flipped => W::Flipped,
+            T::Flipped90 => W::Flipped90,
+            T::Flipped180 => W::Flipped180,
+            T::Flipped270 => W::Flipped270,
+        },
+    }
+}
+
+/// Whole-desktop capture: libway (EXT, then WLR) first, portal second.
 fn wayland_full_image() -> Result<RgbaImage, String> {
-    let wayshot = libwayshot::WayshotConnection::new()
+    let options = libway::CaptureOptions::default();
+    let capture = libway::Connection::connect(&options)
         .map_err(|e| format!("wayland connection failed: {e}"))
-        .and_then(|conn| {
-            conn.screenshot_all(false)
-                .map(|img| img.into_rgba8())
-                .map_err(|e| format!("wayshot screenshot_all failed: {e}"))
+        .and_then(|mut conn| {
+            conn.capture_desktop(&options)
+                .map(|desktop| desktop.image)
+                .map_err(|e| format!("libway desktop capture failed: {e}"))
         });
-    wayshot.or_else(|err| {
+    capture.or_else(|err| {
         super::portal::screenshot().map_err(|pe| format!("{err}; portal fallback failed: {pe}"))
     })
 }
 
-fn parse_geometry(geometry: &str) -> DynResult<libwayshot::region::LogicalRegion> {
-    use libwayshot::region::{LogicalRegion, Position, Region, Size};
+fn parse_geometry(geometry: &str) -> DynResult<libway::Rect> {
     let (pos, size) = geometry
         .split_once(' ')
         .ok_or_else(|| format!("bad geometry '{geometry}'"))?;
@@ -400,15 +425,13 @@ fn parse_geometry(geometry: &str) -> DynResult<libwayshot::region::LogicalRegion
     if w == 0 || h == 0 {
         return Err(format!("zero-sized region '{geometry}'").into());
     }
-    Ok(LogicalRegion {
-        inner: Region {
-            position: Position { x, y },
-            size: Size {
-                width: w,
-                height: h,
-            },
-        },
-    })
+    Ok(libway::Rect {
+        x,
+        y,
+        width: w,
+        height: h,
+    }
+    .validate()?)
 }
 
 fn hyprland_active_window_geometry() -> DynResult<Option<String>> {
@@ -489,5 +512,27 @@ mod tests {
             parse_hypr_window_geometry(json).as_deref(),
             Some("100,200 900x700")
         );
+    }
+
+    #[test]
+    fn libway_region_preserves_signed_origin_and_rejects_invalid_sizes() {
+        assert_eq!(
+            parse_geometry("-1920,-200 900x700").unwrap(),
+            libway::Rect {
+                x: -1920,
+                y: -200,
+                width: 900,
+                height: 700
+            }
+        );
+        for invalid in [
+            "0,0 0x10",
+            "0,0 10x0",
+            "0,0 4294967295x2",
+            "2147483648,0 1x1",
+            "bad",
+        ] {
+            assert!(parse_geometry(invalid).is_err(), "{invalid}");
+        }
     }
 }

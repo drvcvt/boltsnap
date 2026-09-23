@@ -20,8 +20,8 @@
           # Wayland
           wayland
           libxkbcommon
-          # Wayland capture runtime (DRM/GBM; libGL remains available for
-          # compatibility across nixpkgs/libwayshot variants)
+          # Retained graphics runtime; libway's CPU screenshot path itself
+          # does not require DRM/GBM. Other graphics integrations may use these.
           libGL
           libdrm
           gbm
