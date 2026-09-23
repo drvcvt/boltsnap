@@ -22,11 +22,13 @@ pub struct Preset {
     pub mass: f64,
 }
 
+/// 90 % of a jump after about 0.5 s: the cursor glides behind the pointer.
 pub const MELLOW: Preset = Preset {
-    tension: 170.0,
-    friction: 26.0,
+    tension: 60.0,
+    friction: 15.5,
     mass: 1.0,
 };
+/// 90 % of a jump after about 0.16 s.
 pub const QUICK: Preset = Preset {
     tension: 600.0,
     friction: 49.0,
@@ -273,16 +275,22 @@ struct Spring {
     velocity: (f64, f64),
 }
 
+/// Pointer moves smaller than this (clip pixels) around the current target are
+/// hand tremor, not intent, and do not move the smoothed cursor.
+const SHAKE_PX: f64 = 2.0;
+
 impl Spring {
     fn apply(&mut self, sample: Sample) {
         match sample {
-            Sample::At { x, y, .. } => {
-                if self.target.is_none() {
+            Sample::At { x, y, .. } => match self.target {
+                None => {
                     self.position = (x, y);
                     self.velocity = (0.0, 0.0);
+                    self.target = Some((x, y));
                 }
-                self.target = Some((x, y));
-            }
+                Some((tx, ty)) if (x - tx).hypot(y - ty) < SHAKE_PX => {}
+                Some(_) => self.target = Some((x, y)),
+            },
             Sample::Gone { .. } => self.target = None,
         }
     }
@@ -726,6 +734,53 @@ mod tests {
         }
         let at = |preset| smooth(&samples, 240, 48, preset)[47].unwrap().0;
         assert!(at(QUICK) > at(MELLOW));
+    }
+
+    #[test]
+    fn small_shakes_do_not_move_the_cursor() {
+        let mut samples = vec![Sample::At {
+            ms: 0.0,
+            x: 100.0,
+            y: 100.0,
+        }];
+        for (i, (dx, dy)) in [(1.0, 0.0), (-1.2, 0.8), (0.5, -1.5), (1.8, 0.0)]
+            .into_iter()
+            .enumerate()
+        {
+            samples.push(Sample::At {
+                ms: 10.0 * (i + 1) as f64,
+                x: 100.0 + dx,
+                y: 100.0 + dy,
+            });
+        }
+        let frames = smooth(&samples, 100, 20, MELLOW);
+        assert!(frames.iter().all(|p| *p == Some((100.0, 100.0))));
+        samples.push(Sample::At {
+            ms: 60.0,
+            x: 103.0,
+            y: 100.0,
+        });
+        let frames = smooth(&samples, 100, 200, MELLOW);
+        assert!((frames[199].unwrap().0 - 103.0).abs() < 0.05);
+    }
+
+    #[test]
+    fn mellow_glides_about_half_a_second() {
+        let jump = [
+            Sample::At {
+                ms: 0.0,
+                x: 0.0,
+                y: 0.0,
+            },
+            Sample::At {
+                ms: 1.0,
+                x: 100.0,
+                y: 0.0,
+            },
+        ];
+        let frames = smooth(&jump, 1000, 1500, MELLOW);
+        let ninety = frames.iter().position(|p| p.unwrap().0 >= 90.0).unwrap();
+        assert!((400..=600).contains(&ninety), "{ninety} ms");
     }
 
     #[test]

@@ -250,7 +250,7 @@ Maintainer decisions needed:
 ### Implementation notes, 2026-09-23
 
 - Config `record_cursor = "system" | "mellow" | "quick"`, tray submenu Cursor.
-  Presets: mellow tension 170 / friction 26, quick 600 / 49, mass 1 (both
+  Presets: mellow tension 60 / friction 15.5 (was 170 / 26), quick 600 / 49, mass 1 (both
   critically damped). Enter snaps, leave hides; combined outputs merge tracks.
 - Hyprland 0.56 stops the cursor *image* capture for non-SHM cursor buffers
   (first real pointer motion over Brave); positions keep flowing. libway got
