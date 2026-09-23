@@ -69,7 +69,6 @@ impl Default for RecorderTools {
 
 pub struct RecordingSession {
     pub phase: SessionPhase,
-    pub cursor_smoothing: bool,
     pub scope: CaptureScope,
     pub monitors: Vec<Monitor>,
     pub codec: String,
@@ -99,7 +98,6 @@ impl RecordingSession {
     ) -> Self {
         Self {
             phase: SessionPhase::Recording,
-            cursor_smoothing: false,
             scope,
             monitors,
             codec,
@@ -334,7 +332,7 @@ fn spawn_segment_with(
     Ok(active)
 }
 
-pub(crate) fn segment_path(dir: &Path, output: Option<&str>) -> PathBuf {
+fn segment_path(dir: &Path, output: Option<&str>) -> PathBuf {
     let label = output
         .unwrap_or("area")
         .replace(|c: char| !c.is_ascii_alphanumeric(), "_");
@@ -445,13 +443,13 @@ impl StopChildrenJob {
                     });
                 }
                 Ok(status) if !status.success() => {
-                    errors.push(format!("recorder exited with {status}"));
+                    errors.push(format!("wf-recorder exited with {status}"));
                 }
                 Ok(_) => errors.push(format!(
                     "empty recording segment: {}",
                     recorder.path.display()
                 )),
-                Err(error) => errors.push(format!("wait for recorder: {error}")),
+                Err(error) => errors.push(format!("wait for wf-recorder: {error}")),
             }
         }
         if errors.is_empty() {
@@ -677,7 +675,6 @@ while :; do sleep 1; done
     fn legal_transitions_reach_expected_phases() {
         let t0 = Instant::now();
         let mut session = RecordingSession::new_for_test(t0);
-        session.cursor_smoothing = true;
         session.begin_pause(t0 + Duration::from_secs(1)).unwrap();
         assert_eq!(session.phase, SessionPhase::Pausing);
         session.finish_pause(Vec::new()).unwrap();
@@ -686,7 +683,6 @@ while :; do sleep 1; done
             .resume(Vec::new(), t0 + Duration::from_secs(2))
             .unwrap();
         assert_eq!(session.phase, SessionPhase::Recording);
-        assert!(session.cursor_smoothing);
         session.begin_finalize(t0 + Duration::from_secs(3)).unwrap();
         assert_eq!(session.phase, SessionPhase::Finalizing);
         session.finalize_failed("disk full".into()).unwrap();

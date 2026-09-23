@@ -117,6 +117,4 @@ See [benchmark results](replay-benchmarks.md) and the
 [worker instructions](../src/platform/linux/replay/worker/README.md).
 
 Snapshot preparation now shares immutable video GOPs and only copies the active
-GOP when capture next appends to it. See [snapshot measurements and cursor-smoothing
-constraints](recording-smoothing.md) for the latest performance work. Cursor
-smoothing is not enabled by this change.
+GOP when capture next appends to it. See [snapshot measurements](recording-smoothing.md).

@@ -1,10 +1,5 @@
-#[cfg(any(feature = "native-cursor", test))]
-#[path = "../../../../../record/cursor.rs"]
-mod cursor_motion;
 mod export;
 mod media;
-#[cfg(feature = "native-cursor")]
-mod native;
 #[allow(dead_code)]
 #[path = "../../../../../replay/mod.rs"]
 mod replay;
@@ -18,8 +13,6 @@ fn run() -> Result<(), String> {
     ffmpeg_next::log::set_level(ffmpeg_next::log::Level::Warning);
     let mut args = std::env::args_os().skip(1);
     match args.next().as_deref().and_then(|s| s.to_str()) {
-        #[cfg(feature = "native-cursor")]
-        Some(command @ ("cursor-fixture" | "cursor-probe" | "cursor-record" | "cursor-record-fixture")) => native::run(command, args.collect()),
         Some("check-encoder") => {
             let encoder = args.next().and_then(|s| s.into_string().ok()).ok_or("missing encoder")?;
             if args.next().is_some() { return Err("unexpected encoder probe option".into()); }

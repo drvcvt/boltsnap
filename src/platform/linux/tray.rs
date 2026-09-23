@@ -55,9 +55,6 @@ pub struct TraySnapshot {
     pub state: PublicRecordingState,
     /// Whether the replay buffer is currently capturing.
     pub replay_running: bool,
-    pub cursor_available: bool,
-    pub cursor_active: bool,
-    pub cursor_reason: String,
 }
 
 #[derive(Clone, Debug)]
@@ -73,7 +70,6 @@ pub enum TrayAction {
     SetBothMode(RecordBothMode),
     SetAudioSource(RecordAudioSource),
     SetShowFrame(bool),
-    SetCursorSmoothing(bool),
     SetDiskAddToShelf(bool),
 }
 
@@ -128,8 +124,7 @@ fn menu_model(snapshot: &TraySnapshot) -> TrayMenuModel {
     };
     TrayMenuModel {
         replay_running: snapshot.replay_running,
-        start_region_enabled: snapshot.state == PublicRecordingState::Idle
-            && !snapshot.prefs.cursor_smoothing,
+        start_region_enabled: snapshot.state == PublicRecordingState::Idle,
         start_default_enabled: snapshot.state == PublicRecordingState::Idle,
         default_labels: snapshot
             .monitors
@@ -362,40 +357,6 @@ impl ksni::Tray for BoltsnapTray {
             }
             .into(),
             CheckmarkItem {
-                label: "Smooth cursor (fullscreen, experimental)".into(),
-                // Allow retry after installing the worker or changing config.
-                // Enabling still requires the daemon's capability probe.
-                enabled: model.settings_enabled,
-                checked: self.snapshot.prefs.cursor_smoothing,
-                activate: Box::new(|tray: &mut Self| {
-                    tray.snapshot.prefs.cursor_smoothing = !tray.snapshot.prefs.cursor_smoothing;
-                    tray.send(TrayAction::SetCursorSmoothing(
-                        tray.snapshot.prefs.cursor_smoothing,
-                    ));
-                }),
-                ..Default::default()
-            }
-            .into(),
-            StandardItem {
-                label: if self.snapshot.cursor_active {
-                    "Cursor smoothing selected for this session".into()
-                } else if self.snapshot.cursor_available {
-                    "Cursor smoothing: applies to next recording".into()
-                } else {
-                    format!("Cursor smoothing: {}", self.snapshot.cursor_reason)
-                },
-                enabled: false,
-                ..Default::default()
-            }
-            .into(),
-            CheckmarkItem {
-                label: "Replay cursor smoothing (unavailable)".into(),
-                enabled: false,
-                checked: false,
-                ..Default::default()
-            }
-            .into(),
-            CheckmarkItem {
                 label: "Show recording frame".into(),
                 enabled: model.settings_enabled,
                 checked: model.show_frame,
@@ -460,9 +421,6 @@ mod tests {
             ],
             state,
             replay_running: false,
-            cursor_available: false,
-            cursor_active: false,
-            cursor_reason: "not probed".into(),
         }
     }
 
