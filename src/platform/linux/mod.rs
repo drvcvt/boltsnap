@@ -9,3 +9,5 @@ pub mod select_skia;
 pub mod shelf;
 pub(crate) mod timing;
 pub mod tray;
+
+pub(crate) mod cursor_recording;
