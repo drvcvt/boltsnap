@@ -85,7 +85,7 @@ pub(super) fn load_legacy(path: &Path) -> Result<image::RgbaImage, String> {
             return Err("thumbnail PNG is too large".into());
         }
         let image = super::decode_shelf_image(&bytes)?;
-        Ok(crate::shelf::thumbnail::make_card_thumbnail(
+        Ok(crate::shelf::thumbnail::make_image_card_thumbnail(
             &image, CARD_W, CARD_H,
         ))
     })();

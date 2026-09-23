@@ -1,11 +1,9 @@
 use std::fs;
 use std::path::Path;
-use std::process::Command;
 
 use image::{DynamicImage, RgbaImage, imageops};
 use serde_json::Value;
 
-use crate::paths::has_cmd;
 use crate::{Backend, CaptureMode, DynResult};
 
 pub fn capture(
@@ -53,13 +51,23 @@ pub(crate) fn capture_image(
     // Match the previous RGB output before evaluating a window border, without
     // encoding and decoding an intermediate file.
     let _timing = super::timing::Span::new("rgb_and_trim");
-    let image = DynamicImage::ImageRgba8(image).into_rgb8();
+    let image = rgba_to_rgb(image);
     let image = if trim && matches!(mode, CaptureMode::Window | CaptureMode::ActiveWindow) {
         strip_uniform_border(image)
     } else {
         image
     };
     Ok((backend, output, DynamicImage::ImageRgb8(image)))
+}
+
+/// Drop alpha; about 2.5x faster than `DynamicImage::into_rgb8` at 4 MP.
+fn rgba_to_rgb(image: RgbaImage) -> image::RgbImage {
+    let (width, height) = image.dimensions();
+    let mut rgb = Vec::with_capacity(image.as_raw().len() / 4 * 3);
+    for pixel in image.as_raw().chunks_exact(4) {
+        rgb.extend_from_slice(&pixel[..3]);
+    }
+    image::RgbImage::from_raw(width, height, rgb).expect("RGB buffer matches dimensions")
 }
 
 // Strip up to 4 px of uniform grayscale ring (Hypr d0d0d0 active-window
@@ -293,12 +301,13 @@ fn x11_pick_window_id() -> DynResult<Option<u32>> {
 
 fn capture_wayland(mode: CaptureMode, instant: bool) -> DynResult<(RgbaImage, Option<String>)> {
     let _timing = super::timing::Span::new("capture_wayland_total");
-    let capture_output = crate::platform::shelf::focused_monitor_name();
-    super::timing::mark("target_resolved");
+    // The focused monitor is only needed with the result; query it alongside
+    // the capture instead of before it.
+    let capture_output = std::thread::spawn(crate::platform::shelf::focused_monitor_name);
     match mode {
         CaptureMode::Full => {
             let img = wayland_full_image()?;
-            Ok((img, capture_output))
+            Ok((img, capture_output.join().ok().flatten()))
         }
         CaptureMode::ActiveWindow => {
             let start = std::time::Instant::now();
@@ -310,7 +319,7 @@ fn capture_wayland(mode: CaptureMode, instant: bool) -> DynResult<(RgbaImage, Op
             let img = conn
                 .capture_region(region, &remaining(start))
                 .map_err(|e| format!("libway screenshot active failed: {e}"))?;
-            Ok((img.image, capture_output))
+            Ok((img.image, capture_output.join().ok().flatten()))
         }
         CaptureMode::Area | CaptureMode::Window => {
             // Freeze the complete desktop before mapping any selector surfaces.
@@ -375,7 +384,7 @@ fn capture_wayland(mode: CaptureMode, instant: bool) -> DynResult<(RgbaImage, Op
                 Ok(super::select_skia::CapturedDesktop {
                     image,
                     monitors,
-                    preferred_output: capture_output,
+                    preferred_output: capture_output.join().ok().flatten(),
                 })
             };
             let cropped =
@@ -456,10 +465,9 @@ fn parse_geometry(geometry: &str) -> DynResult<libway::Rect> {
 }
 
 fn hyprland_active_window_geometry() -> DynResult<Option<String>> {
-    if !has_cmd("hyprctl") {
+    let Some(out) = super::hypr::json("activewindow") else {
         return Ok(None);
-    }
-    let out = run_capture(Command::new("hyprctl").arg("-j").arg("activewindow"))?;
+    };
     Ok(parse_hypr_window_geometry(&String::from_utf8_lossy(&out)))
 }
 
@@ -482,20 +490,6 @@ fn geometry_from_json_arrays(at: &[Value], size: &[Value]) -> Option<String> {
         return None;
     }
     Some(format!("{x},{y} {w}x{h}"))
-}
-
-fn run_capture(cmd: &mut Command) -> DynResult<Vec<u8>> {
-    let debug = format!("{:?}", cmd);
-    let out = super::replay::process::output_setup(cmd)?;
-    if out.status.success() {
-        Ok(out.stdout)
-    } else {
-        Err(format!(
-            "command failed {debug}: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        )
-        .into())
-    }
 }
 
 #[cfg(test)]

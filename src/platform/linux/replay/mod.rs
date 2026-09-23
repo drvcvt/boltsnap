@@ -328,14 +328,8 @@ fn start(settings: Settings, cancel: Arc<AtomicBool>) -> Result<Session, String>
 }
 
 fn start_capture(settings: Settings, cancel: &AtomicBool) -> Result<Session, String> {
-    let info = process::output(
-        Command::new("hyprctl").args(["-j", "monitors"]),
-        Duration::from_secs(3),
-    )?;
-    if !info.status.success() {
-        return Err("could not query replay monitor".into());
-    }
-    let monitors = crate::record::parse_hyprland_monitors(&info.stdout)?;
+    let info = super::hypr::json("monitors").ok_or("could not query replay monitor")?;
+    let monitors = crate::record::parse_hyprland_monitors(&info)?;
     let output = settings.output.or_else(|| {
         match crate::config::Config::load()
             .recording_prefs()

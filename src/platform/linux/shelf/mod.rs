@@ -111,6 +111,8 @@ pub struct Daemon {
     save_dir: std::path::PathBuf,
     /// Card id + start time of the transient ✓ "saved" flash on its Save button.
     save_flash: Option<(u64, std::time::Instant)>,
+    /// When the shelf's last animation frame callback was requested.
+    frame_requested: Option<std::time::Instant>,
     saving_cards: std::collections::HashSet<u64>,
     press: Option<PressState>,
     /// In-flight per-card appear/dismiss animations.
@@ -126,6 +128,8 @@ pub struct Daemon {
     popup: Option<LayerSurface>,
     popup_pool: Option<SlotPool>,
     popup_font: ab_glyph::FontVec,
+    /// `ui_font` the popup font was loaded for; `None` before the first load.
+    popup_font_family: Option<Option<String>>,
     popup_configured: bool,
     watchers: Vec<UnixStream>,
     last_recording_snapshot: crate::ipc::RecordingSnapshot,
@@ -635,7 +639,7 @@ fn prepare_add(
     }
     let image = decode_shelf_image(&png)?;
     let path = write_temp_png("shelf", &png)?;
-    let thumb = crate::shelf::thumbnail::make_card_thumbnail(
+    let thumb = crate::shelf::thumbnail::make_image_card_thumbnail(
         &image,
         crate::shelf::thumbnail::CARD_W,
         crate::shelf::thumbnail::CARD_H,
@@ -736,7 +740,7 @@ fn prepare_pixels_with(
     Ok(add)
 }
 
-fn decode_shelf_image(png: &[u8]) -> Result<image::RgbaImage, String> {
+fn decode_shelf_image(png: &[u8]) -> Result<image::DynamicImage, String> {
     use image::ImageDecoder;
     let mut reader =
         image::ImageReader::with_format(std::io::Cursor::new(png), image::ImageFormat::Png);
@@ -752,9 +756,7 @@ fn decode_shelf_image(png: &[u8]) -> Result<image::RgbaImage, String> {
     if u64::from(width) * u64::from(height) > MAX_CACHED_IMAGE_BYTES / 4 {
         return Err("decode PNG: image exceeds the 64 megapixel limit".into());
     }
-    image::DynamicImage::from_decoder(decoder)
-        .map(image::DynamicImage::into_rgba8)
-        .map_err(|e| format!("decode PNG: {e}"))
+    image::DynamicImage::from_decoder(decoder).map_err(|e| format!("decode PNG: {e}"))
 }
 
 fn spawn_client_writer(mut stream: UnixStream, bytes: Vec<u8>) {
@@ -784,41 +786,8 @@ fn focused_output_from_hyprland_json(json: &[u8]) -> Option<String> {
 }
 
 fn query_focus_snapshot() -> Result<Vec<crate::record::Monitor>, String> {
-    use std::process::{Command, Stdio};
-    if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_none()
-        || !crate::paths::has_cmd("hyprctl")
-    {
-        return Err("Hyprland monitor query is unavailable".into());
-    }
-    let mut child = Command::new("hyprctl")
-        .args(["monitors", "-j"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|error| format!("start Hyprland monitor query: {error}"))?;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                let output = child
-                    .wait_with_output()
-                    .map_err(|error| format!("read Hyprland monitor query: {error}"))?;
-                if !status.success() {
-                    return Err(format!("Hyprland monitor query exited with {status}"));
-                }
-                return parse_focus_snapshot(&output.stdout);
-            }
-            Ok(None) if std::time::Instant::now() < deadline => {
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-            Ok(None) | Err(_) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err("Hyprland monitor query timed out".into());
-            }
-        }
-    }
+    let reply = super::hypr::json("monitors").ok_or("Hyprland monitor query is unavailable")?;
+    parse_focus_snapshot(&reply)
 }
 
 fn spawn_focus_query(tx: calloop::channel::Sender<DaemonEvent>) {
@@ -923,8 +892,6 @@ fn monitor_for_geometry<'a>(
     })
 }
 
-/// Name of the focused Hyprland monitor, via `hyprctl monitors -j`. `None` off
-/// Hyprland (then the compositor places the shelf on its default output).
 /// Monitor for new video cards: the display a clip was recorded from, the way a
 /// screenshot's card follows its capture. Combined and area clips name no single
 /// output; they go to the focused monitor instead of wherever the shelf last was.
@@ -939,44 +906,24 @@ fn card_output(
         .or_else(focused)
 }
 
+/// Name of the focused Hyprland monitor. `None` off Hyprland (then the
+/// compositor places the shelf on its default output).
 pub(crate) fn focused_monitor_name() -> Option<String> {
-    use std::process::Command;
-    if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_none()
-        || !crate::paths::has_cmd("hyprctl")
-    {
-        // No hyprctl: on Plasma ask KWin over D-Bus, elsewhere give up.
+    if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_none() {
+        // No Hyprland: on Plasma ask KWin over D-Bus, elsewhere give up.
         return if std::env::var("XDG_CURRENT_DESKTOP").is_ok_and(|d| d.contains("KDE")) {
             crate::platform::portal::kwin_active_output_name()
         } else {
             None
         };
     }
-    let out =
-        super::replay::process::output_setup(Command::new("hyprctl").args(["monitors", "-j"]))
-            .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    focused_output_from_hyprland_json(&out.stdout)
+    focused_output_from_hyprland_json(&super::hypr::json("monitors")?)
 }
 
-/// Logical layout origin (`x`, `y`) of the focused Hyprland monitor, via
-/// `hyprctl monitors -j`. Used to map a selection rect (overlay-output-local
+/// Logical layout origin (`x`, `y`) of the focused Hyprland monitor. Used to map a selection rect (overlay-output-local
 /// logical px) into compositor-global coords for recording. `None` off Hyprland.
 pub(crate) fn focused_monitor_origin() -> Option<(i32, i32)> {
-    use std::process::Command;
-    if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_none()
-        || !crate::paths::has_cmd("hyprctl")
-    {
-        return None;
-    }
-    let out =
-        super::replay::process::output_setup(Command::new("hyprctl").args(["monitors", "-j"]))
-            .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let v: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
+    let v: serde_json::Value = serde_json::from_slice(&super::hypr::json("monitors")?).ok()?;
     for m in v.as_array()? {
         if m.get("focused").and_then(|f| f.as_bool()) == Some(true) {
             let x = m.get("x").and_then(|n| n.as_i64())? as i32;
@@ -1088,6 +1035,7 @@ pub fn run_daemon(save_dir_cli: Option<std::path::PathBuf>) -> DynResult<()> {
         hovered: None,
         save_dir,
         save_flash: None,
+        frame_requested: None,
         saving_cards: std::collections::HashSet::new(),
         press: None,
         anims: Vec::new(),
@@ -1101,6 +1049,7 @@ pub fn run_daemon(save_dir_cli: Option<std::path::PathBuf>) -> DynResult<()> {
         popup: None,
         popup_pool: None,
         popup_font: font::fallback_popup_font(),
+        popup_font_family: None,
         popup_configured: false,
         watchers: Vec::new(),
         last_recording_snapshot: crate::ipc::RecordingSnapshot::idle(),
@@ -1184,12 +1133,17 @@ pub fn run_daemon(save_dir_cli: Option<std::path::PathBuf>) -> DynResult<()> {
             daemon.animating(),
             daemon.recording.as_ref().map(|s| s.phase),
         );
+        let timeout = match (timeout, daemon.save_flash_remaining()) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
         event_loop
             .dispatch(timeout, &mut daemon)
             .map_err(|e| format!("dispatch: {e}"))?;
-        if daemon.animating() {
+        if daemon.animation_timer_due() {
             daemon.tick_animations(&qh);
         }
+        daemon.expire_save_flash(&qh);
         // Publish whole-second progress and notice an unexpected recorder exit.
         daemon.tick_recording(&qh);
     }
@@ -1766,7 +1720,7 @@ impl Daemon {
             Some(t) if t.lifetime == FileLifetime::Permanent => {
                 eprintln!("boltsnap daemon: already saved {}", t.png_path.display());
                 notify("Already saved");
-                self.save_flash = Some((id, std::time::Instant::now()));
+                self.flash_saved(id);
                 return;
             }
             Some(t) => (t.png_path.clone(), t.kind),
@@ -1796,7 +1750,7 @@ impl Daemon {
         match std::fs::copy(&src, &dest) {
             Ok(_) => {
                 eprintln!("boltsnap daemon: saved {}", dest.display());
-                self.save_flash = Some((id, std::time::Instant::now()));
+                self.flash_saved(id);
             }
             Err(e) => eprintln!("boltsnap daemon: save failed: {e}"),
         }
@@ -1995,7 +1949,42 @@ impl Daemon {
     }
 
     fn animating(&self) -> bool {
-        !self.anims.is_empty() || self.save_flash.is_some()
+        !self.anims.is_empty()
+    }
+
+    /// Animations advance on the compositor's frame callbacks (the display's
+    /// refresh rate). The loop timer only steps in when callbacks stop, e.g.
+    /// while the shelf is not visible.
+    fn animation_timer_due(&self) -> bool {
+        self.animating()
+            && self
+                .frame_requested
+                .is_none_or(|at| at.elapsed() >= std::time::Duration::from_millis(100))
+    }
+
+    /// Time until the save checkmark disappears.
+    fn save_flash_remaining(&self) -> Option<std::time::Duration> {
+        self.save_flash.map(|(_, started)| {
+            std::time::Duration::from_millis(SAVE_FLASH_MS as u64).saturating_sub(started.elapsed())
+        })
+    }
+
+    /// Show the saved checkmark on a card; `expire_save_flash` removes it.
+    fn flash_saved(&mut self, id: u64) {
+        self.save_flash = Some((id, std::time::Instant::now()));
+        if let Some(qh) = self.qh.clone() {
+            self.draw(&qh);
+        }
+    }
+
+    fn expire_save_flash(&mut self, qh: &QueueHandle<Self>) {
+        if self
+            .save_flash_remaining()
+            .is_some_and(|left| left.is_zero())
+        {
+            self.save_flash = None;
+            self.draw(qh);
+        }
     }
 
     /// Advance animations one frame: retire finished ones (removing dismissed
@@ -2017,11 +2006,6 @@ impl Daemon {
         }
         if removed {
             self.relayout();
-        }
-        if let Some((_, started)) = self.save_flash {
-            if started.elapsed().as_millis() >= SAVE_FLASH_MS {
-                self.save_flash = None;
-            }
         }
         self.draw(qh);
     }
@@ -2062,7 +2046,7 @@ impl Daemon {
         self.animated_layout().hit(x, y, &self.cfg)
     }
 
-    fn draw(&mut self, _qh: &QueueHandle<Self>) {
+    fn draw(&mut self, qh: &QueueHandle<Self>) {
         if !self.shelf_configured {
             self.shelf_pending_draw = true;
             return;
@@ -2132,6 +2116,10 @@ impl Daemon {
         surface.damage_buffer(0, 0, w as i32, h as i32);
         if buffer.attach_to(surface).is_err() {
             return;
+        }
+        if !self.anims.is_empty() {
+            surface.frame(qh, surface.clone());
+            self.frame_requested = Some(std::time::Instant::now());
         }
         layer.commit();
         for trace in self.pending_image_traces.drain(..) {
@@ -2322,7 +2310,12 @@ impl Daemon {
     }
 
     fn create_popup(&mut self, qh: &QueueHandle<Self>) -> Result<(), String> {
-        self.popup_font = font::load_ui_font(crate::config::Config::load().ui_font.as_deref());
+        // fontconfig and the font file cost ~10 ms; reload only when `ui_font` changes.
+        let family = crate::config::Config::load().ui_font;
+        if self.popup_font_family.as_ref() != Some(&family) {
+            self.popup_font = font::load_ui_font(family.as_deref());
+            self.popup_font_family = Some(family);
+        }
         let pool = SlotPool::new((POPUP_W * POPUP_H * 4) as usize, &self.shm)
             .map_err(|error| format!("allocate recording controls: {error}"))?;
         let surface = self.compositor.create_surface(qh);
@@ -2789,10 +2782,7 @@ impl Daemon {
                     Ok(path) => {
                         eprintln!("boltsnap daemon: saved {}", path.display());
                         if self.model.promote(id, path) {
-                            self.save_flash = Some((id, std::time::Instant::now()));
-                            if let Some(qh) = self.qh.clone() {
-                                self.draw(&qh);
-                            }
+                            self.flash_saved(id);
                         }
                     }
                     Err(error) => {
@@ -3087,7 +3077,18 @@ impl CompositorHandler for Daemon {
         _: wl_output::Transform,
     ) {
     }
-    fn frame(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlSurface, _: u32) {}
+    fn frame(&mut self, _: &Connection, qh: &QueueHandle<Self>, surface: &WlSurface, _: u32) {
+        let shelf = self
+            .layer
+            .as_ref()
+            .is_some_and(|layer| layer.wl_surface() == surface);
+        if shelf {
+            self.frame_requested = None;
+            if self.animating() {
+                self.tick_animations(qh);
+            }
+        }
+    }
     fn surface_enter(
         &mut self,
         _: &Connection,
