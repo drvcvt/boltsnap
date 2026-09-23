@@ -301,7 +301,7 @@ fn capture_log() -> Stdio {
         .unwrap_or_else(|_| Stdio::null())
 }
 
-pub(crate) fn companion_path(name: &str) -> PathBuf {
+fn companion_path(name: &str) -> PathBuf {
     let adjacent = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|p| p.join(name)));
@@ -328,9 +328,6 @@ fn start(settings: Settings, cancel: Arc<AtomicBool>) -> Result<Session, String>
 }
 
 fn start_capture(settings: Settings, cancel: &AtomicBool) -> Result<Session, String> {
-    if settings.cursor_smoothing {
-        return Err("Replay cursor smoothing is unavailable: native hardware encoding has not passed validation.".into());
-    }
     let info = process::output(
         Command::new("hyprctl").args(["-j", "monitors"]),
         Duration::from_secs(3),
@@ -565,10 +562,6 @@ pub(crate) fn serve(sender: calloop::channel::Sender<DaemonEvent>) -> Result<Ser
                     let request = wire::read(&mut stream).map_err(|e| e.to_string())?;
                     let command = wire::command(&request)?;
                     if command == "start" {
-                        let settings = crate::config::Config::replay_settings()?;
-                        if settings.cursor_smoothing {
-                            return Err("Replay cursor smoothing is unavailable: native hardware encoding has not passed validation.".into());
-                        }
                         let mut guard = owner.lock().unwrap();
                         if starting.load(Ordering::Relaxed) {
                             return Err("replay is already starting or stopping".into());
@@ -603,6 +596,7 @@ pub(crate) fn serve(sender: calloop::channel::Sender<DaemonEvent>) -> Result<Ser
                             }
                             guard.take();
                         }
+                        let settings = crate::config::Config::replay_settings()?;
                         starting.store(true, Ordering::Relaxed);
                         cancel_start.store(false, Ordering::Relaxed);
                         drop(guard);

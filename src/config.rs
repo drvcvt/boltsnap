@@ -31,7 +31,6 @@ pub enum RecordProfile {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecordingPrefs {
-    pub cursor_smoothing: bool,
     pub default_target: RecordDefaultTarget,
     pub both_mode: RecordBothMode,
     pub show_frame: bool,
@@ -43,7 +42,6 @@ pub struct RecordingPrefs {
 impl Default for RecordingPrefs {
     fn default() -> Self {
         Self {
-            cursor_smoothing: false,
             default_target: RecordDefaultTarget::Focused,
             both_mode: RecordBothMode::Separate,
             show_frame: true,
@@ -61,8 +59,6 @@ pub struct Config {
     pub save_dir: Option<String>,
     pub record_codec: Option<String>,
     record_profile: Option<String>,
-    record_cursor_smoothing: Option<bool>,
-    invalid_cursor_smoothing: bool,
     pub record_dir: Option<String>,
     record_default_target: Option<String>,
     record_both_mode: Option<String>,
@@ -76,13 +72,6 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn cursor_smoothing(&self) -> Result<bool, String> {
-        if self.invalid_cursor_smoothing {
-            return Err("record_cursor_smoothing must be a boolean".into());
-        }
-        Ok(self.record_cursor_smoothing.unwrap_or(false))
-    }
-
     pub fn record_profile(&self) -> Result<RecordProfile, String> {
         match self.record_profile.as_deref() {
             None | Some("quality") => Ok(RecordProfile::Quality),
@@ -123,11 +112,6 @@ impl Config {
             }
             Ok(n)
         };
-        if let Some(value) = value.get("cursor_smoothing") {
-            settings.cursor_smoothing = value
-                .as_bool()
-                .ok_or("replay cursor_smoothing must be a boolean")?;
-        }
         settings.seconds = number("duration_seconds", 60, 1, 600)?;
         settings.memory_mib = number("memory_mib", 512, 64, 4096)? as usize;
         settings.fps = number("fps", 60, 1, 240)? as u32;
@@ -158,12 +142,6 @@ impl Config {
     pub fn parse(text: &str) -> Config {
         match toml::from_str::<toml::Value>(text) {
             Ok(v) => Config {
-                record_cursor_smoothing: v
-                    .get("record_cursor_smoothing")
-                    .and_then(toml::Value::as_bool),
-                invalid_cursor_smoothing: v
-                    .get("record_cursor_smoothing")
-                    .is_some_and(|v| !v.is_bool()),
                 save_dir: v.get("save_dir").and_then(|x| x.as_str()).map(String::from),
                 record_codec: v
                     .get("record_codec")
@@ -213,7 +191,6 @@ impl Config {
     pub fn recording_prefs(&self) -> RecordingPrefs {
         let defaults = RecordingPrefs::default();
         RecordingPrefs {
-            cursor_smoothing: self.cursor_smoothing().unwrap_or(false),
             default_target: match self.record_default_target.as_deref() {
                 Some("focused") => RecordDefaultTarget::Focused,
                 Some("both") => RecordDefaultTarget::Both,
@@ -268,10 +245,6 @@ pub fn save_recording_prefs_at(path: &Path, prefs: &RecordingPrefs) -> io::Resul
         RecordDefaultTarget::Both => "both".to_string(),
     };
     table.insert("record_default_target".into(), toml::Value::String(target));
-    table.insert(
-        "record_cursor_smoothing".into(),
-        toml::Value::Boolean(prefs.cursor_smoothing),
-    );
     table.insert(
         "record_both_mode".into(),
         toml::Value::String(
@@ -535,7 +508,6 @@ unrelated = "keep-me"
                 disk_add_to_shelf: true,
                 audio_enabled: true,
                 audio_source: RecordAudioSource::SystemAndMic,
-                cursor_smoothing: false,
             }
         );
     }
@@ -558,7 +530,6 @@ unrelated = "keep-me"
                 disk_add_to_shelf: false,
                 audio_enabled: true,
                 audio_source: RecordAudioSource::SystemAndMic,
-                cursor_smoothing: false,
             }
         );
     }
@@ -581,7 +552,6 @@ unrelated = "keep-me"
         std::fs::write(&path, "custom = 7\n").unwrap();
         let prefs = RecordingPrefs {
             default_target: RecordDefaultTarget::Output("DP-3".into()),
-            cursor_smoothing: true,
             both_mode: RecordBothMode::Combined,
             show_frame: false,
             disk_add_to_shelf: false,
@@ -682,36 +652,6 @@ unrelated = "keep-me"
         let c = Config::parse("record_codec = \"libx264\"\nrecord_dir = \"/tmp/rec\"\n");
         assert_eq!(c.record_codec.as_deref(), Some("libx264"));
         assert_eq!(c.record_dir.as_deref(), Some("/tmp/rec"));
-    }
-
-    #[test]
-    fn cursor_smoothing_is_default_off_and_rejects_non_booleans() {
-        assert_eq!(Config::default().cursor_smoothing(), Ok(false));
-        assert_eq!(
-            Config::parse("record_cursor_smoothing=true").cursor_smoothing(),
-            Ok(true)
-        );
-        assert_eq!(
-            Config::parse("record_cursor_smoothing=false").cursor_smoothing(),
-            Ok(false)
-        );
-        for value in ["1", "\"true\"", "[]"] {
-            assert!(
-                Config::parse(&format!("record_cursor_smoothing={value}"))
-                    .cursor_smoothing()
-                    .is_err()
-            );
-            assert!(
-                Config::parse_replay_settings(&format!("[replay]\ncursor_smoothing={value}"))
-                    .is_err()
-            );
-        }
-        assert!(!Config::parse_replay_settings("").unwrap().cursor_smoothing);
-        assert!(
-            Config::parse_replay_settings("[replay]\ncursor_smoothing=true")
-                .unwrap()
-                .cursor_smoothing
-        );
     }
 
     #[test]
