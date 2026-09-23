@@ -925,6 +925,20 @@ fn monitor_for_geometry<'a>(
 
 /// Name of the focused Hyprland monitor, via `hyprctl monitors -j`. `None` off
 /// Hyprland (then the compositor places the shelf on its default output).
+/// Monitor for new video cards: the display a clip was recorded from, the way a
+/// screenshot's card follows its capture. Combined and area clips name no single
+/// output; they go to the focused monitor instead of wherever the shelf last was.
+fn card_output(
+    clips: &[FinalizedClip],
+    focused: impl FnOnce() -> Option<String>,
+) -> Option<String> {
+    clips
+        .iter()
+        .rev()
+        .find_map(|clip| clip.output.clone())
+        .or_else(focused)
+}
+
 pub(crate) fn focused_monitor_name() -> Option<String> {
     use std::process::Command;
     if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_none()
@@ -2910,7 +2924,7 @@ impl Daemon {
             return;
         };
         let mut added = false;
-        let mut on_output = None;
+        let on_output = card_output(&clips, focused_monitor_name);
         for clip in clips {
             if clip.permanent && !self.recording_prefs.disk_add_to_shelf {
                 continue;
@@ -2945,16 +2959,11 @@ impl Daemon {
             );
             self.start_anim(id, AnimKind::Appear);
             self.thumbnails.submit(id, clip.path);
-            on_output = clip.output.or(on_output);
             added = true;
         }
         if added {
             self.trim_shelf_cache();
             self.relayout();
-            // Show the card on the display it was recorded from, the way a
-            // screenshot's card already follows its capture. Without this the
-            // shelf stays wherever it was last placed, so a clip taken on one
-            // monitor silently lands on the other one.
             self.place_on_output(on_output.as_deref(), &qh);
             self.draw(&qh);
         }
@@ -4065,6 +4074,26 @@ mod tests {
             monitor_for_geometry(&monitors, &geo).map(|monitor| monitor.name.as_str()),
             Some("HDMI-A-1")
         );
+    }
+
+    #[test]
+    fn video_cards_follow_their_output_or_the_focused_monitor() {
+        let clip = |output: Option<&str>| FinalizedClip {
+            output: output.map(str::to_owned),
+            path: "/tmp/clip.mp4".into(),
+            permanent: false,
+        };
+        let focused = || Some("DP-3".to_owned());
+        assert_eq!(card_output(&[clip(None)], focused).as_deref(), Some("DP-3"));
+        assert_eq!(
+            card_output(&[clip(Some("DP-1"))], focused).as_deref(),
+            Some("DP-1")
+        );
+        assert_eq!(
+            card_output(&[clip(Some("DP-3")), clip(Some("DP-1"))], || None).as_deref(),
+            Some("DP-1")
+        );
+        assert_eq!(card_output(&[clip(None)], || None), None);
     }
 
     #[test]
