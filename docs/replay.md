@@ -115,3 +115,6 @@ prototype failed a pixel comparison on padded video surfaces and is not enabled.
 No claim of imperceptible capture overhead follows from the synthetic tests.
 See [benchmark results](replay-benchmarks.md) and the
 [worker instructions](../src/platform/linux/replay/worker/README.md).
+
+Snapshot preparation now shares immutable video GOPs and only copies the active
+GOP when capture next appends to it. See [snapshot measurements](recording-smoothing.md).

@@ -149,10 +149,7 @@ pub fn capabilities() -> serde_json::Value {
 
 impl Recording {
     pub fn snapshot(&self) -> Result<Self, String> {
-        self.snapshot_with_ring(
-            self.ring
-                .snapshot(|packet| Ok::<_, String>(Arc::clone(packet)))?,
-        )
+        self.snapshot_with_ring(self.ring.snapshot())
     }
 
     pub fn tail_snapshot(&self) -> Result<Self, String> {

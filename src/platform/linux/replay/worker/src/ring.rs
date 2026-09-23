@@ -76,7 +76,7 @@ mod tests {
         let original = entry(input, Rational(1, 1)).unwrap();
         let mut live = crate::replay::ring::Ring::new(1_000_000, 1024 * 1024).unwrap();
         live.push(original, true).unwrap();
-        let frozen = live.snapshot(|p| Ok::<_, String>(Arc::clone(p))).unwrap();
+        let frozen = live.snapshot();
         assert!(Arc::ptr_eq(
             &live.video().next().unwrap().payload,
             &frozen.video().next().unwrap().payload
