@@ -1,3 +1,4 @@
+#![cfg(feature = "capture")]
 mod support;
 use libway::*;
 use std::{
@@ -74,15 +75,17 @@ fn ext_without_shm_falls_back_but_forced_ext_fails() {
 }
 #[test]
 fn failures_are_prompt_and_cleanup() {
-    for (ext, fault) in [
-        (true, Fault::EarlyFail),
-        (false, Fault::EarlyFail),
-        (true, Fault::Stopped),
-        (true, Fault::InvalidSize),
-        (true, Fault::LayoutChange),
+    // WLR is withheld where an EXT failure would otherwise fall back to it.
+    for (ext, wlr, fault) in [
+        (true, 3, Fault::EarlyFail),
+        (false, 3, Fault::EarlyFail),
+        (true, 0, Fault::Stopped),
+        (true, 3, Fault::InvalidSize),
+        (true, 3, Fault::LayoutChange),
     ] {
         let (server, socket) = Server::start(Config {
             ext,
+            wlr,
             fault,
             ..Default::default()
         });
@@ -98,6 +101,22 @@ fn failures_are_prompt_and_cleanup() {
         assert_eq!(server.metrics.sessions.load(Ordering::SeqCst), 0);
         assert_eq!(server.metrics.buffers.load(Ordering::SeqCst), 0);
     }
+}
+#[test]
+fn stopped_ext_session_falls_back_to_wlr_in_auto_mode() {
+    let (_server, socket) = Server::start(Config {
+        fault: Fault::Stopped,
+        ..Default::default()
+    });
+    let opts = options();
+    let mut c = Connection::from_socket(socket, &opts).unwrap();
+    let id = c.outputs(&opts).unwrap()[0].id;
+    assert_eq!(c.capture(id, &opts).unwrap().backend, Backend::Wlr);
+    let explicit = CaptureOptions {
+        backend: Backend::Ext,
+        ..options()
+    };
+    assert!(c.capture(id, &explicit).is_err());
 }
 #[test]
 fn deadline_and_cancellation_do_not_leave_workers() {
@@ -377,6 +396,45 @@ fn removed_capture_manager_is_not_reused() {
     assert_eq!(c.capture(id, &opts).unwrap().backend, Backend::Ext);
     assert!(!c.capabilities().ext_output_capture);
     assert_eq!(c.capture(id, &opts).unwrap().backend, Backend::Wlr);
+}
+
+#[cfg(feature = "image")]
+#[test]
+fn named_socket_captures_outputs_concurrently_with_identical_pixels() {
+    let dir = std::env::temp_dir().join(format!(
+        "libway-parallel-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir(&dir).unwrap();
+    let path = dir.join("display");
+    let config = || Config {
+        outputs: 2,
+        mode_sizes: vec![(4, 2), (6, 3)],
+        ..Default::default()
+    };
+    let named = Server::listen(config(), &path);
+    let opts = options();
+    let mut parallel = Connection::from_socket(
+        std::os::unix::net::UnixStream::connect(&path).unwrap(),
+        &opts,
+    )
+    .unwrap();
+    let concurrent = parallel.capture_desktop(&opts).unwrap();
+    // The main connection plus one sibling per output.
+    assert_eq!(named.metrics.clients.load(Ordering::SeqCst), 3);
+    let (_server, socket) = Server::start(config());
+    let sequential = Connection::from_socket(socket, &opts)
+        .unwrap()
+        .capture_desktop(&opts)
+        .unwrap();
+    assert_eq!(concurrent.image, sequential.image);
+    assert_eq!(concurrent.scale, sequential.scale);
+    drop(named);
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[cfg(feature = "image")]

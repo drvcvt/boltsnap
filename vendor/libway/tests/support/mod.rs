@@ -1,8 +1,12 @@
-#![allow(dead_code)]
+#![allow(dead_code, unused_imports)]
+#[cfg(feature = "dnd")]
+pub mod client;
 mod cursor;
 #[cfg(feature = "gpu")]
 mod dma;
+mod dnd;
 pub use cursor::Fault as CursorFault;
+pub use dnd::{DndCommand, DndConfig, DndControl, DndMetrics, pipe_fds, pipe_open};
 use memmap2::MmapOptions;
 use std::{
     fs::File,
@@ -68,6 +72,7 @@ pub struct Config {
     pub reject_dma: bool,
     pub mode_sizes: Vec<(u32, u32)>,
     pub native_logical_size: bool,
+    pub dnd: Option<DndConfig>,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -83,6 +88,7 @@ impl Default for Config {
             reject_dma: false,
             mode_sizes: Vec::new(),
             native_logical_size: false,
+            dnd: None,
         }
     }
 }
@@ -93,6 +99,7 @@ impl Config {
 }
 #[derive(Default)]
 pub struct Metrics {
+    pub clients: AtomicUsize,
     pub frames: AtomicUsize,
     pub cursor_sessions: AtomicUsize,
     pub seats: AtomicUsize,
@@ -104,9 +111,11 @@ pub struct Metrics {
     pub damage_requests: AtomicUsize,
     pub imports: AtomicUsize,
     pub params: AtomicUsize,
+    pub dnd: DndMetrics,
 }
 pub struct Server {
     pub metrics: Arc<Metrics>,
+    dnd: Option<std::sync::mpsc::Sender<DndCommand>>,
     stop: Arc<AtomicBool>,
     thread: Option<thread::JoinHandle<()>>,
 }
@@ -125,6 +134,8 @@ impl Server {
         let stop = Arc::new(AtomicBool::new(false));
         let stats = metrics.clone();
         let quit = stop.clone();
+        let (dnd_tx, dnd_rx) = std::sync::mpsc::channel();
+        let dnd = config.dnd.is_some().then_some(dnd_tx);
         let thread = thread::spawn(move || {
             let mut display = Display::<State>::new().unwrap();
             let mut dh = display.handle();
@@ -162,7 +173,12 @@ impl Server {
             if config.wlr > 0 {
                 dh.create_global::<State, wlr_manager::ZwlrScreencopyManagerV1, _>(config.wlr, ());
             }
+            let dnd = config
+                .dnd
+                .clone()
+                .map(|c| dnd::DndServer::advertise(&dh, c, dnd_rx));
             let mut state = State {
+                dnd,
                 config,
                 metrics: stats,
                 xdg: Vec::new(),
@@ -172,9 +188,11 @@ impl Server {
             while !quit.load(Ordering::Acquire) {
                 if let Some(listener) = &listener {
                     while let Ok((socket, _)) = listener.accept() {
+                        state.metrics.clients.fetch_add(1, Ordering::SeqCst);
                         dh.insert_client(socket, Arc::new(ClientState)).unwrap();
                     }
                 }
+                dnd::run_commands(&mut state, &dh);
                 display.dispatch_clients(&mut state).unwrap();
                 display.flush_clients().unwrap();
                 use std::os::fd::{AsFd, AsRawFd};
@@ -191,8 +209,14 @@ impl Server {
         });
         Self {
             metrics,
+            dnd,
             stop,
             thread: Some(thread),
+        }
+    }
+    pub fn dnd(&self) -> DndControl {
+        DndControl {
+            tx: self.dnd.clone().expect("Config.dnd is None"),
         }
     }
     pub fn settle(&self) {
@@ -205,6 +229,10 @@ impl Drop for Server {
         if let Some(t) = self.thread.take() {
             t.join().unwrap();
         }
+        let errors = self.metrics.dnd.protocol_errors.load(Ordering::SeqCst);
+        if !thread::panicking() {
+            assert_eq!(errors, 0, "client sent requests a compositor rejects");
+        }
     }
 }
 struct ClientState;
@@ -213,6 +241,7 @@ impl ClientData for ClientState {
     fn disconnected(&self, _: ClientId, _: DisconnectReason) {}
 }
 struct State {
+    dnd: Option<dnd::DndServer>,
     config: Config,
     metrics: Arc<Metrics>,
     xdg: Vec<xdg_output::ZxdgOutputV1>,
