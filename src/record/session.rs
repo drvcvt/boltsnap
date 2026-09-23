@@ -48,6 +48,9 @@ pub struct ActiveRecorder {
     pub output: Option<String>,
     pub path: PathBuf,
     pub child: Child,
+    /// Pointer track for cursor-free segments; held only to stop it on drop.
+    #[allow(dead_code)]
+    pub cursor: Option<crate::platform::cursor_track::Tracker>,
 }
 
 #[derive(Clone, Debug)]
@@ -100,6 +103,8 @@ impl RecorderTools {
 
 pub struct RecordingSession {
     pub phase: SessionPhase,
+    /// Fixed at start; resumed segments keep it.
+    pub cursor: crate::config::RecordCursor,
     pub scope: CaptureScope,
     pub monitors: Vec<Monitor>,
     pub codec: String,
@@ -129,6 +134,7 @@ impl RecordingSession {
     ) -> Self {
         Self {
             phase: SessionPhase::Recording,
+            cursor: crate::config::RecordCursor::System,
             scope,
             monitors,
             codec,
@@ -275,37 +281,48 @@ impl RecordingSession {
 
 static SEGMENT_ID: AtomicU64 = AtomicU64::new(0);
 
+/// `smooth_cursor` records without the pointer plus a separate cursor track per
+/// segment; it requires gpu-screen-recorder.
 pub fn spawn_segment(
     scope: &CaptureScope,
     codec: &str,
     profile: RecordProfile,
     audio: &[String],
+    smooth_cursor: bool,
     tools: &RecorderTools,
 ) -> Result<Vec<ActiveRecorder>, String> {
-    spawn_segment_with(scope, codec, profile, audio, tools, |program, args| {
-        let parent = unsafe { libc::getpid() };
-        let mut command = Command::new(program);
-        command
-            .args(args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::inherit());
-        unsafe {
-            command.pre_exec(move || {
-                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) != 0 {
-                    return Err(io::Error::last_os_error());
-                }
-                if libc::getppid() != parent {
-                    return Err(io::Error::new(
-                        io::ErrorKind::Interrupted,
-                        "boltsnap daemon exited while starting recorder",
-                    ));
-                }
-                Ok(())
-            });
-        }
-        command.spawn()
-    })
+    spawn_segment_with(
+        scope,
+        codec,
+        profile,
+        audio,
+        smooth_cursor,
+        tools,
+        |program, args| {
+            let parent = unsafe { libc::getpid() };
+            let mut command = Command::new(program);
+            command
+                .args(args)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::inherit());
+            unsafe {
+                command.pre_exec(move || {
+                    if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) != 0 {
+                        return Err(io::Error::last_os_error());
+                    }
+                    if libc::getppid() != parent {
+                        return Err(io::Error::new(
+                            io::ErrorKind::Interrupted,
+                            "boltsnap daemon exited while starting recorder",
+                        ));
+                    }
+                    Ok(())
+                });
+            }
+            command.spawn()
+        },
+    )
 }
 
 fn spawn_segment_with(
@@ -313,6 +330,7 @@ fn spawn_segment_with(
     codec: &str,
     profile: RecordProfile,
     audio: &[String],
+    smooth_cursor: bool,
     tools: &RecorderTools,
     mut spawn: impl FnMut(&Path, &[String]) -> io::Result<Child>,
 ) -> Result<Vec<ActiveRecorder>, String> {
@@ -335,9 +353,13 @@ fn spawn_segment_with(
     if gsr_codec.is_none() && audio.len() > 1 {
         return Err("wf-recorder records a single audio source".into());
     }
+    if gsr_codec.is_none() && smooth_cursor {
+        return Err("smooth cursor requires gpu-screen-recorder".into());
+    }
     let mut active = Vec::with_capacity(outputs.len());
 
     for output in outputs {
+        let mut cursor = None;
         let (program, args, path) = match (&tools.gsr, &gsr_codec) {
             (Some(program), Some(codec)) => {
                 let path = segment_path(&tools.segment_dir, output, "mkv");
@@ -346,7 +368,25 @@ fn spawn_segment_with(
                     (CaptureScope::Outputs(_), Some(output)) => gsr::Target::Output(output),
                     _ => unreachable!(),
                 };
-                let args = gsr::args(&target, codec, profile.fps(), audio, &path);
+                if smooth_cursor {
+                    use crate::platform::cursor_track;
+                    let source = match (scope, output) {
+                        (CaptureScope::Area(geometry), _) => {
+                            cursor_track::Source::Region(*geometry)
+                        }
+                        (_, Some(output)) => cursor_track::Source::Output(output.to_owned()),
+                        _ => unreachable!(),
+                    };
+                    // Start before capture so the initial position is recorded.
+                    match cursor_track::start(source, cursor_track::track_path(&path)) {
+                        Ok(tracker) => cursor = Some(tracker),
+                        Err(error) => {
+                            stop_and_reap(active);
+                            return Err(error);
+                        }
+                    }
+                }
+                let args = gsr::args(&target, codec, profile.fps(), audio, !smooth_cursor, &path);
                 (program, args, path)
             }
             _ => {
@@ -369,6 +409,7 @@ fn spawn_segment_with(
                 output: output.map(str::to_owned),
                 path,
                 child,
+                cursor,
             }),
             Err(error) => {
                 stop_and_reap(active);
@@ -418,6 +459,12 @@ fn send_signal(child: &Child, signal: libc::c_int) -> io::Result<()> {
     }
 }
 
+/// gsr segments are Matroska flushed per packet in short clusters, so a killed
+/// recorder leaves a playable file.
+fn is_streamed(path: &Path) -> bool {
+    path.extension().is_some_and(|ext| ext == "mkv")
+}
+
 fn remove_if_empty(path: &Path) {
     if fs::metadata(path)
         .map(|metadata| metadata.len() == 0)
@@ -462,7 +509,13 @@ impl StopChildrenJob {
     }
 
     pub fn wait(self) -> StopChildrenResult {
-        self.wait_with_timeouts(Duration::from_secs(10), Duration::from_secs(2))
+        // gsr normally exits in under a second but sometimes hangs on stop with
+        // two instances running; its Matroska output is already on disk then.
+        if self.children.iter().all(|r| is_streamed(&r.path)) {
+            self.wait_with_timeouts(Duration::from_millis(1500), Duration::from_millis(500))
+        } else {
+            self.wait_with_timeouts(Duration::from_secs(10), Duration::from_secs(2))
+        }
     }
 
     fn wait_with_timeouts(
@@ -484,20 +537,29 @@ impl StopChildrenJob {
                 recorder.child.kill()?;
                 recorder.child.wait()
             }) {
-                Ok(status) if status.success() && is_nonempty(&recorder.path) => {
+                Ok(status)
+                    if (status.success() || is_streamed(&recorder.path))
+                        && is_nonempty(&recorder.path) =>
+                {
+                    if !status.success() {
+                        eprintln!(
+                            "boltsnap daemon: recorder for {} exited with {status}; keeping its streamed segment",
+                            recorder.output.as_deref().unwrap_or("area")
+                        );
+                    }
                     stopped.push(StoppedSegment {
                         output: recorder.output.clone(),
                         path: recorder.path.clone(),
                     });
                 }
                 Ok(status) if !status.success() => {
-                    errors.push(format!("wf-recorder exited with {status}"));
+                    errors.push(format!("recorder exited with {status}"));
                 }
                 Ok(_) => errors.push(format!(
                     "empty recording segment: {}",
                     recorder.path.display()
                 )),
-                Err(error) => errors.push(format!("wait for wf-recorder: {error}")),
+                Err(error) => errors.push(format!("wait for recorder: {error}")),
             }
         }
         if errors.is_empty() {
@@ -827,8 +889,15 @@ while :; do sleep 1; done
         let tools = tools(&dir);
         let scope = CaptureScope::Outputs(vec!["DP-3".into(), "DP-1".into()]);
         let t0 = Instant::now();
-        let active =
-            spawn_segment(&scope, "h264_nvenc", RecordProfile::Quiet, &[], &tools).unwrap();
+        let active = spawn_segment(
+            &scope,
+            "h264_nvenc",
+            RecordProfile::Quiet,
+            &[],
+            false,
+            &tools,
+        )
+        .unwrap();
         assert_eq!(active.len(), 2);
         let mut session = RecordingSession::new(
             scope,
@@ -849,9 +918,15 @@ while :; do sleep 1; done
             let completed = stopped(std::mem::take(&mut session.active));
             session.finish_pause(completed).unwrap();
             if cycle < 2 {
-                let active =
-                    spawn_segment(&session.scope, &session.codec, session.profile, &[], &tools)
-                        .unwrap();
+                let active = spawn_segment(
+                    &session.scope,
+                    &session.codec,
+                    session.profile,
+                    &[],
+                    false,
+                    &tools,
+                )
+                .unwrap();
                 session
                     .resume(active, t0 + Duration::from_secs(cycle * 2 + 2))
                     .unwrap();
@@ -928,6 +1003,7 @@ sleep 1
             "test",
             RecordProfile::Quality,
             &[],
+            false,
             &tools,
         )
         .unwrap();
@@ -980,6 +1056,7 @@ while :; do sleep 1; done
                 "h264_nvenc",
                 RecordProfile::Quality,
                 &[],
+                false,
                 &tools,
                 |program, args| {
                     spawns += 1;
@@ -1034,6 +1111,7 @@ while :; do sleep 1; done
                 output: Some("DP-3".into()),
                 path: path.clone(),
                 child,
+                cursor: None,
             }],
         }
         .wait();
@@ -1044,6 +1122,41 @@ while :; do sleep 1; done
         ));
         assert_eq!(fs::read(&path).unwrap(), b"recoverable");
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn killed_recorder_keeps_a_streamed_segment_but_not_a_buffered_one() {
+        for (name, kept) in [("hung.mkv", true), ("hung.mp4", false)] {
+            let dir = test_dir();
+            let path = dir.join(name);
+            let child = Command::new("sh")
+                .args([
+                    "-c",
+                    "trap '' INT TERM; printf video > \"$1\"; while :; do :; done",
+                    "sh",
+                    path.to_str().unwrap(),
+                ])
+                .spawn()
+                .unwrap();
+            assert!(wait_for(Duration::from_secs(1), || is_nonempty(&path)));
+            let job = StopChildrenJob {
+                children: vec![ActiveRecorder {
+                    output: Some("DP-1".into()),
+                    path: path.clone(),
+                    child,
+                    cursor: None,
+                }],
+            };
+            job.interrupt().unwrap();
+            let result =
+                job.wait_with_timeouts(Duration::from_millis(50), Duration::from_millis(50));
+            assert_eq!(
+                matches!(result, StopChildrenResult::Ready(_)),
+                kept,
+                "{name}"
+            );
+            fs::remove_dir_all(dir).unwrap();
+        }
     }
 
     #[test]
@@ -1065,6 +1178,7 @@ while :; do sleep 1; done
                 output: None,
                 path: path.clone(),
                 child,
+                cursor: None,
             }],
         };
         job.interrupt().unwrap();
@@ -1111,6 +1225,7 @@ exec python3 -c 'import ctypes,signal,sys,time; value=ctypes.c_int(); ctypes.CDL
             "test",
             RecordProfile::Quality,
             &[],
+            false,
             &tools,
         )
         .unwrap();
@@ -1222,5 +1337,91 @@ exec python3 -c 'import ctypes,signal,sys,time; value=ctypes.c_int(); ctypes.CDL
         let plan = start_plan(&prefs, &monitors[..1]).unwrap();
         assert_eq!(plan.outputs.len(), 1);
         assert!(plan.notice.unwrap().contains("one"));
+    }
+
+    /// Records the live desktop: two cursor-free segments with tracks, then a
+    /// Mellow render. Prints the clip paths for inspection.
+    #[test]
+    #[ignore = "records the live desktop; set BOLTSNAP_LIVE_OUTPUT"]
+    fn live_smooth_cursor_recording() {
+        use crate::record::finalize::{FinalizeRequest, SaveDestination, finalize_recording};
+        // Comma-separated outputs record Combined; BOLTSNAP_LIVE_REGION="x,y,w,h"
+        // records an area instead.
+        let outputs: Vec<String> = std::env::var("BOLTSNAP_LIVE_OUTPUT")
+            .unwrap()
+            .split(',')
+            .map(str::to_owned)
+            .collect();
+        let region = std::env::var("BOLTSNAP_LIVE_REGION").ok().map(|r| {
+            let n: Vec<i32> = r.split(',').map(|v| v.parse().unwrap()).collect();
+            Geometry {
+                x: n[0],
+                y: n[1],
+                w: n[2] as u32,
+                h: n[3] as u32,
+            }
+        });
+        let dir = std::env::temp_dir().join(format!("boltsnap-live-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let tools = RecorderTools {
+            gsr: Some(crate::platform::gsr::PROGRAM.into()),
+            wf_recorder: "wf-recorder".into(),
+            ffmpeg: "ffmpeg".into(),
+            segment_dir: dir.clone(),
+        };
+        let codec = tools.session_codec("auto").unwrap();
+        let scope = match region {
+            Some(geometry) => CaptureScope::Area(geometry),
+            None => CaptureScope::Outputs(outputs.clone()),
+        };
+        let mut segments: BTreeMap<Option<String>, Vec<PathBuf>> = BTreeMap::new();
+        for _ in 0..2 {
+            let active =
+                spawn_segment(&scope, &codec, RecordProfile::Quality, &[], true, &tools).unwrap();
+            std::thread::sleep(Duration::from_secs(3));
+            let job = StopChildrenJob { children: active };
+            job.interrupt().unwrap();
+            match job.wait() {
+                StopChildrenResult::Ready(stopped) => {
+                    for segment in stopped {
+                        segments
+                            .entry(segment.output)
+                            .or_default()
+                            .push(segment.path);
+                    }
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        let info = Command::new("hyprctl")
+            .args(["-j", "monitors"])
+            .output()
+            .unwrap();
+        let monitors = crate::record::parse_hyprland_monitors(&info.stdout).unwrap();
+        let clips = finalize_recording(
+            FinalizeRequest {
+                segments,
+                monitors: monitors
+                    .into_iter()
+                    .filter(|m| {
+                        outputs.contains(&m.name)
+                            || region.is_some_and(|g| {
+                                (m.x..m.x + (f64::from(m.width) / m.scale) as i32).contains(&g.x)
+                            })
+                    })
+                    .collect(),
+                both_mode: RecordBothMode::Combined,
+                codec,
+                destination: SaveDestination::Shelf,
+                cursor: crate::config::RecordCursor::Mellow,
+                fps: 240,
+                region,
+            },
+            &tools,
+        )
+        .unwrap();
+        for clip in clips {
+            println!("clip {}", clip.path.display());
+        }
     }
 }

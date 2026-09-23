@@ -22,6 +22,26 @@ pub enum RecordAudioSource {
     System,
 }
 
+/// How recordings show the pointer. Smooth modes record without the cursor and
+/// draw a spring-smoothed one on save.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RecordCursor {
+    #[default]
+    System,
+    Mellow,
+    Quick,
+}
+
+impl RecordCursor {
+    pub fn key(self) -> &'static str {
+        match self {
+            RecordCursor::System => "system",
+            RecordCursor::Mellow => "mellow",
+            RecordCursor::Quick => "quick",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum RecordProfile {
     #[default]
@@ -46,6 +66,7 @@ pub struct RecordingPrefs {
     pub disk_add_to_shelf: bool,
     pub audio_enabled: bool,
     pub audio_source: RecordAudioSource,
+    pub cursor: RecordCursor,
 }
 
 impl Default for RecordingPrefs {
@@ -57,6 +78,7 @@ impl Default for RecordingPrefs {
             disk_add_to_shelf: true,
             audio_enabled: true,
             audio_source: RecordAudioSource::SystemAndMic,
+            cursor: RecordCursor::System,
         }
     }
 }
@@ -71,6 +93,7 @@ pub struct Config {
     pub record_dir: Option<String>,
     record_default_target: Option<String>,
     record_both_mode: Option<String>,
+    record_cursor: Option<String>,
     record_show_frame: Option<bool>,
     record_disk_add_to_shelf: Option<bool>,
     record_audio_enabled: Option<bool>,
@@ -167,6 +190,10 @@ impl Config {
                     .get("record_default_target")
                     .and_then(|x| x.as_str())
                     .map(String::from),
+                record_cursor: v
+                    .get("record_cursor")
+                    .and_then(|x| x.as_str())
+                    .map(String::from),
                 record_both_mode: v
                     .get("record_both_mode")
                     .and_then(|x| x.as_str())
@@ -226,6 +253,11 @@ impl Config {
                 Some("system") => RecordAudioSource::System,
                 _ => defaults.audio_source,
             },
+            cursor: match self.record_cursor.as_deref() {
+                Some("mellow") => RecordCursor::Mellow,
+                Some("quick") => RecordCursor::Quick,
+                _ => defaults.cursor,
+            },
         }
     }
 }
@@ -263,6 +295,10 @@ pub fn save_recording_prefs_at(path: &Path, prefs: &RecordingPrefs) -> io::Resul
             }
             .into(),
         ),
+    );
+    table.insert(
+        "record_cursor".into(),
+        toml::Value::String(prefs.cursor.key().into()),
     );
     table.insert(
         "record_show_frame".into(),
@@ -517,6 +553,7 @@ unrelated = "keep-me"
                 disk_add_to_shelf: true,
                 audio_enabled: true,
                 audio_source: RecordAudioSource::SystemAndMic,
+                cursor: RecordCursor::System,
             }
         );
     }
@@ -539,6 +576,7 @@ unrelated = "keep-me"
                 disk_add_to_shelf: false,
                 audio_enabled: true,
                 audio_source: RecordAudioSource::SystemAndMic,
+                cursor: RecordCursor::System,
             }
         );
     }
@@ -549,7 +587,8 @@ unrelated = "keep-me"
             "record_default_target = \"output:\"\n\
              record_both_mode = \"fast\"\n\
              record_show_frame = \"no\"\n\
-             record_disk_add_to_shelf = 0\n",
+             record_disk_add_to_shelf = 0\n\
+             record_cursor = \"wobbly\"\n",
         )
         .recording_prefs();
         assert_eq!(prefs, RecordingPrefs::default());
@@ -564,6 +603,7 @@ unrelated = "keep-me"
             both_mode: RecordBothMode::Combined,
             show_frame: false,
             disk_add_to_shelf: false,
+            cursor: RecordCursor::Quick,
             ..RecordingPrefs::default()
         };
         save_recording_prefs_at(&path, &prefs).unwrap();

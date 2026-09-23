@@ -110,6 +110,8 @@ pub struct CursorStream<'a> {
     session: Option<cursor_session::ExtImageCopyCaptureCursorSessionV1>,
     buffer: Option<ImageBuffer>,
     closed: bool,
+    /// Whether this stream captures cursor images or only metadata.
+    images: bool,
 }
 
 impl Connection {
@@ -119,7 +121,26 @@ impl Connection {
     pub fn cursor_stream(
         &mut self,
         id: OutputId,
+        options: CaptureOptions,
+    ) -> Result<CursorStream<'_>> {
+        self.open_cursor(id, options, true)
+    }
+    /// Like [`Self::cursor_stream`], but only enter, leave and position events. No
+    /// image capture session is opened, so compositors that stop cursor image
+    /// capture for some cursor buffers (Hyprland 0.56 without SHM cursors) keep
+    /// delivering positions.
+    pub fn cursor_positions(
+        &mut self,
+        id: OutputId,
+        options: CaptureOptions,
+    ) -> Result<CursorStream<'_>> {
+        self.open_cursor(id, options, false)
+    }
+    fn open_cursor(
+        &mut self,
+        id: OutputId,
         mut options: CaptureOptions,
+        images: bool,
     ) -> Result<CursorStream<'_>> {
         check_options(&options)?;
         if options.backend == Backend::Wlr {
@@ -172,6 +193,7 @@ impl Connection {
             session: None,
             buffer: None,
             closed: false,
+            images,
         };
         stream.initialize(end)?;
         Ok(stream)
@@ -212,7 +234,9 @@ impl CursorStream<'_> {
         c.state.pending = Some(Pending::new(token));
         let source = source_manager.create_source(output, &qh, ());
         let session = manager.create_pointer_cursor_session(&source, pointer, &qh, token);
-        self.objects.session = Some(session.get_capture_session(&qh, token));
+        if self.images {
+            self.objects.session = Some(session.get_capture_session(&qh, token));
+        }
         self.objects.source = Some(source);
         self.session = Some(session);
         c.conn.flush().map_err(|e| Error::Wayland(e.to_string()))?;
@@ -296,7 +320,8 @@ impl CursorStream<'_> {
                         received_at,
                     }));
                 }
-                None => self.request_image()?,
+                None if self.images => self.request_image()?,
+                None => {}
             }
         }
     }

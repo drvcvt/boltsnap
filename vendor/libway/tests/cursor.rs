@@ -255,3 +255,28 @@ fn cursor_requires_a_seat_and_respects_image_allocation_limits() {
         Err(Error::LimitExceeded)
     ));
 }
+#[test]
+fn position_stream_opens_no_image_session_and_survives_image_stops() {
+    let (server, socket) = Server::start(Config {
+        cursor: Some(CursorFault::Stopped),
+        ..Default::default()
+    });
+    let mut c = Connection::from_socket(socket, &options()).unwrap();
+    let output = c.outputs(&options()).unwrap()[0].id;
+    let mut stream = c.cursor_positions(output, options()).unwrap();
+    assert!(matches!(next(&mut stream), CursorEvent::Enter { .. }));
+    assert!(matches!(
+        next(&mut stream),
+        CursorEvent::Position { x: -2, y: 3, .. }
+    ));
+    assert!(
+        stream
+            .poll_event(Duration::from_millis(50))
+            .unwrap()
+            .is_none()
+    );
+    drop(stream);
+    server.settle();
+    assert_eq!(server.metrics.sessions.load(Ordering::SeqCst), 0);
+    assert_eq!(server.metrics.captures.load(Ordering::SeqCst), 0);
+}
