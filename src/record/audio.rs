@@ -4,13 +4,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Debug)]
 pub struct AudioCapture {
-    source: String,
+    inputs: Vec<String>,
     modules: Vec<u32>,
 }
 
 impl AudioCapture {
-    pub fn source(&self) -> &str {
-        &self.source
+    /// PulseAudio sources to record: one source, or system and mic when the
+    /// recorder mixes them itself.
+    pub fn inputs(&self) -> &[String] {
+        &self.inputs
     }
 
     pub fn cleanup(self) -> Result<(), String> {
@@ -20,7 +22,7 @@ impl AudioCapture {
     #[cfg(test)]
     pub(crate) fn for_test(source: &str) -> Self {
         Self {
-            source: source.into(),
+            inputs: vec![source.into()],
             modules: Vec::new(),
         }
     }
@@ -98,9 +100,11 @@ fn unload_modules(
     first_error.map_or(Ok(()), Err)
 }
 
+/// `mix_name` creates a PulseAudio mix for recorders that take one source;
+/// without it system and mic are returned as separate inputs.
 fn prepare_audio_with(
     mode: RecordAudioSource,
-    mix_name: &str,
+    mix_name: Option<&str>,
     mut run: impl FnMut(&[String]) -> Result<String, String>,
 ) -> Result<AudioCapture, String> {
     let direct = match mode {
@@ -118,7 +122,7 @@ fn prepare_audio_with(
         let output = call(&mut run, &["list", "short", "sources"])?;
         require_source(&source_names(&output), &source)?;
         return Ok(AudioCapture {
-            source,
+            inputs: vec![source],
             modules: Vec::new(),
         });
     }
@@ -130,6 +134,12 @@ fn prepare_audio_with(
     let names = source_names(&output);
     require_source(&names, &system)?;
     require_source(&names, &mic)?;
+    let Some(mix_name) = mix_name else {
+        return Ok(AudioCapture {
+            inputs: vec![system, mic],
+            modules: Vec::new(),
+        });
+    };
 
     let mut modules = Vec::with_capacity(3);
     let setup = (|| -> Result<(), String> {
@@ -169,20 +179,19 @@ fn prepare_audio_with(
         };
     }
     Ok(AudioCapture {
-        source: format!("{mix_name}.monitor"),
+        inputs: vec![format!("{mix_name}.monitor")],
         modules,
     })
 }
 
 static MIX_ID: AtomicU64 = AtomicU64::new(0);
 
-pub fn prepare_audio(mode: RecordAudioSource) -> Result<AudioCapture, String> {
-    let id = MIX_ID.fetch_add(1, Ordering::Relaxed);
-    prepare_audio_with(
-        mode,
-        &format!("boltsnap_mix_{}_{}", std::process::id(), id),
-        run_pactl,
-    )
+pub fn prepare_audio(mode: RecordAudioSource, mix: bool) -> Result<AudioCapture, String> {
+    let name = mix.then(|| {
+        let id = MIX_ID.fetch_add(1, Ordering::Relaxed);
+        format!("boltsnap_mix_{}_{}", std::process::id(), id)
+    });
+    prepare_audio_with(mode, name.as_deref(), run_pactl)
 }
 
 fn cleanup_stale_mixes_with(
@@ -239,8 +248,8 @@ mod tests {
             "1\talsa_output.monitor\n2\tspeakers.monitor\n",
         ]);
         let capture =
-            prepare_audio_with(RecordAudioSource::System, "unused", |args| fake.run(args)).unwrap();
-        assert_eq!(capture.source(), "speakers.monitor");
+            prepare_audio_with(RecordAudioSource::System, None, |args| fake.run(args)).unwrap();
+        assert_eq!(capture.inputs(), ["speakers.monitor"]);
         assert_eq!(fake.commands, ["get-default-sink", "list short sources"]);
     }
 
@@ -248,8 +257,8 @@ mod tests {
     fn mic_source_uses_default_source() {
         let mut fake = FakePactl::new(["studio_mic\n", "1\tstudio_mic\n"]);
         let capture =
-            prepare_audio_with(RecordAudioSource::Mic, "unused", |args| fake.run(args)).unwrap();
-        assert_eq!(capture.source(), "studio_mic");
+            prepare_audio_with(RecordAudioSource::Mic, None, |args| fake.run(args)).unwrap();
+        assert_eq!(capture.inputs(), ["studio_mic"]);
         assert_eq!(fake.commands, ["get-default-source", "list short sources"]);
     }
 
@@ -267,7 +276,7 @@ mod tests {
         ]);
         let error = prepare_audio_with(
             RecordAudioSource::SystemAndMic,
-            "boltsnap_mix_test",
+            Some("boltsnap_mix_test"),
             |args| fake.run(args),
         )
         .unwrap_err();
@@ -279,6 +288,20 @@ mod tests {
             .cloned()
             .collect::<Vec<_>>();
         assert_eq!(unloads, ["unload-module 42", "unload-module 41"]);
+    }
+
+    #[test]
+    fn combined_source_without_mix_returns_both_inputs_and_loads_nothing() {
+        let mut fake = FakePactl::new([
+            "speakers\n",
+            "studio_mic\n",
+            "1\tspeakers.monitor\n2\tstudio_mic\n",
+        ]);
+        let capture =
+            prepare_audio_with(RecordAudioSource::SystemAndMic, None, |args| fake.run(args))
+                .unwrap();
+        assert_eq!(capture.inputs(), ["speakers.monitor", "studio_mic"]);
+        assert!(!fake.commands.iter().any(|c| c.starts_with("load-module")));
     }
 
     #[test]

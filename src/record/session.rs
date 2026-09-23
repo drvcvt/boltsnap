@@ -52,6 +52,8 @@ pub struct ActiveRecorder {
 
 #[derive(Clone, Debug)]
 pub struct RecorderTools {
+    /// GPU Screen Recorder, preferred when installed.
+    pub gsr: Option<PathBuf>,
     pub wf_recorder: PathBuf,
     pub ffmpeg: PathBuf,
     pub segment_dir: PathBuf,
@@ -59,11 +61,40 @@ pub struct RecorderTools {
 
 impl Default for RecorderTools {
     fn default() -> Self {
+        let gsr = crate::platform::gsr::PROGRAM;
         Self {
+            gsr: crate::paths::has_cmd(gsr).then(|| gsr.into()),
             wf_recorder: "wf-recorder".into(),
             ffmpeg: "ffmpeg".into(),
             segment_dir: crate::paths::rec_dir(),
         }
+    }
+}
+
+impl RecorderTools {
+    /// Validate that a recorder exists and resolve the session codec before any
+    /// audio or capture setup.
+    pub fn session_codec(&self, requested: &str) -> Result<String, String> {
+        if self.gsr.is_some() {
+            let gsr = crate::platform::gsr::info()?;
+            return Ok(crate::platform::gsr::choose(requested, &gsr)?.encoder);
+        }
+        let wf = &self.wf_recorder;
+        if !(wf.is_file() || crate::paths::has_cmd(&wf.to_string_lossy())) {
+            return Err("no screen recorder found; install gpu-screen-recorder".into());
+        }
+        // wf-recorder takes FFmpeg encoder names; keep its historical default.
+        Ok(if requested == "auto" {
+            "h264_nvenc"
+        } else {
+            requested
+        }
+        .to_owned())
+    }
+
+    /// wf-recorder records one PulseAudio source, so it needs a mixed source.
+    pub fn needs_audio_mix(&self) -> bool {
+        self.gsr.is_none()
     }
 }
 
@@ -248,50 +279,44 @@ pub fn spawn_segment(
     scope: &CaptureScope,
     codec: &str,
     profile: RecordProfile,
-    audio_source: Option<&str>,
+    audio: &[String],
     tools: &RecorderTools,
 ) -> Result<Vec<ActiveRecorder>, String> {
-    spawn_segment_with(
-        scope,
-        codec,
-        profile,
-        audio_source,
-        tools,
-        |program, args| {
-            let parent = unsafe { libc::getpid() };
-            let mut command = Command::new(program);
-            command
-                .args(args)
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::inherit());
-            unsafe {
-                command.pre_exec(move || {
-                    if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) != 0 {
-                        return Err(io::Error::last_os_error());
-                    }
-                    if libc::getppid() != parent {
-                        return Err(io::Error::new(
-                            io::ErrorKind::Interrupted,
-                            "boltsnap daemon exited while starting recorder",
-                        ));
-                    }
-                    Ok(())
-                });
-            }
-            command.spawn()
-        },
-    )
+    spawn_segment_with(scope, codec, profile, audio, tools, |program, args| {
+        let parent = unsafe { libc::getpid() };
+        let mut command = Command::new(program);
+        command
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit());
+        unsafe {
+            command.pre_exec(move || {
+                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) != 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                if libc::getppid() != parent {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Interrupted,
+                        "boltsnap daemon exited while starting recorder",
+                    ));
+                }
+                Ok(())
+            });
+        }
+        command.spawn()
+    })
 }
 
 fn spawn_segment_with(
     scope: &CaptureScope,
     codec: &str,
     profile: RecordProfile,
-    audio_source: Option<&str>,
+    audio: &[String],
     tools: &RecorderTools,
     mut spawn: impl FnMut(&Path, &[String]) -> io::Result<Child>,
 ) -> Result<Vec<ActiveRecorder>, String> {
+    use crate::platform::gsr;
     fs::create_dir_all(&tools.segment_dir)
         .map_err(|error| format!("create recording cache: {error}"))?;
     let outputs: Vec<Option<&str>> = match scope {
@@ -303,20 +328,43 @@ fn spawn_segment_with(
             outputs.iter().map(|output| Some(output.as_str())).collect()
         }
     };
+    let gsr_codec = match &tools.gsr {
+        Some(_) => Some(gsr::choose(codec, &gsr::info()?)?),
+        None => None,
+    };
+    if gsr_codec.is_none() && audio.len() > 1 {
+        return Err("wf-recorder records a single audio source".into());
+    }
     let mut active = Vec::with_capacity(outputs.len());
 
     for output in outputs {
-        let path = segment_path(&tools.segment_dir, output);
-        let args = match (scope, output) {
-            (CaptureScope::Area(geometry), None) => {
-                wf_recorder_args(geometry, codec, profile, audio_source, &path)
+        let (program, args, path) = match (&tools.gsr, &gsr_codec) {
+            (Some(program), Some(codec)) => {
+                let path = segment_path(&tools.segment_dir, output, "mkv");
+                let target = match (scope, output) {
+                    (CaptureScope::Area(geometry), None) => gsr::Target::Region(geometry),
+                    (CaptureScope::Outputs(_), Some(output)) => gsr::Target::Output(output),
+                    _ => unreachable!(),
+                };
+                let args = gsr::args(&target, codec, profile.fps(), audio, &path);
+                (program, args, path)
             }
-            (CaptureScope::Outputs(_), Some(output)) => {
-                wf_recorder_output_args(output, codec, profile, audio_source, &path)
+            _ => {
+                let path = segment_path(&tools.segment_dir, output, "mp4");
+                let source = audio.first().map(String::as_str);
+                let args = match (scope, output) {
+                    (CaptureScope::Area(geometry), None) => {
+                        wf_recorder_args(geometry, codec, profile, source, &path)
+                    }
+                    (CaptureScope::Outputs(_), Some(output)) => {
+                        wf_recorder_output_args(output, codec, profile, source, &path)
+                    }
+                    _ => unreachable!(),
+                };
+                (&tools.wf_recorder, args, path)
             }
-            _ => unreachable!(),
         };
-        match spawn(&tools.wf_recorder, &args) {
+        match spawn(program, &args) {
             Ok(child) => active.push(ActiveRecorder {
                 output: output.map(str::to_owned),
                 path,
@@ -325,19 +373,19 @@ fn spawn_segment_with(
             Err(error) => {
                 stop_and_reap(active);
                 remove_if_empty(&path);
-                return Err(format!("start wf-recorder: {error}"));
+                return Err(format!("start {}: {error}", program.display()));
             }
         }
     }
     Ok(active)
 }
 
-fn segment_path(dir: &Path, output: Option<&str>) -> PathBuf {
+fn segment_path(dir: &Path, output: Option<&str>, extension: &str) -> PathBuf {
     let label = output
         .unwrap_or("area")
         .replace(|c: char| !c.is_ascii_alphanumeric(), "_");
     dir.join(format!(
-        "boltsnap-segment-{}-{}-{label}.mp4",
+        "boltsnap-segment-{}-{}-{label}.{extension}",
         std::process::id(),
         SEGMENT_ID.fetch_add(1, Ordering::Relaxed)
     ))
@@ -544,6 +592,7 @@ while :; do sleep 1; done
 
     fn tools(dir: &Path) -> RecorderTools {
         RecorderTools {
+            gsr: None,
             wf_recorder: fake_recorder(dir),
             ffmpeg: PathBuf::from("ffmpeg"),
             segment_dir: dir.to_path_buf(),
@@ -639,8 +688,8 @@ while :; do sleep 1; done
         session.begin_pause(t0 + Duration::from_secs(1)).unwrap();
         session.finish_pause(Vec::new()).unwrap();
         assert_eq!(
-            session.audio.as_ref().map(|audio| audio.source()),
-            Some("boltsnap_mix_test.monitor")
+            session.audio.as_ref().map(|audio| audio.inputs()),
+            Some(&["boltsnap_mix_test.monitor".to_owned()][..])
         );
     }
 
@@ -779,7 +828,7 @@ while :; do sleep 1; done
         let scope = CaptureScope::Outputs(vec!["DP-3".into(), "DP-1".into()]);
         let t0 = Instant::now();
         let active =
-            spawn_segment(&scope, "h264_nvenc", RecordProfile::Quiet, None, &tools).unwrap();
+            spawn_segment(&scope, "h264_nvenc", RecordProfile::Quiet, &[], &tools).unwrap();
         assert_eq!(active.len(), 2);
         let mut session = RecordingSession::new(
             scope,
@@ -800,14 +849,9 @@ while :; do sleep 1; done
             let completed = stopped(std::mem::take(&mut session.active));
             session.finish_pause(completed).unwrap();
             if cycle < 2 {
-                let active = spawn_segment(
-                    &session.scope,
-                    &session.codec,
-                    session.profile,
-                    None,
-                    &tools,
-                )
-                .unwrap();
+                let active =
+                    spawn_segment(&session.scope, &session.codec, session.profile, &[], &tools)
+                        .unwrap();
                 session
                     .resume(active, t0 + Duration::from_secs(cycle * 2 + 2))
                     .unwrap();
@@ -869,6 +913,7 @@ sleep 1
         permissions.set_mode(0o755);
         fs::set_permissions(&script, permissions).unwrap();
         let tools = RecorderTools {
+            gsr: None,
             wf_recorder: script,
             ffmpeg: PathBuf::from("ffmpeg"),
             segment_dir: dir.clone(),
@@ -882,7 +927,7 @@ sleep 1
             }),
             "test",
             RecordProfile::Quality,
-            None,
+            &[],
             &tools,
         )
         .unwrap();
@@ -920,6 +965,7 @@ while :; do sleep 1; done
         permissions.set_mode(0o755);
         fs::set_permissions(&script, permissions).unwrap();
         let tools = RecorderTools {
+            gsr: None,
             wf_recorder: script.clone(),
             ffmpeg: PathBuf::from("ffmpeg"),
             segment_dir: dir.clone(),
@@ -933,7 +979,7 @@ while :; do sleep 1; done
                 &CaptureScope::Outputs(vec!["DP-3".into(), "DP-1".into()]),
                 "h264_nvenc",
                 RecordProfile::Quality,
-                None,
+                &[],
                 &tools,
                 |program, args| {
                     spawns += 1;
@@ -1049,6 +1095,7 @@ exec python3 -c 'import ctypes,signal,sys,time; value=ctypes.c_int(); ctypes.CDL
         permissions.set_mode(0o755);
         fs::set_permissions(&script, permissions).unwrap();
         let tools = RecorderTools {
+            gsr: None,
             wf_recorder: script,
             ffmpeg: PathBuf::from("ffmpeg"),
             segment_dir: dir.clone(),
@@ -1063,7 +1110,7 @@ exec python3 -c 'import ctypes,signal,sys,time; value=ctypes.c_int(); ctypes.CDL
             }),
             "test",
             RecordProfile::Quality,
-            None,
+            &[],
             &tools,
         )
         .unwrap();

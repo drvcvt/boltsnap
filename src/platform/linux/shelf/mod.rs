@@ -1017,6 +1017,14 @@ pub fn run_daemon(save_dir_cli: Option<std::path::PathBuf>) -> DynResult<()> {
     if let Err(error) = crate::record::audio::cleanup_stale_mixes() {
         eprintln!("boltsnap daemon: clean up stale recording audio: {error}");
     }
+    // Encoder discovery takes about 0.5 s; keep it off the first recording start.
+    if crate::paths::has_cmd(crate::platform::gsr::PROGRAM) {
+        std::thread::spawn(|| {
+            if let Err(error) = crate::platform::gsr::info() {
+                eprintln!("boltsnap daemon: gpu-screen-recorder encoder discovery: {error}");
+            }
+        });
+    }
 
     let conn = Connection::connect_to_env()?;
     let (globals, mut event_queue) = registry_queue_init::<Daemon>(&conn)?;
@@ -1208,13 +1216,13 @@ fn spawn_initial_segment(
     String,
 > {
     let mut audio = requested_audio(prefs)
-        .map(crate::record::audio::prepare_audio)
+        .map(|source| crate::record::audio::prepare_audio(source, tools.needs_audio_mix()))
         .transpose()?;
     match spawn_segment(
         scope,
         codec,
         profile,
-        audio.as_ref().map(AudioCapture::source),
+        audio.as_ref().map_or(&[][..], AudioCapture::inputs),
         tools,
     ) {
         Ok(active) => Ok((active, audio)),
@@ -2126,16 +2134,13 @@ impl Daemon {
             return Err("a recording is already in progress".into());
         }
         validate_recording_dimensions(w, h)?;
-        if !crate::paths::has_cmd("wf-recorder") {
-            return Err("wf-recorder is not installed".into());
-        }
+        let config = crate::config::Config::load();
+        let tools = RecorderTools::default();
+        let codec = tools.session_codec(&crate::config::resolve_record_codec(None, &config))?;
         prepare_recording_cache()?;
         let geo = crate::record::Geometry { x, y, w, h };
         let scope = CaptureScope::Area(geo);
-        let config = crate::config::Config::load();
         let profile = config.record_profile()?;
-        let codec = crate::config::resolve_record_codec(None, &config);
-        let tools = RecorderTools::default();
         let monitors = self.cached_monitors();
         let monitors = monitor_for_geometry(&monitors, &geo)
             .cloned()
@@ -2206,9 +2211,9 @@ impl Daemon {
         if self.recording.is_some() {
             return Err("a recording is already in progress".into());
         }
-        if !crate::paths::has_cmd("wf-recorder") {
-            return Err("wf-recorder is not installed".into());
-        }
+        let config = crate::config::Config::load();
+        let tools = RecorderTools::default();
+        let codec = tools.session_codec(&crate::config::resolve_record_codec(None, &config))?;
         prepare_recording_cache()?;
         if monitors.is_empty() {
             return Err("no recording output was selected".into());
@@ -2218,10 +2223,7 @@ impl Daemon {
             .map(|monitor| monitor.name.clone())
             .collect::<Vec<_>>();
         let scope = CaptureScope::Outputs(names.clone());
-        let config = crate::config::Config::load();
         let profile = config.record_profile()?;
-        let codec = crate::config::resolve_record_codec(None, &config);
-        let tools = RecorderTools::default();
         let (active, audio) =
             spawn_initial_segment(&scope, &codec, profile, &tools, &self.recording_prefs)?;
         self.recording = Some(RecordingSession::new(
@@ -2411,8 +2413,8 @@ impl Daemon {
                 .active
                 .iter_mut()
                 .find_map(|recorder| match recorder.child.try_wait() {
-                    Ok(Some(status)) => Some(format!("wf-recorder exited unexpectedly: {status}")),
-                    Err(error) => Some(format!("check wf-recorder: {error}")),
+                    Ok(Some(status)) => Some(format!("recorder exited unexpectedly: {status}")),
+                    Err(error) => Some(format!("check recorder: {error}")),
                     Ok(None) => None,
                 })
         });
@@ -2538,23 +2540,12 @@ impl Daemon {
                 self.stop_children(AfterStop::Pause, children);
             }
             RecordingAction::Resume => {
-                let (scope, codec, profile, audio_source) = {
-                    let session = self.recording.as_ref().unwrap();
-                    (
-                        session.scope.clone(),
-                        session.codec.clone(),
-                        session.profile,
-                        session
-                            .audio
-                            .as_ref()
-                            .map(|audio| audio.source().to_owned()),
-                    )
-                };
+                let session = self.recording.as_ref().unwrap();
                 let active = match spawn_segment(
-                    &scope,
-                    &codec,
-                    profile,
-                    audio_source.as_deref(),
+                    &session.scope,
+                    &session.codec,
+                    session.profile,
+                    session.audio.as_ref().map_or(&[][..], AudioCapture::inputs),
                     &RecorderTools::default(),
                 ) {
                     Ok(active) => active,
