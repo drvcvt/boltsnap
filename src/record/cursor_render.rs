@@ -206,40 +206,44 @@ pub fn render(
 ) -> Result<(), String> {
     let preset = preset(mode).ok_or("system cursor needs no rendering")?;
     let frames = (duration * f64::from(fps)).round().max(1.0) as usize;
-    let positions = cursor::smooth(samples, fps, frames, preset);
-    let arrow = crate::platform::xcursor::arrow(scale);
-    let hotspot = (f64::from(arrow.hotspot.0), f64::from(arrow.hotspot.1));
+    let path = cursor::trajectory(samples, frames * 1000 / fps.max(1) as usize, preset);
+    // Sized like the desktop cursor (XCURSOR_SIZE, default 24) at clip scale.
+    let size = std::env::var("XCURSOR_SIZE")
+        .ok()
+        .and_then(|value| value.parse::<f32>().ok())
+        .filter(|size| (8.0..=256.0).contains(size))
+        .unwrap_or(24.0);
+    let arrow = cursor::arrow(size * scale as f32);
     let color = probe_color(job.existing_clean.unwrap_or(job.audio), ffmpeg);
     let sprite = cursor::Sprite::new(
-        arrow.image.as_raw(),
-        arrow.image.width() as usize,
-        arrow.image.height() as usize,
+        &arrow.rgba,
+        arrow.width as usize,
+        arrow.height as usize,
         color.bt709,
         color.full,
     );
     let clean_out = clean_path(job.clip);
     let encode_clean = job.existing_clean.is_none().then_some(clean_out.as_path());
-    let result = pipe(
-        &job,
-        encode_clean,
-        fps,
-        codec,
-        &color,
-        ffmpeg,
-        |index, frame| {
-            let position = positions.get(index).copied().flatten();
-            if let Some((x, y)) = position {
-                cursor::blend_yuv420(
-                    frame,
-                    job.size.0 as usize,
-                    job.size.1 as usize,
-                    &sprite,
-                    (x - hotspot.0).round() as i64,
-                    (y - hotspot.1).round() as i64,
-                );
-            }
-        },
-    );
+    let draw = |index: usize, frame: &mut [u8]| {
+        let taps = cursor::exposure(&path, index, fps, arrow.hotspot);
+        cursor::blend_exposure(
+            frame,
+            job.size.0 as usize,
+            job.size.1 as usize,
+            &sprite,
+            &taps,
+            cursor::BLUR_SAMPLES as u32,
+        );
+    };
+    let mut result = pipe(&job, encode_clean, fps, codec, &color, ffmpeg, draw);
+    // A GPU encoder can fail to start, e.g. without free video memory while a
+    // game runs. H.264 on the CPU keeps the rendered cursor instead of failing.
+    if let Err(error) = &result
+        && super::finalize::hardware_device(codec).is_some()
+    {
+        eprintln!("boltsnap: {codec} cursor render failed, retrying with libx264: {error}");
+        result = pipe(&job, encode_clean, fps, "libx264", &color, ffmpeg, draw);
+    }
     if let Err(error) = result {
         let _ = fs::remove_file(job.clip);
         if encode_clean.is_some() {
@@ -251,15 +255,15 @@ pub fn render(
         fs::rename(existing, &clean_out).map_err(|error| format!("keep clean video: {error}"))?;
     }
     let mut png = Vec::new();
-    arrow
-        .image
+    image::RgbaImage::from_raw(arrow.width, arrow.height, arrow.rgba.clone())
+        .ok_or("cursor image size")?
         .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
         .map_err(|error| format!("encode cursor image: {error}"))?;
     let json = cursor::sidecar_json(
         samples,
         job.size,
         clean_out.file_name().and_then(|name| name.to_str()),
-        Some((&base64(&png), hotspot, scale)),
+        Some((&base64(&png), arrow.hotspot, scale)),
         mode.key(),
     );
     write_atomic(&sidecar_path(job.clip), json.to_string().as_bytes())
@@ -328,7 +332,7 @@ fn pipe(
     codec: &str,
     color: &Color,
     ffmpeg: &Path,
-    mut draw: impl FnMut(usize, &mut [u8]),
+    draw: impl Fn(usize, &mut [u8]),
 ) -> Result<(), String> {
     use std::io::Read;
     use std::process::{Child, Stdio};
@@ -374,11 +378,18 @@ fn pipe(
     let mut index = 0;
     let streamed = std::thread::scope(|scope| -> Result<(), String> {
         let (frames_tx, frames) = std::sync::mpsc::sync_channel::<Vec<u8>>(2);
+        // Frame buffers circulate reader -> drawing -> writer -> reader. A fresh
+        // 3 MB allocation per frame cost about 1.8 ms in page faults at 1080p.
+        const POOL: usize = 6;
+        let (free_tx, free) = std::sync::mpsc::sync_channel::<Vec<u8>>(POOL);
+        for _ in 0..POOL {
+            let _ = free_tx.try_send(vec![0u8; frame_len]);
+        }
         let reader = scope.spawn(move || -> Result<(), String> {
             let mut source = source;
             enlarge_pipe(&source);
             loop {
-                let mut frame = vec![0u8; frame_len];
+                let mut frame = free.recv().unwrap_or_else(|_| vec![0u8; frame_len]);
                 match source.read_exact(&mut frame) {
                     Ok(()) => {}
                     Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => {
@@ -395,6 +406,7 @@ fn pipe(
             .into_iter()
             .map(|(sink, drawn)| {
                 let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(2);
+                let recycle = free_tx.clone();
                 let writer = scope.spawn(move || -> Result<(), String> {
                     use std::io::Write;
                     let mut sink = sink;
@@ -402,12 +414,14 @@ fn pipe(
                     for frame in rx {
                         sink.write_all(&frame)
                             .map_err(|error| format!("write frames to encoder: {error}"))?;
+                        let _ = recycle.try_send(frame);
                     }
                     Ok(())
                 });
                 (tx, drawn, writer)
             })
             .collect();
+        drop(free_tx);
         let mut result = Ok(());
         'frames: for mut frame in frames {
             for (tx, drawn, _) in &writers {
@@ -495,12 +509,14 @@ fn encode_args(job: &Job, out: &Path, fps: u32, codec: &str, color: &Color) -> V
             &format!("{}x{}", job.size.0, job.size.1),
             "-framerate",
             &fps.to_string(),
-            "-i",
-            "-",
-            "-i",
         ]
         .map(str::to_owned),
     );
+    // Tag the raw input, not the output: output tags make FFmpeg insert a
+    // swscale colour conversion (about 0.7 ms per 1080p frame) and still leave
+    // primaries and transfer unset.
+    args.extend(color.tags.iter().cloned());
+    args.extend(["-i", "-", "-i"].map(str::to_owned));
     args.push(job.audio.to_string_lossy().into_owned());
     args.extend(["-map", "0:v", "-map", "1:a?", "-c:a", "copy"].map(str::to_owned));
     if upload.is_some() {
@@ -508,7 +524,6 @@ fn encode_args(job: &Job, out: &Path, fps: u32, codec: &str, color: &Color) -> V
     }
     args.extend(["-c:v".into(), codec.into()]);
     args.extend(super::finalize::quality_args(codec));
-    args.extend(color.tags.iter().cloned());
     args.push(out.to_string_lossy().into_owned());
     args
 }
@@ -617,8 +632,8 @@ mod tests {
             tags: vec!["-color_range".into(), "tv".into()],
         };
         let joined = encode_args(&job, clip, 240, "h264_vulkan", &color).join(" ");
-        assert!(joined.starts_with("-y -init_hw_device vulkan=hw -filter_hw_device hw -f rawvideo -pix_fmt yuv420p -video_size 1920x1080 -framerate 240 -i - -i /c/clean.mp4"));
-        assert!(joined.contains("-map 0:v -map 1:a? -c:a copy -vf format=nv12,hwupload -c:v h264_vulkan -rc_mode cqp -qp 18 -color_range tv /c/out.mp4"));
+        assert!(joined.starts_with("-y -init_hw_device vulkan=hw -filter_hw_device hw -f rawvideo -pix_fmt yuv420p -video_size 1920x1080 -framerate 240 -color_range tv -i - -i /c/clean.mp4"));
+        assert!(joined.contains("-map 0:v -map 1:a? -c:a copy -vf format=nv12,hwupload -c:v h264_vulkan -rc_mode cqp -qp 18 /c/out.mp4"));
         let cpu = encode_args(&job, clip, 60, "libx264", &color);
         assert!(
             !cpu.iter()
@@ -737,13 +752,16 @@ mod tests {
             .output()
             .unwrap();
         let luma = |x: u32, y: u32| out.stdout[(y * w + x) as usize];
-        let arrow = crate::platform::xcursor::arrow(1.0);
-        let (hx, hy) = arrow.hotspot;
-        let lit = (0..arrow.image.height())
-            .flat_map(|y| (0..arrow.image.width()).map(move |x| (x, y)))
-            .filter(|(x, y)| arrow.image.get_pixel(*x, *y)[3] == 255)
+        let arrow = cursor::arrow(24.0);
+        let (hx, hy) = (
+            arrow.hotspot.0.round() as u32,
+            arrow.hotspot.1.round() as u32,
+        );
+        let lit = (0..arrow.height)
+            .flat_map(|y| (0..arrow.width).map(move |x| (x, y)))
+            .filter(|(x, y)| arrow.rgba[((y * arrow.width + x) * 4 + 3) as usize] == 255)
             .filter(|(x, y)| {
-                let (fx, fy) = (200 - hx + x, 100 - hy + y);
+                let (fx, fy) = (200 + x - hx, 100 + y - hy);
                 luma(fx, fy).abs_diff(0x30) > 20
             })
             .count();
