@@ -47,7 +47,7 @@ pub fn print_doctor() {
     println!("  X11 window:        in-process x11rb picker");
     println!("  X11 active win:    in-process via x11rb (_NET_ACTIVE_WINDOW)");
     println!(
-        "  Wayland capture:   in-process via libwayshot (wlr-screencopy), xdg-desktop-portal fallback (KWin)"
+        "  Wayland capture:   in-process via libway (EXT image-copy-capture / WLR screencopy), xdg-desktop-portal fallback (KWin)"
     );
     println!("  Wayland area/win:  in-process selection overlay (tiny-skia)");
     println!("  Wayland active win: hyprctl on Hyprland");

@@ -1,0 +1,31 @@
+[package]
+name = "libway"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Bounded Wayland capture with SHM and optional DMA-BUF frames"
+license = "MIT"
+
+[features]
+default = ["image"]
+image = ["dep:image"]
+gpu = ["dep:gbm"]
+
+[dependencies]
+wayland-client = "0.31.14"
+wayland-protocols = { version = "0.32.12", features = ["client", "staging", "unstable"] }
+wayland-protocols-wlr = { version = "0.3.12", features = ["client"] }
+memmap2 = "0.9"
+libc = "0.2"
+image = { version = "0.25.10", default-features = false, optional = true }
+gbm = { version = "0.18", default-features = false, optional = true }
+
+[dev-dependencies]
+wayland-server = "0.31.14"
+wayland-protocols = { version = "0.32.12", features = ["server"] }
+wayland-protocols-wlr = { version = "0.3.12", features = ["server"] }
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+
+[[example]]
+name = "snapshot"
+required-features = ["image"]

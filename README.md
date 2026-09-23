@@ -89,6 +89,12 @@ sudo install -m755 boltsnap-*/boltsnap /usr/local/bin/
 
 ### From source
 
+Wayland screenshots use our unpublished `libway` 0.1 library. A source snapshot
+is included under `vendor/libway`, so a normal checkout needs no sibling project.
+See [library development and synchronization](vendor/README.md) and the
+[integration validation](docs/libway.md). The screenshot path uses CPU buffers;
+libway's optional GPU support does not add a GBM requirement to Boltsnap.
+
 ```sh
 cargo install --path .
 ```
@@ -136,7 +142,7 @@ Backends:
 
 | Backend | Status                     | Capture        | Region select         | Clipboard          |
 |---------|----------------------------|----------------|-----------------------|--------------------|
-| Wayland | Supported                  | libwayshot     | across monitors, tiny-skia | wl-clipboard-rs    |
+| Wayland | Supported                  | libway + portal fallback | across monitors, tiny-skia | wl-clipboard-rs    |
 | X11     | Supported                  | x11rb GetImage | unavailable           | arboard            |
 | Windows | Experimental, unmaintained | DXGI + WGC     | in-process tiny-skia  | Win32 + OLE        |
 
@@ -151,15 +157,19 @@ Boltsnap supports Wayland protocols, not a specific compositor framework:
 
 | Feature | Required protocol |
 |---------|-------------------|
-| Capture and recording | `wlr-screencopy-unstable-v1` |
+| Direct screenshots | `ext-image-copy-capture-v1` + `ext-image-capture-source-v1`, or `wlr-screencopy-unstable-v1` |
+| Recording via wf-recorder | `wlr-screencopy-unstable-v1` |
 | Region selector and screenshot shelf | `wlr-layer-shell-unstable-v1` |
 | Clipboard | `ext-data-control-v1` or `wlr-data-control-unstable-v1` |
 
-The following compositor stacks are tested:
+The existing compositor checks below predate the libway replacement. The new
+capture core has isolated protocol and GPU buffer tests; live-compositor
+validation remains listed in [the integration report](docs/libway.md).
 
 | Stack | Tested compositors |
 |-------|--------------------|
-| wlroots | Hyprland, Sway |
+| Hyprland / Aquamarine | Hyprland |
+| wlroots | Sway |
 | Smithay | Niri |
 
 Other Wayland compositors may work if they expose the required protocols;

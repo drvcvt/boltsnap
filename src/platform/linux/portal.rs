@@ -1,8 +1,8 @@
-//! xdg-desktop-portal helpers for compositors without wlr-screencopy (KWin).
+//! xdg-desktop-portal helpers for compositor screenshot fallback.
 //!
-//! libwayshot needs `zwlr_screencopy_manager_v1`, which KWin does not expose.
-//! The portal Screenshot call is answered by xdg-desktop-portal-kde without a
-//! dialog (non-interactive) and hands back a PNG of the whole desktop.
+//! Used when direct EXT image-copy-capture / WLR screencopy is unavailable or fails.
+//! The Screenshot request asks for non-interactive capture and returns a PNG of
+//! the whole desktop. Consent UI remains under the portal backend's control.
 
 use std::collections::HashMap;
 use std::path::PathBuf;

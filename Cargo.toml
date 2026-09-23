@@ -25,7 +25,8 @@ ab_glyph = "0.2"
 toml = "0.8"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-libwayshot = "0.7"
+# Vendored until libway has a published release; see vendor/README.md.
+libway = { version = "0.1.0", path = "vendor/libway" }
 # Portal screenshot fallback + KWin active-output lookup on compositors
 # without wlr-screencopy (KDE Plasma).
 zbus = "5"
