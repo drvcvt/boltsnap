@@ -7,8 +7,12 @@ use std::path::Path;
 #[cfg(target_os = "linux")]
 pub mod audio;
 pub mod cursor;
+// Motion, blur and feed parsing run inside the gsr plugin crate, which
+// includes this file; the daemon uses the config, feed and arrow parts.
+#[allow(dead_code)]
+pub mod cursor_motion;
 #[cfg(target_os = "linux")]
-pub mod cursor_render;
+pub mod cursor_sidecar;
 #[cfg(target_os = "linux")]
 pub mod finalize;
 #[cfg(target_os = "linux")]

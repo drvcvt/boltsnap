@@ -1,0 +1,19 @@
+[package]
+name = "boltsnap-gsr-cursor"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib"]
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+tiny-skia = "0.11"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort"
