@@ -956,11 +956,35 @@ fn prep_shelf_compositor_rules() {
     }
 }
 
+/// A daemon started by the compositor has stderr on /dev/null, which loses
+/// recorder and finalize errors. Append them to `daemon.log` in the cache dir
+/// instead; the previous run's log is kept as `daemon.log.old`.
+fn log_to_file_when_detached() {
+    use std::os::fd::AsRawFd;
+    if unsafe { libc::isatty(libc::STDERR_FILENO) } == 1 {
+        return;
+    }
+    let dir = crate::paths::cache_dir();
+    let path = dir.join("daemon.log");
+    let _ = std::fs::create_dir_all(&dir);
+    let _ = std::fs::rename(&path, dir.join("daemon.log.old"));
+    if let Ok(file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        unsafe {
+            libc::dup2(file.as_raw_fd(), libc::STDERR_FILENO);
+        }
+    }
+}
+
 pub fn run_daemon(save_dir_cli: Option<std::path::PathBuf>) -> DynResult<()> {
     // Single-instance: if a daemon already answers, do nothing.
     if crate::ipc::daemon_alive() {
         return Ok(());
     }
+    log_to_file_when_detached();
     let sock = crate::ipc::socket_path();
     let _ = std::fs::remove_file(&sock); // clear stale socket
 
