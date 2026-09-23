@@ -1223,6 +1223,7 @@ fn spawn_initial_segment(
         codec,
         profile,
         audio.as_ref().map_or(&[][..], AudioCapture::inputs),
+        prefs.cursor != crate::config::RecordCursor::System,
         tools,
     ) {
         Ok(active) => Ok((active, audio)),
@@ -1407,6 +1408,11 @@ impl Daemon {
             TrayAction::SetDefaultTarget(target) => {
                 let mut prefs = self.recording_prefs.clone();
                 prefs.default_target = target;
+                self.persist_tray_prefs(prefs);
+            }
+            TrayAction::SetCursor(mode) => {
+                let mut prefs = self.recording_prefs.clone();
+                prefs.cursor = mode;
                 self.persist_tray_prefs(prefs);
             }
             TrayAction::SetBothMode(mode) => {
@@ -2159,6 +2165,7 @@ impl Daemon {
             active,
             std::time::Instant::now(),
         ));
+        self.recording.as_mut().unwrap().cursor = self.recording_prefs.cursor;
         if show_frame {
             self.create_marker(&geo, qh);
         }
@@ -2237,6 +2244,7 @@ impl Daemon {
             active,
             std::time::Instant::now(),
         ));
+        self.recording.as_mut().unwrap().cursor = self.recording_prefs.cursor;
         self.publish_recording_snapshot();
         Ok(())
     }
@@ -2546,6 +2554,7 @@ impl Daemon {
                     &session.codec,
                     session.profile,
                     session.audio.as_ref().map_or(&[][..], AudioCapture::inputs),
+                    session.cursor != crate::config::RecordCursor::System,
                     &RecorderTools::default(),
                 ) {
                     Ok(active) => active,
@@ -2850,6 +2859,12 @@ impl Daemon {
             both_mode: session.both_mode,
             codec: session.codec.clone(),
             destination,
+            cursor: session.cursor,
+            fps: session.profile.fps(),
+            region: match &session.scope {
+                CaptureScope::Area(geometry) => Some(*geometry),
+                CaptureScope::Outputs(_) => None,
+            },
         };
         let tx = self.event_tx.clone();
         std::thread::spawn(move || {
@@ -2880,6 +2895,10 @@ impl Daemon {
             let cache = crate::paths::rec_dir();
             for path in paths {
                 if path.starts_with(&cache) {
+                    let _ = std::fs::remove_file(super::cursor_track::track_path(&path));
+                    let mut timestamps = path.clone().into_os_string();
+                    timestamps.push(".ts");
+                    let _ = std::fs::remove_file(timestamps);
                     let _ = std::fs::remove_file(path);
                 }
             }

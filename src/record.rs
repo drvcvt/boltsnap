@@ -6,6 +6,9 @@ use std::path::Path;
 
 #[cfg(target_os = "linux")]
 pub mod audio;
+pub mod cursor;
+#[cfg(target_os = "linux")]
+pub mod cursor_render;
 #[cfg(target_os = "linux")]
 pub mod finalize;
 #[cfg(target_os = "linux")]

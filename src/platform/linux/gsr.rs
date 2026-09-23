@@ -121,7 +121,16 @@ pub fn choose(requested: &str, info: &Info) -> Result<Codec, String> {
     })
 }
 
-pub fn args(target: &Target, codec: &Codec, fps: u32, audio: &[String], out: &Path) -> Vec<String> {
+/// `cursor: false` records without the pointer and writes the first frame's
+/// monotonic timestamp to `<out>.ts` for aligning a separate cursor track.
+pub fn args(
+    target: &Target,
+    codec: &Codec,
+    fps: u32,
+    audio: &[String],
+    cursor: bool,
+    out: &Path,
+) -> Vec<String> {
     let source = match target {
         Target::Output(name) => (*name).to_owned(),
         Target::Region(geo) => format!("{}x{}+{}+{}", geo.w, geo.h, geo.x, geo.y),
@@ -144,15 +153,22 @@ pub fn args(target: &Target, codec: &Codec, fps: u32, audio: &[String], out: &Pa
         "-keyint",
         "2",
         "-cursor",
-        "yes",
+        if cursor { "yes" } else { "no" },
         "-fallback-cpu-encoding",
         "no",
+        // Write packets as they come in 100 ms clusters: a gsr that hangs on
+        // stop (seen with two instances at 240 FPS) still leaves the recording.
+        "-ffmpeg-opts",
+        "flush_packets=1;cluster_time_limit=100",
     ]
     .into_iter()
     .map(str::to_owned)
     .collect();
     if codec.cpu {
         args.extend(["-encoder".into(), "cpu".into()]);
+    }
+    if !cursor {
+        args.extend(["-write-first-frame-ts".into(), "yes".into()]);
     }
     if !audio.is_empty() {
         let sources = audio
@@ -258,11 +274,14 @@ mod tests {
             &cpu,
             60,
             &["sink.monitor".into(), "mic".into()],
+            false,
             Path::new("/tmp/seg.mkv"),
         );
         let joined = region.join(" ");
         assert!(joined.starts_with("-w 800x600+-10+20 -c mkv -f 60 -fm cfr -k h264 "));
         assert!(joined.contains("-encoder cpu"));
+        assert!(joined.contains("-cursor no"));
+        assert!(joined.contains("-write-first-frame-ts yes"));
         assert!(joined.contains("-a device:sink.monitor|device:mic -ac aac"));
         assert!(joined.ends_with("-o /tmp/seg.mkv"));
 
@@ -276,9 +295,12 @@ mod tests {
             &gpu,
             240,
             &[],
+            true,
             Path::new("/tmp/o.mkv"),
         );
         assert_eq!(output[..2], ["-w", "DP-3"]);
         assert!(!output.iter().any(|a| a == "-a" || a == "-encoder"));
+        assert!(output.windows(2).any(|w| w == ["-cursor", "yes"]));
+        assert!(!output.iter().any(|a| a == "-write-first-frame-ts"));
     }
 }

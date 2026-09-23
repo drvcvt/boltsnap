@@ -29,6 +29,10 @@ pub struct Thumb {
 impl Thumb {
     pub fn delete_file_on_dismiss(&self) -> std::io::Result<()> {
         if self.lifetime == FileLifetime::Temporary {
+            if self.kind == CardKind::Video {
+                let _ = std::fs::remove_file(crate::record::cursor::sidecar_path(&self.png_path));
+                let _ = std::fs::remove_file(crate::record::cursor::clean_path(&self.png_path));
+            }
             std::fs::remove_file(&self.png_path)
         } else {
             Ok(())

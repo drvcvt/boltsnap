@@ -1,4 +1,6 @@
-use crate::config::{RecordAudioSource, RecordBothMode, RecordDefaultTarget, RecordingPrefs};
+use crate::config::{
+    RecordAudioSource, RecordBothMode, RecordCursor, RecordDefaultTarget, RecordingPrefs,
+};
 use crate::record::Monitor;
 use crate::record::session::PublicRecordingState;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -68,6 +70,7 @@ pub enum TrayAction {
     StartDefault,
     SetDefaultTarget(RecordDefaultTarget),
     SetBothMode(RecordBothMode),
+    SetCursor(RecordCursor),
     SetAudioSource(RecordAudioSource),
     SetShowFrame(bool),
     SetDiskAddToShelf(bool),
@@ -80,12 +83,18 @@ struct TrayMenuModel {
     default_labels: Vec<String>,
     default_selected: usize,
     both_mode_selected: usize,
+    cursor_selected: usize,
     audio_source_selected: usize,
     show_frame: bool,
     disk_add_to_shelf: bool,
     settings_enabled: bool,
 }
 
+const CURSOR_MODES: [RecordCursor; 3] = [
+    RecordCursor::System,
+    RecordCursor::Mellow,
+    RecordCursor::Quick,
+];
 const AUDIO_SOURCE_LABELS: [&str; 3] = ["System + microphone", "Microphone only", "System only"];
 
 fn audio_source_at(index: usize) -> RecordAudioSource {
@@ -134,6 +143,10 @@ fn menu_model(snapshot: &TraySnapshot) -> TrayMenuModel {
             .collect(),
         default_selected,
         both_mode_selected: usize::from(snapshot.prefs.both_mode == RecordBothMode::Combined),
+        cursor_selected: CURSOR_MODES
+            .iter()
+            .position(|mode| *mode == snapshot.prefs.cursor)
+            .unwrap_or(0),
         audio_source_selected: match snapshot.prefs.audio_source {
             RecordAudioSource::SystemAndMic => 0,
             RecordAudioSource::Mic => 1,
@@ -325,6 +338,30 @@ impl ksni::Tray for BoltsnapTray {
                             };
                             tray.snapshot.prefs.both_mode = mode;
                             tray.send(TrayAction::SetBothMode(mode));
+                        }),
+                    }
+                    .into(),
+                ],
+                ..Default::default()
+            }
+            .into(),
+            SubMenu {
+                label: "Cursor".into(),
+                enabled: model.settings_enabled,
+                submenu: vec![
+                    RadioGroup {
+                        selected: model.cursor_selected,
+                        options: ["System cursor", "Smooth (mellow)", "Smooth (quick)"]
+                            .into_iter()
+                            .map(|label| RadioItem {
+                                label: label.into(),
+                                ..Default::default()
+                            })
+                            .collect(),
+                        select: Box::new(|tray: &mut Self, index| {
+                            let mode = CURSOR_MODES[index.min(CURSOR_MODES.len() - 1)];
+                            tray.snapshot.prefs.cursor = mode;
+                            tray.send(TrayAction::SetCursor(mode));
                         }),
                     }
                     .into(),

@@ -1,5 +1,6 @@
 pub mod capture;
 pub mod clipboard;
+pub(crate) mod cursor_track;
 pub mod gsr;
 pub(crate) mod image_transfer;
 pub mod ipc;
@@ -10,3 +11,4 @@ pub mod select_skia;
 pub mod shelf;
 pub(crate) mod timing;
 pub mod tray;
+pub(crate) mod xcursor;

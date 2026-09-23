@@ -1,6 +1,6 @@
 use super::Monitor;
 use super::session::RecorderTools;
-use crate::config::RecordBothMode;
+use crate::config::{RecordBothMode, RecordCursor};
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
@@ -22,6 +22,11 @@ pub struct FinalizeRequest {
     pub both_mode: RecordBothMode,
     pub codec: String,
     pub destination: SaveDestination,
+    /// Smooth modes draw the recorded cursor track onto the clip.
+    pub cursor: RecordCursor,
+    pub fps: u32,
+    /// Recorded region for area recordings, in logical coordinates.
+    pub region: Option<super::Geometry>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -56,7 +61,28 @@ pub fn finalize_recording(
         ));
     }
 
-    let mut ready = req.segments;
+    let combined = req.both_mode == RecordBothMode::Combined && req.segments.len() > 1;
+    // Tracks must be read before concatenation removes their segments.
+    let mut tracks = BTreeMap::new();
+    if req.cursor != RecordCursor::System {
+        for (output, segments) in &req.segments {
+            let Some((origin, _)) = cursor_frame(&req, output.as_deref(), combined) else {
+                continue;
+            };
+            match super::cursor_render::load(segments, origin, &tools.ffmpeg) {
+                Ok(Some(logical)) => {
+                    tracks.insert(output.clone(), logical.samples);
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    return Err(failure(format!("read cursor track: {error}"), req.segments));
+                }
+            }
+        }
+    }
+    let originals: Vec<PathBuf> = req.segments.values().flatten().cloned().collect();
+
+    let mut ready = req.segments.clone();
     for (output, segments) in ready.clone() {
         match finalize_group(output.as_deref(), &segments, tools) {
             Ok(path) => {
@@ -74,12 +100,99 @@ pub fn finalize_recording(
             }
             Err(error) => return Err(failure(error, ready)),
         }
+        let merged = super::cursor::merge(&tracks.values().cloned().collect::<Vec<_>>());
+        tracks.clear();
+        if !merged.is_empty() {
+            tracks.insert(None, merged);
+        }
     }
+
+    for (output, samples) in tracks {
+        let Some(clean) = ready.get(&output).and_then(|paths| paths.first()).cloned() else {
+            continue;
+        };
+        match render_cursor(&req, output.as_deref(), combined, &clean, &samples, tools) {
+            Ok(clip) => {
+                ready.insert(output, vec![clip]);
+            }
+            Err(error) => {
+                // The cursor-free video stays recoverable; nothing is delivered
+                // without the requested cursor.
+                return Err(failure(
+                    format!(
+                        "cursor rendering failed: {error}; the recording without cursor is kept at {}",
+                        clean.display()
+                    ),
+                    ready,
+                ));
+            }
+        }
+    }
+    super::cursor_render::remove_segment_files(&originals);
 
     match req.destination {
         SaveDestination::Shelf => Ok(clips_from(&ready, false)),
         SaveDestination::Disk(dir) => move_to_disk(ready, &dir),
     }
+}
+
+/// Logical origin and width of a clip for cursor mapping.
+fn cursor_frame(
+    req: &FinalizeRequest,
+    output: Option<&str>,
+    combined: bool,
+) -> Option<((f64, f64), f64)> {
+    let logical = |m: &Monitor| (f64::from(m.x), f64::from(m.y), f64::from(m.width) / m.scale);
+    if combined {
+        let mut monitors = req.monitors.iter().filter(|m| m.scale > 0.0).map(logical);
+        let first = monitors.next()?;
+        let (min_x, min_y, max_x) = monitors.fold(
+            (first.0, first.1, first.0 + first.2),
+            |(x0, y0, x1), (x, y, w)| (x0.min(x), y0.min(y), x1.max(x + w)),
+        );
+        return Some(((min_x, min_y), max_x - min_x));
+    }
+    match output {
+        Some(name) => req
+            .monitors
+            .iter()
+            .find(|m| m.name == name && m.scale > 0.0)
+            .map(|m| {
+                let (x, y, w) = logical(m);
+                ((x, y), w)
+            }),
+        None => req
+            .region
+            .map(|g| ((f64::from(g.x), f64::from(g.y)), f64::from(g.w))),
+    }
+}
+
+fn render_cursor(
+    req: &FinalizeRequest,
+    output: Option<&str>,
+    combined: bool,
+    clean: &Path,
+    samples: &[super::cursor::Sample],
+    tools: &RecorderTools,
+) -> Result<PathBuf, String> {
+    let (_, logical_width) = cursor_frame(req, output, combined).ok_or("missing clip layout")?;
+    let probe = super::cursor_render::probe(clean, &tools.ffmpeg)?;
+    let factor = f64::from(probe.width) / logical_width;
+    let clip = work_path(&tools.segment_dir, "cursor", output, "mp4");
+    ensure_free_space(&tools.segment_dir, source_size(&[clean.to_path_buf()])?)?;
+    super::cursor_render::render(
+        clean,
+        &clip,
+        &super::cursor_render::to_pixels(samples, factor),
+        (probe.width, probe.height),
+        probe.duration,
+        req.fps,
+        req.cursor,
+        factor,
+        &req.codec,
+        &tools.ffmpeg,
+    )?;
+    Ok(clip)
 }
 
 fn failure(
@@ -214,7 +327,10 @@ pub fn promote_recording(
     loop {
         let destination = crate::paths::unique_recording_path(dir, output);
         match move_final_file(source, &destination) {
-            Ok(()) => return Ok(destination),
+            Ok(()) => {
+                move_sidecars(source, &destination);
+                return Ok(destination);
+            }
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists && destination.exists() => {}
             Err(error) => {
                 return Err(format!(
@@ -243,7 +359,10 @@ fn move_to_disk_with(
         let destination = loop {
             let destination = crate::paths::unique_recording_path(dir, output.as_deref());
             match move_file(&source, &destination) {
-                Ok(()) => break destination,
+                Ok(()) => {
+                    move_sidecars(&source, &destination);
+                    break destination;
+                }
                 Err(error)
                     if error.kind() == io::ErrorKind::AlreadyExists && destination.exists() =>
                 {
@@ -266,6 +385,13 @@ fn move_to_disk_with(
         });
     }
     Ok(clips)
+}
+
+/// Cursor sidecars follow their clip; a failure keeps the clip saved.
+fn move_sidecars(source: &Path, destination: &Path) {
+    if let Err(error) = super::cursor_render::move_sidecars(source, destination) {
+        eprintln!("boltsnap: saved {}, but {error}", destination.display());
+    }
 }
 
 pub fn build_concat_args(list: &Path, output: &Path) -> Vec<String> {
@@ -336,13 +462,7 @@ fn build_combined_args(
     output: &Path,
 ) -> Vec<String> {
     let mut args = vec!["-y".into()];
-    // GPU encoders that take hardware frames need an upload after xstack.
-    let device = match codec.rsplit('_').next() {
-        Some("vulkan") => Some("vulkan=hw"),
-        Some("vaapi") => Some("vaapi=hw"),
-        _ => None,
-    };
-    let filter = match device {
+    let filter = match hardware_device(codec) {
         Some(device) => {
             args.extend(["-init_hw_device".into(), device.into()]);
             args.extend(["-filter_hw_device".into(), "hw".into()]);
@@ -370,6 +490,16 @@ fn build_combined_args(
     args.extend(quality_args(codec));
     args.push(output.to_string_lossy().into_owned());
     args
+}
+
+/// Device for encoders that take hardware frames, which need an upload after
+/// software filters.
+pub(crate) fn hardware_device(codec: &str) -> Option<&'static str> {
+    match codec.rsplit('_').next() {
+        Some("vulkan") => Some("vulkan=hw"),
+        Some("vaapi") => Some("vaapi=hw"),
+        _ => None,
+    }
 }
 
 pub fn quality_args(codec: &str) -> Vec<String> {
@@ -401,9 +531,22 @@ pub fn quality_args(codec: &str) -> Vec<String> {
 }
 
 fn run_ffmpeg(program: &Path, args: &[String]) -> Result<(), String> {
+    run_ffmpeg_in(program, args, None)
+}
+
+/// `dir` lets filter options name files without filtergraph escaping.
+pub(crate) fn run_ffmpeg_in(
+    program: &Path,
+    args: &[String],
+    dir: Option<&Path>,
+) -> Result<(), String> {
     let mut busy_retries = 3;
     let output = loop {
-        let result = Command::new(program)
+        let mut command = Command::new(program);
+        if let Some(dir) = dir {
+            command.current_dir(dir);
+        }
+        let result = command
             .args(["-hide_banner", "-loglevel", "error"])
             .args(args)
             .stdin(Stdio::null())
@@ -431,7 +574,7 @@ fn run_ffmpeg(program: &Path, args: &[String]) -> Result<(), String> {
     }
 }
 
-fn require_nonempty(path: &Path) -> Result<(), String> {
+pub(crate) fn require_nonempty(path: &Path) -> Result<(), String> {
     match fs::metadata(path) {
         Ok(metadata) if metadata.len() > 0 => Ok(()),
         Ok(_) => Err(format!("ffmpeg produced an empty file: {}", path.display())),
@@ -520,7 +663,7 @@ fn ensure_free_space(dir: &Path, source_bytes: u64) -> Result<(), String> {
     }
 }
 
-fn move_final_file(source: &Path, destination: &Path) -> io::Result<()> {
+pub(crate) fn move_final_file(source: &Path, destination: &Path) -> io::Result<()> {
     let source_dev = fs::metadata(source)?.dev();
     let destination_dev = fs::metadata(destination.parent().unwrap_or(Path::new(".")))?.dev();
     if source_dev == destination_dev {
@@ -698,6 +841,9 @@ mod tests {
             both_mode: mode,
             codec: "h264_nvenc".into(),
             destination,
+            cursor: RecordCursor::System,
+            fps: 60,
+            region: None,
         }
     }
 

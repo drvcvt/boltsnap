@@ -1,6 +1,6 @@
 # Performance and functionality fixes, 2026-09-23
 
-Status: in progress (Phases 0, 1 and the cursor removal done). Linux only; the Windows backend stays frozen.
+Status: implemented (Phases 0-4); see the implementation notes per phase. Linux only; the Windows backend stays frozen.
 Each phase is one capability and lands as its own commit(s). Phases 1 and 4
 change user-visible behavior and need explicit maintainer approval before code.
 
@@ -246,3 +246,32 @@ Maintainer decisions needed:
 2. Approve deleting the native cursor pipeline and rebuilding it as described in
    Phase 4. Default preset and whether region recording is in the first version.
 3. Commit split in Phase 0 (commits only on request).
+
+### Implementation notes, 2026-09-23
+
+- Config `record_cursor = "system" | "mellow" | "quick"`, tray submenu Cursor.
+  Presets: mellow tension 170 / friction 26, quick 600 / 49, mass 1 (both
+  critically damped). Enter snaps, leave hides; combined outputs merge tracks.
+- Hyprland 0.56 stops the cursor *image* capture for non-SHM cursor buffers
+  (first real pointer motion over Brave); positions keep flowing. libway got
+  `cursor_positions` (no image session). The rendered cursor is the Xcursor theme
+  arrow (drawn fallback when no theme is found). No clicks are available.
+- Tracker thread per segment writes `<segment>.cursor` (monotonic µs); gsr runs
+  with `-cursor no -write-first-frame-ts yes`. Finalize reads tracks before
+  concat, maps to clip pixels (video width / logical width), smooths per frame
+  and draws with `overlay` + `sendcmd` in one encode. Combined composes first,
+  then draws on the composite (two encodes).
+- Eddy contract: `X.clean.mp4` + `X.cursor.json` (`boltsnap.cursor` v1, raw
+  samples, arrow PNG, preset), moved/deleted with the clip.
+- Render failure keeps the cursor-free video as a recoverable segment and reports
+  the error; nothing is delivered without the requested cursor silently.
+- gsr hangs on stop in about half of the runs with two instances at 240 FPS
+  (not with one, not at 60 FPS); multi-source hangs too and `av1_vulkan` output
+  was undecodable. Segments now use `flush_packets=1;cluster_time_limit=100`, a
+  1.5 s + 0.5 s stop budget, and a killed recorder's non-empty Matroska segment
+  is kept (loses at most about 0.1 s).
+- Live: DP-1 two segments 240 FPS mellow (1237 frames, clip and clean identical
+  apart from an 11x17 px arrow trailing the raw track), region 600x500, and
+  Combined 3840x1080 through gsr stop hangs. Ignored test
+  `live_smooth_cursor_recording` reproduces it (`BOLTSNAP_LIVE_OUTPUT`,
+  `BOLTSNAP_LIVE_REGION`).
