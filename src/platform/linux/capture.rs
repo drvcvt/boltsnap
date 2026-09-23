@@ -301,25 +301,25 @@ fn capture_wayland(mode: CaptureMode, instant: bool) -> DynResult<(RgbaImage, Op
             Ok((img, capture_output))
         }
         CaptureMode::ActiveWindow => {
-            let options = libway::CaptureOptions::default();
-            let mut conn = libway::Connection::connect(&options)
+            let start = std::time::Instant::now();
+            let mut conn = libway::Connection::connect(&remaining(start))
                 .map_err(|e| format!("wayland connection failed: {e}"))?;
             let geometry = hyprland_active_window_geometry()?
                 .ok_or("active-window on Wayland requires Hyprland (hyprctl)")?;
             let region = parse_geometry(&geometry)?;
             let img = conn
-                .capture_region(region, &options)
+                .capture_region(region, &remaining(start))
                 .map_err(|e| format!("libway screenshot active failed: {e}"))?;
             Ok((img.image, capture_output))
         }
         CaptureMode::Area | CaptureMode::Window => {
             // Freeze the complete desktop before mapping any selector surfaces.
             let grab = move || -> Result<super::select_skia::CapturedDesktop, String> {
-                let options = libway::CaptureOptions::default();
-                let mut conn = libway::Connection::connect(&options)
+                let start = std::time::Instant::now();
+                let mut conn = libway::Connection::connect(&remaining(start))
                     .map_err(|e| format!("wayland connection failed: {e}"))?;
                 super::timing::mark("libway_connected");
-                let outputs = conn.outputs(&options).map_err(|e| e.to_string())?;
+                let outputs = conn.outputs(&remaining(start)).map_err(|e| e.to_string())?;
                 let monitors: Vec<_> = outputs.iter().map(captured_monitor).collect();
                 let regions: Vec<_> = monitors
                     .iter()
@@ -336,7 +336,7 @@ fn capture_wayland(mode: CaptureMode, instant: bool) -> DynResult<(RgbaImage, Op
                     return Err("desktop capture exceeds 64 million pixels".into());
                 }
                 super::timing::mark("capture_start");
-                let image = match conn.capture_desktop(&options) {
+                let image = match conn.capture_desktop(&remaining(start)) {
                     Ok(desktop) => {
                         if desktop.outputs != outputs {
                             return Err("desktop layout changed during capture; retry".into());
@@ -350,7 +350,20 @@ fn capture_wayland(mode: CaptureMode, instant: bool) -> DynResult<(RgbaImage, Op
                         let image = super::portal::screenshot().map_err(|pe| {
                             format!("libway desktop failed: {err}; portal fallback failed: {pe}")
                         })?;
-                        if conn.outputs(&options).map_err(|e| e.to_string())? != outputs {
+                        // The failed connection may be unusable; verify the layout on
+                        // a fresh one. Output ids are per connection, so compare names
+                        // and geometry.
+                        let now = libway::Connection::connect(&remaining(start))
+                            .and_then(|mut fresh| fresh.outputs(&remaining(start)))
+                            .map_err(|e| {
+                                format!("libway desktop failed: {err}; layout check failed: {e}")
+                            })?;
+                        let layout = |list: &[libway::Output]| {
+                            list.iter()
+                                .map(|o| (o.name.clone(), o.logical, o.mode_size, o.transform))
+                                .collect::<Vec<_>>()
+                        };
+                        if layout(&now) != layout(&outputs) {
                             return Err(
                                 "desktop layout changed during portal capture; retry".into()
                             );
@@ -393,13 +406,21 @@ fn captured_monitor(output: &libway::Output) -> super::select_skia::CapturedMoni
     }
 }
 
+/// libway options whose timeout is what remains of one request-wide budget, so
+/// connect, output discovery and capture cannot each wait the full default.
+fn remaining(start: std::time::Instant) -> libway::CaptureOptions {
+    let mut options = libway::CaptureOptions::default();
+    options.timeout = options.timeout.saturating_sub(start.elapsed());
+    options
+}
+
 /// Whole-desktop capture: libway (EXT, then WLR) first, portal second.
 fn wayland_full_image() -> Result<RgbaImage, String> {
-    let options = libway::CaptureOptions::default();
-    let capture = libway::Connection::connect(&options)
+    let start = std::time::Instant::now();
+    let capture = libway::Connection::connect(&remaining(start))
         .map_err(|e| format!("wayland connection failed: {e}"))
         .and_then(|mut conn| {
-            conn.capture_desktop(&options)
+            conn.capture_desktop(&remaining(start))
                 .map(|desktop| desktop.image)
                 .map_err(|e| format!("libway desktop capture failed: {e}"))
         });

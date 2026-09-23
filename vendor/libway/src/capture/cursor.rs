@@ -8,21 +8,34 @@ use wayland_protocols::ext::image_copy_capture::v1::client::ext_image_copy_captu
 /// not a hardware input timestamp. Positions use transformed output-buffer pixels.
 /// Image pixels/hotspot remain in the cursor buffer's own coordinates.
 pub enum CursorEvent {
+    /// Cursor became visible within the captured output.
     Enter {
+        /// Local monotonic event receipt time.
         received_at: Instant,
     },
+    /// Cursor left the output or became hidden.
     Leave {
+        /// Local monotonic event receipt time.
         received_at: Instant,
     },
+    /// Cursor position changed, independently of its image.
     Position {
+        /// Horizontal position in transformed output-buffer pixels.
         x: i32,
+        /// Vertical position in transformed output-buffer pixels.
         y: i32,
+        /// Local monotonic event receipt time.
         received_at: Instant,
     },
+    /// A completed cursor image and its associated hotspot.
     Image {
+        /// Owned SHM frame; dimensions describe the cursor buffer, not the output.
         frame: Box<Frame>,
+        /// Pointer position in the cursor buffer's pixel coordinates.
         hotspot: (i32, i32),
+        /// Increasing image generation within this stream.
         generation: u64,
+        /// Local monotonic completion receipt time.
         received_at: Instant,
     },
 }
@@ -206,6 +219,9 @@ impl CursorStream<'_> {
         Ok(())
     }
 
+    /// Wait up to `timeout` for the next observation; idle timeout yields `Ok(None)` and
+    /// preserves the session. Cancellation, layout changes and protocol errors close it.
+    /// An unrepresentable timeout returns [`Error::InvalidDimensions`] without closing it.
     pub fn poll_event(&mut self, timeout: Duration) -> Result<Option<CursorEvent>> {
         if self.closed {
             return Err(Error::SessionStopped);

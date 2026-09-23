@@ -158,6 +158,16 @@ Work in `../libway` after its current fix wave, then sync the snapshot once.
 Acceptance: libway unit tests for each fix; boltsnap full/area/window timings
 recorded before and after; synthetic EXT/WLR fallback tests in libway.
 
+### Implementation notes, 2026-09-23
+
+- libway branch `review-fixes-and-capture-perf`: the finished review wave as one
+  commit, then these fixes. Sibling connections need the server socket path
+  (`getpeername`); inherited `WAYLAND_SOCKET` connections stay sequential.
+- Measured capture stage of `boltsnap full` on 2x1080p: 32-36 ms release build
+  vs 41-50 ms installed (libway `capture_desktop` alone: 15-21 ms vs 35-46 ms).
+- Not done: a portal fallback when `outputs()` itself fails in Area mode. The
+  selector needs the output layout, which the portal does not provide.
+
 ## Phase 3: replay start cleanup
 
 Drop the duplicated cursor check in `serve()` (`replay/mod.rs:568-571`); the

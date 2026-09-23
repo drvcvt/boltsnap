@@ -1,3 +1,4 @@
+#![cfg(feature = "capture")]
 mod support;
 use libway::*;
 use std::{sync::atomic::Ordering, time::Duration};
@@ -121,7 +122,15 @@ fn cursor_errors_are_bounded_and_do_not_poison_the_connection() {
             }
             Ok(())
         })();
-        assert!(result.is_err());
+        // libwayland (`foreign-display`) reads 4 KiB per call and pump stops reading while
+        // notices are queued, so depending on how the flood splits it becomes backpressure
+        // or overflows. Both stay bounded; an overflow must be the explicit limit error.
+        let backpressure = cfg!(feature = "foreign-display") && matches!(fault, CursorFault::Flood);
+        match &result {
+            Ok(()) => assert!(backpressure, "this fault must fail"),
+            Err(e) if backpressure => assert!(matches!(e, Error::LimitExceeded), "{e:?}"),
+            Err(_) => {}
+        }
         c.outputs(&options()).unwrap();
         server.settle();
         assert_eq!(server.metrics.seats.load(Ordering::SeqCst), 0);

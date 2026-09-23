@@ -7,9 +7,12 @@ description = "Bounded Wayland capture with SHM and optional DMA-BUF frames"
 license = "MIT"
 
 [features]
-default = ["image"]
-image = ["dep:image"]
-gpu = ["dep:gbm"]
+default = ["capture", "image"]
+capture = []
+image = ["capture", "dep:image"]
+gpu = ["capture", "dep:gbm"]
+dnd = []
+foreign-display = ["dnd", "wayland-client/system"]
 
 [dependencies]
 wayland-client = "0.31.14"
@@ -29,3 +32,7 @@ image = { version = "0.25.10", default-features = false, features = ["png"] }
 [[example]]
 name = "snapshot"
 required-features = ["image"]
+
+[[example]]
+name = "frames"
+required-features = ["capture"]

@@ -9,23 +9,42 @@ use std::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
 pub enum PixelFormat {
+    /// 32-bit ARGB, eight bits per component; little-endian memory order BGRA.
     Argb8888 = 0x34325241,
+    /// 32-bit XRGB; the unused high byte is treated as opaque alpha.
     Xrgb8888 = 0x34325258,
+    /// 32-bit ABGR; little-endian memory order RGBA.
     Abgr8888 = 0x34324241,
+    /// 32-bit XBGR; the unused high byte is treated as opaque alpha.
     Xbgr8888 = 0x34324258,
+    /// Packed 24-bit RGB; little-endian memory order BGR.
     Rgb888 = 0x34324752,
+    /// Packed 24-bit BGR; little-endian memory order RGB.
     Bgr888 = 0x34324742,
+    /// ARGB with two alpha bits and ten bits per color component.
     Argb2101010 = 0x30335241,
+    /// XRGB with ten bits per color component and opaque alpha.
     Xrgb2101010 = 0x30335258,
+    /// ABGR with two alpha bits and ten bits per color component.
     Abgr2101010 = 0x30334241,
+    /// XBGR with ten bits per color component and opaque alpha.
     Xbgr2101010 = 0x30334258,
 }
 impl PixelFormat {
+    /// Packed storage bytes per pixel, excluding row padding.
     pub fn bytes_per_pixel(self) -> u32 {
         if matches!(self, Self::Rgb888 | Self::Bgr888) {
             3
         } else {
             4
+        }
+    }
+    /// CPU conversion cost: 8888 formats have a fast path, 10-bit ones do not.
+    pub(crate) fn cpu_rank(self) -> u8 {
+        match self {
+            Self::Argb8888 | Self::Xrgb8888 | Self::Abgr8888 | Self::Xbgr8888 => 0,
+            Self::Rgb888 | Self::Bgr888 => 1,
+            _ => 2,
         }
     }
     pub(crate) fn from_shm(value: u32) -> Option<Self> {
@@ -92,14 +111,18 @@ impl ShmBuffer {
 /// CPU storage is immutable and only accessible after successful capture completion.
 /// GPU storage retains its device, allocation and exported plane descriptors.
 pub enum FrameStorage {
+    /// Completed, immutable shared-memory buffer.
     Cpu(CpuBuffer),
+    /// Completed DMA-BUF allocation and owned exported descriptors (`gpu` feature).
     #[cfg(feature = "gpu")]
     Gpu(crate::gpu::GpuBuffer),
 }
+/// Owned SHM mapping; dropped with its backing descriptor when no longer needed.
 pub struct CpuBuffer {
     pub(crate) shm: ShmBuffer,
 }
 impl CpuBuffer {
+    /// Raw completed pixels, including stride padding, in the frame's pixel format.
     pub fn bytes(&self) -> &[u8] {
         &self.shm.map
     }
@@ -109,21 +132,35 @@ impl CpuBuffer {
 /// No color space is implied by the pixel format. Capture protocols used here do not
 /// provide enough color metadata to promise HDR conversion or sRGB tagging.
 pub struct Frame {
+    /// Output layout snapshot captured with this frame.
     pub output: Output,
+    /// Protocol actually used; never Auto for frames produced by libway.
     pub backend: Backend,
+    /// Buffer width in pixels before transform.
     pub width: u32,
+    /// Buffer height in pixels before transform.
     pub height: u32,
+    /// CPU row stride in bytes. For GPU storage use each plane's stride instead.
     pub stride: u32,
+    /// Packed pixel layout, without color-space metadata.
     pub format: PixelFormat,
+    /// Buffer transform to account for when presenting upright pixels.
     pub transform: Transform,
+    /// Whether the buffer is vertically inverted before applying its transform.
     pub y_inverted: bool,
+    /// Compositor timestamp with an unspecified origin; not comparable to wall-clock time.
     pub presentation_time: Option<std::time::Duration>,
+    /// Reported damage rectangles `(x, y, width, height)` in buffer pixels.
+    /// An empty list means no rectangles were reported, not necessarily an unchanged image.
     pub damage: Vec<(u32, u32, u32, u32)>,
+    /// Owned completed storage. Retain it until asynchronous consumers finish importing it.
     pub storage: FrameStorage,
 }
 impl Frame {
     /// Copy CPU pixels into tightly packed RGBA8 in the buffer's original orientation.
     /// Alpha is kept premultiplied as in wl_shm; X channels are normalized to opaque.
+    /// GPU readback returns [`Error::Unsupported`]. Invalid layouts or allocation limits
+    /// return [`Error::InvalidDimensions`] or [`Error::LimitExceeded`].
     pub fn rgba8(&self) -> Result<Vec<u8>> {
         match &self.storage {
             FrameStorage::Cpu(b) => {
@@ -239,15 +276,20 @@ pub(crate) fn convert_rgba(
     Ok(out)
 }
 
-pub(crate) fn create_wl_shm(
+pub(crate) fn create_wl_shm<S>(
     shm: &wayland_client::protocol::wl_shm::WlShm,
-    qh: &wayland_client::QueueHandle<crate::capture::State>,
+    qh: &wayland_client::QueueHandle<S>,
     buffer: &ShmBuffer,
     width: u32,
     height: u32,
     stride: u32,
     wire_format: wayland_client::protocol::wl_shm::Format,
-) -> wayland_client::protocol::wl_buffer::WlBuffer {
+) -> wayland_client::protocol::wl_buffer::WlBuffer
+where
+    S: wayland_client::Dispatch<wayland_client::protocol::wl_shm_pool::WlShmPool, ()>
+        + wayland_client::Dispatch<wayland_client::protocol::wl_buffer::WlBuffer, ()>
+        + 'static,
+{
     let pool = shm.create_pool(buffer.file.as_fd(), buffer.map.len() as i32, qh, ());
     let wl = pool.create_buffer(
         0,

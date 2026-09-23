@@ -12,12 +12,16 @@ use std::{
     sync::Arc,
 };
 
+/// Explicit GBM device shared by its allocations. Thread-local (`!Send`/`!Sync`);
+/// create and use it on the capture/import thread. Requires `gpu` and system GBM.
 #[derive(Clone)]
 pub struct GpuAllocator {
     device: Rc<gbm::Device<Arc<File>>>,
     device_id: u64,
 }
 impl GpuAllocator {
+    /// Open a caller-selected DRM render node for read/write access and initialize GBM.
+    /// File/device failures yield [`Error::Io`]; non-device paths yield [`Error::Unsupported`].
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let file = OpenOptions::new().read(true).write(true).open(path)?;
         let meta = file.metadata()?;
@@ -30,6 +34,7 @@ impl GpuAllocator {
             device_id,
         })
     }
+    /// Device number (`st_rdev`) used to match compositor DMA-BUF device constraints.
     pub fn device_id(&self) -> u64 {
         self.device_id
     }
@@ -173,16 +178,22 @@ pub struct Plane {
     offset: u32,
 }
 impl Plane {
+    /// Borrow the owned DMA-BUF descriptor. Duplicate it if ownership must be transferred;
+    /// retaining only the borrowed descriptor does not retain the allocation.
     pub fn fd(&self) -> BorrowedFd<'_> {
         self.fd.as_fd()
     }
+    /// Row stride in bytes for this plane.
     pub fn stride(&self) -> u32 {
         self.stride
     }
+    /// Byte offset of this plane within its descriptor.
     pub fn offset(&self) -> u32 {
         self.offset
     }
 }
+/// Owned thread-local GBM allocation, device reference and exported plane descriptors.
+/// Keep the whole buffer alive until asynchronous GPU/encoder use has completed.
 pub struct GpuBuffer {
     // BO must be destroyed before the device's last File handle closes.
     bo: gbm::BufferObject<()>,
@@ -192,9 +203,11 @@ pub struct GpuBuffer {
     modifier: u64,
 }
 impl GpuBuffer {
+    /// Exported planes in import order; descriptors remain owned by this buffer.
     pub fn planes(&self) -> &[Plane] {
         &self.planes
     }
+    /// DRM packed pixel format of the allocation.
     pub fn format(&self) -> PixelFormat {
         self.format
     }
@@ -202,9 +215,11 @@ impl GpuBuffer {
     pub fn modifier(&self) -> u64 {
         self.modifier
     }
+    /// Actual modifier reported by GBM, which may differ from the implicit import modifier.
     pub fn allocation_modifier(&self) -> u64 {
         self.bo.modifier().into()
     }
+    /// Allocation width and height in buffer pixels before transforms.
     pub fn dimensions(&self) -> (u32, u32) {
         (self.bo.width(), self.bo.height())
     }

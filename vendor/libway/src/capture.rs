@@ -41,8 +41,11 @@ pub use cursor::{CursorEvent, CursorStream};
 static CONNECTION_IDS: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone)]
+/// Storage requested for a capture. GPU requires the `gpu` feature and an explicit allocator.
 pub enum BufferKind {
+    /// Bounded shared memory, readable on the CPU after completion.
     Cpu,
+    /// Allocate DMA-BUFs on this device; no implicit CPU readback or CPU fallback.
     #[cfg(feature = "gpu")]
     Gpu(crate::gpu::GpuAllocator),
 }
@@ -171,8 +174,15 @@ pub struct Connection {
     queue: EventQueue<State>,
     state: State,
     serial: u64,
+    /// Filesystem path of the server socket, used to open sibling connections.
+    /// `None` for inherited or unnamed sockets.
+    #[cfg(feature = "image")]
+    pub(crate) peer: Option<std::path::PathBuf>,
 }
 impl Connection {
+    /// Open the display selected by `WAYLAND_DISPLAY`/`WAYLAND_SOCKET` and discover globals.
+    /// Setup observes the timeout, cancellation and limits in `options`; connection and
+    /// protocol failures are returned as [`Error::Wayland`]. Requires `capture`.
     pub fn connect(options: &CaptureOptions) -> Result<Self> {
         check_options(options)?;
         let deadline = deadline(options)?;
@@ -187,6 +197,14 @@ impl Connection {
         Self::initialize(conn, options, deadline)
     }
     fn initialize(conn: WlConnection, options: &CaptureOptions, deadline: Instant) -> Result<Self> {
+        #[cfg(feature = "image")]
+        let peer = conn
+            .backend()
+            .poll_fd()
+            .try_clone_to_owned()
+            .ok()
+            .and_then(|fd| UnixStream::from(fd).peer_addr().ok())
+            .and_then(|addr| addr.as_pathname().map(Into::into));
         let queue = conn.new_event_queue();
         let registry = conn.display().get_registry(&queue.handle(), ());
         let mut this = Self {
@@ -213,6 +231,8 @@ impl Connection {
                 limits: options.limits,
             },
             serial: 0,
+            #[cfg(feature = "image")]
+            peer,
         };
         this.barrier(options, deadline)?;
         this.state.attach_xdg(&this.queue.handle());
@@ -222,6 +242,7 @@ impl Connection {
         this.barrier(options, deadline)?;
         Ok(this)
     }
+    /// Last dispatched capability snapshot, without waiting for new registry events.
     pub fn capabilities(&self) -> Capabilities {
         Capabilities {
             ext_output_capture: self.state.ext.is_some() && self.state.source.is_some(),
@@ -229,6 +250,8 @@ impl Connection {
             linux_dmabuf_version: self.state.dma.as_ref().map_or(0, Proxy::version),
         }
     }
+    /// Synchronize and return the current output layout; an empty desktop yields an empty Vec.
+    /// May fail on timeout, cancellation, connection failure or invalid output dimensions.
     pub fn outputs(&mut self, options: &CaptureOptions) -> Result<Vec<Output>> {
         self.barrier(options, deadline(options)?)?;
         self.output_snapshot()
@@ -255,9 +278,26 @@ impl Connection {
             })
             .collect()
     }
+    /// Capture one completed CPU frame. The id must come from this connection's outputs.
+    /// Uses the same deadline, layout checks and error behavior as [`Self::stream`].
+    ///
+    /// ```no_run
+    /// use libway::{CaptureOptions, Connection, Error};
+    /// # fn main() -> libway::Result<()> {
+    /// let options = CaptureOptions::default();
+    /// let mut connection = Connection::connect(&options)?;
+    /// let output = connection.outputs(&options)?.into_iter().next().ok_or(Error::NoOutputs)?;
+    /// let frame = connection.capture(output.id, &options)?;
+    /// let pixels = frame.rgba8()?;
+    /// assert_eq!(pixels.len(), frame.width as usize * frame.height as usize * 4);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn capture(&mut self, id: OutputId, options: &CaptureOptions) -> Result<Frame> {
         self.capture_with(id, options, BufferKind::Cpu)
     }
+    /// Capture one frame using explicitly selected storage. GPU allocation/import failures
+    /// are returned to the caller; there is no implicit GPU-to-CPU fallback.
     pub fn capture_with(
         &mut self,
         id: OutputId,
@@ -269,6 +309,24 @@ impl Connection {
     /// EXT sessions persist across frames and wait for damage after the first frame.
     /// A timeout/error terminates the stream. Drop returned frames to release storage;
     /// libway does not retain a frame history or encoder queue.
+    /// The stream exclusively borrows this connection until dropped. Unknown ids return
+    /// [`Error::OutputGone`]; missing protocols return [`Error::Unsupported`]. Setup and
+    /// the first frame share one deadline. Subsequent frames each receive a fresh timeout.
+    ///
+    /// ```no_run
+    /// use libway::{BufferKind, CaptureOptions, Connection};
+    /// # fn main() -> libway::Result<()> {
+    /// let options = CaptureOptions::default();
+    /// let mut connection = Connection::connect(&options)?;
+    /// let output = connection.outputs(&options)?.into_iter().next().ok_or(libway::Error::NoOutputs)?;
+    /// let mut stream = connection.stream(output.id, options, BufferKind::Cpu)?;
+    /// for _ in 0..3 {
+    ///     let frame = stream.next_frame()?;
+    ///     println!("{:?}", frame.presentation_time);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn stream(
         &mut self,
         id: OutputId,
@@ -301,7 +359,14 @@ impl Connection {
             closed: false,
             first_deadline: Some(end),
         };
-        stream.prepare(end)?;
+        if let Err(error) = stream.prepare(end) {
+            if !stream.falls_back(&error) {
+                return Err(error);
+            }
+            stream.objects = Objects::default();
+            stream.backend = Backend::Wlr;
+            stream.prepare(end)?;
+        }
         Ok(stream)
     }
     fn barrier(&mut self, options: &CaptureOptions, end: Instant) -> Result<()> {
@@ -438,6 +503,8 @@ impl Drop for Objects {
     }
 }
 
+/// Sequential output capture that exclusively borrows its connection. Drop to release the
+/// session; previously returned frames remain owned by the caller and valid independently.
 pub struct Stream<'a> {
     connection: &'a mut Connection,
     output: Output,
@@ -449,6 +516,18 @@ pub struct Stream<'a> {
     first_deadline: Option<Instant>,
 }
 impl Stream<'_> {
+    /// A failed EXT session in Auto mode retries WLR within the same deadline.
+    fn falls_back(&self, error: &Error) -> bool {
+        matches!(
+            error,
+            Error::UnsupportedFormat
+                | Error::Unsupported(_)
+                | Error::CaptureFailed(_)
+                | Error::SessionStopped
+        ) && self.options.backend == Backend::Auto
+            && self.backend == Backend::Ext
+            && self.connection.state.wlr.is_some()
+    }
     fn prepare(&mut self, end: Instant) -> Result<()> {
         let c = &mut self.connection;
         c.serial += 1;
@@ -489,6 +568,9 @@ impl Stream<'_> {
         }
         Ok(())
     }
+    /// Wait for a completed frame, bounded by the stream's capture options.
+    /// A timeout, cancellation, layout change or capture failure closes the stream;
+    /// later calls return [`Error::SessionStopped`]. EXT can wait for damage after frame one.
     pub fn next_frame(&mut self) -> Result<Frame> {
         if self.closed {
             return Err(Error::SessionStopped);
@@ -499,13 +581,7 @@ impl Stream<'_> {
             .map(Ok)
             .unwrap_or_else(|| deadline(&self.options))?;
         let mut result = self.next_inner(end);
-        if matches!(
-            result,
-            Err(Error::UnsupportedFormat) | Err(Error::Unsupported(_))
-        ) && self.options.backend == Backend::Auto
-            && self.backend == Backend::Ext
-            && self.connection.state.wlr.is_some()
-        {
+        if result.as_ref().is_err_and(|error| self.falls_back(error)) {
             self.objects = Objects::default();
             self.backend = Backend::Wlr;
             result = self.prepare(end).and_then(|()| self.next_inner(end));
@@ -580,7 +656,8 @@ impl Stream<'_> {
                 let (wire, format) = constraints
                     .shm
                     .iter()
-                    .find_map(|f| PixelFormat::from_shm(*f as u32).map(|fmt| (*f, fmt)))
+                    .filter_map(|f| PixelFormat::from_shm(*f as u32).map(|fmt| (*f, fmt)))
+                    .min_by_key(|(_, fmt)| fmt.cpu_rank())
                     .ok_or(Error::UnsupportedFormat)?;
                 let stride = constraints.stride.unwrap_or(
                     width
