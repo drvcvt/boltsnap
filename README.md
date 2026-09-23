@@ -151,6 +151,12 @@ requires the separate replay worker, FFmpeg and GPU Screen Recorder with native
 KMS permission. X11, other Wayland compositors and Windows have no replay adapter
 yet. See [setup, controls and limitations](docs/replay.md).
 
+Optional [cursor smoothing](docs/recording-smoothing.md#optional-cursor-smoothing-experimental)
+is experimental and off by default: ordinary recording of one unrotated EXT
+output, explicit libx264 and the 60-FPS quiet profile. It requires the companion's
+`native-cursor` feature and additional FFmpeg/EGL/GLES/GBM/Vulkan development
+libraries. Replay smoothing, regions and hardware encoding are unavailable.
+
 ### Wayland compatibility
 
 Boltsnap supports Wayland protocols, not a specific compositor framework:

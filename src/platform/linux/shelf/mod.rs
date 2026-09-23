@@ -136,6 +136,10 @@ pub struct Daemon {
     pending_controls: Vec<UnixStream>,
     pending_default_recordings: Vec<UnixStream>,
     pending_tray_default_recording: bool,
+    cursor_probe_key: Option<String>,
+    cursor_probe_pending: bool,
+    cursor_probe_requested: bool,
+    cursor_probe_result: Result<(), String>,
     recording_prefs: crate::config::RecordingPrefs,
     persisted_recording_prefs: crate::config::RecordingPrefs,
     prefs_generation: u64,
@@ -155,6 +159,10 @@ pub(crate) enum AfterStop {
 }
 
 pub(crate) enum DaemonEvent {
+    CursorProbed {
+        key: String,
+        result: Result<(), String>,
+    },
     ThumbnailReady {
         id: u64,
         image: Option<image::RgbaImage>,
@@ -1089,6 +1097,10 @@ pub fn run_daemon(save_dir_cli: Option<std::path::PathBuf>) -> DynResult<()> {
         pending_controls: Vec::new(),
         pending_default_recordings: Vec::new(),
         pending_tray_default_recording: false,
+        cursor_probe_key: None,
+        cursor_probe_pending: false,
+        cursor_probe_requested: false,
+        cursor_probe_result: Err("checking support".into()),
         persisted_recording_prefs: recording_prefs.clone(),
         recording_prefs,
         prefs_generation: 0,
@@ -1207,10 +1219,16 @@ fn spawn_initial_segment(
     ),
     String,
 > {
+    crate::config::Config::load().cursor_smoothing()?;
     let mut audio = requested_audio(prefs)
         .map(crate::record::audio::prepare_audio)
         .transpose()?;
-    match spawn_segment(
+    let spawn = if prefs.cursor_smoothing {
+        super::cursor_recording::spawn
+    } else {
+        spawn_segment
+    };
+    match spawn(
         scope,
         codec,
         profile,
@@ -1292,10 +1310,56 @@ impl Daemon {
             monitors: self.cached_monitors(),
             state: self.recording_snapshot().state,
             replay_running: self.replay_running.as_ref().is_some_and(|r| r.get()),
+            cursor_available: self.cursor_probe_result.is_ok()
+                || (self.cursor_probe_key.is_none() && !self.cursor_probe_pending),
+            cursor_active: self.recording.as_ref().is_some_and(|s| s.cursor_smoothing),
+            cursor_reason: self
+                .cursor_probe_result
+                .as_ref()
+                .err()
+                .cloned()
+                .unwrap_or_default(),
         }
     }
 
+    fn refresh_cursor_probe(&mut self) {
+        let plan = start_plan(&self.recording_prefs, &self.cached_monitors());
+        let output = match plan {
+            Ok(plan) if plan.outputs.len() == 1 => plan.outputs[0].clone(),
+            _ => {
+                self.cursor_probe_result = Err("select one fullscreen monitor".into());
+                self.cursor_probe_key = None;
+                return;
+            }
+        };
+        let codec = crate::config::resolve_record_codec(None, &crate::config::Config::load());
+        let profile = crate::config::Config::load().record_profile();
+        let key = format!("{output:?}|{codec}|{profile:?}");
+        if self.cursor_probe_key.as_ref() == Some(&key) {
+            return;
+        }
+        if !self.recording_prefs.cursor_smoothing && !self.cursor_probe_requested {
+            self.cursor_probe_key = None;
+            self.cursor_probe_result = Err("enable to check support".into());
+            return;
+        }
+        if self.cursor_probe_pending {
+            self.cursor_probe_result = Err("checking support".into());
+            return;
+        }
+        self.cursor_probe_key = Some(key.clone());
+        self.cursor_probe_pending = true;
+        self.cursor_probe_result = Err("checking support".into());
+        let tx = self.event_tx.clone();
+        std::thread::spawn(move || {
+            let result = profile
+                .and_then(|profile| super::cursor_recording::probe(&output.name, &codec, profile));
+            let _ = tx.send(DaemonEvent::CursorProbed { key, result });
+        });
+    }
+
     fn start_tray(&mut self) {
+        self.refresh_cursor_probe();
         self.tray = Some(crate::tray::TrayPublisher::spawn(
             self.tray_snapshot(),
             self.event_tx.clone(),
@@ -1400,6 +1464,8 @@ impl Daemon {
                 let mut prefs = self.recording_prefs.clone();
                 prefs.default_target = target;
                 self.persist_tray_prefs(prefs);
+                self.refresh_cursor_probe();
+                self.publish_tray_snapshot();
             }
             TrayAction::SetBothMode(mode) => {
                 let mut prefs = self.recording_prefs.clone();
@@ -1409,6 +1475,19 @@ impl Daemon {
             TrayAction::SetAudioSource(source) => {
                 let mut prefs = self.recording_prefs.clone();
                 prefs.audio_source = source;
+                self.persist_tray_prefs(prefs);
+            }
+            TrayAction::SetCursorSmoothing(enabled) => {
+                if enabled && self.cursor_probe_result.is_err() {
+                    self.cursor_probe_requested = true;
+                    self.cursor_probe_key = None;
+                    self.refresh_cursor_probe();
+                    self.publish_tray_snapshot();
+                    return;
+                }
+                self.cursor_probe_requested = false;
+                let mut prefs = self.recording_prefs.clone();
+                prefs.cursor_smoothing = enabled;
                 self.persist_tray_prefs(prefs);
             }
             TrayAction::SetShowFrame(show) => {
@@ -2126,7 +2205,7 @@ impl Daemon {
             return Err("a recording is already in progress".into());
         }
         validate_recording_dimensions(w, h)?;
-        if !crate::paths::has_cmd("wf-recorder") {
+        if !self.recording_prefs.cursor_smoothing && !crate::paths::has_cmd("wf-recorder") {
             return Err("wf-recorder is not installed".into());
         }
         prepare_recording_cache()?;
@@ -2154,6 +2233,7 @@ impl Daemon {
             active,
             std::time::Instant::now(),
         ));
+        self.recording.as_mut().unwrap().cursor_smoothing = self.recording_prefs.cursor_smoothing;
         if show_frame {
             self.create_marker(&geo, qh);
         }
@@ -2206,7 +2286,7 @@ impl Daemon {
         if self.recording.is_some() {
             return Err("a recording is already in progress".into());
         }
-        if !crate::paths::has_cmd("wf-recorder") {
+        if !self.recording_prefs.cursor_smoothing && !crate::paths::has_cmd("wf-recorder") {
             return Err("wf-recorder is not installed".into());
         }
         prepare_recording_cache()?;
@@ -2235,6 +2315,7 @@ impl Daemon {
             active,
             std::time::Instant::now(),
         ));
+        self.recording.as_mut().unwrap().cursor_smoothing = self.recording_prefs.cursor_smoothing;
         self.publish_recording_snapshot();
         Ok(())
     }
@@ -2550,7 +2631,12 @@ impl Daemon {
                             .map(|audio| audio.source().to_owned()),
                     )
                 };
-                let active = match spawn_segment(
+                let spawn = if self.recording.as_ref().unwrap().cursor_smoothing {
+                    super::cursor_recording::spawn
+                } else {
+                    spawn_segment
+                };
+                let active = match spawn(
                     &scope,
                     &codec,
                     profile,
@@ -2787,6 +2873,39 @@ impl Daemon {
                     }
                 }
             }
+            DaemonEvent::CursorProbed { key, result } => {
+                self.cursor_probe_pending = false;
+                // A target or config change during the asynchronous probe must
+                // not enable the preference using the previous target's result.
+                let config = crate::config::Config::load();
+                let codec = crate::config::resolve_record_codec(None, &config);
+                let profile = config.record_profile();
+                let current_key = start_plan(&self.recording_prefs, &self.cached_monitors())
+                    .ok()
+                    .filter(|plan| plan.outputs.len() == 1)
+                    .map(|plan| format!("{:?}|{codec}|{profile:?}", plan.outputs[0]));
+                if current_key.as_ref() != Some(&key) {
+                    self.cursor_probe_key = None;
+                }
+                if self.cursor_probe_key.as_ref() == Some(&key) {
+                    self.cursor_probe_result = result;
+                    if self.cursor_probe_requested {
+                        self.cursor_probe_requested = false;
+                        match &self.cursor_probe_result {
+                            Ok(()) => {
+                                let mut prefs = self.recording_prefs.clone();
+                                prefs.cursor_smoothing = true;
+                                self.persist_tray_prefs(prefs);
+                            }
+                            Err(reason) => {
+                                notify(&format!("Cursor smoothing unavailable: {reason}"))
+                            }
+                        }
+                    }
+                }
+                self.refresh_cursor_probe();
+                self.publish_tray_snapshot();
+            }
             DaemonEvent::FocusResolved(snapshot) => {
                 let connected = self.cached_monitors();
                 if let Some(output) = snapshot.as_ref().ok().and_then(|monitors| {
@@ -2808,6 +2927,7 @@ impl Daemon {
                     notify(&error);
                 }
                 self.finish_pending_controls();
+                self.refresh_cursor_probe();
                 if self.tray.is_none() {
                     self.start_tray();
                 } else {

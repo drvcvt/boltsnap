@@ -102,3 +102,13 @@ warmup. It does not measure game frame times or replace real-time
 capture tests. `--syncpoints default` reproduces the rejected NUT transport.
 Results and remaining P0 gates are recorded in
 [the benchmark log](../../../../../docs/replay-benchmarks.md).
+
+## Optional native cursor producer
+
+`--features native-cursor` adds the experimental ordinary-recording producer;
+it does not replace replay capture. It additionally needs FFmpeg 8.1.2 libavfilter,
+EGL/GLES 3, GBM and Vulkan development libraries plus a C compiler. See
+[cursor setup, tests and limitations](../../../../../docs/recording-smoothing.md#optional-cursor-smoothing-experimental).
+The `cursor-fixture` and `cursor-record-fixture` commands use synthetic pixels
+or a caller-selected test compositor/audio tone and are diagnostic entry points.
+Live `cursor-record` rejects hardware codecs and non-60-FPS rates explicitly.
