@@ -276,20 +276,39 @@ fn unique_recording_path_at(dir: &Path, output: Option<&str>, stamp: &str) -> Pa
 /// Local wall-clock stamp `YYYY-MM-DD_HH-MM-SS` via `date` (correct local time,
 /// no date-crate dependency — matching how the codebase already shells out to
 /// `hyprctl`). Falls back to epoch millis if `date` is unavailable.
+/// Local time as `YYYY-MM-DD_HH-MM-SS`, without spawning `date`.
 pub fn local_timestamp() -> String {
-    std::process::Command::new("date")
-        .arg("+%Y-%m-%d_%H-%M-%S")
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| timestamp().to_string())
+    let now = unsafe { libc::time(std::ptr::null_mut()) };
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    if unsafe { libc::localtime_r(&now, &mut tm) }.is_null() {
+        return timestamp().to_string();
+    }
+    format!(
+        "{:04}-{:02}-{:02}_{:02}-{:02}-{:02}",
+        tm.tm_year + 1900,
+        tm.tm_mon + 1,
+        tm.tm_mday,
+        tm.tm_hour,
+        tm.tm_min,
+        tm.tm_sec
+    )
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn local_timestamp_matches_date_format() {
+        let stamp = super::local_timestamp();
+        let expected = std::process::Command::new("date")
+            .arg("+%Y-%m-%d_%H-%M-%S")
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+            .unwrap_or_default();
+        assert_eq!(stamp.len(), 19, "{stamp}");
+        // Same second, or the next one if the clock ticked in between.
+        assert_eq!(stamp[..16], expected[..16]);
+    }
+
     use super::*;
 
     #[test]
