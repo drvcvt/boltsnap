@@ -256,6 +256,7 @@ fn finalize_group(
 fn combined_layout(
     ready: &BTreeMap<Option<String>, Vec<PathBuf>>,
     monitors: &[Monitor],
+    codec: &str,
 ) -> Result<(Vec<PathBuf>, String), String> {
     let selected: Vec<&Monitor> = monitors
         .iter()
@@ -268,7 +269,7 @@ fn combined_layout(
         .iter()
         .map(|monitor| ready[&Some(monitor.name.clone())][0].clone())
         .collect();
-    let filter = build_xstack_filter_for(&selected)?;
+    let filter = build_xstack_filter_for(&selected, canvas_limit(codec))?;
     Ok((paths, filter))
 }
 
@@ -278,7 +279,7 @@ fn compose_outputs(
     codec: &str,
     tools: &RecorderTools,
 ) -> Result<PathBuf, String> {
-    let (ordered_paths, filter) = combined_layout(ready, monitors)?;
+    let (ordered_paths, filter) = combined_layout(ready, monitors, codec)?;
     ensure_free_space(&tools.segment_dir, source_size(&ordered_paths)?)?;
     let output = work_path(&tools.segment_dir, "combined", None, "mp4");
     let args = build_combined_args(&ordered_paths, &filter, codec, &output);
@@ -409,35 +410,59 @@ fn escape_concat_path(path: &Path) -> String {
 
 #[cfg(test)]
 fn build_xstack_filter(monitors: &[Monitor]) -> Result<String, String> {
-    build_xstack_filter_for(&monitors.iter().collect::<Vec<_>>())
+    build_xstack_filter_for(&monitors.iter().collect::<Vec<_>>(), f64::INFINITY)
 }
 
-fn build_xstack_filter_for(monitors: &[&Monitor]) -> Result<String, String> {
+/// Largest canvas side the encoder accepts; hardware H.264 stops at 4096.
+fn canvas_limit(codec: &str) -> f64 {
+    if ["_nvenc", "_vaapi", "_vulkan"]
+        .iter()
+        .any(|suffix| codec.ends_with(suffix))
+    {
+        4096.0
+    } else {
+        f64::INFINITY
+    }
+}
+
+/// Stacks the outputs at the largest scale, shrunk to fit `limit`. Edges are
+/// rounded to even pixels so tiles meet without gaps in 4:2:0.
+fn build_xstack_filter_for(monitors: &[&Monitor], limit: f64) -> Result<String, String> {
     if monitors.len() < 2 {
         return Err("combined recording requires at least two outputs".into());
     }
     if monitors.iter().any(|monitor| monitor.scale <= 0.0) {
         return Err("monitor scale must be positive".into());
     }
+    let min_x = monitors.iter().map(|monitor| monitor.x).min().unwrap();
+    let min_y = monitors.iter().map(|monitor| monitor.y).min().unwrap();
+    // Logical rect of each output relative to the layout origin.
+    let rects: Vec<_> = monitors
+        .iter()
+        .map(|m| {
+            let (x, y) = (f64::from(m.x - min_x), f64::from(m.y - min_y));
+            let (w, h) = (m.width as f64 / m.scale, m.height as f64 / m.scale);
+            (x, y, x + w, y + h)
+        })
+        .collect();
+    let right = rects.iter().map(|r| r.2).fold(0.0, f64::max);
+    let bottom = rects.iter().map(|r| r.3).fold(0.0, f64::max);
     let scale = monitors
         .iter()
         .map(|monitor| monitor.scale)
-        .fold(1.0_f64, f64::max);
-    let min_x = monitors.iter().map(|monitor| monitor.x).min().unwrap();
-    let min_y = monitors.iter().map(|monitor| monitor.y).min().unwrap();
+        .fold(1.0_f64, f64::max)
+        .min(limit / right)
+        .min(limit / bottom);
+    let px = |logical: f64| ((logical * scale / 2.0).round() * 2.0) as i64;
     let mut filters = String::new();
     let mut inputs = String::new();
     let mut layout = Vec::with_capacity(monitors.len());
-    for (index, monitor) in monitors.iter().enumerate() {
-        let width = ((monitor.width as f64 / monitor.scale) * scale).round() as u32;
-        let height = ((monitor.height as f64 / monitor.scale) * scale).round() as u32;
+    for (index, &(x, y, x1, y1)) in rects.iter().enumerate() {
+        let (left, top) = (px(x), px(y));
+        let (width, height) = (px(x1) - left, px(y1) - top);
         filters.push_str(&format!("[{index}:v]scale={width}:{height}[v{index}];"));
         inputs.push_str(&format!("[v{index}]"));
-        layout.push(format!(
-            "{}_{}",
-            ((monitor.x - min_x) as f64 * scale).round() as i64,
-            ((monitor.y - min_y) as f64 * scale).round() as i64
-        ));
+        layout.push(format!("{left}_{top}"));
     }
     Ok(format!(
         "{filters}{inputs}xstack=inputs={}:layout={}:fill=black[v]",
@@ -1106,6 +1131,27 @@ mod tests {
         assert!(filter.contains("[0:v]scale=3840:2160"));
         assert!(filter.contains("[1:v]scale=3840:2160"));
         assert!(filter.contains("layout=0_0|3840_0"));
+    }
+
+    #[test]
+    fn combined_layout_fits_hardware_h264_canvas() {
+        let monitor = |name: &str, x, scale| Monitor {
+            name: name.into(),
+            description: String::new(),
+            x,
+            y: 0,
+            width: 1920,
+            height: 1080,
+            scale,
+            focused: false,
+        };
+        let (a, b) = (monitor("DP-3", 0, 1.0), monitor("DP-1", 1920, 1.5));
+        // 1.5 would need a 4800x1620 canvas; NVENC H.264 stops at 4096.
+        let filter = build_xstack_filter_for(&[&a, &b], canvas_limit("h264_nvenc")).unwrap();
+        assert!(filter.contains("[0:v]scale=2458:1382"));
+        assert!(filter.contains("[1:v]scale=1638:922"));
+        assert!(filter.contains("layout=0_0|2458_0"));
+        assert_eq!(canvas_limit("libx264"), f64::INFINITY);
     }
 
     #[test]
