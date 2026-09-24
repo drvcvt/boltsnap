@@ -896,10 +896,11 @@ impl SeatHandler for Selector {
                 self.pointer = Some(tp);
             }
         }
-        if cap == Capability::Keyboard && self.keyboard.is_none() {
-            if let Ok(k) = self.seat_state.get_keyboard(qh, &seat, None) {
-                self.keyboard = Some(k);
-            }
+        if cap == Capability::Keyboard
+            && self.keyboard.is_none()
+            && let Ok(k) = self.seat_state.get_keyboard(qh, &seat, None)
+        {
+            self.keyboard = Some(k);
         }
     }
     fn remove_capability(
@@ -926,10 +927,10 @@ impl PointerHandler for Selector {
     ) {
         let mut redraw = false;
         for ev in events {
-            if matches!(ev.kind, PointerEventKind::Enter { .. }) {
-                if let Some(p) = self.pointer.as_ref() {
-                    let _ = p.set_cursor(conn, CursorIcon::Crosshair);
-                }
+            if matches!(ev.kind, PointerEventKind::Enter { .. })
+                && let Some(p) = self.pointer.as_ref()
+            {
+                let _ = p.set_cursor(conn, CursorIcon::Crosshair);
             }
             let Some(view) = self
                 .views
@@ -1072,19 +1073,18 @@ impl PointerHandler for Selector {
                                 self.mode = Mode::Editing { rect: nr };
                                 redraw = true;
                             }
-                            Some(Interaction::ClickInside { press }) => {
-                                // Promote to a move only once the cursor leaves the
-                                // slop radius, so a jittery click still confirms.
+                            // Promote to a move only once the cursor leaves the
+                            // slop radius, so a jittery click still confirms.
+                            Some(Interaction::ClickInside { press })
                                 if (x - press.0).powi(2) + (y - press.1).powi(2)
-                                    > DRAG_SLOP * DRAG_SLOP
-                                {
-                                    self.interaction = Some(Interaction::Move {
-                                        grab: (x - rect.x, y - rect.y),
-                                    });
-                                    redraw = true;
-                                }
+                                    > DRAG_SLOP * DRAG_SLOP =>
+                            {
+                                self.interaction = Some(Interaction::Move {
+                                    grab: (x - rect.x, y - rect.y),
+                                });
+                                redraw = true;
                             }
-                            None => {}
+                            Some(Interaction::ClickInside { .. }) | None => {}
                         }
                         if self.alt_held {
                             redraw = true;

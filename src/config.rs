@@ -419,10 +419,10 @@ pub fn resolve_save_dir(cli: Option<&Path>, cfg: &Config) -> PathBuf {
     if let Some(p) = cli {
         return p.to_path_buf();
     }
-    if let Ok(e) = env::var("BOLTSNAP_SAVE_DIR") {
-        if !e.is_empty() {
-            return expand_path(&e);
-        }
+    if let Ok(e) = env::var("BOLTSNAP_SAVE_DIR")
+        && !e.is_empty()
+    {
+        return expand_path(&e);
     }
     if let Some(s) = &cfg.save_dir {
         return expand_path(s);
@@ -440,10 +440,10 @@ pub fn resolve_record_codec(cli: Option<&str>, cfg: &Config) -> String {
     if let Some(c) = cli {
         return c.to_string();
     }
-    if let Ok(e) = env::var("BOLTSNAP_RECORD_CODEC") {
-        if !e.is_empty() {
-            return e;
-        }
+    if let Ok(e) = env::var("BOLTSNAP_RECORD_CODEC")
+        && !e.is_empty()
+    {
+        return e;
     }
     if let Some(c) = &cfg.record_codec {
         return c.clone();

@@ -1854,7 +1854,7 @@ impl Daemon {
     }
 
     /// Start a Wayland drag for thumbnail `id`, offering image/png (or video/mp4)
-    /// + a file URI, with the thumbnail itself as the drag icon. Returns true if
+    /// and a file URI, with the thumbnail itself as the drag icon. Returns true if
     /// the drag was actually started.
     fn begin_drag(&mut self, id: u64, serial: u32) -> bool {
         let (path, kind) = match self.model.get(id) {
@@ -3352,10 +3352,11 @@ impl SeatHandler for Daemon {
                 self.pointer = Some(tp);
             }
         }
-        if cap == Capability::Keyboard && self.keyboard.is_none() {
-            if let Ok(k) = self.seat_state.get_keyboard(qh, &seat, None) {
-                self.keyboard = Some(k);
-            }
+        if cap == Capability::Keyboard
+            && self.keyboard.is_none()
+            && let Ok(k) = self.seat_state.get_keyboard(qh, &seat, None)
+        {
+            self.keyboard = Some(k);
         }
         if self.data_device.is_none() {
             self.data_device = Some(self.ddm.get_data_device(qh, &seat));
@@ -3390,15 +3391,15 @@ impl PointerHandler for Daemon {
                 self.clear_drag();
             }
             if self.is_popup_surface(&ev.surface) {
-                if matches!(ev.kind, PointerEventKind::Enter { .. }) {
-                    if let Some(p) = self.pointer.as_ref() {
-                        let _ = p.set_cursor(conn, CursorIcon::Default);
-                    }
+                if matches!(ev.kind, PointerEventKind::Enter { .. })
+                    && let Some(p) = self.pointer.as_ref()
+                {
+                    let _ = p.set_cursor(conn, CursorIcon::Default);
                 }
-                if let PointerEventKind::Press { button, .. } = ev.kind {
-                    if button == BTN_LEFT {
-                        self.on_popup_click(ev.position);
-                    }
+                if let PointerEventKind::Press { button, .. } = ev.kind
+                    && button == BTN_LEFT
+                {
+                    self.on_popup_click(ev.position);
                 }
                 continue;
             }
@@ -3408,18 +3409,16 @@ impl PointerHandler for Daemon {
             }
             // Set the normal arrow when the pointer enters the shelf, instead of
             // inheriting the previously-focused window's cursor (e.g. an I-beam).
-            if matches!(ev.kind, PointerEventKind::Enter { .. }) {
-                if let Some(p) = self.pointer.as_ref() {
-                    let _ = p.set_cursor(conn, CursorIcon::Default);
-                }
+            if matches!(ev.kind, PointerEventKind::Enter { .. })
+                && let Some(p) = self.pointer.as_ref()
+            {
+                let _ = p.set_cursor(conn, CursorIcon::Default);
             }
             let (x, y) = ev.position;
             match ev.kind {
-                PointerEventKind::Leave { .. } => {
-                    if self.hovered.is_some() {
-                        self.hovered = None;
-                        redraw = true;
-                    }
+                PointerEventKind::Leave { .. } if self.hovered.is_some() => {
+                    self.hovered = None;
+                    redraw = true;
                 }
                 PointerEventKind::Enter { .. } | PointerEventKind::Motion { .. } => {
                     let now = self.hit_test(x, y).map(|h| match h {
@@ -3446,10 +3445,10 @@ impl PointerHandler for Daemon {
                         // Only mark the press as dragging if the drag actually
                         // started; otherwise the eventual Release would wrongly be
                         // swallowed instead of treated as a click.
-                        if self.begin_drag(id, serial) {
-                            if let Some(p) = self.press.as_mut() {
-                                p.dragging = true;
-                            }
+                        if self.begin_drag(id, serial)
+                            && let Some(p) = self.press.as_mut()
+                        {
+                            p.dragging = true;
                         }
                     }
                 }
@@ -3477,19 +3476,17 @@ impl PointerHandler for Daemon {
                     }
                 }
                 PointerEventKind::Release { button, .. } if button == BTN_LEFT => {
-                    if let Some(p) = self.press.take() {
-                        if !p.dragging {
-                            self.on_click(p.hit, &mut redraw);
-                        }
+                    if let Some(p) = self.press.take()
+                        && !p.dragging
+                    {
+                        self.on_click(p.hit, &mut redraw);
                     }
                 }
                 _ => {}
             }
         }
-        if redraw {
-            if let Some(qh) = self.qh.clone() {
-                self.draw(&qh);
-            }
+        if redraw && let Some(qh) = self.qh.clone() {
+            self.draw(&qh);
         }
     }
 }
@@ -3614,23 +3611,23 @@ impl DataSourceHandler for Daemon {
         // A cancel without a successful drop = the user dropped onto nothing (or
         // the target rejected it): fall back to copying the image to the clipboard
         // so the drag is never wasted.
-        if !self.drop_ok {
-            if let Some(path) = self.drag_path.clone() {
-                // Only screenshots fall back to a clipboard image copy; a video's
-                // raw bytes aren't meaningful on the clipboard (mirrors copy_card).
-                let is_video = path
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .is_some_and(|e| e.eq_ignore_ascii_case("mp4"));
-                if is_video {
-                    eprintln!(
-                        "boltsnap daemon: drag cancelled for a video card; not copying to clipboard (use Save)"
-                    );
-                } else if let Err(e) =
-                    crate::clipboard::copy_to_clipboard(&path, crate::Backend::Wayland)
-                {
-                    eprintln!("boltsnap daemon: fallback copy failed: {e}");
-                }
+        if !self.drop_ok
+            && let Some(path) = self.drag_path.clone()
+        {
+            // Only screenshots fall back to a clipboard image copy; a video's
+            // raw bytes aren't meaningful on the clipboard (mirrors copy_card).
+            let is_video = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| e.eq_ignore_ascii_case("mp4"));
+            if is_video {
+                eprintln!(
+                    "boltsnap daemon: drag cancelled for a video card; not copying to clipboard (use Save)"
+                );
+            } else if let Err(e) =
+                crate::clipboard::copy_to_clipboard(&path, crate::Backend::Wayland)
+            {
+                eprintln!("boltsnap daemon: fallback copy failed: {e}");
             }
         }
         self.clear_drag();

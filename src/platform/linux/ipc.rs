@@ -9,10 +9,10 @@ pub use crate::protocol::{RecordingSnapshot, Request, Response};
 pub use crate::protocol::{read_frame, write_frame};
 
 pub fn socket_path() -> PathBuf {
-    if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR") {
-        if !dir.is_empty() {
-            return PathBuf::from(dir).join("boltsnap.sock");
-        }
+    if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR")
+        && !dir.is_empty()
+    {
+        return PathBuf::from(dir).join("boltsnap.sock");
     }
     std::env::temp_dir().join("boltsnap.sock")
 }

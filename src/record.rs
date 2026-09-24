@@ -145,7 +145,7 @@ pub struct Geometry {
 
 impl Geometry {
     /// wf-recorder `-g` string: "X,Y WxH".
-    pub fn to_arg(&self) -> String {
+    pub fn to_arg(self) -> String {
         format!("{},{} {}x{}", self.x, self.y, self.w, self.h)
     }
 }

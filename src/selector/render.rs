@@ -896,11 +896,11 @@ pub fn record_toolbar(
             }
             let mut row_y = [0.0; 4];
             let mut inner_h = 0.0;
-            for r in 0..rows {
+            for (r, y) in row_y.iter_mut().enumerate().take(rows) {
                 if r > 0 {
                     inner_h += TB_GAP;
                 }
-                row_y[r] = inner_h;
+                *y = inner_h;
                 inner_h += UI_BLOCK_H;
             }
             let (width, height) = (inner_w + TB_PAD * 2.0, inner_h + TB_PAD * 2.0);
