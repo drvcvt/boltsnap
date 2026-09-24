@@ -401,3 +401,20 @@ Commit B, "Smooth cursor in the replay buffer": `replay/mod.rs`
   `FrameClock` (`cursor_motion.rs`) now samples at the slot: `c8cf56b`,
   plugin installed 22:25. Frames that gsr itself repeats under load (seen
   once, at a window opening) remain. Live re-measurement pending.
+- Hitch follow-up, 2026-09-25 (no user action needed): raw cursor events from
+  Hyprland's cursor session (40 s probe with the tracker's libway stream, DP-3)
+  arrive at 240 Hz, 4.0-4.25 ms apart with about +-0.5-1 ms receipt jitter, 54
+  missed updates (8.3 ms), no bursts, integer positions. Replaying them through
+  an offline copy of the spring showed the input side is clean; the 2 px
+  `SHAKE_PX` dead zone, linear target interpolation and a One-Euro prefilter
+  changed roughness by under 1 %. End-to-end harness: real gsr (DP-3,
+  1920x1080@120, NVENC) with an instrumented plugin copy that clears frames
+  to black and logs each draw, fed the recorded events in real time. Drawn
+  arrow against the plugin logic evaluated at the frame slots: draw-time
+  sampling p95 0.83 px / max 2.06 px, `FrameClock` p95 0.49 px / max 0.67 px
+  (measurement noise). gsr draws came 0.7-1.0 ms after the slot (p99 ~2 ms),
+  rarely up to 8.3 ms, clustered; a draw that misses the next slot makes gsr
+  encode the frame twice (2 in 120 s; `flush_packets=1` made no difference).
+  Shelf videos open in Eddy (`xdg-mime` -> eddy.desktop), which plays through
+  Qt Multimedia's `QMediaPlayer`; its timer-paced frames are the likely source
+  of the remaining perceived judder. Not verified: Eddy's presentation timing.
