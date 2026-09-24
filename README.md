@@ -271,8 +271,8 @@ header, then the payload.
 - `{"cmd":"add_video","path":"/abs/clip.mp4","source":"…","output":"DP-1"}`
   with no payload. The shelf keeps its own copy of the file and answers with a
   frame whose header is `{"ok":true,"path":"…"}` (or `"ok":false` with an
-  `"error"`). On Windows the shelf only takes a copy with
-  `"take_ownership":true`; without it the card shows your file in place.
+  `"error"`). Linux only; the unmaintained Windows backend answers with an
+  error.
 
 `output` is optional and picks the monitor the shelf appears on.
 

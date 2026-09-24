@@ -477,16 +477,8 @@ impl ShelfApplication {
         let result = match request {
             Request::Ping => return Response::ok(None),
             Request::Add { source, png, .. } => self.add_image(source, png),
-            Request::AddVideo {
-                source,
-                path,
-                take_ownership,
-                ..
-            } => {
-                return match self.add_video(source, path, take_ownership) {
-                    Ok(path) => Response::ok_path(path),
-                    Err(error) => Response::error(error.to_string()),
-                };
+            Request::AddVideo { .. } => {
+                return Response::error("add_video is not supported on Windows");
             }
             Request::RecordingStatus => return Response::ok(Some(self.recording_snapshot())),
             Request::RecordingWatch => {
