@@ -51,7 +51,10 @@ struct Plugin {
     sources: Sources,
     mapping: Mapping,
     motion: Motion,
+    /// Rasterized at `gl::SUPERSAMPLE` times the video resolution.
     arrow: Arrow,
+    /// The arrow's tip in video pixels.
+    hotspot: (f64, f64),
     /// Created on the first visible frame, inside `draw`.
     renderer: Option<gl::Renderer>,
 }
@@ -77,13 +80,20 @@ impl Plugin {
             ));
         }
         let mapping = config.mapping(params.width);
+        let ss = gl::SUPERSAMPLE as f32;
+        let arrow = cursor_motion::arrow(config.size * mapping.scale as f32 * ss);
+        let hotspot = (
+            arrow.hotspot.0 / f64::from(ss),
+            arrow.hotspot.1 / f64::from(ss),
+        );
         Ok(Self {
             feed: unsafe { File::from_raw_fd(fd) },
             partial: Vec::new(),
             sources: Sources::default(),
             mapping,
             motion: Motion::new(preset),
-            arrow: cursor_motion::arrow(config.size * mapping.scale as f32),
+            arrow,
+            hotspot,
             renderer: None,
         })
     }
@@ -123,7 +133,7 @@ impl Plugin {
         self.poll();
         let now_ms = now_us as f64 / 1000.0;
         self.motion.advance_to(now_ms.ceil() as i64);
-        let taps = self.motion.taps(now_ms, self.arrow.hotspot);
+        let taps = self.motion.taps(now_ms, self.hotspot);
         if taps.iter().all(Option::is_none) {
             return Ok(());
         }
