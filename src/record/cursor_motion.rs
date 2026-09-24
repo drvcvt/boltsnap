@@ -79,9 +79,9 @@ impl Mapping {
     }
 }
 
-/// Exposure per frame for motion blur: a fixed 1/120 s, so the trail looks the
+/// Exposure per frame for motion blur: a fixed 1/200 s, so the trail looks the
 /// same at 60 and 240 FPS. Longer than a 240 FPS frame, so exposures overlap.
-pub const SHUTTER_MS: usize = 8;
+pub const SHUTTER_MS: usize = 5;
 /// Sub-positions averaged per frame.
 pub const BLUR_SAMPLES: usize = 8;
 /// Longer gaps between frames restart the simulation settled at the target.
@@ -583,7 +583,8 @@ mod tests {
         let taps = moving.taps((0.0, 0.0));
         assert!(taps.iter().all(Option::is_some));
         let xs: Vec<i64> = taps.iter().map(|t| t.unwrap().0).collect();
-        assert!(xs.windows(2).all(|w| w[1] > w[0]), "{xs:?}");
+        assert!(xs.windows(2).all(|w| w[1] >= w[0]), "{xs:?}");
+        assert!(xs[BLUR_SAMPLES - 1] - xs[0] > 10, "{xs:?}");
 
         let mut appearing = Motion::new(QUICK);
         appearing.push(Sample::Gone { ms: 0.0 });

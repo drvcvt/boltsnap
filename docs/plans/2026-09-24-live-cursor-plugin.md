@@ -330,3 +330,6 @@ Commit B, "Smooth cursor in the replay buffer": `replay/mod.rs`
 - Replay: `smooth_cursor()` in `replay/mod.rs` adds `-cursor no -p <plugin>`,
   the env and the inherited feed to the capture command; the tracker lives in
   `Session.cursor`. Not live-tested (starting replay records the desktop).
+- Live check by the user, 2026-09-24 (area recording, mellow): cursor looks
+  right; `cursor.json` written, no plugin errors in the daemon log. On request
+  the blur exposure went from 8 ms to 5 ms (`SHUTTER_MS`), still 8 taps.
