@@ -86,6 +86,11 @@ Delete those request variants, handlers, tests, and now-unused shelf model helpe
 Run after implementation: `cargo test --lib removed_editor_backchannel_commands_are_rejected`
 Expected: PASS.
 
+> Superseded in part (2026-09-24, `b521f96`): `add_video` is accepted again as a
+> generic shelf input any local tool may send (path + optional output, see the
+> README's shelf socket section). It carries no editor coupling; `replace` and
+> `reload` stay rejected.
+
 ### Task 2: Make shelf actions editor-independent on both platforms
 
 **Files:**
