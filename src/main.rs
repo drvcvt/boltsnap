@@ -549,6 +549,15 @@ fn capture_flow(args: &Args) -> DynResult<()> {
         }
         // Default PNG transport, also used after an older daemon closes the
         // nonmutating raw offer. No image has been accepted on that path yet.
+        // The card thumbnail comes along so the shelf need not decode the PNG.
+        let thumbnail = crate::platform::timing::Span::new("card_thumbnail");
+        let thumb = crate::shelf::thumbnail::make_rgb_card_thumbnail(
+            &image::ImageBuffer::from_raw(image.width(), image.height(), image.as_raw().as_slice())
+                .expect("RGB view matches its image"),
+            crate::shelf::thumbnail::CARD_W,
+            crate::shelf::thumbnail::CARD_H,
+        );
+        drop(thumbnail);
         let encoding = crate::platform::timing::Span::new("png_encode");
         let mut png = Vec::new();
         image::DynamicImage::ImageRgb8(image)
@@ -569,6 +578,11 @@ fn capture_flow(args: &Args) -> DynResult<()> {
             source: mode.label().into(),
             png,
             output: capture_output,
+            thumb: Some(crate::protocol::CardThumb {
+                width: thumb.width(),
+                height: thumb.height(),
+                rgba: thumb.into_raw(),
+            }),
         })?;
         println!(
             "Boltsnap sent {} to shelf{}",
@@ -639,6 +653,7 @@ fn capture_flow(args: &Args) -> DynResult<()> {
                 source: mode.label().to_string(),
                 png,
                 output: capture_output,
+                thumb: None,
             })?;
             let suffix = if copy { " (copied)" } else { "" };
             println!("Boltsnap sent {} to shelf{}", mode.label(), suffix);
@@ -651,7 +666,7 @@ fn send_shelf_add(request: crate::ipc::Request) -> DynResult<()> {
     #[cfg(target_os = "linux")]
     {
         let _timing = crate::platform::timing::Span::new("png_transfer_and_shelf_ack");
-        let response = crate::ipc::call_daemon(request)
+        let response = crate::ipc::add_to_shelf(request)
             .map_err(|error| format!("shelf daemon unavailable: {error}"))?;
         require_daemon_success(response, "shelf ingest failed")?;
     }

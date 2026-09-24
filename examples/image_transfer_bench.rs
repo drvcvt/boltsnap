@@ -93,6 +93,7 @@ fn main() {
                                     source: "bench".into(),
                                     png,
                                     output: None,
+                                    thumb: None,
                                 }
                                 .encode(),
                             )
