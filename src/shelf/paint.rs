@@ -33,6 +33,7 @@ pub fn clear(canvas: &mut [u8]) {
 /// final alpha — the caller picks the base translucency (e.g. `CARD_OPACITY`, or
 /// `1.0` for the hovered card) and folds in any appear/dismiss fade. `scale == 1.0
 /// && opacity == 1.0` is a fully-opaque settled card.
+#[allow(clippy::too_many_arguments)]
 pub fn blit_thumb_card_anim(
     canvas: &mut [u8],
     cw: u32,
@@ -133,6 +134,7 @@ fn rr_coverage(px: f32, py: f32, w: f32, h: f32, r: f32) -> f32 {
 
 /// Source-over composite a straight-alpha colour onto the premultiplied BGRA
 /// canvas at integer (x,y). `a` is fractional coverage in 0..=1.
+#[allow(clippy::too_many_arguments)]
 fn blend_px(canvas: &mut [u8], cw: u32, ch: u32, x: i32, y: i32, r: u8, g: u8, b: u8, a: f32) {
     if x < 0 || y < 0 || x as u32 >= cw || y as u32 >= ch {
         return;
@@ -154,6 +156,7 @@ fn blend_px(canvas: &mut [u8], cw: u32, ch: u32, x: i32, y: i32, r: u8, g: u8, b
 }
 
 /// Anti-aliased filled circle.
+#[allow(clippy::too_many_arguments)]
 fn fill_circle(
     canvas: &mut [u8],
     cw: u32,
@@ -180,6 +183,7 @@ fn fill_circle(
 }
 
 /// Anti-aliased line segment with round caps, half-width `hw`.
+#[allow(clippy::too_many_arguments)]
 fn stroke_line(
     canvas: &mut [u8],
     cw: u32,
@@ -480,6 +484,7 @@ fn draw_font_text(
 
 /// Anti-aliased filled rounded rectangle at (x,y) size (w,h), corner radius `r`,
 /// colour `c`, coverage `a`. Reuses the same SDF as the card corners.
+#[allow(clippy::too_many_arguments)]
 fn fill_round_rect(
     canvas: &mut [u8],
     cw: u32,
@@ -509,6 +514,7 @@ fn fill_round_rect(
 }
 
 /// Render the whole shelf: each thumbnail, plus hover icons on the hovered thumb.
+#[allow(clippy::too_many_arguments)]
 pub fn draw_shelf(
     canvas: &mut [u8],
     cw: u32,
@@ -551,6 +557,7 @@ pub fn draw_shelf_opaque(
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_shelf_with_opacity(
     canvas: &mut [u8],
     cw: u32,
@@ -724,6 +731,7 @@ enum Glyph {
 }
 
 /// Minimal anti-aliased glyphs centred in a cell at (x,y) of size s.
+#[allow(clippy::too_many_arguments)]
 fn draw_glyph(
     canvas: &mut [u8],
     cw: u32,
@@ -849,7 +857,7 @@ mod tests {
         );
         assert!(buf[c + 2] < 60, "centre R should be the thumbnail's");
         // left-edge midpoint is the IMAGE colour now, NOT a white border
-        let e = ((10 * 20 + 0) * 4) as usize;
+        let e = ((10 * 20) * 4) as usize;
         assert!(
             buf[e + 3] > 150,
             "left edge should carry card alpha, got {}",

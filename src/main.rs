@@ -275,7 +275,7 @@ fn run() -> DynResult<()> {
                 .image
                 .clone()
                 .unwrap_or_else(|| PathBuf::from("/tmp/boltsnap-debug-render.png"));
-            return crate::shelf::debug_render(&out);
+            crate::shelf::debug_render(&out)
         }
         "__serve-clipboard" => {
             // Detached child kept alive to serve Wayland paste requests.
@@ -283,7 +283,7 @@ fn run() -> DynResult<()> {
                 .image
                 .clone()
                 .ok_or("__serve-clipboard needs a PNG path")?;
-            return serve_wayland_clipboard(&path);
+            serve_wayland_clipboard(&path)
         }
         #[cfg(target_os = "linux")]
         "__serve-clipboard-once" => {
@@ -291,7 +291,7 @@ fn run() -> DynResult<()> {
                 .image
                 .clone()
                 .ok_or("__serve-clipboard-once needs a PNG path")?;
-            return crate::clipboard::serve_wayland_clipboard_once(&path);
+            crate::clipboard::serve_wayland_clipboard_once(&path)
         }
         "__serve-clipboard-uri" => {
             // Detached child kept alive to serve Wayland file-reference paste.
@@ -299,7 +299,7 @@ fn run() -> DynResult<()> {
                 .image
                 .clone()
                 .ok_or("__serve-clipboard-uri needs a path")?;
-            return serve_wayland_uri_list(&path);
+            serve_wayland_uri_list(&path)
         }
         command => {
             CaptureMode::parse(command)?;
