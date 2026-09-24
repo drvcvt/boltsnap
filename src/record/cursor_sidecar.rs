@@ -184,19 +184,22 @@ pub fn write(
         .ok_or("cursor image size")?
         .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
         .map_err(|error| format!("encode cursor image: {error}"))?;
-    let json = cursor::sidecar_json(
-        samples,
-        size,
-        Some((&base64(&png), arrow.hotspot, scale)),
-        mode.key(),
-    );
-    write_atomic(&sidecar_path(clip), json.to_string().as_bytes())
-}
-
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let path = sidecar_path(clip);
     let temp = path.with_extension("json.tmp");
-    fs::write(&temp, bytes)
-        .and_then(|()| fs::rename(&temp, path))
+    let written = fs::File::create(&temp).and_then(|file| {
+        use std::io::Write;
+        let mut out = std::io::BufWriter::new(file);
+        cursor::write_sidecar(
+            &mut out,
+            samples,
+            size,
+            Some((&base64(&png), arrow.hotspot, scale)),
+            mode.key(),
+        )?;
+        out.flush()
+    });
+    written
+        .and_then(|()| fs::rename(&temp, &path))
         .map_err(|error| {
             let _ = fs::remove_file(&temp);
             format!("write {}: {error}", path.display())

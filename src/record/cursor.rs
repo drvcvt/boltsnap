@@ -151,39 +151,65 @@ pub fn merge(timelines: &[Vec<Sample>]) -> Vec<Sample> {
     merged
 }
 
-/// Raw samples as the `boltsnap.cursor` v1 JSON sidecar read by Eddy.
-pub fn sidecar_json(
+/// Samples closer than this after the previous kept one are left out of the
+/// sidecar: 120 per second is plenty for editors and keeps hour-long tracks small.
+pub const SIDECAR_MIN_GAP_MS: f64 = 1000.0 / 120.0;
+
+/// Stream raw samples as the `boltsnap.cursor` v1 JSON sidecar read by Eddy,
+/// one sample at a time, so long recordings need no large buffer. Positions
+/// are thinned to `SIDECAR_MIN_GAP_MS`; leaves and the first position after
+/// one are always kept, as is the last sample.
+pub fn write_sidecar(
+    out: &mut impl std::io::Write,
     samples: &[Sample],
     size: (u32, u32),
     image: Option<(&str, (f64, f64), f64)>,
     preset: &str,
-) -> serde_json::Value {
+) -> std::io::Result<()> {
     let id = image.map(|_| "arrow");
-    let samples: Vec<serde_json::Value> = samples
-        .iter()
-        .map(|sample| match *sample {
-            Sample::At { ms, x, y } => match id {
-                Some(id) => serde_json::json!([round3(ms), round3(x), round3(y), id]),
-                None => serde_json::json!([round3(ms), round3(x), round3(y)]),
-            },
-            Sample::Gone { ms } => serde_json::json!([round3(ms), null, null]),
-        })
-        .collect();
-    let mut value = serde_json::json!({
+    let mut head = serde_json::json!({
         "format": "boltsnap.cursor",
         "version": 1,
         "width": size.0,
         "height": size.1,
         "cursor_in_video": true,
-        "samples": samples,
         "render": {"preset": preset},
     });
     if let Some((png, hotspot, scale)) = image {
-        value["images"] = serde_json::json!({
+        head["images"] = serde_json::json!({
             "arrow": {"png": png, "hotspot": [hotspot.0, hotspot.1], "scale": scale}
         });
     }
-    value
+    let head = head.to_string();
+    out.write_all(&head.as_bytes()[..head.len() - 1])?;
+    out.write_all(b",\"samples\":[")?;
+    let mut kept: Option<Sample> = None;
+    for (index, sample) in samples.iter().enumerate() {
+        let keep = match (kept, *sample) {
+            (Some(Sample::At { ms: last, .. }), Sample::At { ms, .. }) => {
+                // Half a millisecond of slack: two 240 Hz steps are a hair
+                // under the gap in floating point.
+                ms - last >= SIDECAR_MIN_GAP_MS - 0.5 || index + 1 == samples.len()
+            }
+            _ => true,
+        };
+        if !keep {
+            continue;
+        }
+        if kept.is_some() {
+            out.write_all(b",")?;
+        }
+        let value = match *sample {
+            Sample::At { ms, x, y } => match id {
+                Some(id) => serde_json::json!([round3(ms), round3(x), round3(y), id]),
+                None => serde_json::json!([round3(ms), round3(x), round3(y)]),
+            },
+            Sample::Gone { ms } => serde_json::json!([round3(ms), null, null]),
+        };
+        serde_json::to_writer(&mut *out, &value)?;
+        kept = Some(*sample);
+    }
+    out.write_all(b"]}")
 }
 
 fn round3(value: f64) -> f64 {
@@ -303,21 +329,29 @@ mod tests {
         );
     }
 
-    #[test]
-    fn sidecar_matches_the_v1_contract() {
-        let value = sidecar_json(
-            &[
-                Sample::At {
-                    ms: 1.23456,
-                    x: 2.0,
-                    y: 3.0,
-                },
-                Sample::Gone { ms: 4.0 },
-            ],
+    fn sidecar(samples: &[Sample]) -> serde_json::Value {
+        let mut out = Vec::new();
+        write_sidecar(
+            &mut out,
+            samples,
             (1920, 1080),
             Some(("UE5H", (1.0, 2.0), 1.0)),
             "mellow",
-        );
+        )
+        .unwrap();
+        serde_json::from_slice(&out).unwrap()
+    }
+
+    #[test]
+    fn sidecar_matches_the_v1_contract() {
+        let value = sidecar(&[
+            Sample::At {
+                ms: 1.23456,
+                x: 2.0,
+                y: 3.0,
+            },
+            Sample::Gone { ms: 4.0 },
+        ]);
         assert_eq!(value["format"], "boltsnap.cursor");
         assert_eq!(value["version"], 1);
         assert_eq!(value["width"], 1920);
@@ -334,5 +368,26 @@ mod tests {
         );
         assert_eq!(value["render"]["preset"], "mellow");
         assert!(value.get("clicks").is_none());
+    }
+
+    #[test]
+    fn sidecar_thins_positions_to_120_hz_but_keeps_leaves() {
+        let at = |ms: f64| Sample::At { ms, x: ms, y: 0.0 };
+        // 240 Hz for one second, a leave, a return, and a final position.
+        let mut samples: Vec<Sample> = (0..240).map(|i| at(i as f64 * 1000.0 / 240.0)).collect();
+        samples.push(Sample::Gone { ms: 1001.0 });
+        samples.push(at(1002.0));
+        samples.push(at(1003.0));
+        let value = sidecar(&samples);
+        let kept = value["samples"].as_array().unwrap();
+        assert!((118..=124).contains(&kept.len()), "{}", kept.len());
+        let times: Vec<f64> = kept.iter().map(|s| s[0].as_f64().unwrap()).collect();
+        assert!(times.windows(2).all(|w| w[1] > w[0]));
+        assert!(
+            kept.iter().any(|s| s[0] == 1001.0 && s[1].is_null()),
+            "leave kept"
+        );
+        assert!(times.contains(&1002.0), "return kept");
+        assert_eq!(times.last(), Some(&1003.0), "last kept");
     }
 }
