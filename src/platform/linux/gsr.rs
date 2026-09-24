@@ -33,7 +33,9 @@ pub enum Target<'a> {
 
 /// gsr multi-source capture of `monitors` as laid out by the compositor
 /// (`DP-3;x=0;y=0|DP-1;x=1920;y=0`, positions in video pixels). `None` for
-/// fewer than two outputs or mixed scales, which keep one stream per output.
+/// fewer than two outputs, mixed scales, or a canvas beyond what hardware H.264
+/// encodes (gsr refuses to start); those keep one stream per output and are
+/// composed on save. `-s` does not help: gsr applies it to each source.
 /// Earlier hangs with two outputs came from the Vulkan encoder, not from this.
 pub fn combined_source(monitors: &[crate::record::Monitor]) -> Option<String> {
     let scale = monitors.first()?.scale;
@@ -43,6 +45,13 @@ pub fn combined_source(monitors: &[crate::record::Monitor]) -> Option<String> {
     let min_x = monitors.iter().map(|m| m.x).min()?;
     let min_y = monitors.iter().map(|m| m.y).min()?;
     let place = |v: i32| (f64::from(v) * scale).round() as i64;
+    let limit = i64::from(crate::record::finalize::HARDWARE_H264_MAX_SIDE);
+    if monitors.iter().any(|m| {
+        place(m.x - min_x) + i64::from(m.width) > limit
+            || place(m.y - min_y) + i64::from(m.height) > limit
+    }) {
+        return None;
+    }
     Some(
         monitors
             .iter()
@@ -317,6 +326,16 @@ mod tests {
             combined_source(&[monitor("A", 0, 0, 1.0), monitor("B", 1920, 0, 2.0)]),
             None,
             "mixed scales keep one stream per output"
+        );
+        let wide = crate::record::Monitor {
+            width: 2560,
+            height: 1440,
+            ..monitor("A", 0, 0, 1.0)
+        };
+        assert_eq!(
+            combined_source(&[wide, monitor("B", 2560, 0, 1.0)]),
+            None,
+            "a 4480 px canvas is beyond hardware H.264"
         );
     }
 
