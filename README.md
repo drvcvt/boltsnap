@@ -318,7 +318,12 @@ The recording controls offer:
   normal pause path does not re-encode or reduce quality. Paused time is not
   included in the displayed duration.
 - **Shelf Save** — finalize into Boltsnap's disk-backed cache and add a temporary
-  video card. Dismissing the card deletes that cached recording.
+  video card. Dismissing the card deletes that cached recording. Recordings of
+  at least `record_shelf_to_disk_after_seconds` (default 60) are saved
+  permanently to `record_dir` instead and still get a shelf card, so long clips
+  survive dismissing and daemon restarts. Once a recording reaches that length
+  it no longer counts toward the 2 GiB temporary cache quota; only the free
+  disk reserve can pause it.
 - **Disk Save** — finalize permanently in `record_dir`. With the tray toggle
   enabled, the shelf card references that same permanent file; it does not make
   a second copy, and dismissing the card never deletes the disk file.
@@ -357,8 +362,10 @@ gpu-screen-recorder leaves out the system cursor and a small gsr plugin
 frame instead. Boltsnap follows the pointer through the
 `ext-image-copy-capture-v1` cursor session and feeds it to the plugin while
 recording; the critically damped spring (no overshoot) removes small jitter and
-lets fast moves glide, with a short motion blur. Mellow trails more, quick
-follows closely. The cursor is part of the video, so saving only remuxes, as
+lets fast moves glide, with a short motion blur. Mellow trails more (90 % of a
+move after about 0.5 s), quick follows closely (about 0.11 s). The arrow is
+rasterized at four times the video resolution and area-filtered per pixel, so
+it stays sharp at subpixel positions and in motion. The cursor is part of the video, so saving only remuxes, as
 with the system cursor. Single outputs, areas, both outputs (Separate and
 Combined) and the replay buffer are covered; across two outputs the cursor
 glides over the border.
@@ -372,8 +379,8 @@ cp src/platform/linux/gsr_cursor/target/release/libboltsnap_gsr_cursor.so ~/.car
 ```
 
 Beside each recorded clip `X.mp4` Boltsnap keeps `X.cursor.json` (raw pointer
-samples in clip pixels, format `boltsnap.cursor` v1, `cursor_in_video: true`)
-for editors, e.g. to follow the cursor when zooming. It moves and is deleted
+samples in clip pixels, format `boltsnap.cursor` v1, `cursor_in_video: true`,
+at most 120 per second) for editors, e.g. to follow the cursor when zooming. It moves and is deleted
 with the clip. Replay clips have none. There is no cursor-free copy of the
 video, so editors cannot re-render or drop the cursor.
 
@@ -446,6 +453,11 @@ record_show_frame = true
 
 # Add permanently saved recordings to the shelf without copying them. Default: true
 record_disk_add_to_shelf = true
+
+# Shelf saves of recordings at least this long go to record_dir (with a shelf
+# card) instead of the temporary cache. 0 keeps every shelf save temporary.
+# Default: 60
+record_shelf_to_disk_after_seconds = 60
 
 # Include audio in recordings. Default: true
 record_audio_enabled = true

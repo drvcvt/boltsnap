@@ -333,3 +333,20 @@ Commit B, "Smooth cursor in the replay buffer": `replay/mod.rs`
 - Live check by the user, 2026-09-24 (area recording, mellow): cursor looks
   right; `cursor.json` written, no plugin errors in the daemon log. On request
   the blur exposure went from 8 ms to 5 ms (`SHUTTER_MS`), still 8 taps.
+- Encoder hang, 2026-09-24: recordings froze after 0-9 s. gdb (gsr spawned with
+  `PR_SET_PTRACER_ANY`) showed gsr's main thread in `avcodec_send_frame` ->
+  FFmpeg `h264_vulkan` -> NVIDIA driver -> `poll`. Plain gsr without the plugin
+  froze the same way at 1914x1043@240 with audio; 640x360 did not. Cause: the
+  system FFmpeg lacked NVENC, so gsr only had Vulkan video. After rebuilding
+  FFmpeg with NVENC, the same test ran 20 s cleanly and a user recording of 19 s
+  kept 240 FPS (gsr ~40 % of one core, daemon under 4 %, save 0.38 s).
+- Follow-ups on request: blur exposure 5 ms; subpixel taps interpolated at the
+  exact frame time (240 FPS frames had alternated 4 and 5 ms of motion); quick
+  preset 1200/70 (90 % after about 0.11 s); the arrow is uploaded 4x
+  supersampled, premultiplied with mipmaps and area-filtered per pixel.
+- Long recordings: `cursor.json` is streamed sample by sample and thinned to
+  120 Hz (an hour at 240 Hz had built a >100 MB `serde_json::Value`). Shelf
+  saves of recordings at least `record_shelf_to_disk_after_seconds` (default
+  60) go to `record_dir` with a shelf card, and such recordings stop counting
+  toward the 2 GiB temporary cache quota, which used to pause long recordings
+  after a few minutes at 240 FPS.

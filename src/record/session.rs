@@ -106,6 +106,10 @@ pub struct RecordingSession {
     pub phase: SessionPhase,
     /// Fixed at start; resumed segments keep it.
     pub cursor: crate::config::RecordCursor,
+    /// Recording length from which a shelf save goes to disk (`None`: never).
+    pub shelf_to_disk_after: Option<Duration>,
+    /// Set when a shelf save was redirected to disk, so the clip still gets a card.
+    pub shelf_card_for_disk: bool,
     pub scope: CaptureScope,
     pub monitors: Vec<Monitor>,
     pub codec: String,
@@ -136,6 +140,8 @@ impl RecordingSession {
         Self {
             phase: SessionPhase::Recording,
             cursor: crate::config::RecordCursor::System,
+            shelf_to_disk_after: None,
+            shelf_card_for_disk: false,
             scope,
             monitors,
             codec,
@@ -169,6 +175,13 @@ impl RecordingSession {
             Vec::new(),
             now,
         )
+    }
+
+    /// Long enough to be kept on disk: a shelf save goes to `record_dir`, and the
+    /// recording no longer counts as temporary cache.
+    pub fn is_long(&self, now: Instant) -> bool {
+        self.shelf_to_disk_after
+            .is_some_and(|after| self.elapsed_at(now) >= after)
     }
 
     pub fn elapsed_at(&self, now: Instant) -> Duration {
@@ -745,6 +758,19 @@ while :; do sleep 1; done
             .unwrap()
             .parse()
             .unwrap()
+    }
+
+    #[test]
+    fn recordings_become_long_at_the_configured_length() {
+        let start = Instant::now();
+        let mut session = RecordingSession::new_for_test(start);
+        assert!(
+            !session.is_long(start + Duration::from_secs(3600)),
+            "off by default"
+        );
+        session.shelf_to_disk_after = Some(Duration::from_secs(60));
+        assert!(!session.is_long(start + Duration::from_secs(59)));
+        assert!(session.is_long(start + Duration::from_secs(60)));
     }
 
     #[test]
