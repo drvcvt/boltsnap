@@ -80,16 +80,20 @@ impl Mapping {
     }
 }
 
-/// Exposure per frame for motion blur: a fixed 1/200 s, so the trail looks the
-/// same at 60 and 240 FPS. Longer than a 240 FPS frame, so exposures overlap.
+/// Shortest exposure per frame for motion blur, 1/200 s. At high frame rates it
+/// is longer than a frame, so exposures overlap.
 pub const SHUTTER_MS: usize = 5;
+
+/// Exposure for `fps`: `SHUTTER_MS`, or half a frame when that is longer (a
+/// 180 degree shutter), so 60 FPS motion blurs instead of strobing. 240 FPS
+/// keeps 5 ms.
+pub fn shutter_ms(fps: u32) -> f64 {
+    (500.0 / f64::from(fps.max(1))).max(SHUTTER_MS as f64)
+}
 /// Sub-positions averaged per frame.
 pub const BLUR_SAMPLES: usize = 8;
 /// Longer gaps between frames restart the simulation settled at the target.
 const MAX_GAP_MS: i64 = 2000;
-/// Simulated milliseconds kept for blur taps: the shutter plus one for
-/// interpolating between steps.
-const HISTORY: usize = SHUTTER_MS + 2;
 
 #[derive(Default)]
 struct Spring {
@@ -150,8 +154,13 @@ pub struct Motion {
     pending: VecDeque<Sample>,
     /// Next millisecond to simulate.
     next_ms: Option<i64>,
-    /// Positions of the last `HISTORY` simulated milliseconds, newest last.
+    /// Positions of the last `history` simulated milliseconds, newest last.
     recent: VecDeque<Option<(f64, f64)>>,
+    /// Exposure in milliseconds.
+    shutter: f64,
+    /// Simulated milliseconds kept for blur taps: the shutter plus one for
+    /// interpolating between steps.
+    history: usize,
 }
 
 impl Motion {
@@ -161,8 +170,17 @@ impl Motion {
             spring: Spring::default(),
             pending: VecDeque::new(),
             next_ms: None,
-            recent: VecDeque::with_capacity(HISTORY + 1),
+            recent: VecDeque::new(),
+            shutter: SHUTTER_MS as f64,
+            history: SHUTTER_MS + 2,
         }
+    }
+
+    /// Blur over `shutter` milliseconds instead of `SHUTTER_MS`.
+    pub fn with_shutter(mut self, shutter: f64) -> Self {
+        self.shutter = shutter.max(0.0);
+        self.history = shutter.ceil() as usize + 2;
+        self
     }
 
     pub fn push(&mut self, sample: Sample) {
@@ -177,7 +195,7 @@ impl Motion {
         let mut tick = match self.next_ms {
             Some(next) if ms - next <= MAX_GAP_MS => next,
             _ => {
-                let start = ms - HISTORY as i64 + 1;
+                let start = ms - self.history as i64 + 1;
                 while self.pending.front().is_some_and(|s| s.ms() < start as f64) {
                     let sample = self.pending.pop_front().unwrap();
                     self.spring.apply(sample);
@@ -192,7 +210,7 @@ impl Motion {
                 let sample = self.pending.pop_front().unwrap();
                 self.spring.apply(sample);
             }
-            if self.recent.len() >= HISTORY {
+            if self.recent.len() >= self.history {
                 self.recent.pop_front();
             }
             self.recent
@@ -223,7 +241,7 @@ impl Motion {
         let newest_ms = (next - 1) as f64;
         let (hx, hy) = (hotspot.0.round(), hotspot.1.round());
         for (tap, slot) in taps.iter_mut().enumerate() {
-            let shutter = SHUTTER_MS as f64 * (BLUR_SAMPLES - 1 - tap) as f64;
+            let shutter = self.shutter * (BLUR_SAMPLES - 1 - tap) as f64;
             let back = (newest_ms - at_ms + shutter / (BLUR_SAMPLES - 1) as f64).max(0.0);
             let whole = back.floor() as usize;
             let fraction = back - whole as f64;
@@ -648,6 +666,25 @@ mod tests {
             .fold((f64::MAX, f64::MIN), |(lo, hi), s| (lo.min(*s), hi.max(*s)));
         // Whole-millisecond frames alternated 4 and 5 ms steps (25 % judder).
         assert!(max / min < 1.02, "{min} .. {max}");
+    }
+
+    #[test]
+    fn low_frame_rates_blur_over_half_a_frame() {
+        assert_eq!(shutter_ms(240), SHUTTER_MS as f64);
+        assert!((shutter_ms(60) - 1000.0 / 120.0).abs() < 1e-9);
+        // At 60 FPS the trail spans the longer exposure.
+        let trail = |motion: Motion| {
+            let mut motion = motion;
+            motion.push(at(0.0, 0.0, 0.0));
+            motion.advance_to(0);
+            motion.push(at(1.0, 400.0, 0.0));
+            motion.advance_to(40);
+            let taps = motion.taps(40.0, (0.0, 0.0));
+            taps[BLUR_SAMPLES - 1].unwrap().0 - taps[0].unwrap().0
+        };
+        let short = trail(Motion::new(QUICK));
+        let long = trail(Motion::new(QUICK).with_shutter(shutter_ms(60)));
+        assert!(long > short * 1.5, "{short} vs {long}");
     }
 
     #[test]

@@ -91,7 +91,7 @@ impl Plugin {
             partial: Vec::new(),
             sources: Sources::default(),
             mapping,
-            motion: Motion::new(preset),
+            motion: Motion::new(preset).with_shutter(cursor_motion::shutter_ms(params.fps)),
             arrow,
             hotspot,
             renderer: None,
