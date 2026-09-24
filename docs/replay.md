@@ -96,8 +96,10 @@ paced to the clip duration. The shelf receives the completed file immediately
 after export. Full-display remux still avoids encoding. Capture uses the
 very-high quality preset because the selector also displays a decoded buffer
 frame; region export uses QP/CRF 18 to limit the additional encoding loss. Stop cancels the capture and any unfinished export; a partial file
-can remain for recovery. Completed clips are privately created in the recording
-cache and published without replacing existing files. Existing cache and disk
+can remain for recovery until the daemon restarts. Completed clips are privately
+created in the recording cache and published without replacing existing files.
+The shelf is RAM-only, so the daemon removes leftover `clip-*.mkv` files with the
+other orphaned recordings when it starts. Existing cache and disk
 reserve checks apply; concurrent ordinary recording is not a shared disk
 reservation. Do not treat that preflight check as a hard system-wide disk cap.
 
