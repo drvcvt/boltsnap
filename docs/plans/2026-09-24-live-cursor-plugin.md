@@ -390,3 +390,14 @@ Commit B, "Smooth cursor in the replay buffer": `replay/mod.rs`
   binary, exporting `gsr_plugin_init`/`gsr_plugin_deinit`. Without python3 the
   parent-death-signal test failed in the sandbox. Not run under Nix: the live
   capture itself.
+- Hitches, 2026-09-24 evening: the user saw short hitches in 120 FPS clips
+  played on DP-3 (240 Hz), with quick and mellow. Tracking the burned-in arrow
+  (per-frame centroid against a median background) and comparing each frame
+  with a quadratic fit of its neighbours: 90 % of frames within +-0.7 ms, but
+  8 (quick, 27 s) and 21 (mellow, 27 s) frames 3-7.6 ms off, nearly all late.
+  gsr assigns a draw to the grid slot it lands in (`recorder.c:549-551`,
+  `:619-622`) while the plugin sampled the cursor at the call time. The
+  cursor samples themselves had 12-25 ms gaps that the spring hid completely.
+  `FrameClock` (`cursor_motion.rs`) now samples at the slot: `c8cf56b`,
+  plugin installed 22:25. Frames that gsr itself repeats under load (seen
+  once, at a window opening) remain. Live re-measurement pending.
