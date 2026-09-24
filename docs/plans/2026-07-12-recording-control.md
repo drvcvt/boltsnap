@@ -447,6 +447,7 @@ pub fn finalize_recording(req: FinalizeRequest, tools: &RecorderTools)
 - [ ] Implement one-segment finalization without invoking FFmpeg. For multiple compatible pause segments, write a concat list inside the recording cache and run `ffmpeg -f concat -safe 0 -i <list> -c copy <temp-output>`. Delete source segments and the list only after a non-empty final output succeeds.
 
 - [ ] Implement combined mode after per-output concat. Normalize Hyprland logical positions by the largest monitor scale so high-DPI streams are never downscaled. Build one `scale=<tile-width>:<tile-height>` filter per input and an `xstack` layout containing every normalized coordinate, for example `xstack=inputs=2:layout=0_0|3840_0:fill=black`. Use:
+  > Superseded in part (2026-09-24, `ccde45c`): hardware encoders cap the canvas at 4096 px per side, so large mixed-scale layouts are downscaled; equal scales under gsr record one stream and are not composed.
 
 ```text
 *_nvenc: -preset p5 -tune hq -rc vbr -cq 16 -b:v 0

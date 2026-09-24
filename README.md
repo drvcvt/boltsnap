@@ -349,7 +349,9 @@ Combined mode arranges both outputs like the Hyprland layout. With GPU Screen
 Recorder and equal output scales it records them as one stream, so saving only
 remuxes; with mixed scales (or wf-recorder) each output is recorded separately
 and composed on save, the only ordinary path that re-encodes, with
-high-quality settings intended to be visually lossless. Failed saves keep their source segments so they can be
+high-quality settings intended to be visually lossless. The composed canvas
+uses the highest output scale; with a hardware encoder it shrinks to at most
+4096 pixels per side, the H.264 limit. Failed saves keep their source segments so they can be
 retried or discarded instead of losing the recording.
 
 Video cards carry a **▶** badge; on Linux, clicking one opens the video in the
@@ -387,7 +389,8 @@ rasterized at four times the video resolution and area-filtered per pixel, so
 it stays sharp at subpixel positions and in motion. The cursor is part of the video, so saving only remuxes, as
 with the system cursor. Single outputs, areas, both outputs (Separate and
 Combined) and the replay buffer are covered; across two outputs the cursor
-glides over the border.
+glides over the border. Scaled outputs work: positions are logical and the
+arrow grows with the scale (checked on Hyprland at 1.5).
 
 Build the plugin and put it beside the `boltsnap` binary (packaged installs may
 use `../lib/boltsnap/` relative to it):
