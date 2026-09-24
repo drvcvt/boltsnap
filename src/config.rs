@@ -47,6 +47,8 @@ pub enum RecordProfile {
     #[default]
     Quality,
     Quiet,
+    /// `record_fps`: an explicit frame rate.
+    Fps(u32),
 }
 
 impl RecordProfile {
@@ -54,6 +56,7 @@ impl RecordProfile {
         match self {
             RecordProfile::Quality => 240,
             RecordProfile::Quiet => 60,
+            RecordProfile::Fps(fps) => fps,
         }
     }
 }
@@ -90,6 +93,8 @@ pub struct Config {
     pub save_dir: Option<String>,
     pub record_codec: Option<String>,
     record_profile: Option<String>,
+    /// `Some(None)`: set, but not a whole number.
+    record_fps: Option<Option<i64>>,
     pub record_dir: Option<String>,
     record_default_target: Option<String>,
     record_both_mode: Option<String>,
@@ -105,7 +110,14 @@ pub struct Config {
 }
 
 impl Config {
+    /// `record_fps` (1-240) overrides the profile's frame rate.
     pub fn record_profile(&self) -> Result<RecordProfile, String> {
+        if let Some(fps) = self.record_fps {
+            return fps
+                .filter(|fps| (1..=240).contains(fps))
+                .map(|fps| RecordProfile::Fps(fps as u32))
+                .ok_or_else(|| "record_fps must be a whole number from 1 to 240".into());
+        }
         match self.record_profile.as_deref() {
             None | Some("quality") => Ok(RecordProfile::Quality),
             Some("quiet") => Ok(RecordProfile::Quiet),
@@ -183,6 +195,7 @@ impl Config {
                 record_profile: v
                     .get("record_profile")
                     .map(|x| x.as_str().unwrap_or("").to_owned()),
+                record_fps: v.get("record_fps").map(|x| x.as_integer()),
                 record_dir: v
                     .get("record_dir")
                     .and_then(|x| x.as_str())
@@ -468,6 +481,11 @@ mod tests {
                 .unwrap(),
             RecordProfile::Quiet
         );
+        let fps = |text: &str| Config::parse(text).record_profile().map(RecordProfile::fps);
+        assert_eq!(fps("record_profile = 'quiet'\nrecord_fps = 120"), Ok(120));
+        for text in ["record_fps = 0", "record_fps = 241", "record_fps = '120'"] {
+            assert!(fps(text).is_err(), "{text}");
+        }
         for text in [
             "record_profile = 'typo'",
             "record_profile = 60",
