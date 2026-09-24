@@ -36,7 +36,6 @@ pub enum Request {
         source: String,
         path: PathBuf,
         output: Option<String>,
-        take_ownership: bool,
     },
     Ping,
     RecordingStatus,
@@ -343,13 +342,11 @@ impl Request {
                 source,
                 path,
                 output,
-                take_ownership,
             } => {
                 let mut header = json!({
                     "cmd": "add_video",
                     "source": source,
                     "path": path.to_string_lossy(),
-                    "take_ownership": take_ownership,
                 });
                 if let Some(output) = output {
                     header["output"] = json!(output);
@@ -465,10 +462,6 @@ impl Request {
                     .and_then(Value::as_str)
                     .filter(|value| !value.is_empty())
                     .map(str::to_owned),
-                take_ownership: v
-                    .get("take_ownership")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false),
             }),
             Some("ping") => Ok(Request::Ping),
             Some("recording_status") => Ok(Request::RecordingStatus),
@@ -619,19 +612,16 @@ mod tests {
             source: "editor".into(),
             path: PathBuf::from("/tmp/a clip.mp4"),
             output: Some("DP-2".into()),
-            take_ownership: true,
         };
         match Request::read(&mut Cursor::new(request.encode())).unwrap() {
             Request::AddVideo {
                 source,
                 path,
                 output,
-                take_ownership,
             } => {
                 assert_eq!(source, "editor");
                 assert_eq!(path, PathBuf::from("/tmp/a clip.mp4"));
                 assert_eq!(output.as_deref(), Some("DP-2"));
-                assert!(take_ownership);
             }
             other => panic!("wrong variant: {other:?}"),
         }
