@@ -350,3 +350,13 @@ Commit B, "Smooth cursor in the replay buffer": `replay/mod.rs`
   60) go to `record_dir` with a shelf card, and such recordings stop counting
   toward the 2 GiB temporary cache quota, which used to pause long recordings
   after a few minutes at 240 FPS.
+- Playback lag and slow Combined saves (user, 2026-09-24): a 15.6 s Combined
+  clip took 19.8 s to save (NVENC p5 composing 3840x1080@240 at ~174 FPS) and
+  stuttered in Eddy (software decode of ~1 Gpixel/s). Changes: Combined
+  composes with NVENC p1 (2.3x faster, PSNR -0.02 dB); with gsr and equal
+  scales Combined records one multi-source stream (`DP-3;x=0;y=0|DP-1;x=1920;y=0`),
+  both output trackers feeding one plugin, so saving only remuxes. Four 20 s
+  NVENC tests (60 and 240 FPS, plugin, audio) ran without hangs and stopped in
+  0.21 s; the old multi-source hangs were the Vulkan encoder too. The user's
+  config now records at 60 FPS (`record_profile = "quiet"`), where the blur
+  spans half a frame (8.3 ms) instead of 5 ms.

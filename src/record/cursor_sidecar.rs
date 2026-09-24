@@ -13,51 +13,72 @@ pub struct Logical {
 }
 
 /// Read the tracks recorded beside `segments`. `None` when no segment has one,
-/// e.g. a recording made with the system cursor or a retry after a failed render.
+/// e.g. a recording made with the system cursor. A combined stream has one
+/// track per output; their timelines are merged.
 pub fn load(
     segments: &[PathBuf],
     origin: (f64, f64),
     ffmpeg: &Path,
 ) -> Result<Option<Logical>, String> {
-    let tracks: Vec<Option<(Track, u64)>> = segments
+    // Per segment: one (track, first frame) per tracker.
+    let tracks: Vec<Vec<(Track, u64)>> = segments
         .iter()
         .map(|segment| {
-            let track =
-                fs::read_to_string(crate::platform::cursor_track::track_path(segment)).ok()?;
-            let first = fs::read_to_string(first_frame_path(segment)).ok()?;
-            Some((
-                cursor::parse_track(&track).ok()?,
-                parse_first_frame(&first)?,
-            ))
+            let Some(first) = fs::read_to_string(first_frame_path(segment))
+                .ok()
+                .and_then(|text| parse_first_frame(&text))
+            else {
+                return Vec::new();
+            };
+            crate::platform::cursor_track::track_paths(segment)
+                .iter()
+                .filter_map(|path| cursor::parse_track(&fs::read_to_string(path).ok()?).ok())
+                .map(|track| (track, first))
+                .collect()
         })
         .collect();
-    if tracks.iter().all(Option::is_none) {
+    let trackers = tracks.iter().map(Vec::len).max().unwrap_or(0);
+    if trackers == 0 {
         return Ok(None);
     }
-    let mut offset = 0.0;
-    let mut placed = Vec::new();
-    let empty = Track::default();
-    for (segment, track) in segments.iter().zip(&tracks) {
-        let duration_ms = probe(segment, ffmpeg)?.duration * 1000.0;
-        let (track, first_frame_us) = track.as_ref().map_or((&empty, 0), |(t, us)| (t, *us));
-        placed.push(Placed {
-            track,
-            first_frame_us,
-            offset_ms: offset,
-            duration_ms,
-            mapping: Mapping { origin, scale: 1.0 },
-        });
-        offset += duration_ms;
+    let mut durations = Vec::with_capacity(segments.len());
+    for segment in segments {
+        durations.push(probe(segment, ffmpeg)?.duration * 1000.0);
     }
+    let empty = (Track::default(), 0);
+    let timelines: Vec<Vec<Sample>> = (0..trackers)
+        .map(|tracker| {
+            let mut offset = 0.0;
+            let placed: Vec<Placed> = tracks
+                .iter()
+                .zip(&durations)
+                .map(|(segment, &duration_ms)| {
+                    let (track, first_frame_us) = segment.get(tracker).unwrap_or(&empty);
+                    let placed = Placed {
+                        track,
+                        first_frame_us: *first_frame_us,
+                        offset_ms: offset,
+                        duration_ms,
+                        mapping: Mapping { origin, scale: 1.0 },
+                    };
+                    offset += duration_ms;
+                    placed
+                })
+                .collect();
+            cursor::timeline(&placed)
+        })
+        .collect();
     Ok(Some(Logical {
-        samples: cursor::timeline(&placed),
+        samples: cursor::merge(&timelines),
     }))
 }
 
 /// Remove the per-segment cursor files once the clip is final.
 pub fn remove_segment_files(segments: &[PathBuf]) {
     for segment in segments {
-        let _ = fs::remove_file(crate::platform::cursor_track::track_path(segment));
+        for track in crate::platform::cursor_track::track_paths(segment) {
+            let _ = fs::remove_file(track);
+        }
         let _ = fs::remove_file(first_frame_path(segment));
     }
 }
