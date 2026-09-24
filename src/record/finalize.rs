@@ -413,13 +413,16 @@ fn build_xstack_filter(monitors: &[Monitor]) -> Result<String, String> {
     build_xstack_filter_for(&monitors.iter().collect::<Vec<_>>(), f64::INFINITY)
 }
 
-/// Largest canvas side the encoder accepts; hardware H.264 stops at 4096.
+/// Largest frame side hardware H.264 encoders accept.
+pub const HARDWARE_H264_MAX_SIDE: u32 = 4096;
+
+/// Largest canvas side the encoder accepts.
 fn canvas_limit(codec: &str) -> f64 {
     if ["_nvenc", "_vaapi", "_vulkan"]
         .iter()
         .any(|suffix| codec.ends_with(suffix))
     {
-        4096.0
+        f64::from(HARDWARE_H264_MAX_SIDE)
     } else {
         f64::INFINITY
     }
