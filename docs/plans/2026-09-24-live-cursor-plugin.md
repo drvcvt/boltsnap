@@ -199,7 +199,8 @@ The mode is fixed per replay start; changing it applies on the next start.
 Eddy's studio plan uses the raw samples for "follow cursor" and zoom
 suggestions, and they stay cheap: the tracker already runs for the plugin, the
 track file is a few KB per minute, and finalize needs one ffprobe per segment
-(durations, as before) plus one for the clip size. Format `boltsnap.cursor` v1
+(durations and size; since 2026-09-24 the clip itself is probed only when
+composed, see `2026-09-24-performance-save-and-screenshot.md` A1). Format `boltsnap.cursor` v1
 unchanged, `cursor_in_video: true`, no `clean_video` key. Writing it is
 best-effort: a failure is logged and the clip (which already contains the
 cursor) is still delivered. It moves and is deleted with the clip.

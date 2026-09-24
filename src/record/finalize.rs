@@ -71,7 +71,7 @@ pub fn finalize_recording(
             };
             match super::cursor_sidecar::load(segments, origin, &tools.ffmpeg) {
                 Ok(Some(logical)) => {
-                    tracks.insert(output.clone(), logical.samples);
+                    tracks.insert(output.clone(), (logical.samples, logical.size));
                 }
                 Ok(None) => {}
                 Err(error) => eprintln!("boltsnap: read cursor track: {error}"),
@@ -98,20 +98,32 @@ pub fn finalize_recording(
             }
             Err(error) => return Err(failure(error, ready)),
         }
-        let merged = super::cursor::merge(&tracks.values().cloned().collect::<Vec<_>>());
+        let merged = super::cursor::merge(
+            &tracks
+                .values()
+                .map(|(samples, _)| samples.clone())
+                .collect::<Vec<_>>(),
+        );
         tracks.clear();
         if !merged.is_empty() {
-            tracks.insert(None, merged);
+            // The composed canvas has its own size.
+            tracks.insert(None, (merged, None));
         }
     }
 
-    for (output, samples) in tracks {
+    for (output, (samples, size)) in tracks {
         let Some(clip) = ready.get(&output).and_then(|paths| paths.first()) else {
             continue;
         };
-        if let Err(error) =
-            write_cursor_track(&req, output.as_deref(), combined, clip, &samples, tools)
-        {
+        if let Err(error) = write_cursor_track(
+            &req,
+            output.as_deref(),
+            combined,
+            clip,
+            &samples,
+            size,
+            tools,
+        ) {
             eprintln!("boltsnap: {} has no cursor track: {error}", clip.display());
         }
     }
@@ -156,22 +168,30 @@ fn cursor_frame(
 }
 
 /// Write `X.cursor.json` for a finished clip; `samples` are logical units
-/// relative to the clip origin.
+/// relative to the clip origin. `size` is the video size when the segments'
+/// probe already knows it; otherwise the clip is probed.
 fn write_cursor_track(
     req: &FinalizeRequest,
     output: Option<&str>,
     combined: bool,
     clip: &Path,
     samples: &[super::cursor::Sample],
+    size: Option<(u32, u32)>,
     tools: &RecorderTools,
 ) -> Result<(), String> {
     let (_, logical_width) = cursor_frame(req, output, combined).ok_or("missing clip layout")?;
-    let probe = super::cursor_sidecar::probe(clip, &tools.ffmpeg)?;
-    let factor = f64::from(probe.width) / logical_width;
+    let (width, height) = match size {
+        Some(size) => size,
+        None => {
+            let probe = super::cursor_sidecar::probe(clip, &tools.ffmpeg)?;
+            (probe.width, probe.height)
+        }
+    };
+    let factor = f64::from(width) / logical_width;
     super::cursor_sidecar::write(
         clip,
         &super::cursor_sidecar::to_pixels(samples, factor),
-        (probe.width, probe.height),
+        (width, height),
         factor,
         req.cursor,
     )
@@ -1024,6 +1044,83 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["DP-1", "DP-3"]
         );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// Fake ffprobe beside `ffmpeg` that logs one line per call to `calls`.
+    fn fake_ffprobe(dir: &Path) -> PathBuf {
+        executable(
+            dir.join("ffprobe"),
+            &format!(
+                "#!/bin/sh\necho call >> '{}'\nprintf 'width=1920\\nheight=1080\\nduration=5\\n'\n",
+                dir.join("calls").display()
+            ),
+        )
+    }
+
+    fn smooth_segment(path: &Path) -> PathBuf {
+        let segment = file(path, b"segment");
+        file(
+            &PathBuf::from(format!("{}.ts", segment.display())),
+            b"monotonic_microsec realtime_microsec\n1000 0\n",
+        );
+        file(
+            &PathBuf::from(format!("{}.cursor", segment.display())),
+            b"boltsnap-cursor 1\noutput 0 0\n2000 p 10 10\n",
+        );
+        segment
+    }
+
+    #[test]
+    fn cursor_json_reuses_the_segment_probe_for_the_clip_size() {
+        let dir = temp_dir("cursor-probe");
+        let segment = smooth_segment(&dir.join("a.mkv"));
+        let ffmpeg = fake_ffmpeg(&dir, true);
+        fake_ffprobe(&dir);
+        let mut req = request(
+            BTreeMap::from([(Some("DP-3".into()), vec![segment])]),
+            RecordBothMode::Separate,
+            SaveDestination::Shelf,
+        );
+        req.monitors = vec![monitor("DP-3", 0)];
+        req.cursor = RecordCursor::Quick;
+        let clips = finalize_recording(req, &tools(&dir, &ffmpeg)).unwrap();
+        let json: serde_json::Value = serde_json::from_slice(
+            &fs::read(super::super::cursor::sidecar_path(&clips[0].path)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(json["width"], 1920);
+        let calls = fs::read_to_string(dir.join("calls")).unwrap();
+        assert_eq!(
+            calls.lines().count(),
+            1,
+            "one ffprobe per segment, none for the clip"
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn composed_combined_clips_still_probe_the_canvas() {
+        let dir = temp_dir("cursor-compose");
+        let a = smooth_segment(&dir.join("a.mkv"));
+        let b = smooth_segment(&dir.join("b.mkv"));
+        let ffmpeg = fake_ffmpeg(&dir, true);
+        fake_ffprobe(&dir);
+        let mut req = request(
+            BTreeMap::from([
+                (Some("DP-3".into()), vec![a]),
+                (Some("DP-1".into()), vec![b]),
+            ]),
+            RecordBothMode::Combined,
+            SaveDestination::Shelf,
+        );
+        req.monitors = vec![monitor("DP-3", 0), monitor("DP-1", 1920)];
+        req.cursor = RecordCursor::Quick;
+        let clips = finalize_recording(req, &tools(&dir, &ffmpeg)).unwrap();
+        assert!(super::super::cursor::sidecar_path(&clips[0].path).is_file());
+        // Two segment probes plus one for the composed canvas.
+        let calls = fs::read_to_string(dir.join("calls")).unwrap();
+        assert_eq!(calls.lines().count(), 3);
         let _ = fs::remove_dir_all(dir);
     }
 

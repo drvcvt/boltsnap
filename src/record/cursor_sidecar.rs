@@ -10,6 +10,8 @@ use std::process::Command;
 /// A group's cursor samples in logical units relative to the clip origin.
 pub struct Logical {
     pub samples: Vec<Sample>,
+    /// Video size shared by all segments, which a stream copy keeps.
+    pub size: Option<(u32, u32)>,
 }
 
 /// Read the tracks recorded beside `segments`. `None` when no segment has one,
@@ -42,9 +44,16 @@ pub fn load(
         return Ok(None);
     }
     let mut durations = Vec::with_capacity(segments.len());
+    let mut sizes = Vec::with_capacity(segments.len());
     for segment in segments {
-        durations.push(probe(segment, ffmpeg)?.duration * 1000.0);
+        let probe = probe(segment, ffmpeg)?;
+        durations.push(probe.duration * 1000.0);
+        sizes.push((probe.width, probe.height));
     }
+    let size = sizes
+        .iter()
+        .all(|size| *size == sizes[0])
+        .then_some(sizes[0]);
     let empty = (Track::default(), 0);
     let timelines: Vec<Vec<Sample>> = (0..trackers)
         .map(|tracker| {
@@ -70,6 +79,7 @@ pub fn load(
         .collect();
     Ok(Some(Logical {
         samples: cursor::merge(&timelines),
+        size,
     }))
 }
 
