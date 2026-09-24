@@ -365,3 +365,17 @@ Commit B, "Smooth cursor in the replay buffer": `replay/mod.rs`
   most 4 ms, half the data of 240). Live check 15:45: area 1918x1080, 1455
   frames in 12.2 s, 120 FPS every second, save 0.33 s, gsr ~25 % of a core.
   The user confirmed smooth playback in Eddy without lag.
+- Scale != 1 and replay, 2026-09-24 18:33: DP-1 temporarily at scale 1.5
+  (logical 1280x720), cursor moved to fixed points with
+  `hl.dsp.cursor.move`. Output (1920x1080) and area (800x500 logical ->
+  1200x750) clips: every `cursor.json` sample was exactly logical x 1.5, and
+  the burned-in arrow tip sat on it in the frames, 36 px tall. So Hyprland's
+  cursor session sends logical positions and the mapping holds. Replay on DP-3
+  (60 FPS, NVENC) drew the smooth arrow at all three target points.
+- Mixed-scale Combined failed to save in that setup: composing at the largest
+  scale needs a 4800x1620 canvas, and NVENC H.264 rejects anything over 4096
+  ("No capable devices found"). Hardware encoders now compose at the largest
+  scale that fits 4096 (here 1.28, 4096x1382) with edges on even pixels;
+  software encoders are unchanged. `cursor.json` maps through the probed clip
+  width, so it follows. Checked with a 1 s synthetic NVENC encode of both
+  canvases; the live save of a mixed-scale Combined clip is still unverified.
