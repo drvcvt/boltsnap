@@ -379,3 +379,7 @@ Commit B, "Smooth cursor in the replay buffer": `replay/mod.rs`
   software encoders are unchanged. `cursor.json` maps through the probed clip
   width, so it follows. Checked with a 1 s synthetic NVENC encode of both
   canvases; the live save of a mixed-scale Combined clip is still unverified.
+- Mixed-scale Combined, live 2026-09-24 19:08 (installed `c50adfe`, DP-1 at
+  1.5): saved in 3.45 s as 4096x1382 H.264 + AAC; `cursor.json` samples at
+  logical x 1.28 on both outputs, the burned-in arrow sits on them in the
+  composed frames, DP-1's tile is 1638x922 at x 2458.
