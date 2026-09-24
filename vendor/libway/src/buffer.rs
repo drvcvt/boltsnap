@@ -195,9 +195,6 @@ pub(crate) fn convert_rgba(
         .checked_mul(h as usize)
         .and_then(|n| n.checked_mul(4))
         .ok_or(Error::LimitExceeded)?;
-    let mut out = Vec::new();
-    out.try_reserve_exact(len)
-        .map_err(|_| Error::LimitExceeded)?;
     if matches!(
         format,
         PixelFormat::Argb8888
@@ -205,7 +202,7 @@ pub(crate) fn convert_rgba(
             | PixelFormat::Abgr8888
             | PixelFormat::Xbgr8888
     ) {
-        out.resize(len, 0);
+        let mut out = zeroed(len)?;
         let swapped = matches!(format, PixelFormat::Argb8888 | PixelFormat::Xrgb8888);
         let alpha = matches!(format, PixelFormat::Argb8888 | PixelFormat::Abgr8888);
         let (r, b) = if swapped { (2, 0) } else { (0, 2) };
@@ -222,6 +219,9 @@ pub(crate) fn convert_rgba(
         }
         return Ok(out);
     }
+    let mut out = Vec::new();
+    out.try_reserve_exact(len)
+        .map_err(|_| Error::LimitExceeded)?;
     for row in bytes[..size].chunks_exact(stride as usize) {
         for p in row[..w as usize * bpp].chunks_exact(bpp) {
             let rgba = match format {
@@ -304,6 +304,26 @@ where
     wl
 }
 
+/// `len` zero bytes, or `LimitExceeded` when the allocation fails. Fresh pages
+/// from the kernel are already zero, so large buffers skip the memset that
+/// `resize(len, 0)` would do before they are overwritten anyway.
+pub(crate) fn zeroed(len: usize) -> Result<Vec<u8>> {
+    if len == 0 {
+        return Ok(Vec::new());
+    }
+    let layout = std::alloc::Layout::array::<u8>(len).map_err(|_| Error::LimitExceeded)?;
+    // SAFETY: the layout has a non-zero size. The pointer is checked for null,
+    // comes from the global allocator with the layout a `Vec<u8>` of this
+    // capacity uses, and zeroed bytes are initialized `u8`s.
+    unsafe {
+        let pointer = std::alloc::alloc_zeroed(layout);
+        if pointer.is_null() {
+            return Err(Error::LimitExceeded);
+        }
+        Ok(Vec::from_raw_parts(pointer, len, len))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -351,6 +371,28 @@ mod tests {
             convert_rgba(&[16, 32, 48, 0], 1, 1, 4, PixelFormat::Bgr888).unwrap(),
             [16, 32, 48, 255]
         );
+    }
+    #[test]
+    fn packed_rows_skip_stride_padding() {
+        // 2x2 XRGB8888 (bytes B, G, R, X) with 4 padding bytes per row.
+        let mut bytes = Vec::new();
+        for row in 0..2u8 {
+            for col in 0..2u8 {
+                bytes.extend_from_slice(&[col, row, 7, 0]);
+            }
+            bytes.extend_from_slice(&[99; 4]);
+        }
+        assert_eq!(
+            convert_rgba(&bytes, 2, 2, 12, PixelFormat::Xrgb8888).unwrap(),
+            [7, 0, 0, 255, 7, 0, 1, 255, 7, 1, 0, 255, 7, 1, 1, 255]
+        );
+    }
+    #[test]
+    fn zeroed_buffers_are_sized_and_zero() {
+        assert!(zeroed(0).unwrap().is_empty());
+        let bytes = zeroed(1 << 20).unwrap();
+        assert_eq!(bytes.len(), 1 << 20);
+        assert!(bytes.iter().all(|&byte| byte == 0));
     }
     #[test]
     fn malformed_buffers_are_rejected_before_reading() {
