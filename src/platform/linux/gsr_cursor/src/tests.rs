@@ -139,8 +139,8 @@ fn draws_the_arrow_over_the_frame_and_averages_blur_taps() {
     };
     let frame = context.frame(width, height, grey);
     let renderer = gl::Renderer::new(&half).unwrap();
-    let a = Some((10, 10));
-    let b = Some((30, 10));
+    let a = Some((10.0, 10.0));
+    let b = Some((30.0, 10.0));
     renderer.draw(&[a, a, a, a, b, b, b, None], (width, height));
     let pixels = context.read(&frame);
     let at = |x: u32, y: u32| &pixels[((y * width + x) * 4) as usize..][..4];
@@ -160,6 +160,28 @@ fn draws_the_arrow_over_the_frame_and_averages_blur_taps() {
     );
     assert_eq!(at(10, 10)[3], 255);
     assert_eq!(at(20, 10), grey);
+
+    // Subpixel: half a pixel right splits the coverage over two pixels.
+    let frame = context.frame(width, height, grey);
+    let opaque = Arrow {
+        rgba: vec![255; 4],
+        ..half
+    };
+    let renderer = gl::Renderer::new(&opaque).unwrap();
+    renderer.draw(&[Some((10.5, 20.0)); 8], (width, height));
+    let pixels = context.read(&frame);
+    let at = |x: u32, y: u32| &pixels[((y * width + x) * 4) as usize..][..4];
+    for x in [10, 11] {
+        assert!(
+            (i32::from(at(x, 20)[0]) - 192).abs() <= 1,
+            "{:?}",
+            at(x, 20)
+        );
+        assert_eq!(at(x, 20)[3], 255);
+    }
+    assert_eq!(at(9, 20), grey);
+    assert_eq!(at(12, 20), grey);
+    assert_eq!(at(10, 19), grey);
 }
 
 /// Minimal surfaceless EGL + FBO harness for the GL check.
@@ -364,5 +386,28 @@ mod egl {
             );
             pixels
         }
+    }
+}
+
+#[test]
+#[ignore = "needs an EGL driver (surfaceless Mesa or an EGL device)"]
+fn keeps_drawing_after_the_pointer_stops() {
+    let context = egl::Context::new().expect("EGL context");
+    let _frame = context.frame(64, 48, [128, 128, 128, 255]);
+    let (fd, mut writer) = feed();
+    let mut plugin = Plugin::new(&EGL_ES, &config(fd)).unwrap();
+    let start = 1_000_000u64;
+    let frame_us = 1_000_000 / 240;
+    for frame in 0..240 * 20u64 {
+        let now = start + frame * frame_us;
+        // The pointer moves for 8 s, then rests; the feed stays open.
+        if frame < 240 * 8 {
+            writer
+                .write_all(format!("0 {now} p {} 60\n", 100 + frame % 20).as_bytes())
+                .unwrap();
+        }
+        let began = std::time::Instant::now();
+        plugin.frame(now, (64, 48)).unwrap();
+        assert!(began.elapsed().as_millis() < 100, "frame {frame} stalled");
     }
 }
