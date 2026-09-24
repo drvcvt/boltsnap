@@ -60,14 +60,16 @@ pub(crate) fn capture_image(
     Ok((backend, output, DynamicImage::ImageRgb8(image)))
 }
 
-/// Drop alpha; about 2.5x faster than `DynamicImage::into_rgb8` at 4 MP.
+/// Drop alpha in place: no second 12 MB buffer to allocate and fault in.
 fn rgba_to_rgb(image: RgbaImage) -> image::RgbImage {
     let (width, height) = image.dimensions();
-    let mut rgb = Vec::with_capacity(image.as_raw().len() / 4 * 3);
-    for pixel in image.as_raw().chunks_exact(4) {
-        rgb.extend_from_slice(&pixel[..3]);
+    let mut buf = image.into_raw();
+    let pixels = buf.len() / 4;
+    for i in 0..pixels {
+        buf.copy_within(i * 4..i * 4 + 3, i * 3);
     }
-    image::RgbImage::from_raw(width, height, rgb).expect("RGB buffer matches dimensions")
+    buf.truncate(pixels * 3);
+    image::RgbImage::from_raw(width, height, buf).expect("RGB buffer matches dimensions")
 }
 
 // Strip up to 4 px of uniform grayscale ring (Hypr d0d0d0 active-window
@@ -494,6 +496,15 @@ fn geometry_from_json_arrays(at: &[Value], size: &[Value]) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn rgb_drop_matches_image_conversion() {
+        let rgba = image::RgbaImage::from_fn(37, 11, |x, y| {
+            image::Rgba([x as u8 * 7, y as u8 * 23, (x + y) as u8, (x * y) as u8])
+        });
+        let expected = image::DynamicImage::ImageRgba8(rgba.clone()).into_rgb8();
+        assert_eq!(super::rgba_to_rgb(rgba), expected);
+    }
+
     #[test]
     fn owned_rgba_is_reused() {
         let rgba = image::RgbaImage::new(23, 17);
