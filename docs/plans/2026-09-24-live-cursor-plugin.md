@@ -1,6 +1,6 @@
 # Live smooth cursor through a gpu-screen-recorder plugin, 2026-09-24
 
-Status: implemented; live recording check pending (needs the user's approval).
+Status: implemented and live-checked by the user (2026-09-24), see section 5.
 Linux only; the Windows backend stays frozen.
 
 Replaces the save-time cursor renderer (Phase 4 of
@@ -360,3 +360,8 @@ Commit B, "Smooth cursor in the replay buffer": `replay/mod.rs`
   0.21 s; the old multi-source hangs were the Vulkan encoder too. The user's
   config now records at 60 FPS (`record_profile = "quiet"`), where the blur
   spans half a frame (8.3 ms) instead of 5 ms.
+- Frame rate: `record_fps` (1-240) overrides the profile; the user's config
+  records at 120 FPS (DP-3 240 Hz divides evenly, DP-1 200 Hz jitters by at
+  most 4 ms, half the data of 240). Live check 15:45: area 1918x1080, 1455
+  frames in 12.2 s, 120 FPS every second, save 0.33 s, gsr ~25 % of a core.
+  The user confirmed smooth playback in Eddy without lag.
