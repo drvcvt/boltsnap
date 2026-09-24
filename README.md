@@ -332,9 +332,11 @@ The recording controls offer:
 
 A single uninterrupted recording is moved directly and skips FFmpeg at save
 time. Separate dual-monitor mode creates one native-resolution clip per output.
-Combined mode arranges both outputs like the Hyprland layout and is the only
-ordinary path that re-encodes; it uses high-quality settings intended to be
-visually lossless. Failed saves keep their source segments so they can be
+Combined mode arranges both outputs like the Hyprland layout. With GPU Screen
+Recorder and equal output scales it records them as one stream, so saving only
+remuxes; with mixed scales (or wf-recorder) each output is recorded separately
+and composed on save, the only ordinary path that re-encodes, with
+high-quality settings intended to be visually lossless. Failed saves keep their source segments so they can be
 retried or discarded instead of losing the recording.
 
 Video cards carry a **▶** badge; on Linux, clicking one opens the video in the
@@ -343,8 +345,12 @@ desktop default app. Right-click copies its file reference.
 On Linux recording uses GPU Screen Recorder (`gpu-screen-recorder`) with a
 hardware encoder: NVENC/VA-API when available, otherwise Vulkan video. Without
 it Boltsnap falls back to `wf-recorder`. Audio also requires `pactl`. With both
-outputs in Combined mode each output is recorded separately and composed on save
-with the same encoder. The
+outputs in Combined mode one stream covers both (equal scales), otherwise each
+output is recorded separately and composed on save with the same encoder. On
+NVIDIA, FFmpeg needs NVENC: GPU Screen Recorder's Vulkan H.264 encoder froze
+here at 1080p 240 FPS after a few seconds. For demo videos `record_profile =
+"quiet"` (60 FPS) keeps files light enough to play smoothly; 240 FPS over two
+outputs is about a gigapixel per second to decode. The
 unmaintained Windows backend contains native Windows Graphics Capture, Media
 Foundation H.264/AAC, and WASAPI recording code, but it is not currently
 manually verified or shipped.

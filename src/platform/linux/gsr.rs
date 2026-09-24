@@ -24,11 +24,39 @@ pub struct Info {
     pub codecs: Vec<String>,
 }
 
-// Multi-source capture (`A|B`) is not used: gsr 6.1.2 intermittently hangs on
-// start and stop with two outputs at different refresh rates.
 pub enum Target<'a> {
     Output(&'a str),
     Region(&'a Geometry),
+    /// Several outputs in one stream, as built by `combined_source`.
+    Combined(&'a str),
+}
+
+/// gsr multi-source capture of `monitors` as laid out by the compositor
+/// (`DP-3;x=0;y=0|DP-1;x=1920;y=0`, positions in video pixels). `None` for
+/// fewer than two outputs or mixed scales, which keep one stream per output.
+/// Earlier hangs with two outputs came from the Vulkan encoder, not from this.
+pub fn combined_source(monitors: &[crate::record::Monitor]) -> Option<String> {
+    let scale = monitors.first()?.scale;
+    if monitors.len() < 2 || monitors.iter().any(|m| m.scale != scale || scale <= 0.0) {
+        return None;
+    }
+    let min_x = monitors.iter().map(|m| m.x).min()?;
+    let min_y = monitors.iter().map(|m| m.y).min()?;
+    let place = |v: i32| (f64::from(v) * scale).round() as i64;
+    Some(
+        monitors
+            .iter()
+            .map(|m| {
+                format!(
+                    "{};x={};y={}",
+                    m.name,
+                    place(m.x - min_x),
+                    place(m.y - min_y)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("|"),
+    )
 }
 
 /// Only successful discovery is cached; a failed probe is retried on the next start.
@@ -135,6 +163,7 @@ pub fn args(
     let source = match target {
         Target::Output(name) => (*name).to_owned(),
         Target::Region(geo) => format!("{}x{}+{}+{}", geo.w, geo.h, geo.x, geo.y),
+        Target::Combined(source) => (*source).to_owned(),
     };
     let mut args: Vec<String> = [
         "-w",
@@ -256,6 +285,39 @@ mod tests {
             let first = choose("auto", &info).unwrap();
             assert_eq!(choose(&first.encoder, &info).unwrap(), first);
         }
+    }
+
+    fn monitor(name: &str, x: i32, y: i32, scale: f64) -> crate::record::Monitor {
+        crate::record::Monitor {
+            name: name.into(),
+            description: String::new(),
+            x,
+            y,
+            width: 1920,
+            height: 1080,
+            scale,
+            focused: false,
+        }
+    }
+
+    #[test]
+    fn combined_source_places_outputs_in_video_pixels() {
+        assert_eq!(
+            combined_source(&[monitor("DP-1", 1920, 0, 1.0), monitor("DP-3", 0, 0, 1.0)])
+                .as_deref(),
+            Some("DP-1;x=1920;y=0|DP-3;x=0;y=0")
+        );
+        // Logical layout at scale 1.5 becomes physical offsets.
+        assert_eq!(
+            combined_source(&[monitor("A", -1280, 100, 1.5), monitor("B", 0, 0, 1.5)]).as_deref(),
+            Some("A;x=0;y=150|B;x=1920;y=0")
+        );
+        assert_eq!(combined_source(&[monitor("A", 0, 0, 1.0)]), None);
+        assert_eq!(
+            combined_source(&[monitor("A", 0, 0, 1.0), monitor("B", 1920, 0, 2.0)]),
+            None,
+            "mixed scales keep one stream per output"
+        );
     }
 
     #[test]

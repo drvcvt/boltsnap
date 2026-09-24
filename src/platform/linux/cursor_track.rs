@@ -42,11 +42,23 @@ impl Drop for Tracker {
     }
 }
 
-/// Track file for a segment.
-pub fn track_path(segment: &Path) -> PathBuf {
+/// Track file of the `index`th tracker of a segment; a combined stream has one
+/// tracker per output.
+pub fn track_path_indexed(segment: &Path, index: usize) -> PathBuf {
     let mut name = segment.as_os_str().to_owned();
     name.push(".cursor");
+    if index > 0 {
+        name.push(index.to_string());
+    }
     PathBuf::from(name)
+}
+
+/// Existing track files of a segment, in tracker order.
+pub fn track_paths(segment: &Path) -> Vec<PathBuf> {
+    (0..)
+        .map(|index| track_path_indexed(segment, index))
+        .take_while(|path| path.is_file())
+        .collect()
 }
 
 /// File name of the gpu-screen-recorder plugin that draws the smooth cursor.
@@ -301,8 +313,12 @@ mod tests {
     #[test]
     fn track_path_appends_to_the_segment_name() {
         assert_eq!(
-            track_path(Path::new("/tmp/seg.mkv")),
+            track_path_indexed(Path::new("/tmp/seg.mkv"), 0),
             PathBuf::from("/tmp/seg.mkv.cursor")
+        );
+        assert_eq!(
+            track_path_indexed(Path::new("/tmp/seg.mkv"), 1),
+            PathBuf::from("/tmp/seg.mkv.cursor1")
         );
     }
 

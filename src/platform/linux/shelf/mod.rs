@@ -1200,6 +1200,7 @@ fn spawn_initial_segment(
     profile: crate::config::RecordProfile,
     tools: &RecorderTools,
     prefs: &crate::config::RecordingPrefs,
+    combined: Option<&[crate::record::Monitor]>,
 ) -> Result<
     (
         Vec<crate::record::session::ActiveRecorder>,
@@ -1216,6 +1217,7 @@ fn spawn_initial_segment(
         profile,
         audio.as_ref().map_or(&[][..], AudioCapture::inputs),
         prefs.cursor,
+        combined,
         tools,
     ) {
         Ok(active) => Ok((active, audio)),
@@ -2179,7 +2181,7 @@ impl Daemon {
             .into_iter()
             .collect();
         let (active, audio) =
-            spawn_initial_segment(&scope, &codec, profile, &tools, &self.recording_prefs)?;
+            spawn_initial_segment(&scope, &codec, profile, &tools, &self.recording_prefs, None)?;
         self.recording = Some(RecordingSession::new(
             scope,
             monitors,
@@ -2259,8 +2261,14 @@ impl Daemon {
             .collect::<Vec<_>>();
         let scope = CaptureScope::Outputs(names.clone());
         let profile = config.record_profile()?;
-        let (active, audio) =
-            spawn_initial_segment(&scope, &codec, profile, &tools, &self.recording_prefs)?;
+        let (active, audio) = spawn_initial_segment(
+            &scope,
+            &codec,
+            profile,
+            &tools,
+            &self.recording_prefs,
+            (both_mode == crate::config::RecordBothMode::Combined).then_some(monitors.as_slice()),
+        )?;
         self.recording = Some(RecordingSession::new(
             scope,
             monitors,
@@ -2600,6 +2608,8 @@ impl Daemon {
                     session.profile,
                     session.audio.as_ref().map_or(&[][..], AudioCapture::inputs),
                     session.cursor,
+                    (session.both_mode == crate::config::RecordBothMode::Combined)
+                        .then_some(session.monitors.as_slice()),
                     &RecorderTools::default(),
                 ) {
                     Ok(active) => active,
@@ -2950,7 +2960,9 @@ impl Daemon {
             let cache = crate::paths::rec_dir();
             for path in paths {
                 if path.starts_with(&cache) {
-                    let _ = std::fs::remove_file(super::cursor_track::track_path(&path));
+                    for track in super::cursor_track::track_paths(&path) {
+                        let _ = std::fs::remove_file(track);
+                    }
                     let mut timestamps = path.clone().into_os_string();
                     timestamps.push(".ts");
                     let _ = std::fs::remove_file(timestamps);

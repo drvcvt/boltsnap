@@ -130,7 +130,8 @@ fn cursor_frame(
     combined: bool,
 ) -> Option<((f64, f64), f64)> {
     let logical = |m: &Monitor| (f64::from(m.x), f64::from(m.y), f64::from(m.width) / m.scale);
-    if combined {
+    // A combined layout recorded as one stream has no output and no region.
+    if combined || (output.is_none() && req.region.is_none()) {
         let mut monitors = req.monitors.iter().filter(|m| m.scale > 0.0).map(logical);
         let first = monitors.next()?;
         let (min_x, min_y, max_x) = monitors.fold(
@@ -849,6 +850,29 @@ mod tests {
             scale: 1.0,
             focused: x == 0,
         }
+    }
+
+    #[test]
+    fn one_stream_combined_clips_map_the_cursor_over_both_outputs() {
+        let mut req = request(
+            BTreeMap::new(),
+            RecordBothMode::Combined,
+            SaveDestination::Shelf,
+        );
+        req.monitors = vec![monitor("DP-1", 1920), monitor("DP-3", 0)];
+        // One stream: no output key, no region, but the whole layout.
+        assert_eq!(cursor_frame(&req, None, false), Some(((0.0, 0.0), 3840.0)));
+        assert_eq!(
+            cursor_frame(&req, Some("DP-1"), false),
+            Some(((1920.0, 0.0), 1920.0))
+        );
+        req.region = Some(super::super::Geometry {
+            x: 10,
+            y: 20,
+            w: 300,
+            h: 200,
+        });
+        assert_eq!(cursor_frame(&req, None, false), Some(((10.0, 20.0), 300.0)));
     }
 
     #[test]

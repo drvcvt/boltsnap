@@ -49,9 +49,9 @@ pub struct ActiveRecorder {
     pub output: Option<String>,
     pub path: PathBuf,
     pub child: Child,
-    /// Pointer tracker of a smooth-cursor segment; held only to stop it on drop.
+    /// Pointer trackers of a smooth-cursor segment; held only to stop them on drop.
     #[allow(dead_code)]
-    pub cursor: Option<crate::platform::cursor_track::Tracker>,
+    pub cursor: Vec<crate::platform::cursor_track::Tracker>,
 }
 
 #[derive(Clone, Debug)]
@@ -296,54 +296,86 @@ impl RecordingSession {
 static SEGMENT_ID: AtomicU64 = AtomicU64::new(0);
 
 /// Smooth `cursor` modes record without the system pointer; the gsr plugin
-/// draws the smoothed cursor live and a track per segment feeds
-/// `X.cursor.json`. They require gpu-screen-recorder.
+/// draws the smoothed cursor live and a track per tracked output feeds
+/// `X.cursor.json`. They require gpu-screen-recorder. `combined` records these
+/// outputs as one gsr stream when their scales match, so saving only remuxes.
 pub fn spawn_segment(
     scope: &CaptureScope,
     codec: &str,
     profile: RecordProfile,
     audio: &[String],
     cursor: RecordCursor,
+    combined: Option<&[Monitor]>,
     tools: &RecorderTools,
 ) -> Result<Vec<ActiveRecorder>, String> {
-    spawn_segment_with(scope, codec, profile, audio, cursor, tools, |command| {
-        let parent = unsafe { libc::getpid() };
-        command
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::inherit());
-        unsafe {
-            command.pre_exec(move || {
-                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) != 0 {
-                    return Err(io::Error::last_os_error());
-                }
-                if libc::getppid() != parent {
-                    return Err(io::Error::new(
-                        io::ErrorKind::Interrupted,
-                        "boltsnap daemon exited while starting recorder",
-                    ));
-                }
-                Ok(())
-            });
-        }
-        command.spawn()
-    })
+    spawn_segment_with(
+        scope,
+        codec,
+        profile,
+        audio,
+        cursor,
+        combined,
+        tools,
+        |command| {
+            let parent = unsafe { libc::getpid() };
+            command
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::inherit());
+            unsafe {
+                command.pre_exec(move || {
+                    if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) != 0 {
+                        return Err(io::Error::last_os_error());
+                    }
+                    if libc::getppid() != parent {
+                        return Err(io::Error::new(
+                            io::ErrorKind::Interrupted,
+                            "boltsnap daemon exited while starting recorder",
+                        ));
+                    }
+                    Ok(())
+                });
+            }
+            command.spawn()
+        },
+    )
 }
 
 /// Cursor trackers and plugin feeds of one smooth-cursor segment.
 struct SmoothCursor {
     plugin: PathBuf,
     feeds: crate::platform::cursor_track::Feeds,
-    trackers: Vec<Option<crate::platform::cursor_track::Tracker>>,
-    areas: Vec<crate::platform::cursor_track::Area>,
+    /// Per recorder: its trackers (one per output it shows).
+    trackers: Vec<Vec<crate::platform::cursor_track::Tracker>>,
+    /// Per recorder: logical origin and width its video covers.
+    frames: Vec<((f64, f64), f64)>,
 }
 
+/// Logical origin and width of `monitors` laid out together.
+fn logical_frame(monitors: &[Monitor]) -> ((f64, f64), f64) {
+    let left = monitors
+        .iter()
+        .map(|m| f64::from(m.x))
+        .fold(f64::MAX, f64::min);
+    let top = monitors
+        .iter()
+        .map(|m| f64::from(m.y))
+        .fold(f64::MAX, f64::min);
+    let right = monitors
+        .iter()
+        .map(|m| f64::from(m.x) + f64::from(m.width) / m.scale)
+        .fold(f64::MIN, f64::max);
+    ((left, top), right - left)
+}
+
+#[allow(clippy::too_many_arguments)]
 fn spawn_segment_with(
     scope: &CaptureScope,
     codec: &str,
     profile: RecordProfile,
     audio: &[String],
     cursor: RecordCursor,
+    combined: Option<&[Monitor]>,
     tools: &RecorderTools,
     mut spawn: impl FnMut(&mut Command) -> io::Result<Child>,
 ) -> Result<Vec<ActiveRecorder>, String> {
@@ -351,18 +383,26 @@ fn spawn_segment_with(
     use crate::record::cursor_motion::{PLUGIN_ENV, PluginConfig, cursor_size};
     fs::create_dir_all(&tools.segment_dir)
         .map_err(|error| format!("create recording cache: {error}"))?;
+    let gsr_codec = match &tools.gsr {
+        Some(_) => Some(gsr::choose(codec, &gsr::info()?)?),
+        None => None,
+    };
+    // One gsr stream for the combined layout (gsr only, matching scales).
+    let combined = match (scope, &gsr_codec, combined) {
+        (CaptureScope::Outputs(_), Some(_), Some(monitors)) => {
+            gsr::combined_source(monitors).map(|source| (source, monitors))
+        }
+        _ => None,
+    };
     let outputs: Vec<Option<&str>> = match scope {
         CaptureScope::Area(_) => vec![None],
         CaptureScope::Outputs(outputs) if outputs.is_empty() => {
             return Err("cannot record an empty output list".into());
         }
+        CaptureScope::Outputs(_) if combined.is_some() => vec![None],
         CaptureScope::Outputs(outputs) => {
             outputs.iter().map(|output| Some(output.as_str())).collect()
         }
-    };
-    let gsr_codec = match &tools.gsr {
-        Some(_) => Some(gsr::choose(codec, &gsr::info()?)?),
-        None => None,
     };
     if gsr_codec.is_none() && audio.len() > 1 {
         return Err("wf-recorder records a single audio source".into());
@@ -374,30 +414,64 @@ fn spawn_segment_with(
     let extension = if gsr_codec.is_some() { "mkv" } else { "mp4" };
     let paths: Vec<PathBuf> = outputs
         .iter()
-        .map(|output| segment_path(&tools.segment_dir, *output, extension))
+        .map(|output| {
+            let label = if combined.is_some() {
+                Some("combined")
+            } else {
+                *output
+            };
+            segment_path(&tools.segment_dir, label, extension)
+        })
         .collect();
     // Trackers start before capture so the initial position is known.
     let mut smooth = if smooth {
         let plugin = cursor_track::plugin_path()?;
         let feeds = cursor_track::Feeds::new(outputs.len())?;
-        let mut trackers = Vec::with_capacity(outputs.len());
-        let mut areas = Vec::with_capacity(outputs.len());
-        for (index, (output, path)) in outputs.iter().zip(&paths).enumerate() {
-            let source = match (scope, output) {
-                (CaptureScope::Area(geometry), _) => cursor_track::Source::Region(*geometry),
-                (_, Some(output)) => cursor_track::Source::Output((*output).to_owned()),
-                _ => unreachable!(),
-            };
-            let (tracker, area) =
-                cursor_track::start(source, index, Some(cursor_track::track_path(path)), &feeds)?;
-            trackers.push(Some(tracker));
-            areas.push(area);
+        // (tracked source, recorder it belongs to)
+        let tracked: Vec<(cursor_track::Source, usize)> = match (&combined, scope) {
+            (Some((_, monitors)), _) => monitors
+                .iter()
+                .map(|m| (cursor_track::Source::Output(m.name.clone()), 0))
+                .collect(),
+            (None, CaptureScope::Area(geometry)) => {
+                vec![(cursor_track::Source::Region(*geometry), 0)]
+            }
+            (None, CaptureScope::Outputs(_)) => outputs
+                .iter()
+                .enumerate()
+                .map(|(i, output)| {
+                    (
+                        cursor_track::Source::Output(output.unwrap_or_default().to_owned()),
+                        i,
+                    )
+                })
+                .collect(),
+        };
+        let mut trackers: Vec<Vec<cursor_track::Tracker>> =
+            outputs.iter().map(|_| Vec::new()).collect();
+        let mut frames = vec![((0.0, 0.0), 1.0); outputs.len()];
+        for (index, (source, recorder)) in tracked.into_iter().enumerate() {
+            let track =
+                cursor_track::track_path_indexed(&paths[recorder], trackers[recorder].len());
+            let (tracker, area) = cursor_track::start(source, index, Some(track), &feeds)?;
+            trackers[recorder].push(tracker);
+            frames[recorder] = ((area.x, area.y), area.width);
+        }
+        match (&combined, scope) {
+            (Some((_, monitors)), _) => frames[0] = logical_frame(monitors),
+            (None, CaptureScope::Area(geometry)) => {
+                frames[0] = (
+                    (f64::from(geometry.x), f64::from(geometry.y)),
+                    f64::from(geometry.w),
+                )
+            }
+            _ => {}
         }
         Some(SmoothCursor {
             plugin,
             feeds,
             trackers,
-            areas,
+            frames,
         })
     } else {
         None
@@ -407,9 +481,12 @@ fn spawn_segment_with(
     for (index, (output, path)) in outputs.into_iter().zip(paths).enumerate() {
         let (program, args) = match (&tools.gsr, &gsr_codec) {
             (Some(program), Some(codec)) => {
-                let target = match (scope, output) {
-                    (CaptureScope::Area(geometry), None) => gsr::Target::Region(geometry),
-                    (CaptureScope::Outputs(_), Some(output)) => gsr::Target::Output(output),
+                let target = match (scope, output, &combined) {
+                    (CaptureScope::Outputs(_), None, Some((source, _))) => {
+                        gsr::Target::Combined(source)
+                    }
+                    (CaptureScope::Area(geometry), None, _) => gsr::Target::Region(geometry),
+                    (CaptureScope::Outputs(_), Some(output), _) => gsr::Target::Output(output),
                     _ => unreachable!(),
                 };
                 let plugin = smooth.as_ref().map(|smooth| smooth.plugin.as_path());
@@ -432,19 +509,10 @@ fn spawn_segment_with(
         };
         let mut command = Command::new(program);
         command.args(&args);
-        let mut tracker = None;
+        let mut trackers = Vec::new();
         if let Some(smooth) = &mut smooth {
             let fd = smooth.feeds.readers[index].as_raw_fd();
-            let (origin, width) = match scope {
-                CaptureScope::Area(geometry) => (
-                    (f64::from(geometry.x), f64::from(geometry.y)),
-                    f64::from(geometry.w),
-                ),
-                CaptureScope::Outputs(_) => {
-                    let area = smooth.areas[index];
-                    ((area.x, area.y), area.width)
-                }
-            };
+            let (origin, width) = smooth.frames[index];
             let config = PluginConfig {
                 fd,
                 preset: cursor.key().into(),
@@ -462,14 +530,14 @@ fn spawn_segment_with(
                     Ok(())
                 });
             }
-            tracker = smooth.trackers[index].take();
+            trackers = std::mem::take(&mut smooth.trackers[index]);
         }
         match spawn(&mut command) {
             Ok(child) => active.push(ActiveRecorder {
                 output: output.map(str::to_owned),
                 path,
                 child,
-                cursor: tracker,
+                cursor: trackers,
             }),
             Err(error) => {
                 stop_and_reap(active);
@@ -968,6 +1036,7 @@ while :; do sleep 1; done
             RecordProfile::Quiet,
             &[],
             RecordCursor::System,
+            None,
             &tools,
         )
         .unwrap();
@@ -997,6 +1066,7 @@ while :; do sleep 1; done
                     session.profile,
                     &[],
                     RecordCursor::System,
+                    None,
                     &tools,
                 )
                 .unwrap();
@@ -1077,6 +1147,7 @@ sleep 1
             RecordProfile::Quality,
             &[],
             RecordCursor::System,
+            None,
             &tools,
         )
         .unwrap();
@@ -1130,6 +1201,7 @@ while :; do sleep 1; done
                 RecordProfile::Quality,
                 &[],
                 RecordCursor::System,
+                None,
                 &tools,
                 |command| {
                     spawns += 1;
@@ -1185,7 +1257,7 @@ while :; do sleep 1; done
                 output: Some("DP-3".into()),
                 path: path.clone(),
                 child,
-                cursor: None,
+                cursor: Vec::new(),
             }],
         }
         .wait();
@@ -1218,7 +1290,7 @@ while :; do sleep 1; done
                     output: Some("DP-1".into()),
                     path: path.clone(),
                     child,
-                    cursor: None,
+                    cursor: Vec::new(),
                 }],
             };
             job.interrupt().unwrap();
@@ -1252,7 +1324,7 @@ while :; do sleep 1; done
                 output: None,
                 path: path.clone(),
                 child,
-                cursor: None,
+                cursor: Vec::new(),
             }],
         };
         job.interrupt().unwrap();
@@ -1300,6 +1372,7 @@ exec python3 -c 'import ctypes,signal,sys,time; value=ctypes.c_int(); ctypes.CDL
             RecordProfile::Quality,
             &[],
             RecordCursor::System,
+            None,
             &tools,
         )
         .unwrap();
@@ -1458,6 +1531,7 @@ exec python3 -c 'import ctypes,signal,sys,time; value=ctypes.c_int(); ctypes.CDL
                 RecordProfile::Quality,
                 &[],
                 RecordCursor::Mellow,
+                None,
                 &tools,
             )
             .unwrap();
