@@ -73,25 +73,73 @@ pub(super) fn ensure_daemon() -> io::Result<UnixStream> {
 }
 
 pub fn call_daemon(req: Request) -> io::Result<Response> {
-    let mut stream = ensure_daemon()?;
+    send(&mut connect()?, &req)
+}
+
+/// Send a screenshot to the shelf. A daemon older than `add_thumb` reads the
+/// frame, rejects the command and closes without a reply; the PNG then goes
+/// again as a plain `add`.
+pub fn add_to_shelf(req: Request) -> io::Result<Response> {
+    add_with(connect, req)
+}
+
+fn add_with(
+    mut connect: impl FnMut() -> io::Result<UnixStream>,
+    req: Request,
+) -> io::Result<Response> {
+    match (send(&mut connect()?, &req), req) {
+        (
+            Err(error),
+            Request::Add {
+                source,
+                png,
+                output,
+                thumb: Some(_),
+            },
+        ) if error.kind() == io::ErrorKind::UnexpectedEof => {
+            let legacy = Request::Add {
+                source,
+                png,
+                output,
+                thumb: None,
+            };
+            send(&mut connect()?, &legacy)
+        }
+        (response, _) => response,
+    }
+}
+
+fn connect() -> io::Result<UnixStream> {
+    let stream = ensure_daemon()?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
-    match &req {
+    Ok(stream)
+}
+
+fn send(stream: &mut UnixStream, req: &Request) -> io::Result<Response> {
+    match req {
         Request::Add {
             source,
             png,
             output,
+            thumb,
         } => {
             // Frame the existing PNG directly instead of copying it into a
             // second header+payload Vec. Old daemons ignore the optional trace.
-            let header = serde_json::json!({"cmd":"add","source":source,"output":output,
-                "trace":super::timing::request_id()});
-            crate::protocol::write_frame(&mut stream, header.to_string().as_bytes(), png)?;
+            let mut header =
+                crate::protocol::add_header(source, png, output.as_deref(), thumb.as_ref());
+            header["trace"] = serde_json::json!(super::timing::request_id());
+            let rgba = thumb.as_ref().map_or(&[][..], |thumb| &thumb.rgba);
+            crate::protocol::write_frame_parts(
+                &mut *stream,
+                header.to_string().as_bytes(),
+                &[png, rgba],
+            )?;
         }
         _ => stream.write_all(&req.encode())?,
     }
     stream.flush()?;
-    Response::read(&mut stream)
+    Response::read(stream)
 }
 
 pub fn watch_recording() -> io::Result<UnixStream> {
@@ -294,24 +342,98 @@ mod tests {
 
     #[test]
     fn request_add_roundtrip() {
-        let req = Request::Add {
-            source: "area".into(),
-            png: vec![9, 8, 7],
-            output: Some("DP-3".into()),
+        let thumb = crate::protocol::CardThumb {
+            width: 2,
+            height: 1,
+            rgba: vec![1, 2, 3, 4, 5, 6, 7, 8],
         };
-        let bytes = req.encode();
-        let mut cur = Cursor::new(bytes);
-        match Request::read(&mut cur).unwrap() {
-            Request::Add {
-                source,
-                png,
-                output,
-            } => {
-                assert_eq!(source, "area");
-                assert_eq!(png, vec![9, 8, 7]);
-                assert_eq!(output.as_deref(), Some("DP-3"));
+        for thumb in [None, Some(thumb)] {
+            let req = Request::Add {
+                source: "area".into(),
+                png: vec![9, 8, 7],
+                output: Some("DP-3".into()),
+                thumb: thumb.clone(),
+            };
+            let bytes = req.encode();
+            let mut cur = Cursor::new(bytes);
+            match Request::read(&mut cur).unwrap() {
+                Request::Add {
+                    source,
+                    png,
+                    output,
+                    thumb: read,
+                } => {
+                    assert_eq!(source, "area");
+                    assert_eq!(png, vec![9, 8, 7]);
+                    assert_eq!(output.as_deref(), Some("DP-3"));
+                    assert_eq!(read, thumb);
+                }
+                other => panic!("wrong variant: {other:?}"),
             }
-            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn add_falls_back_to_plain_add_when_an_old_daemon_closes() {
+        let (first, mut old) = UnixStream::pair().unwrap();
+        let (second, mut new) = UnixStream::pair().unwrap();
+        // The old daemon reads the whole frame, rejects add_thumb, and closes.
+        let old_daemon = std::thread::spawn(move || {
+            let (header, _) = read_frame(&mut old).unwrap();
+            assert!(String::from_utf8(header).unwrap().contains("add_thumb"));
+        });
+        let daemon = std::thread::spawn(move || {
+            match Request::read(&mut new).unwrap() {
+                Request::Add { png, thumb, .. } => {
+                    assert_eq!(png, vec![1, 2, 3]);
+                    assert_eq!(thumb, None);
+                }
+                other => panic!("wrong variant: {other:?}"),
+            }
+            new.write_all(&Response::ok(None).encode()).unwrap();
+        });
+        let mut streams = vec![second, first];
+        let response = add_with(
+            || Ok(streams.pop().unwrap()),
+            Request::Add {
+                source: "full".into(),
+                png: vec![1, 2, 3],
+                output: None,
+                thumb: Some(crate::protocol::CardThumb {
+                    width: 1,
+                    height: 1,
+                    rgba: vec![0; 4],
+                }),
+            },
+        )
+        .unwrap();
+        assert!(response.ok);
+        old_daemon.join().unwrap();
+        daemon.join().unwrap();
+    }
+
+    #[test]
+    fn add_thumb_rejects_inconsistent_lengths() {
+        for (header, payload) in [
+            // png_len beyond the payload
+            (
+                r#"{"cmd":"add_thumb","png_len":9,"thumb_w":1,"thumb_h":1}"#,
+                8,
+            ),
+            // 3 PNG bytes leave 5, not 1x1x4
+            (
+                r#"{"cmd":"add_thumb","png_len":3,"thumb_w":1,"thumb_h":1}"#,
+                8,
+            ),
+            (r#"{"cmd":"add_thumb","png_len":3,"thumb_w":1}"#, 7),
+        ] {
+            let mut bytes = Vec::new();
+            write_frame(&mut bytes, header.as_bytes(), &vec![0; payload]).unwrap();
+            assert_eq!(
+                Request::read(&mut Cursor::new(bytes)).unwrap_err().kind(),
+                io::ErrorKind::InvalidData,
+                "{header}"
+            );
         }
     }
 
@@ -326,7 +448,10 @@ mod tests {
         .unwrap();
 
         match Request::read(&mut Cursor::new(bytes)).unwrap() {
-            Request::Add { output, .. } => assert_eq!(output, None),
+            Request::Add { output, thumb, .. } => {
+                assert_eq!(output, None);
+                assert_eq!(thumb, None);
+            }
             other => panic!("wrong variant: {other:?}"),
         }
     }

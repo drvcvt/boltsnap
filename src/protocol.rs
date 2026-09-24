@@ -23,12 +23,24 @@ pub enum RecordingAction {
     Discard,
 }
 
+/// Card thumbnail sent with a screenshot so the shelf need not decode the PNG.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CardThumb {
+    pub width: u32,
+    pub height: u32,
+    /// RGBA8, `width * height * 4` bytes.
+    pub rgba: Vec<u8>,
+}
+
 #[derive(Debug)]
 pub enum Request {
+    /// `add` frames carry the PNG; `add_thumb` frames append the card thumbnail
+    /// after it, which older daemons reject without side effects.
     Add {
         source: String,
         png: Vec<u8>,
         output: Option<String>,
+        thumb: Option<CardThumb>,
     },
     /// Put a video file on the shelf. Any client may send it; the shelf keeps its
     /// own copy and answers with that path.
@@ -293,11 +305,41 @@ fn parse_string_array(value: &Value, name: &str) -> io::Result<Vec<String>> {
 
 /// Frame = [u32 BE header_len][u32 BE payload_len][header bytes][payload bytes].
 pub fn write_frame<W: Write>(w: &mut W, header: &[u8], payload: &[u8]) -> io::Result<()> {
+    write_frame_parts(w, header, &[payload])
+}
+
+/// A frame whose payload is the concatenation of `parts`, written without
+/// copying them together first.
+pub fn write_frame_parts<W: Write>(w: &mut W, header: &[u8], parts: &[&[u8]]) -> io::Result<()> {
+    let payload_len: usize = parts.iter().map(|part| part.len()).sum();
     w.write_all(&(header.len() as u32).to_be_bytes())?;
-    w.write_all(&(payload.len() as u32).to_be_bytes())?;
+    w.write_all(&(payload_len as u32).to_be_bytes())?;
     w.write_all(header)?;
-    w.write_all(payload)?;
+    for part in parts {
+        w.write_all(part)?;
+    }
     w.flush()
+}
+
+/// Header of an `add` or `add_thumb` frame; the payload is `png`, then the
+/// thumbnail's RGBA bytes.
+pub fn add_header(
+    source: &str,
+    png: &[u8],
+    output: Option<&str>,
+    thumb: Option<&CardThumb>,
+) -> Value {
+    let mut header = json!({ "cmd": "add", "source": source });
+    if let Some(output) = output {
+        header["output"] = json!(output);
+    }
+    if let Some(thumb) = thumb {
+        header["cmd"] = json!("add_thumb");
+        header["png_len"] = json!(png.len());
+        header["thumb_w"] = json!(thumb.width);
+        header["thumb_h"] = json!(thumb.height);
+    }
+    header
 }
 
 pub fn read_frame<R: Read>(r: &mut R) -> io::Result<(Vec<u8>, Vec<u8>)> {
@@ -331,12 +373,11 @@ impl Request {
                 source,
                 png,
                 output,
+                thumb,
             } => {
-                let mut header = json!({ "cmd": "add", "source": source });
-                if let Some(output) = output {
-                    header["output"] = json!(output);
-                }
-                write_frame(&mut buf, header.to_string().as_bytes(), png).unwrap();
+                let header = add_header(source, png, output.as_deref(), thumb.as_ref());
+                let rgba = thumb.as_ref().map_or(&[][..], |thumb| &thumb.rgba);
+                write_frame_parts(&mut buf, header.to_string().as_bytes(), &[png, rgba]).unwrap();
             }
             Request::AddVideo {
                 source,
@@ -432,19 +473,53 @@ impl Request {
         let v: Value = serde_json::from_slice(&header)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         match v.get("cmd").and_then(|c| c.as_str()) {
-            Some("add") => Ok(Request::Add {
-                source: v
-                    .get("source")
-                    .and_then(|s| s.as_str())
-                    .unwrap_or("")
-                    .to_string(),
-                png: payload,
-                output: v
-                    .get("output")
-                    .and_then(|s| s.as_str())
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_owned),
-            }),
+            Some(cmd @ ("add" | "add_thumb")) => {
+                let mut png = payload;
+                let thumb = if cmd == "add_thumb" {
+                    let field = |name: &str| {
+                        v.get(name)
+                            .and_then(Value::as_u64)
+                            .ok_or_else(|| invalid_data(format!("add_thumb needs {name}")))
+                    };
+                    let png_len = usize::try_from(field("png_len")?)
+                        .ok()
+                        .filter(|len| *len <= png.len())
+                        .ok_or_else(|| invalid_data("add_thumb png_len exceeds the payload"))?;
+                    let (width, height) = (
+                        u32::try_from(field("thumb_w")?).map_err(|_| invalid_data("thumb_w"))?,
+                        u32::try_from(field("thumb_h")?).map_err(|_| invalid_data("thumb_h"))?,
+                    );
+                    let rgba = png.split_off(png_len);
+                    if Some(rgba.len() as u64)
+                        != u64::from(width)
+                            .checked_mul(u64::from(height))
+                            .and_then(|n| n.checked_mul(4))
+                    {
+                        return Err(invalid_data("add_thumb thumbnail size mismatch"));
+                    }
+                    Some(CardThumb {
+                        width,
+                        height,
+                        rgba,
+                    })
+                } else {
+                    None
+                };
+                Ok(Request::Add {
+                    source: v
+                        .get("source")
+                        .and_then(|s| s.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    png,
+                    output: v
+                        .get("output")
+                        .and_then(|s| s.as_str())
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_owned),
+                    thumb,
+                })
+            }
             Some("add_video") => Ok(Request::AddVideo {
                 source: v
                     .get("source")

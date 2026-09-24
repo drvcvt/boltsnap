@@ -624,10 +624,13 @@ fn spawn_client_reader(
                 source,
                 png,
                 output,
+                thumb,
             }) => {
                 let trace = value.as_ref().and_then(|v| v["trace"].as_u64());
                 let _timing = super::timing::Span::for_request("shelf_png_prepare", trace);
-                let result = prepare_add(png, source, output).map(|mut add| {
+                // Trust a client thumbnail only from our own user.
+                let thumb = thumb.filter(|_| super::image_transfer::same_user(&stream).is_ok());
+                let result = prepare_add(png, source, output, thumb).map(|mut add| {
                     add.trace = trace;
                     add
                 });
@@ -679,21 +682,33 @@ fn spawn_client_reader(
     });
 }
 
+/// Store a screenshot PNG for a card. With the client's card thumbnail only the
+/// PNG header is checked; otherwise the PNG is decoded for the thumbnail.
 fn prepare_add(
     png: Vec<u8>,
     source: String,
     output: Option<String>,
+    thumb: Option<crate::protocol::CardThumb>,
 ) -> Result<PreparedAdd, String> {
+    use crate::shelf::thumbnail::{CARD_H, CARD_W};
     if png.len() as u64 > MAX_CACHED_IMAGE_BYTES {
         return Err("PNG exceeds the 256 MiB shelf cache limit".into());
     }
-    let image = decode_shelf_image(&png)?;
+    let card = thumb
+        .filter(|thumb| (thumb.width, thumb.height) == (CARD_W, CARD_H))
+        .and_then(|thumb| image::RgbaImage::from_raw(thumb.width, thumb.height, thumb.rgba));
+    let thumb = match card {
+        Some(card) => {
+            shelf_png_decoder(&png)?;
+            card
+        }
+        None => crate::shelf::thumbnail::make_image_card_thumbnail(
+            &decode_shelf_image(&png)?,
+            CARD_W,
+            CARD_H,
+        ),
+    };
     let path = write_temp_png("shelf", &png)?;
-    let thumb = crate::shelf::thumbnail::make_image_card_thumbnail(
-        &image,
-        crate::shelf::thumbnail::CARD_W,
-        crate::shelf::thumbnail::CARD_H,
-    );
     Ok(PreparedAdd {
         path,
         thumb,
@@ -791,6 +806,12 @@ fn prepare_pixels_with(
 }
 
 fn decode_shelf_image(png: &[u8]) -> Result<image::DynamicImage, String> {
+    image::DynamicImage::from_decoder(shelf_png_decoder(png)?)
+        .map_err(|e| format!("decode PNG: {e}"))
+}
+
+/// A PNG decoder after checking the header against the shelf's pixel limit.
+fn shelf_png_decoder(png: &[u8]) -> Result<impl image::ImageDecoder + '_, String> {
     use image::ImageDecoder;
     let mut reader =
         image::ImageReader::with_format(std::io::Cursor::new(png), image::ImageFormat::Png);
@@ -806,7 +827,7 @@ fn decode_shelf_image(png: &[u8]) -> Result<image::DynamicImage, String> {
     if u64::from(width) * u64::from(height) > MAX_CACHED_IMAGE_BYTES / 4 {
         return Err("decode PNG: image exceeds the 64 megapixel limit".into());
     }
-    image::DynamicImage::from_decoder(decoder).map_err(|e| format!("decode PNG: {e}"))
+    Ok(decoder)
 }
 
 fn spawn_client_writer(mut stream: UnixStream, bytes: Vec<u8>) {
@@ -1574,12 +1595,7 @@ impl Daemon {
             crate::ipc::Request::Ping => {
                 spawn_client_writer(stream, b"PONG".to_vec());
             }
-            crate::ipc::Request::Add {
-                source: _,
-                png: _,
-                output: _,
-            }
-            | crate::ipc::Request::AddVideo { .. } => {
+            crate::ipc::Request::Add { .. } | crate::ipc::Request::AddVideo { .. } => {
                 self.write_response(
                     stream,
                     crate::ipc::Response::error("add request was not prepared"),
@@ -3861,9 +3877,103 @@ mod tests {
         );
     }
 
+    fn client_thumb(width: u32, height: u32) -> crate::protocol::CardThumb {
+        crate::protocol::CardThumb {
+            width,
+            height,
+            rgba: vec![7; (width * height * 4) as usize],
+        }
+    }
+
+    /// A PNG with a valid header whose image data is damaged.
+    fn png_with_broken_data() -> Vec<u8> {
+        let rgb = image::RgbImage::from_fn(64, 48, |x, y| image::Rgb([x as u8, y as u8, 9]));
+        let mut png = Vec::new();
+        image::DynamicImage::ImageRgb8(rgb)
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let idat = png.windows(4).position(|tag| tag == b"IDAT").unwrap();
+        png[idat + 4..idat + 14].fill(0xff);
+        png
+    }
+
+    #[test]
+    fn client_thumbnail_skips_decoding_the_png() {
+        use crate::shelf::thumbnail::{CARD_H, CARD_W};
+        let png = png_with_broken_data();
+        assert!(prepare_add(png.clone(), "full".into(), None, None).is_err());
+        let add =
+            prepare_add(png, "full".into(), None, Some(client_thumb(CARD_W, CARD_H))).unwrap();
+        assert_eq!(add.thumb.as_raw(), &vec![7; (CARD_W * CARD_H * 4) as usize]);
+        // A thumbnail of the wrong size is ignored and the PNG decoded instead.
+        let add = prepare_add(png_bytes(), "full".into(), None, Some(client_thumb(2, 2))).unwrap();
+        assert_eq!(add.thumb.dimensions(), (CARD_W, CARD_H));
+        assert_ne!(add.thumb.as_raw()[..4], [7, 7, 7, 7]);
+    }
+
+    #[test]
+    fn client_thumbnail_still_enforces_the_pixel_limit() {
+        use crate::shelf::thumbnail::{CARD_H, CARD_W};
+        use image::ImageEncoder;
+        // 9000x9000 header, far above 64 MP; the body never gets read.
+        let mut png = Vec::new();
+        image::codecs::png::PngEncoder::new(&mut png)
+            .write_image(&[0; 3], 1, 1, image::ExtendedColorType::Rgb8)
+            .unwrap();
+        png[16..20].copy_from_slice(&9000u32.to_be_bytes());
+        png[20..24].copy_from_slice(&9000u32.to_be_bytes());
+        let crc = crc32fast_ihdr(&png[12..29]);
+        png[29..33].copy_from_slice(&crc.to_be_bytes());
+        let Err(error) = prepare_add(png, "full".into(), None, Some(client_thumb(CARD_W, CARD_H)))
+        else {
+            panic!("oversized PNG was accepted")
+        };
+        assert!(error.contains("64 megapixel"), "{error}");
+    }
+
+    /// CRC-32 (PNG polynomial) of a chunk's type and data.
+    fn crc32fast_ihdr(bytes: &[u8]) -> u32 {
+        let mut crc = 0xffff_ffffu32;
+        for &byte in bytes {
+            crc ^= u32::from(byte);
+            for _ in 0..8 {
+                crc = if crc & 1 != 0 {
+                    (crc >> 1) ^ 0xedb8_8320
+                } else {
+                    crc >> 1
+                };
+            }
+        }
+        !crc
+    }
+
+    #[test]
+    fn cli_card_thumbnail_matches_the_decoded_one() {
+        use crate::shelf::thumbnail::{CARD_H, CARD_W};
+        let rgb = image::RgbImage::from_fn(1555, 1080, |x, y| {
+            image::Rgb([(x % 251) as u8, (y % 241) as u8, ((x ^ y) % 256) as u8])
+        });
+        let from_cli = crate::shelf::thumbnail::make_rgb_card_thumbnail(
+            &image::ImageBuffer::from_raw(rgb.width(), rgb.height(), rgb.as_raw().as_slice())
+                .unwrap(),
+            CARD_W,
+            CARD_H,
+        );
+        let mut png = Vec::new();
+        image::DynamicImage::ImageRgb8(rgb)
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let decoded = crate::shelf::thumbnail::make_image_card_thumbnail(
+            &decode_shelf_image(&png).unwrap(),
+            CARD_W,
+            CARD_H,
+        );
+        assert_eq!(from_cli, decoded);
+    }
+
     #[test]
     fn invalid_png_preparation_returns_an_ingest_error() {
-        let result = prepare_add(vec![1, 2, 3], "area".into(), None);
+        let result = prepare_add(vec![1, 2, 3], "area".into(), None, None);
         let Err(error) = result else {
             panic!("invalid PNG was accepted")
         };
@@ -3934,6 +4044,7 @@ mod tests {
                     source: "test".into(),
                     png: vec![1],
                     output: None,
+                    thumb: None,
                 }
                 .encode(),
             )
@@ -3966,6 +4077,7 @@ mod tests {
                     source: "area".into(),
                     png: png_bytes(),
                     output: Some("DP-3".into()),
+                    thumb: None,
                 }
                 .encode(),
             )

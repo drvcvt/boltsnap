@@ -31,6 +31,15 @@ mit größerer Schrift.
 - Im normalen PNG-IPC wird der vorhandene PNG-Puffer direkt geschrieben, ohne
   ihn vorher in einen zweiten Header-plus-Payload-Puffer zu kopieren. Das
   bestehende Wire-Format bleibt kompatibel.
+- Seit 24.09.: Das CLI baut das 190x132-Kartenthumbnail aus dem RGB-Bild, das es
+  ohnehin im Speicher hat (ca. 3 ms), und schickt es als `add_thumb` hinter dem
+  PNG mit. Der Daemon prüft dann nur den PNG-Header (64-MP-Grenze) statt das Bild
+  voll zu dekodieren; gemessen kostete der alte Weg `shelf_png_prepare` 21,5 ms
+  bei 3840x1080. Ein Thumbnail wird nur vom eigenen User und nur in Kartengröße
+  angenommen, sonst dekodiert der Daemon wie bisher. Ein älterer Daemon verwirft
+  `add_thumb` ohne Nebenwirkung und schließt; das CLI schickt dann ein normales
+  `add` (live gegen den Daemon von `c50adfe` geprüft). Plan:
+  [2026-09-24-performance-save-and-screenshot.md](plans/2026-09-24-performance-save-and-screenshot.md), B1.
 
 ## Selector-UI
 
