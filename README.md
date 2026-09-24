@@ -263,6 +263,19 @@ restarted.
 `boltsnap doctor` reports the Wayland session, whether the daemon is running,
 and the socket path.
 
+Other tools can put media on the shelf through that socket. Each message is a
+frame: header length and payload length as big-endian `u32`, then a JSON
+header, then the payload.
+
+- `{"cmd":"add","source":"…","output":"DP-1"}` with PNG bytes as payload.
+- `{"cmd":"add_video","path":"/abs/clip.mp4","source":"…","output":"DP-1"}`
+  with no payload. The shelf keeps its own copy of the file and answers with a
+  frame whose header is `{"ok":true,"path":"…"}` (or `"ok":false` with an
+  `"error"`). On Windows the shelf only takes a copy with
+  `"take_ownership":true`; without it the card shows your file in place.
+
+`output` is optional and picks the monitor the shelf appears on.
+
 Flags still work: `--copy` also copies to the clipboard on capture, `-o PATH`
 / `--save` write a file (no shelf), and `-o -` streams PNG to stdout. **X11 is
 unchanged** — it keeps the classic copy-to-clipboard one-shot behavior with no
