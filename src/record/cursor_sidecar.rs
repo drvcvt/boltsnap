@@ -5,7 +5,7 @@ use super::cursor::{self, Mapping, Placed, Sample, Track, sidecar_path};
 use crate::config::RecordCursor;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
 
 /// A group's cursor samples in logical units relative to the clip origin.
 pub struct Logical {
@@ -118,8 +118,9 @@ pub struct Probe {
 
 pub fn probe(path: &Path, ffmpeg: &Path) -> Result<Probe, String> {
     let ffprobe = ffmpeg.with_file_name("ffprobe");
-    let output = Command::new(&ffprobe)
-        .args([
+    let output = run_ffprobe(
+        &ffprobe,
+        &[
             "-v",
             "error",
             "-select_streams",
@@ -128,10 +129,9 @@ pub fn probe(path: &Path, ffmpeg: &Path) -> Result<Probe, String> {
             "stream=width,height:format=duration",
             "-of",
             "default=nw=1",
-        ])
-        .arg(path)
-        .output()
-        .map_err(|error| format!("run {}: {error}", ffprobe.display()))?;
+        ],
+        path,
+    )?;
     if !output.status.success() {
         return Err(format!(
             "ffprobe {}: {}",
@@ -158,10 +158,28 @@ pub fn probe(path: &Path, ffmpeg: &Path) -> Result<Probe, String> {
     })
 }
 
+/// Retries a start that fails with ETXTBSY, like `run_ffmpeg`: a freshly
+/// written executable can be briefly busy while another thread forks.
+fn run_ffprobe(ffprobe: &Path, args: &[&str], path: &Path) -> Result<Output, String> {
+    let mut busy_retries = 3;
+    loop {
+        match Command::new(ffprobe).args(args).arg(path).output() {
+            Err(error) if error.raw_os_error() == Some(libc::ETXTBSY) && busy_retries > 0 => {
+                busy_retries -= 1;
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            result => {
+                return result.map_err(|error| format!("run {}: {error}", ffprobe.display()));
+            }
+        }
+    }
+}
+
 /// Duration from the last video packet plus one frame interval.
 fn packet_duration(path: &Path, ffprobe: &Path) -> Result<f64, String> {
-    let output = Command::new(ffprobe)
-        .args([
+    let output = run_ffprobe(
+        ffprobe,
+        &[
             "-v",
             "error",
             "-select_streams",
@@ -170,10 +188,9 @@ fn packet_duration(path: &Path, ffprobe: &Path) -> Result<f64, String> {
             "packet=pts_time",
             "-of",
             "csv=p=0",
-        ])
-        .arg(path)
-        .output()
-        .map_err(|error| format!("run {}: {error}", ffprobe.display()))?;
+        ],
+        path,
+    )?;
     let mut times: Vec<f64> = String::from_utf8_lossy(&output.stdout)
         .lines()
         .filter_map(|line| line.trim().trim_end_matches(',').parse().ok())
