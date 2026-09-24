@@ -19,10 +19,11 @@ pub const MELLOW: Preset = Preset {
     friction: 15.5,
     mass: 1.0,
 };
-/// 90 % of a jump after about 0.16 s.
+/// 90 % of a jump after about 0.11 s. Friction a hair above critical
+/// (2 * sqrt(1200) = 69.3), so it never overshoots.
 pub const QUICK: Preset = Preset {
-    tension: 600.0,
-    friction: 49.0,
+    tension: 1200.0,
+    friction: 70.0,
     mass: 1.0,
 };
 
@@ -534,6 +535,18 @@ mod tests {
         let frames = smooth(&jump, 1000, 1500, MELLOW);
         let ninety = frames.iter().position(|p| p.unwrap().0 >= 90.0).unwrap();
         assert!((400..=600).contains(&ninety), "{ninety} ms");
+    }
+
+    #[test]
+    fn quick_follows_within_about_a_tenth_of_a_second() {
+        let jump = [at(0.0, 0.0, 0.0), at(1.0, 100.0, 0.0)];
+        let frames = smooth(&jump, 1000, 500, QUICK);
+        let ninety = frames.iter().position(|p| p.unwrap().0 >= 90.0).unwrap();
+        assert!((90..=140).contains(&ninety), "{ninety} ms");
+        assert!(
+            frames.iter().all(|p| p.unwrap().0 <= 100.0 + 1e-6),
+            "no overshoot"
+        );
     }
 
     #[test]
