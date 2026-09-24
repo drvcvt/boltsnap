@@ -52,8 +52,9 @@ use wayland_client::{
 use crate::DynResult;
 use crate::record::audio::AudioCapture;
 use crate::record::finalize::{
-    FinalizeFailure, FinalizeRequest, FinalizedClip, SaveDestination, check_recording_cache_limit,
-    check_recording_reserve, finalize_recording, promote_recording,
+    FinalizeFailure, FinalizeRequest, FinalizedClip, RECORDING_CACHE_LIMIT_BYTES, SaveDestination,
+    check_recording_cache_capacity, check_recording_cache_limit, check_recording_reserve,
+    finalize_recording, promote_recording,
 };
 use crate::record::session::{
     CaptureScope, PublicRecordingState, RecorderTools, RecordingAction, RecordingSession,
@@ -181,6 +182,11 @@ pub(crate) enum DaemonEvent {
         stream: UnixStream,
         _client: Permit,
         _image: Option<Permit>,
+    },
+    VideoPrepared {
+        result: Result<FinalizedClip, String>,
+        stream: UnixStream,
+        _client: Permit,
     },
     ChildrenStopped {
         after: AfterStop,
@@ -472,6 +478,34 @@ fn prepare_recording_cache() -> Result<(), String> {
     check_recording_reserve(&dir)
 }
 
+/// Take a client's video into the recording cache so the card owns its file.
+/// A hard link costs nothing on the same filesystem; otherwise copy.
+fn prepare_shelf_video(path: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    let metadata =
+        std::fs::metadata(path).map_err(|error| format!("inspect shelf video: {error}"))?;
+    if !metadata.is_file() || metadata.len() == 0 {
+        return Err("shelf video is not a non-empty file".into());
+    }
+    if metadata.len() >= RECORDING_CACHE_LIMIT_BYTES {
+        return Err("video exceeds the 2 GiB temporary shelf limit".into());
+    }
+    prepare_recording_cache()?;
+    check_recording_cache_capacity(&crate::paths::rec_dir(), metadata.len())?;
+    let ext = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .filter(|ext| !ext.is_empty() && ext.chars().all(|c| c.is_ascii_alphanumeric()))
+        .unwrap_or("mp4");
+    let target = crate::paths::rec_file("shelf-video", ext);
+    if std::fs::hard_link(path, &target).is_err() {
+        std::fs::copy(path, &target).map_err(|error| {
+            let _ = std::fs::remove_file(&target);
+            format!("copy shelf video: {error}")
+        })?;
+    }
+    Ok(target)
+}
+
 fn validate_recording_dimensions(width: u32, height: u32) -> Result<(), String> {
     if width == 0 || height == 0 {
         Err("recording width and height must be greater than zero".into())
@@ -602,6 +636,22 @@ fn spawn_client_reader(
                     stream,
                     _client: client,
                     _image: image,
+                });
+            }
+            Ok(crate::ipc::Request::AddVideo { path, output, .. }) => {
+                // The daemon reads the named file, so only its own user may name one.
+                let result = super::image_transfer::same_user(&stream)
+                    .map_err(|error| error.to_string())
+                    .and_then(|()| prepare_shelf_video(&path))
+                    .map(|path| FinalizedClip {
+                        output,
+                        path,
+                        permanent: false,
+                    });
+                let _ = tx.send(DaemonEvent::VideoPrepared {
+                    result,
+                    stream,
+                    _client: client,
                 });
             }
             Ok(request) => {
@@ -1528,7 +1578,8 @@ impl Daemon {
                 source: _,
                 png: _,
                 output: _,
-            } => {
+            }
+            | crate::ipc::Request::AddVideo { .. } => {
                 self.write_response(
                     stream,
                     crate::ipc::Response::error("add request was not prepared"),
@@ -2745,6 +2796,28 @@ impl Daemon {
                     }
                     (Ok(add), None) => {
                         let _ = std::fs::remove_file(&add.path);
+                        crate::ipc::Response::error("shelf is not ready")
+                    }
+                    (Err(error), _) => {
+                        eprintln!("boltsnap daemon: {error}");
+                        crate::ipc::Response::error(error)
+                    }
+                };
+                self.write_response(stream, response);
+            }
+            DaemonEvent::VideoPrepared {
+                result,
+                stream,
+                _client,
+            } => {
+                let response = match (result, self.qh.is_some()) {
+                    (Ok(clip), true) => {
+                        let path = clip.path.clone();
+                        self.add_finalized_cards(vec![clip], true);
+                        crate::ipc::Response::ok_path(path)
+                    }
+                    (Ok(clip), false) => {
+                        let _ = std::fs::remove_file(&clip.path);
                         crate::ipc::Response::error("shelf is not ready")
                     }
                     (Err(error), _) => {

@@ -30,6 +30,14 @@ pub enum Request {
         png: Vec<u8>,
         output: Option<String>,
     },
+    /// Put a video file on the shelf. Any client may send it; the shelf keeps its
+    /// own copy and answers with that path.
+    AddVideo {
+        source: String,
+        path: PathBuf,
+        output: Option<String>,
+        take_ownership: bool,
+    },
     Ping,
     RecordingStatus,
     RecordingWatch,
@@ -331,6 +339,23 @@ impl Request {
                 }
                 write_frame(&mut buf, header.to_string().as_bytes(), png).unwrap();
             }
+            Request::AddVideo {
+                source,
+                path,
+                output,
+                take_ownership,
+            } => {
+                let mut header = json!({
+                    "cmd": "add_video",
+                    "source": source,
+                    "path": path.to_string_lossy(),
+                    "take_ownership": take_ownership,
+                });
+                if let Some(output) = output {
+                    header["output"] = json!(output);
+                }
+                write_frame(&mut buf, header.to_string().as_bytes(), &[]).unwrap();
+            }
             Request::Ping => {
                 let header = json!({ "cmd": "ping" });
                 write_frame(&mut buf, header.to_string().as_bytes(), &[]).unwrap();
@@ -422,6 +447,28 @@ impl Request {
                     .and_then(|s| s.as_str())
                     .filter(|s| !s.is_empty())
                     .map(str::to_owned),
+            }),
+            Some("add_video") => Ok(Request::AddVideo {
+                source: v
+                    .get("source")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+                path: PathBuf::from(
+                    v.get("path")
+                        .and_then(Value::as_str)
+                        .filter(|path| !path.is_empty())
+                        .ok_or_else(|| invalid_data("add_video needs a path"))?,
+                ),
+                output: v
+                    .get("output")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_owned),
+                take_ownership: v
+                    .get("take_ownership")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
             }),
             Some("ping") => Ok(Request::Ping),
             Some("recording_status") => Ok(Request::RecordingStatus),
@@ -554,7 +601,6 @@ mod tests {
     #[test]
     fn removed_editor_backchannel_commands_are_rejected() {
         for header in [
-            br#"{"cmd":"add_video"}"#.as_slice(),
             br#"{"cmd":"replace","media":"image"}"#.as_slice(),
             br#"{"cmd":"reload"}"#.as_slice(),
         ] {
@@ -565,5 +611,35 @@ mod tests {
                 io::ErrorKind::InvalidData
             );
         }
+    }
+
+    #[test]
+    fn add_video_roundtrips() {
+        let request = Request::AddVideo {
+            source: "editor".into(),
+            path: PathBuf::from("/tmp/a clip.mp4"),
+            output: Some("DP-2".into()),
+            take_ownership: true,
+        };
+        match Request::read(&mut Cursor::new(request.encode())).unwrap() {
+            Request::AddVideo {
+                source,
+                path,
+                output,
+                take_ownership,
+            } => {
+                assert_eq!(source, "editor");
+                assert_eq!(path, PathBuf::from("/tmp/a clip.mp4"));
+                assert_eq!(output.as_deref(), Some("DP-2"));
+                assert!(take_ownership);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+        let mut bytes = Vec::new();
+        write_frame(&mut bytes, br#"{"cmd":"add_video"}"#, &[]).unwrap();
+        assert_eq!(
+            Request::read(&mut Cursor::new(bytes)).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
     }
 }
