@@ -2191,7 +2191,9 @@ impl Daemon {
             active,
             std::time::Instant::now(),
         ));
-        self.recording.as_mut().unwrap().cursor = self.recording_prefs.cursor;
+        let session = self.recording.as_mut().unwrap();
+        session.cursor = self.recording_prefs.cursor;
+        session.shelf_to_disk_after = crate::config::Config::load().shelf_to_disk_after();
         if show_frame {
             self.create_marker(&geo, qh);
         }
@@ -2270,7 +2272,9 @@ impl Daemon {
             active,
             std::time::Instant::now(),
         ));
-        self.recording.as_mut().unwrap().cursor = self.recording_prefs.cursor;
+        let session = self.recording.as_mut().unwrap();
+        session.cursor = self.recording_prefs.cursor;
+        session.shelf_to_disk_after = crate::config::Config::load().shelf_to_disk_after();
         self.publish_recording_snapshot();
         Ok(())
     }
@@ -2466,9 +2470,19 @@ impl Daemon {
         {
             self.last_recording_space_check = std::time::Instant::now();
             let dir = crate::paths::rec_dir();
-            recovery = check_recording_cache_limit(&dir)
-                .and_then(|()| check_recording_reserve(&dir))
-                .err();
+            // A long recording is headed for disk, not the temporary cache;
+            // only the free-space reserve bounds it.
+            let long = self
+                .recording
+                .as_ref()
+                .is_some_and(|session| session.is_long(std::time::Instant::now()));
+            recovery = if long {
+                Ok(())
+            } else {
+                check_recording_cache_limit(&dir)
+            }
+            .and_then(|()| check_recording_reserve(&dir))
+            .err();
         }
         if let Some(error) = recovery {
             if let Some(session) = self.recording.as_mut() {
@@ -2616,14 +2630,17 @@ impl Daemon {
                 }
             }
             RecordingAction::SaveShelf | RecordingAction::SaveDisk => {
-                let destination = if action == RecordingAction::SaveShelf {
+                let session = self.recording.as_mut().unwrap();
+                // Long recordings are kept on disk; the shelf still gets a card.
+                let long = session.is_long(std::time::Instant::now());
+                session.shelf_card_for_disk = action == RecordingAction::SaveShelf && long;
+                let destination = if action == RecordingAction::SaveShelf && !long {
                     SaveDestination::Shelf
                 } else {
                     SaveDestination::Disk(crate::config::resolve_record_dir(
                         &crate::config::Config::load(),
                     ))
                 };
-                let session = self.recording.as_mut().unwrap();
                 session.begin_finalize(std::time::Instant::now())?;
                 let children = std::mem::take(&mut session.active);
                 self.remove_marker();
@@ -2770,14 +2787,21 @@ impl Daemon {
                 output,
                 reply,
             } => {
-                self.add_finalized_cards(vec![FinalizedClip {
-                    path,
-                    output: Some(output),
-                    permanent: false,
-                }]);
+                self.add_finalized_cards(
+                    vec![FinalizedClip {
+                        path,
+                        output: Some(output),
+                        permanent: false,
+                    }],
+                    false,
+                );
                 let _ = reply.send(());
             }
             DaemonEvent::Finalized(Ok(clips)) => {
+                let shelf_card = self
+                    .recording
+                    .as_ref()
+                    .is_some_and(|session| session.shelf_card_for_disk);
                 let audio = self
                     .recording
                     .as_mut()
@@ -2786,10 +2810,14 @@ impl Daemon {
                 cleanup_audio_async(audio);
                 self.remove_marker();
                 self.remove_popup();
-                self.add_finalized_cards(clips);
+                self.add_finalized_cards(clips, shelf_card);
             }
             DaemonEvent::Finalized(Err(failure)) => {
-                self.add_finalized_cards(failure.completed);
+                let shelf_card = self
+                    .recording
+                    .as_ref()
+                    .is_some_and(|session| session.shelf_card_for_disk);
+                self.add_finalized_cards(failure.completed, shelf_card);
                 if let Some(session) = self.recording.as_mut() {
                     session.completed = failure.recoverable_segments;
                     let _ = session.finalize_failed(failure.error.clone());
@@ -2932,14 +2960,16 @@ impl Daemon {
         });
     }
 
-    fn add_finalized_cards(&mut self, clips: Vec<FinalizedClip>) {
+    /// `shelf_card` adds cards for disk saves even when `record_disk_add_to_shelf`
+    /// is off: the user saved to the shelf and only the length sent it to disk.
+    fn add_finalized_cards(&mut self, clips: Vec<FinalizedClip>, shelf_card: bool) {
         let Some(qh) = self.qh.clone() else {
             return;
         };
         let mut added = false;
         let on_output = card_output(&clips, focused_monitor_name);
         for clip in clips {
-            if clip.permanent && !self.recording_prefs.disk_add_to_shelf {
+            if clip.permanent && !self.recording_prefs.disk_add_to_shelf && !shelf_card {
                 continue;
             }
             let mut image = image::RgbaImage::new(

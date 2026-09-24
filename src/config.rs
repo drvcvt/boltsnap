@@ -98,6 +98,7 @@ pub struct Config {
     record_disk_add_to_shelf: Option<bool>,
     record_audio_enabled: Option<bool>,
     record_audio_source: Option<String>,
+    record_shelf_to_disk_after_seconds: Option<i64>,
     /// Font family for boltsnap's own chrome (selector overlay, shelf). Unset
     /// follows the desktop font.
     pub ui_font: Option<String>,
@@ -207,6 +208,9 @@ impl Config {
                     .get("record_audio_source")
                     .and_then(|x| x.as_str())
                     .map(String::from),
+                record_shelf_to_disk_after_seconds: v
+                    .get("record_shelf_to_disk_after_seconds")
+                    .and_then(|x| x.as_integer()),
                 ui_font: v.get("ui_font").and_then(|x| x.as_str()).map(String::from),
             },
             Err(e) => {
@@ -221,6 +225,18 @@ impl Config {
         match std::fs::read_to_string(config_path()) {
             Ok(s) => Config::parse(&s),
             Err(_) => Config::default(),
+        }
+    }
+
+    /// Recordings at least this long are saved permanently to `record_dir` even
+    /// when saved to the shelf (they still get a shelf card), and stop counting
+    /// toward the temporary cache quota once they reach it. Default 60 s; 0
+    /// turns it off.
+    pub fn shelf_to_disk_after(&self) -> Option<std::time::Duration> {
+        match self.record_shelf_to_disk_after_seconds {
+            None => Some(std::time::Duration::from_secs(60)),
+            Some(seconds) if seconds > 0 => Some(std::time::Duration::from_secs(seconds as u64)),
+            Some(_) => None,
         }
     }
 
@@ -540,6 +556,18 @@ unrelated = "keep-me"
     fn invalid_audio_source_uses_default() {
         let prefs = Config::parse("record_audio_source = \"bluetooth\"\n").recording_prefs();
         assert_eq!(prefs.audio_source, RecordAudioSource::SystemAndMic);
+    }
+
+    #[test]
+    fn long_shelf_recordings_go_to_disk_after_a_minute_by_default() {
+        let after = |text: &str| Config::parse(text).shelf_to_disk_after();
+        assert_eq!(after(""), Some(std::time::Duration::from_secs(60)));
+        assert_eq!(
+            after("record_shelf_to_disk_after_seconds = 300\n"),
+            Some(std::time::Duration::from_secs(300))
+        );
+        assert_eq!(after("record_shelf_to_disk_after_seconds = 0\n"), None);
+        assert_eq!(after("record_shelf_to_disk_after_seconds = -5\n"), None);
     }
 
     #[test]
