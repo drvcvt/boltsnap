@@ -383,3 +383,9 @@ Commit B, "Smooth cursor in the replay buffer": `replay/mod.rs`
   1.5): saved in 3.45 s as 4096x1382 H.264 + AAC; `cursor.json` samples at
   logical x 1.28 on both outputs, the burned-in arrow sits on them in the
   composed frames, DP-1's tile is 1638x922 at x 2458.
+- `flake.nix` built on the Mini (NixOS, Nix 2.31.5, nixos-unstable) at
+  `2f9ffcf` plus the python3 check input: plugin 17 tests, main crate 283 + 23
+  tests, `result/lib/boltsnap/libboltsnap_gsr_cursor.so` beside the wrapped
+  binary, exporting `gsr_plugin_init`/`gsr_plugin_deinit`. Without python3 the
+  parent-death-signal test failed in the sandbox. Not run under Nix: the live
+  capture itself.

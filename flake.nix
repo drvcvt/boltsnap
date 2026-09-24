@@ -57,6 +57,8 @@
 
           nativeBuildInputs = with pkgs; [ pkg-config makeWrapper ];
           buildInputs = runtimeLibs;
+          # The parent-death-signal test drives a python3 stand-in recorder.
+          nativeCheckInputs = [ pkgs.python3 ];
 
           # Looked up as ../lib/boltsnap/ relative to the binary.
           postInstall = ''
