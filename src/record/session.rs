@@ -49,8 +49,8 @@ pub struct ActiveRecorder {
     pub output: Option<String>,
     pub path: PathBuf,
     pub child: Child,
-    /// Pointer trackers of a smooth-cursor segment; held only to stop them on drop.
-    #[allow(dead_code)]
+    /// Pointer trackers of a smooth-cursor segment; asked to stop with the
+    /// recorder and joined on drop.
     pub cursor: Vec<crate::platform::cursor_track::Tracker>,
 }
 
@@ -562,11 +562,21 @@ fn segment_path(dir: &Path, output: Option<&str>, extension: &str) -> PathBuf {
 
 fn stop_and_reap(active: Vec<ActiveRecorder>) {
     for recorder in &active {
-        let _ = send_sigint(&recorder.child);
+        let _ = interrupt(recorder);
     }
     std::thread::spawn(move || {
         let _ = StopChildrenJob { children: active }.wait();
     });
+}
+
+/// SIGINT the recorder and let its trackers wind down meanwhile, so joining
+/// them after the recorder exits does not wait for their next poll timeout.
+fn interrupt(recorder: &ActiveRecorder) -> io::Result<()> {
+    let result = send_sigint(&recorder.child);
+    for tracker in &recorder.cursor {
+        tracker.request_stop();
+    }
+    result
 }
 
 fn send_sigint(child: &Child) -> io::Result<()> {
@@ -626,7 +636,7 @@ impl StopChildrenJob {
         let errors = self
             .children
             .iter()
-            .filter_map(|recorder| send_sigint(&recorder.child).err())
+            .filter_map(|recorder| interrupt(recorder).err())
             .map(|error| error.to_string())
             .collect::<Vec<_>>();
         if errors.is_empty() {
@@ -1267,6 +1277,36 @@ while :; do sleep 1; done
                 if kept == vec![StoppedSegment { output: Some("DP-3".into()), path: path.clone() }]
         ));
         assert_eq!(fs::read(&path).unwrap(), b"recoverable");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn interrupt_asks_trackers_to_stop_before_the_recorder_exits() {
+        let dir = test_dir();
+        let path = dir.join("a.mkv");
+        // A recorder that ignores SIGINT keeps running while we look.
+        let child = Command::new("sh")
+            .args(["-c", "trap '' INT; sleep 5"])
+            .spawn()
+            .unwrap();
+        let job = StopChildrenJob {
+            children: vec![ActiveRecorder {
+                output: None,
+                path,
+                child,
+                cursor: vec![
+                    crate::platform::cursor_track::Tracker::idle(),
+                    crate::platform::cursor_track::Tracker::idle(),
+                ],
+            }],
+        };
+        job.interrupt().unwrap();
+        assert!(wait_for(Duration::from_secs(1), || {
+            job.children[0].cursor.iter().all(|t| t.is_finished())
+        }));
+        let mut child = job.children.into_iter().next().unwrap().child;
+        let _ = child.kill();
+        let _ = child.wait();
         fs::remove_dir_all(dir).unwrap();
     }
 

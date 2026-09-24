@@ -33,6 +33,34 @@ impl std::fmt::Debug for Tracker {
     }
 }
 
+impl Tracker {
+    /// Let the thread finish while the recorder stops; drop still joins it.
+    pub fn request_stop(&self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
+
+    /// A tracker whose thread only waits for the stop flag.
+    #[cfg(test)]
+    pub fn idle() -> Self {
+        let stop = Arc::new(AtomicBool::new(false));
+        let flag = stop.clone();
+        let thread = std::thread::spawn(move || {
+            while !flag.load(Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        });
+        Self {
+            stop,
+            thread: Some(thread),
+        }
+    }
+
+    #[cfg(test)]
+    pub fn is_finished(&self) -> bool {
+        self.thread.as_ref().is_none_or(JoinHandle::is_finished)
+    }
+}
+
 impl Drop for Tracker {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
@@ -358,6 +386,17 @@ mod tests {
         std::fs::write(bin.join(PLUGIN), b"").unwrap();
         assert_eq!(plugin_in(&bin), Some(bin.join(PLUGIN)));
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn request_stop_lets_the_thread_end_before_drop() {
+        let tracker = Tracker::idle();
+        tracker.request_stop();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !tracker.is_finished() {
+            assert!(Instant::now() < deadline, "tracker thread still running");
+            std::thread::sleep(Duration::from_millis(1));
+        }
     }
 
     #[test]
