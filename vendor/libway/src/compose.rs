@@ -164,10 +164,7 @@ impl Connection {
                 placed.into_iter().next().map(|(pixels, _, _)| pixels)
             }
             _ => {
-                let mut raw = Vec::new();
-                raw.try_reserve_exact(bytes)
-                    .map_err(|_| Error::LimitExceeded)?;
-                raw.resize(bytes, 0);
+                let mut raw = crate::buffer::zeroed(bytes)?;
                 // Desktop gaps are opaque black, independent of export codec.
                 if !covers(&placed, width, height) {
                     for p in raw.chunks_exact_mut(4) {
