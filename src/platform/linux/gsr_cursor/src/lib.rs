@@ -121,8 +121,9 @@ impl Plugin {
     /// Draw the frame captured at monotonic `now_us` into the bound frame texture.
     fn frame(&mut self, now_us: u64, size: (u32, u32)) -> Result<(), String> {
         self.poll();
-        self.motion.advance_to((now_us / 1000) as i64);
-        let taps = self.motion.taps(self.arrow.hotspot);
+        let now_ms = now_us as f64 / 1000.0;
+        self.motion.advance_to(now_ms.ceil() as i64);
+        let taps = self.motion.taps(now_ms, self.arrow.hotspot);
         if taps.iter().all(Option::is_none) {
             return Ok(());
         }

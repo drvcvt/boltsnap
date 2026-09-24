@@ -86,6 +86,9 @@ pub const SHUTTER_MS: usize = 5;
 pub const BLUR_SAMPLES: usize = 8;
 /// Longer gaps between frames restart the simulation settled at the target.
 const MAX_GAP_MS: i64 = 2000;
+/// Simulated milliseconds kept for blur taps: the shutter plus one for
+/// interpolating between steps.
+const HISTORY: usize = SHUTTER_MS + 2;
 
 #[derive(Default)]
 struct Spring {
@@ -146,7 +149,7 @@ pub struct Motion {
     pending: VecDeque<Sample>,
     /// Next millisecond to simulate.
     next_ms: Option<i64>,
-    /// Positions of the last `SHUTTER_MS + 1` simulated milliseconds, newest last.
+    /// Positions of the last `HISTORY` simulated milliseconds, newest last.
     recent: VecDeque<Option<(f64, f64)>>,
 }
 
@@ -157,7 +160,7 @@ impl Motion {
             spring: Spring::default(),
             pending: VecDeque::new(),
             next_ms: None,
-            recent: VecDeque::with_capacity(SHUTTER_MS + 2),
+            recent: VecDeque::with_capacity(HISTORY + 1),
         }
     }
 
@@ -173,7 +176,7 @@ impl Motion {
         let mut tick = match self.next_ms {
             Some(next) if ms - next <= MAX_GAP_MS => next,
             _ => {
-                let start = ms - SHUTTER_MS as i64;
+                let start = ms - HISTORY as i64 + 1;
                 while self.pending.front().is_some_and(|s| s.ms() < start as f64) {
                     let sample = self.pending.pop_front().unwrap();
                     self.spring.apply(sample);
@@ -188,7 +191,7 @@ impl Motion {
                 let sample = self.pending.pop_front().unwrap();
                 self.spring.apply(sample);
             }
-            if self.recent.len() > SHUTTER_MS {
+            if self.recent.len() >= HISTORY {
                 self.recent.pop_front();
             }
             self.recent
@@ -204,22 +207,34 @@ impl Motion {
         self.recent.back().copied().flatten()
     }
 
-    /// Sprite top-left per blur tap over the exposure ending at the last
-    /// simulated millisecond, `None` where the cursor was hidden. At rest all
-    /// taps coincide; appearing and leaving fade over the exposure.
-    pub fn taps(&self, hotspot: (f64, f64)) -> [Option<(i64, i64)>; BLUR_SAMPLES] {
+    /// Sprite top-left per blur tap over the exposure ending at `at_ms`, `None`
+    /// where the cursor was hidden. Needs `advance_to(at_ms.ceil())`. Taps are
+    /// interpolated between simulated milliseconds and stay subpixel, so frames
+    /// between whole milliseconds move evenly and a slowing cursor does not
+    /// step from pixel to pixel. The hotspot is rounded: at rest on a whole
+    /// pixel the arrow is drawn unfiltered. Appearing and leaving fade over
+    /// the exposure.
+    pub fn taps(&self, at_ms: f64, hotspot: (f64, f64)) -> [Option<(f64, f64)>; BLUR_SAMPLES] {
         let mut taps = [None; BLUR_SAMPLES];
-        let Some(newest) = self.recent.len().checked_sub(1) else {
+        let (Some(newest), Some(next)) = (self.recent.len().checked_sub(1), self.next_ms) else {
             return taps;
         };
+        let newest_ms = (next - 1) as f64;
+        let (hx, hy) = (hotspot.0.round(), hotspot.1.round());
         for (tap, slot) in taps.iter_mut().enumerate() {
-            let back = SHUTTER_MS * (BLUR_SAMPLES - 1 - tap) / (BLUR_SAMPLES - 1);
-            *slot = self.recent[newest.saturating_sub(back)].map(|(x, y)| {
-                (
-                    (x - hotspot.0).round() as i64,
-                    (y - hotspot.1).round() as i64,
-                )
-            });
+            let shutter = SHUTTER_MS as f64 * (BLUR_SAMPLES - 1 - tap) as f64;
+            let back = (newest_ms - at_ms + shutter / (BLUR_SAMPLES - 1) as f64).max(0.0);
+            let whole = back.floor() as usize;
+            let fraction = back - whole as f64;
+            let later = self.recent[newest.saturating_sub(whole)];
+            let earlier = self.recent[newest.saturating_sub(whole + 1)];
+            *slot = match (later, earlier) {
+                (Some((x1, y1)), Some((x0, y0))) => Some((
+                    x1 + (x0 - x1) * fraction - hx,
+                    y1 + (y0 - y1) * fraction - hy,
+                )),
+                _ => if fraction < 0.5 { later } else { earlier }.map(|(x, y)| (x - hx, y - hy)),
+            };
         }
         taps
     }
@@ -559,9 +574,9 @@ mod tests {
         assert_eq!(motion.position(), Some((300.0, 40.0)));
         assert!(
             motion
-                .taps((0.0, 0.0))
+                .taps(5000.0, (0.0, 0.0))
                 .iter()
-                .all(|t| *t == Some((300, 40)))
+                .all(|t| *t == Some((300.0, 40.0)))
         );
         motion.push(at(5001.0, 600.0, 40.0));
         motion.advance_to(60_000);
@@ -573,26 +588,53 @@ mod tests {
         let mut still = Motion::new(QUICK);
         still.push(at(0.0, 5.0, 5.0));
         still.advance_to(100);
-        assert_eq!(still.taps((1.0, 1.0)), [Some((4, 4)); BLUR_SAMPLES]);
+        // The hotspot rounds, so a cursor at rest on a pixel draws unfiltered.
+        assert_eq!(
+            still.taps(100.0, (1.2, 0.8)),
+            [Some((4.0, 4.0)); BLUR_SAMPLES]
+        );
 
         let mut moving = Motion::new(QUICK);
         moving.push(at(0.0, 0.0, 0.0));
         moving.advance_to(0);
         moving.push(at(1.0, 400.0, 0.0));
         moving.advance_to(40);
-        let taps = moving.taps((0.0, 0.0));
+        let taps = moving.taps(40.0, (0.0, 0.0));
         assert!(taps.iter().all(Option::is_some));
-        let xs: Vec<i64> = taps.iter().map(|t| t.unwrap().0).collect();
-        assert!(xs.windows(2).all(|w| w[1] >= w[0]), "{xs:?}");
-        assert!(xs[BLUR_SAMPLES - 1] - xs[0] > 10, "{xs:?}");
+        let xs: Vec<f64> = taps.iter().map(|t| t.unwrap().0).collect();
+        assert!(xs.windows(2).all(|w| w[1] > w[0]), "{xs:?}");
+        assert!(xs[BLUR_SAMPLES - 1] - xs[0] > 10.0, "{xs:?}");
 
         let mut appearing = Motion::new(QUICK);
         appearing.push(Sample::Gone { ms: 0.0 });
         appearing.advance_to(30);
         appearing.push(at(34.0, 0.0, 0.0));
         appearing.advance_to(38);
-        let shown = appearing.taps((0.0, 0.0)).iter().flatten().count();
+        let shown = appearing.taps(38.0, (0.0, 0.0)).iter().flatten().count();
         assert!(shown > 0 && shown < BLUR_SAMPLES, "{shown}");
+    }
+
+    #[test]
+    fn frames_between_milliseconds_move_evenly() {
+        // Pointer at 1 px/ms; 240 FPS frames fall between whole milliseconds.
+        let mut motion = Motion::new(QUICK);
+        for ms in 0..=2000 {
+            motion.push(at(ms as f64, ms as f64, 0.0));
+        }
+        let xs: Vec<f64> = (0..480)
+            .map(|frame| {
+                let at_ms = frame as f64 * 1000.0 / 240.0;
+                motion.advance_to(at_ms.ceil() as i64);
+                motion.taps(at_ms, (0.0, 0.0))[BLUR_SAMPLES - 1].unwrap().0
+            })
+            .collect();
+        // The second second: the spring follows the ramp at its steady lag.
+        let steps: Vec<f64> = xs[240..].windows(2).map(|w| w[1] - w[0]).collect();
+        let (min, max) = steps
+            .iter()
+            .fold((f64::MAX, f64::MIN), |(lo, hi), s| (lo.min(*s), hi.max(*s)));
+        // Whole-millisecond frames alternated 4 and 5 ms steps (25 % judder).
+        assert!(max / min < 1.02, "{min} .. {max}");
     }
 
     #[test]

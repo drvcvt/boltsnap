@@ -83,7 +83,7 @@ gl_api! {
     glUniform1i: fn(i32, i32);
     glUniform2f: fn(i32, f32, f32);
     glUniform4f: fn(i32, f32, f32, f32, f32);
-    glUniform2iv: fn(i32, i32, *const i32);
+    glUniform2fv: fn(i32, i32, *const f32);
     glGenVertexArrays: fn(i32, *mut u32);
     glBindVertexArray: fn(u32);
     glGenTextures: fn(i32, *mut u32);
@@ -110,24 +110,32 @@ void main() {
 ";
 
 /// Mean of the arrow under each blur tap. Row 0 of gsr's frame texture is the
-/// top image row, so `gl_FragCoord` is already in image pixels. Output is
+/// top image row, so `gl_FragCoord` is already in image pixels. Taps are
+/// subpixel: each samples the arrow bilinearly in premultiplied alpha, with
+/// transparency outside it (a whole-pixel tap reads single texels). Output is
 /// straight alpha: the averaged premultiplied colour divided by coverage.
 const FRAGMENT: &CStr = c"#version 300 es
 precision highp float;
 precision highp int;
 uniform highp sampler2D sprite;
-uniform ivec2 taps[8];
+uniform vec2 taps[8];
 out vec4 color;
+vec4 texel(ivec2 at, ivec2 extent) {
+    if (any(lessThan(at, ivec2(0))) || any(greaterThanEqual(at, extent))) return vec4(0.0);
+    vec4 t = texelFetch(sprite, at, 0);
+    return vec4(t.rgb * t.a, t.a);
+}
 void main() {
-    ivec2 pixel = ivec2(gl_FragCoord.xy);
     ivec2 extent = textureSize(sprite, 0);
     vec4 sum = vec4(0.0);
     for (int i = 0; i < 8; i++) {
-        ivec2 at = pixel - taps[i];
-        if (all(greaterThanEqual(at, ivec2(0))) && all(lessThan(at, extent))) {
-            vec4 texel = texelFetch(sprite, at, 0);
-            sum += vec4(texel.rgb * texel.a, texel.a);
-        }
+        vec2 at = gl_FragCoord.xy - taps[i] - 0.5;
+        vec2 cell = floor(at);
+        vec2 f = at - cell;
+        ivec2 p = ivec2(cell);
+        vec4 top = mix(texel(p, extent), texel(p + ivec2(1, 0), extent), f.x);
+        vec4 bottom = mix(texel(p + ivec2(0, 1), extent), texel(p + ivec2(1, 1), extent), f.x);
+        sum += mix(top, bottom, f.y);
     }
     if (sum.a <= 0.0) discard;
     color = vec4(sum.rgb / sum.a, sum.a / 8.0);
@@ -135,7 +143,7 @@ void main() {
 ";
 
 /// Tap position that never covers a pixel.
-const HIDDEN: i32 = -(1 << 24);
+const HIDDEN: f32 = -1.0e6;
 
 pub struct Renderer {
     gl: Gl,
@@ -245,17 +253,18 @@ impl Renderer {
 
     /// Blend the mean of the arrow at each tap (sprite top-left, video pixels)
     /// over the bound frame of `size`.
-    pub fn draw(&self, taps: &[Option<(i64, i64)>; BLUR_SAMPLES], size: (u32, u32)) {
+    pub fn draw(&self, taps: &[Option<(f64, f64)>; BLUR_SAMPLES], size: (u32, u32)) {
         let visible = || taps.iter().flatten();
-        let (Some(left), Some(top)) = (
-            visible().map(|(x, _)| *x).min(),
-            visible().map(|(_, y)| *y).min(),
-        ) else {
+        if visible().next().is_none() {
             return;
-        };
-        let right = visible().map(|(x, _)| *x).max().unwrap_or(left) + i64::from(self.sprite.0);
-        let bottom = visible().map(|(_, y)| *y).max().unwrap_or(top) + i64::from(self.sprite.1);
-        let limit = |v: i64| v.clamp(i64::from(HIDDEN) / 2, -i64::from(HIDDEN) / 2) as i32;
+        }
+        let limit = |v: f64| v.clamp(f64::from(HIDDEN) / 2.0, -f64::from(HIDDEN) / 2.0) as f32;
+        let left = visible().map(|(x, _)| *x).fold(f64::MAX, f64::min).floor();
+        let top = visible().map(|(_, y)| *y).fold(f64::MAX, f64::min).floor();
+        let right =
+            visible().map(|(x, _)| *x).fold(f64::MIN, f64::max).ceil() + f64::from(self.sprite.0);
+        let bottom =
+            visible().map(|(_, y)| *y).fold(f64::MIN, f64::max).ceil() + f64::from(self.sprite.1);
         let mut positions = [HIDDEN; 2 * BLUR_SAMPLES];
         for (slot, tap) in positions.chunks_exact_mut(2).zip(taps) {
             if let Some((x, y)) = tap {
@@ -270,13 +279,13 @@ impl Renderer {
             (gl.glBindTexture)(GL_TEXTURE_2D, self.texture);
             (gl.glUniform4f)(
                 self.rect,
-                limit(left) as f32,
-                limit(top) as f32,
-                limit(right) as f32,
-                limit(bottom) as f32,
+                limit(left),
+                limit(top),
+                limit(right),
+                limit(bottom),
             );
             (gl.glUniform2f)(self.size, size.0 as f32, size.1 as f32);
-            (gl.glUniform2iv)(self.taps, BLUR_SAMPLES as i32, positions.as_ptr());
+            (gl.glUniform2fv)(self.taps, BLUR_SAMPLES as i32, positions.as_ptr());
             (gl.glEnable)(GL_BLEND);
             // Colour: straight-alpha over. Alpha: keep the frame's, which gsr's
             // YUV conversion blends with; below 1 it would mix in the previous frame.
