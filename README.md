@@ -430,6 +430,9 @@ and no video data or paths are sent through IPC.
 record_codec = "auto"
 
 # Live recording profile (Linux): "quality" = 240 fps (default), "quiet" = 60 fps.
+# record_fps (1-240) overrides the profile's frame rate, e.g. 120: smooth
+# motion at half the data of 240. A frame rate that divides the monitor's
+# refresh rate (240 Hz: 60/120/240) captures it without judder.
 # Encoder quality settings stay the same. Takes effect on the next recording;
 # pause/resume keeps its original profile. Replay has its own fps setting.
 record_profile = "quality"
