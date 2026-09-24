@@ -230,14 +230,40 @@ mod egl {
             const PBUFFER_BIT: i32 = 0x0001;
             const NONE: i32 = 0x3038;
             const CLIENT_VERSION: i32 = 0x3098;
-            let display: Display = call!(
-                egl_ok,
-                c"eglGetPlatformDisplay",
-                fn(u32, *mut c_void, *const isize) -> Display,
-                SURFACELESS_MESA,
-                std::ptr::null_mut(),
-                std::ptr::null()
-            );
+            // BOLTSNAP_EGL_DEVICE=N picks EGL device N (e.g. the NVIDIA driver)
+            // instead of Mesa's surfaceless platform.
+            let display: Display = match std::env::var("BOLTSNAP_EGL_DEVICE") {
+                Ok(index) => {
+                    const DEVICE_EXT: u32 = 0x313F;
+                    let query = egl(c"eglGetProcAddress");
+                    let query: unsafe extern "C" fn(*const std::ffi::c_char) -> *mut c_void =
+                        unsafe { std::mem::transmute(query) };
+                    let devices = unsafe { query(c"eglQueryDevicesEXT".as_ptr()) };
+                    let devices: unsafe extern "C" fn(i32, *mut *mut c_void, *mut i32) -> u32 =
+                        unsafe { std::mem::transmute(devices) };
+                    let mut list = [std::ptr::null_mut(); 8];
+                    let mut count = 0;
+                    unsafe { devices(8, list.as_mut_ptr(), &mut count) };
+                    let index: usize = index.parse().unwrap();
+                    assert!(index < count as usize, "{count} EGL devices");
+                    call!(
+                        egl_ok,
+                        c"eglGetPlatformDisplay",
+                        fn(u32, *mut c_void, *const isize) -> Display,
+                        DEVICE_EXT,
+                        list[index],
+                        std::ptr::null()
+                    )
+                }
+                Err(_) => call!(
+                    egl_ok,
+                    c"eglGetPlatformDisplay",
+                    fn(u32, *mut c_void, *const isize) -> Display,
+                    SURFACELESS_MESA,
+                    std::ptr::null_mut(),
+                    std::ptr::null()
+                ),
+            };
             if display.is_null() {
                 return Err("no surfaceless EGL display".into());
             }
@@ -293,6 +319,13 @@ mod egl {
             {
                 return Err("no current GLES 3 context".into());
             }
+            let renderer = call!(
+                symbol,
+                c"glGetString",
+                fn(u32) -> *const std::ffi::c_char,
+                0x1F01
+            );
+            println!("GL renderer: {:?}", unsafe { CStr::from_ptr(renderer) });
             Ok(Self)
         }
 
@@ -369,6 +402,10 @@ mod egl {
             Frame { width, height }
         }
 
+        pub fn finish(&self) {
+            call!(symbol, c"glFinish", fn() -> (),);
+        }
+
         /// RGBA rows of the bound frame, row 0 first.
         pub fn read(&self, frame: &Frame) -> Vec<u8> {
             let mut pixels = vec![0u8; (frame.width * frame.height * 4) as usize];
@@ -408,6 +445,8 @@ fn keeps_drawing_after_the_pointer_stops() {
         }
         let began = std::time::Instant::now();
         plugin.frame(now, (64, 48)).unwrap();
+        // gsr finishes every frame on NVIDIA (`gsr_egl_swap_buffers`).
+        context.finish();
         assert!(began.elapsed().as_millis() < 100, "frame {frame} stalled");
     }
 }
