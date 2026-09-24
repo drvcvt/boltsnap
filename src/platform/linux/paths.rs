@@ -217,13 +217,18 @@ pub fn clean_orphan_rec_files() -> usize {
         return 0;
     };
     for entry in entries.flatten() {
-        if entry.file_name().to_string_lossy().starts_with("boltsnap-")
+        if is_orphan_rec_file(&entry.file_name().to_string_lossy())
             && fs::remove_file(entry.path()).is_ok()
         {
             removed += 1;
         }
     }
     removed
+}
+
+/// Recordings and shelf copies, plus the replay worker's `clip-*.mkv` exports.
+fn is_orphan_rec_file(name: &str) -> bool {
+    name.starts_with("boltsnap-") || (name.starts_with("clip-") && name.ends_with(".mkv"))
 }
 
 pub fn timestamp() -> u128 {
@@ -375,6 +380,14 @@ mod tests {
             boltsnap_filename_ext("2026-06-01_14-23-05", "png"),
             "boltsnap-2026-06-01_14-23-05.png"
         );
+    }
+
+    #[test]
+    fn replay_clips_are_orphan_recording_files() {
+        assert!(is_orphan_rec_file("boltsnap-final-12-3.mp4"));
+        assert!(is_orphan_rec_file("clip-3233529-1790267666021572148-1.mkv"));
+        assert!(!is_orphan_rec_file("clip-notes.txt"));
+        assert!(!is_orphan_rec_file("other.mkv"));
     }
 
     #[test]
