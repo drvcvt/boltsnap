@@ -90,6 +90,43 @@ pub const SHUTTER_MS: usize = 5;
 pub fn shutter_ms(fps: u32) -> f64 {
     (500.0 / f64::from(fps.max(1))).max(SHUTTER_MS as f64)
 }
+/// Maps gsr's draw calls to the frame grid they belong to. gsr wakes on a
+/// fixed grid and gives each call the slot it lands in, but a call can come a
+/// few ms late (seen up to 7.6 ms at 120 FPS); the frame still plays at its
+/// slot, so sampling the cursor at the call time makes it jump ahead for one
+/// frame. Every call is the next slot, unless gsr fell a whole frame or more
+/// behind and repeated frames; a call earlier than its slot moves the grid.
+pub struct FrameClock {
+    interval_us: f64,
+    grid: Option<(f64, u64)>,
+}
+
+impl FrameClock {
+    pub fn new(fps: u32) -> Self {
+        Self {
+            interval_us: 1_000_000.0 / f64::from(fps.max(1)),
+            grid: None,
+        }
+    }
+
+    /// The grid time of the frame drawn at monotonic `now_us`.
+    pub fn frame_us(&mut self, now_us: u64) -> f64 {
+        let now = now_us as f64;
+        let Some((origin, index)) = self.grid.as_mut() else {
+            self.grid = Some((now, 0));
+            return now;
+        };
+        *index += 1;
+        let late = now - (*origin + *index as f64 * self.interval_us);
+        if late < 0.0 {
+            *origin += late;
+        } else if late >= self.interval_us {
+            *index += (late / self.interval_us) as u64;
+        }
+        *origin + *index as f64 * self.interval_us
+    }
+}
+
 /// Sub-positions averaged per frame.
 pub const BLUR_SAMPLES: usize = 8;
 /// Longer gaps between frames restart the simulation settled at the target.
@@ -492,6 +529,29 @@ pub fn arrow(size: f32) -> Arrow {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frame_clock_samples_late_calls_at_their_grid_slot() {
+        // 120 FPS: slots every 8333.3 us from the first call.
+        let mut clock = FrameClock::new(120);
+        assert_eq!(clock.frame_us(1_000_000), 1_000_000.0);
+        let slot = |n: f64| 1_000_000.0 + n * 1_000_000.0 / 120.0;
+        assert!((clock.frame_us(slot(1.0) as u64 + 300) - slot(1.0)).abs() < 1.0);
+        // 7.6 ms late: still slot 2, and slot 3 right after it stays slot 3.
+        assert!((clock.frame_us(slot(2.0) as u64 + 7_600) - slot(2.0)).abs() < 1.0);
+        assert!((clock.frame_us(slot(3.0) as u64 + 100) - slot(3.0)).abs() < 1.0);
+    }
+
+    #[test]
+    fn frame_clock_follows_repeated_frames_and_an_earlier_grid() {
+        let mut clock = FrameClock::new(100); // 10 ms slots
+        clock.frame_us(0);
+        // gsr fell 2.5 frames behind and repeated frames: jump to slot 3.
+        assert!((clock.frame_us(32_000) - 30_000.0).abs() < 1.0);
+        // A call before its slot means the first call was late: move the grid.
+        assert!((clock.frame_us(38_000) - 38_000.0).abs() < 1.0);
+        assert!((clock.frame_us(48_500) - 48_000.0).abs() < 1.0);
+    }
 
     /// Smoothed position per output frame, like the old save-time renderer.
     fn smooth(

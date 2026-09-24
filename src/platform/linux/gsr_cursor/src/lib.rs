@@ -9,7 +9,7 @@
 mod cursor_motion;
 mod gl;
 
-use cursor_motion::{Arrow, Mapping, Motion, PLUGIN_ENV, PluginConfig, Sources};
+use cursor_motion::{Arrow, FrameClock, Mapping, Motion, PLUGIN_ENV, PluginConfig, Sources};
 use std::ffi::{c_char, c_uint, c_void};
 use std::fs::File;
 use std::io::{ErrorKind, Read};
@@ -51,6 +51,7 @@ struct Plugin {
     sources: Sources,
     mapping: Mapping,
     motion: Motion,
+    clock: FrameClock,
     /// Rasterized at `gl::SUPERSAMPLE` times the video resolution.
     arrow: Arrow,
     /// The arrow's tip in video pixels.
@@ -92,6 +93,7 @@ impl Plugin {
             sources: Sources::default(),
             mapping,
             motion: Motion::new(preset).with_shutter(cursor_motion::shutter_ms(params.fps)),
+            clock: FrameClock::new(params.fps),
             arrow,
             hotspot,
             renderer: None,
@@ -128,10 +130,11 @@ impl Plugin {
         }
     }
 
-    /// Draw the frame captured at monotonic `now_us` into the bound frame texture.
+    /// Draw the frame gsr captures at monotonic `now_us` into the bound frame
+    /// texture, with the cursor as of that frame's grid slot.
     fn frame(&mut self, now_us: u64, size: (u32, u32)) -> Result<(), String> {
         self.poll();
-        let now_ms = now_us as f64 / 1000.0;
+        let now_ms = self.clock.frame_us(now_us) / 1000.0;
         self.motion.advance_to(now_ms.ceil() as i64);
         let taps = self.motion.taps(now_ms, self.hotspot);
         if taps.iter().all(Option::is_none) {
