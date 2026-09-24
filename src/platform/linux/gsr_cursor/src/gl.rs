@@ -15,7 +15,11 @@ const GL_RGBA8: i32 = 0x8058;
 const GL_UNSIGNED_BYTE: u32 = 0x1401;
 const GL_TEXTURE_MIN_FILTER: u32 = 0x2801;
 const GL_TEXTURE_MAG_FILTER: u32 = 0x2800;
-const GL_NEAREST: i32 = 0x2600;
+const GL_LINEAR: i32 = 0x2601;
+const GL_LINEAR_MIPMAP_NEAREST: i32 = 0x2701;
+const GL_TEXTURE_WRAP_S: u32 = 0x2802;
+const GL_TEXTURE_WRAP_T: u32 = 0x2803;
+const GL_CLAMP_TO_EDGE: i32 = 0x812F;
 const GL_TRIANGLE_STRIP: u32 = 0x0005;
 const GL_BLEND: u32 = 0x0BE2;
 const GL_ZERO: u32 = 0;
@@ -91,6 +95,7 @@ gl_api! {
     glBindTexture: fn(u32, u32);
     glTexParameteri: fn(u32, u32, i32);
     glTexImage2D: fn(u32, i32, i32, i32, i32, i32, u32, u32, *const c_void);
+    glGenerateMipmap: fn(u32);
     glGetIntegerv: fn(u32, *mut i32);
     glIsEnabled: fn(u32) -> u8;
     glEnable: fn(u32);
@@ -110,37 +115,63 @@ void main() {
 ";
 
 /// Mean of the arrow under each blur tap. Row 0 of gsr's frame texture is the
-/// top image row, so `gl_FragCoord` is already in image pixels. Taps are
-/// subpixel: each samples the arrow bilinearly in premultiplied alpha, with
-/// transparency outside it (a whole-pixel tap reads single texels). Output is
-/// straight alpha: the averaged premultiplied colour divided by coverage.
+/// top image row, so `gl_FragCoord` is already in image pixels. The arrow is
+/// rasterized at `SUPERSAMPLE` times the video resolution, premultiplied, with
+/// mipmaps: four bilinear samples of mip 1 at quarter-pixel offsets area-filter
+/// each video pixel, so subpixel positions stay sharp and a resting arrow gets
+/// 16x coverage antialiasing. Output is straight alpha: the averaged
+/// premultiplied colour divided by coverage.
 const FRAGMENT: &CStr = c"#version 300 es
 precision highp float;
-precision highp int;
 uniform highp sampler2D sprite;
 uniform vec2 taps[8];
+uniform vec2 origin;
+uniform vec2 texel_scale;
 out vec4 color;
-vec4 texel(ivec2 at, ivec2 extent) {
-    if (any(lessThan(at, ivec2(0))) || any(greaterThanEqual(at, extent))) return vec4(0.0);
-    vec4 t = texelFetch(sprite, at, 0);
-    return vec4(t.rgb * t.a, t.a);
+vec4 box(vec2 at) {
+    vec4 sum = textureLod(sprite, origin + (at + vec2(-0.25, -0.25)) * texel_scale, 1.0);
+    sum += textureLod(sprite, origin + (at + vec2(0.25, -0.25)) * texel_scale, 1.0);
+    sum += textureLod(sprite, origin + (at + vec2(-0.25, 0.25)) * texel_scale, 1.0);
+    sum += textureLod(sprite, origin + (at + vec2(0.25, 0.25)) * texel_scale, 1.0);
+    return sum * 0.25;
 }
 void main() {
-    ivec2 extent = textureSize(sprite, 0);
     vec4 sum = vec4(0.0);
     for (int i = 0; i < 8; i++) {
-        vec2 at = gl_FragCoord.xy - taps[i] - 0.5;
-        vec2 cell = floor(at);
-        vec2 f = at - cell;
-        ivec2 p = ivec2(cell);
-        vec4 top = mix(texel(p, extent), texel(p + ivec2(1, 0), extent), f.x);
-        vec4 bottom = mix(texel(p + ivec2(0, 1), extent), texel(p + ivec2(1, 1), extent), f.x);
-        sum += mix(top, bottom, f.y);
+        sum += box(gl_FragCoord.xy - taps[i]);
     }
     if (sum.a <= 0.0) discard;
     color = vec4(sum.rgb / sum.a, sum.a / 8.0);
 }
 ";
+
+/// Arrow texels per video pixel.
+pub const SUPERSAMPLE: u32 = 4;
+
+/// Premultiplied texture of a `SUPERSAMPLE`d arrow with a transparent border of
+/// one video pixel, sized to a multiple of `SUPERSAMPLE` so mip levels stay
+/// aligned with video pixels. Returns the texels and the texture size.
+pub fn texture(arrow: &Arrow) -> (Vec<u8>, u32, u32) {
+    let pad = SUPERSAMPLE;
+    let round_up = |v: u32| v.div_ceil(SUPERSAMPLE) * SUPERSAMPLE;
+    let (width, height) = (
+        round_up(arrow.width + 2 * pad),
+        round_up(arrow.height + 2 * pad),
+    );
+    let mut texels = vec![0u8; (width * height * 4) as usize];
+    for y in 0..arrow.height {
+        for x in 0..arrow.width {
+            let from = ((y * arrow.width + x) * 4) as usize;
+            let to = (((y + pad) * width + x + pad) * 4) as usize;
+            let alpha = u32::from(arrow.rgba[from + 3]);
+            for c in 0..3 {
+                texels[to + c] = ((u32::from(arrow.rgba[from + c]) * alpha + 127) / 255) as u8;
+            }
+            texels[to + 3] = alpha as u8;
+        }
+    }
+    (texels, width, height)
+}
 
 /// Tap position that never covers a pixel.
 const HIDDEN: f32 = -1.0e6;
@@ -150,7 +181,8 @@ pub struct Renderer {
     program: u32,
     vao: u32,
     texture: u32,
-    sprite: (u32, u32),
+    /// Arrow size in video pixels.
+    sprite: (f64, f64),
     rect: i32,
     size: i32,
     taps: i32,
@@ -206,9 +238,11 @@ impl Saved {
 }
 
 impl Renderer {
-    /// Load GL, build the program and upload the arrow. Needs the context current.
+    /// Load GL, build the program and upload the arrow, which is rasterized at
+    /// `SUPERSAMPLE` times the video resolution. Needs the context current.
     pub fn new(arrow: &Arrow) -> Result<Self, String> {
         let gl = Gl::load()?;
+        let (texels, width, height) = texture(arrow);
         unsafe {
             let saved = Saved::take(&gl);
             let program = link(&gl);
@@ -217,32 +251,51 @@ impl Renderer {
             let mut texture = 0;
             (gl.glGenTextures)(1, &mut texture);
             (gl.glBindTexture)(GL_TEXTURE_2D, texture);
-            (gl.glTexParameteri)(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-            (gl.glTexParameteri)(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            (gl.glTexParameteri)(
+                GL_TEXTURE_2D,
+                GL_TEXTURE_MIN_FILTER,
+                GL_LINEAR_MIPMAP_NEAREST,
+            );
+            (gl.glTexParameteri)(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            (gl.glTexParameteri)(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            (gl.glTexParameteri)(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
             (gl.glTexImage2D)(
                 GL_TEXTURE_2D,
                 0,
                 GL_RGBA8,
-                arrow.width as i32,
-                arrow.height as i32,
+                width as i32,
+                height as i32,
                 0,
                 GL_RGBA,
                 GL_UNSIGNED_BYTE,
-                arrow.rgba.as_ptr().cast(),
+                texels.as_ptr().cast(),
             );
+            (gl.glGenerateMipmap)(GL_TEXTURE_2D);
             let uniform =
                 |program: u32, name: &CStr| (gl.glGetUniformLocation)(program, name.as_ptr());
             if let Ok(program) = program {
+                let pad = SUPERSAMPLE as f32;
                 (gl.glUseProgram)(program);
                 (gl.glUniform1i)(uniform(program, c"sprite"), 0);
+                (gl.glUniform2f)(
+                    uniform(program, c"origin"),
+                    pad / width as f32,
+                    pad / height as f32,
+                );
+                (gl.glUniform2f)(
+                    uniform(program, c"texel_scale"),
+                    pad / width as f32,
+                    pad / height as f32,
+                );
             }
             saved.restore(&gl);
             let program = program?;
+            let ss = f64::from(SUPERSAMPLE);
             Ok(Self {
                 program,
                 vao,
                 texture,
-                sprite: (arrow.width, arrow.height),
+                sprite: (f64::from(arrow.width) / ss, f64::from(arrow.height) / ss),
                 rect: uniform(program, c"rect"),
                 size: uniform(program, c"size"),
                 taps: uniform(program, c"taps"),
@@ -259,12 +312,13 @@ impl Renderer {
             return;
         }
         let limit = |v: f64| v.clamp(f64::from(HIDDEN) / 2.0, -f64::from(HIDDEN) / 2.0) as f32;
-        let left = visible().map(|(x, _)| *x).fold(f64::MAX, f64::min).floor();
-        let top = visible().map(|(_, y)| *y).fold(f64::MAX, f64::min).floor();
+        // One pixel of margin for the area filter's footprint.
+        let left = visible().map(|(x, _)| *x).fold(f64::MAX, f64::min).floor() - 1.0;
+        let top = visible().map(|(_, y)| *y).fold(f64::MAX, f64::min).floor() - 1.0;
         let right =
-            visible().map(|(x, _)| *x).fold(f64::MIN, f64::max).ceil() + f64::from(self.sprite.0);
+            visible().map(|(x, _)| *x).fold(f64::MIN, f64::max).ceil() + self.sprite.0 + 1.0;
         let bottom =
-            visible().map(|(_, y)| *y).fold(f64::MIN, f64::max).ceil() + f64::from(self.sprite.1);
+            visible().map(|(_, y)| *y).fold(f64::MIN, f64::max).ceil() + self.sprite.1 + 1.0;
         let mut positions = [HIDDEN; 2 * BLUR_SAMPLES];
         for (slot, tap) in positions.chunks_exact_mut(2).zip(taps) {
             if let Some((x, y)) = tap {

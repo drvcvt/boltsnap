@@ -104,26 +104,50 @@ fn draws_the_arrow_over_the_frame_and_averages_blur_taps() {
     writer.write_all(b"0 1000000 p 110 60\n").unwrap();
     plugin.frame(3_000_000, (width, height)).unwrap();
     let pixels = context.read(&frame);
-    let arrow = &plugin.arrow;
-    let left = (20.0 - arrow.hotspot.0).round() as u32;
-    let top = (20.0 - arrow.hotspot.1).round() as u32;
     let at = |x: u32, y: u32| &pixels[((y * width + x) * 4) as usize..][..4];
+    // At rest on whole pixels each video pixel is the 4x4 area mean of the
+    // supersampled arrow over the frame.
+    let (texels, tex_w, _) = gl::texture(&plugin.arrow);
+    let ss = gl::SUPERSAMPLE;
+    let left = (20.0 - plugin.hotspot.0.round()) as u32;
+    let top = (20.0 - plugin.hotspot.1.round()) as u32;
+    let (out_w, out_h) = (plugin.arrow.width / ss + 1, plugin.arrow.height / ss + 1);
     let mut opaque = 0;
-    for y in 0..arrow.height {
-        for x in 0..arrow.width {
-            let sprite = &arrow.rgba[((y * arrow.width + x) * 4) as usize..][..4];
-            let drawn = at(left + x, top + y);
-            if sprite[3] == 255 {
-                opaque += 1;
-                // Row 0 of the frame is the image top: the arrow is not flipped.
-                assert_eq!(&drawn[..3], &sprite[..3], "({x}, {y})");
+    for y in 0..out_h {
+        for x in 0..out_w {
+            let mut mean = [0f32; 4];
+            for dy in 0..ss {
+                for dx in 0..ss {
+                    let texel = (((y * ss + dy + ss) * tex_w + x * ss + dx + ss) * 4) as usize;
+                    for c in 0..4 {
+                        mean[c] += f32::from(texels[texel + c]) / (ss * ss) as f32;
+                    }
+                }
             }
-            if sprite[3] == 0 {
-                assert_eq!(drawn, grey, "({x}, {y})");
+            let coverage = mean[3] / 255.0;
+            let drawn = at(left + x, top + y);
+            for c in 0..3 {
+                let expected = 128.0 * (1.0 - coverage) + mean[c];
+                assert!(
+                    (f32::from(drawn[c]) - expected).abs() <= 2.5,
+                    "({x}, {y}) channel {c}: {} vs {expected}",
+                    drawn[c]
+                );
+            }
+            if coverage > 0.99 {
+                opaque += 1;
             }
         }
     }
-    assert!(opaque > 20);
+    // Row 0 of the frame is the image top: the tip sits top-left, not flipped.
+    assert!(opaque > 20, "{opaque}");
+    // The tip is at (20, 20); the dark fill lies just below and right of it.
+    assert!(
+        at(22, 26)[0] < 60,
+        "dark body near the tip: {:?}",
+        at(22, 26)
+    );
+    assert_eq!(at(17, 26), grey, "nothing left of the white rim");
     assert!(
         pixels.chunks_exact(4).all(|p| p[3] == 255),
         "frame alpha kept"
@@ -131,10 +155,11 @@ fn draws_the_arrow_over_the_frame_and_averages_blur_taps() {
     assert_eq!(at(60, 44), grey);
 
     // Blur: taps average; they do not overdraw each other.
+    // One video pixel of half-transparent white, at the supersampled size.
     let half = Arrow {
-        rgba: vec![255, 255, 255, 128],
-        width: 1,
-        height: 1,
+        rgba: [255, 255, 255, 128].repeat(16),
+        width: 4,
+        height: 4,
         hotspot: (0.0, 0.0),
     };
     let frame = context.frame(width, height, grey);
@@ -164,7 +189,7 @@ fn draws_the_arrow_over_the_frame_and_averages_blur_taps() {
     // Subpixel: half a pixel right splits the coverage over two pixels.
     let frame = context.frame(width, height, grey);
     let opaque = Arrow {
-        rgba: vec![255; 4],
+        rgba: vec![255; 64],
         ..half
     };
     let renderer = gl::Renderer::new(&opaque).unwrap();
@@ -447,6 +472,10 @@ fn keeps_drawing_after_the_pointer_stops() {
         plugin.frame(now, (64, 48)).unwrap();
         // gsr finishes every frame on NVIDIA (`gsr_egl_swap_buffers`).
         context.finish();
-        assert!(began.elapsed().as_millis() < 100, "frame {frame} stalled");
+        // The first frame compiles the shader, which is slow on llvmpipe.
+        assert!(
+            frame == 0 || began.elapsed().as_millis() < 100,
+            "frame {frame} stalled"
+        );
     }
 }
