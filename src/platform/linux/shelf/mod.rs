@@ -313,6 +313,27 @@ fn shelf_commit_allowed(drag_active: bool) -> bool {
 }
 
 const MAX_VISIBLE_CARDS: usize = 5;
+const MAX_RECORDING_WATCHERS: usize = 16;
+
+/// False once a watch client hung up. Watch clients send nothing after their
+/// request, so pending bytes are left unread and count as connected.
+fn watcher_connected(stream: &UnixStream) -> bool {
+    use std::os::fd::AsRawFd;
+    let mut byte = 0_u8;
+    let peeked = unsafe {
+        libc::recv(
+            stream.as_raw_fd(),
+            (&raw mut byte).cast(),
+            1,
+            libc::MSG_PEEK | libc::MSG_DONTWAIT,
+        )
+    };
+    match peeked {
+        0 => false,
+        1.. => true,
+        _ => std::io::Error::last_os_error().kind() == std::io::ErrorKind::WouldBlock,
+    }
+}
 const MAX_CACHED_CARDS: usize = 20;
 const MAX_CACHED_IMAGE_BYTES: u64 = 256 * 1024 * 1024;
 
@@ -1675,6 +1696,15 @@ impl Daemon {
                 );
             }
             crate::ipc::Request::RecordingWatch => {
+                // Idle status never changes, so closed watchers are only noticed
+                // here; the limit caps the live ones.
+                self.watchers.retain(watcher_connected);
+                if self.watchers.len() >= MAX_RECORDING_WATCHERS {
+                    eprintln!(
+                        "boltsnap daemon: refused a recording watch; {MAX_RECORDING_WATCHERS} are open"
+                    );
+                    return;
+                }
                 let _ = stream.set_read_timeout(None);
                 let _ = stream.set_nonblocking(true);
                 let line = self.recording_snapshot().to_json_line();
@@ -4042,6 +4072,36 @@ mod tests {
         assert!(send_file(&path, &mut writer).is_err());
         assert!(send_file(&dir.join("input/gone.mp4"), &mut Receiver(Vec::new(), 0)).is_err());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn hung_up_watchers_are_noticed_without_a_status_change() {
+        let (open, _open_peer) = UnixStream::pair().unwrap();
+        let (chatty, mut chatty_peer) = UnixStream::pair().unwrap();
+        chatty_peer.write_all(b"x").unwrap();
+        let (closed, closed_peer) = UnixStream::pair().unwrap();
+        drop(closed_peer);
+        let (sent_then_closed, mut peer) = UnixStream::pair().unwrap();
+        peer.write_all(b"x").unwrap();
+        drop(peer);
+
+        assert!(watcher_connected(&open));
+        assert!(watcher_connected(&chatty));
+        assert!(!watcher_connected(&closed));
+        // Unread client bytes come first; the hang-up shows once they are read.
+        assert!(watcher_connected(&sent_then_closed));
+        // A blocking socket is peeked without blocking.
+        open.set_nonblocking(false).unwrap();
+        assert!(watcher_connected(&open));
+
+        let mut watchers = Vec::new();
+        for _ in 0..100 {
+            let (daemon_side, client) = UnixStream::pair().unwrap();
+            drop(client);
+            watchers.retain(watcher_connected);
+            watchers.push(daemon_side);
+        }
+        assert_eq!(watchers.len(), 1);
     }
 
     #[test]
