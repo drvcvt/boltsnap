@@ -433,4 +433,7 @@ Commit B, "Smooth cursor in the replay buffer": `replay/mod.rs`
   An FFmpeg-backed test (ignored by default) checks 60 frames of a synthetic
   120 FPS Matroska segment land within 10 us of their slots; without the flag
   the second frame sits at 8 ms. Replay clips stay Matroska and still have
-  millisecond times; not changed here.
+  millisecond times; not changed here. Live after installing `b11e5b2`: a
+  14 s user recording has time base 1/120 and all 1684 frames on the 8.333 ms
+  grid; the user reports the cursor as clean now. Occasional stalls remain
+  while playing in Eddy (separate repository, Qt Multimedia playback).
