@@ -1894,6 +1894,7 @@ exec python3 -c 'import ctypes,signal,sys,time; value=ctypes.c_int(); ctypes.CDL
                     .collect(),
                 both_mode: RecordBothMode::Combined,
                 codec,
+                fps: RecordProfile::Quality.fps(),
                 destination: SaveDestination::Shelf,
                 cursor: crate::config::RecordCursor::Mellow,
                 region,

@@ -418,3 +418,19 @@ Commit B, "Smooth cursor in the replay buffer": `replay/mod.rs`
   Shelf videos open in Eddy (`xdg-mime` -> eddy.desktop), which plays through
   Qt Multimedia's `QMediaPlayer`; its timer-paced frames are the likely source
   of the remaining perceived judder. Not verified: Eddy's presentation timing.
+- Frame times, 2026-09-25 afternoon: the user still saw the cursor judder on
+  every display and player, which rules out the ZOWIE-only explanation. The
+  saved clip carried millisecond frame times (0, 8, 17, 25, 33, 42 ms at 120
+  FPS; deltas 8/8/9 ms): gsr's Matroska segments store whole milliseconds and
+  the stream-copy remux kept them. A player shows a frame at the first refresh
+  after its time, so a frame rounded up (16.667 -> 17 ms) misses its refresh at
+  240 Hz and the previous frame stays one refresh longer, a steady hitch that
+  shows most on the moving cursor. This also explains why the 119.88 FPS
+  retimed files looked better and the 0.67 px harness floor (the 0.33 ms
+  offset). Fix: the remux of gsr segments passes `-video_track_timescale
+  <fps>`, which rounds every frame back onto its exact slot without
+  re-encoding; wf-recorder segments are variable rate and keep their times.
+  An FFmpeg-backed test (ignored by default) checks 60 frames of a synthetic
+  120 FPS Matroska segment land within 10 us of their slots; without the flag
+  the second frame sits at 8 ms. Replay clips stay Matroska and still have
+  millisecond times; not changed here.
