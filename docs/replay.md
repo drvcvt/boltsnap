@@ -116,7 +116,10 @@ field and is treated as holding no selection.
 
 Saving a replay card moves its Matroska bytes unchanged and keeps the `.mkv`
 name; dragging it offers `video/x-matroska` next to the file reference.
-Nothing converts the container.
+Nothing converts the container. Replay clips therefore keep Matroska's
+millisecond frame times (at 120 FPS 0, 8, 17, 25 ms), which can make fast
+motion judder slightly; ordinary recordings are snapped to exact frame times
+when they are remuxed.
 
 ## Verification and limits
 

@@ -350,7 +350,9 @@ The recording controls offer:
 
 A single MP4 segment is moved directly and skips FFmpeg at save time.
 GPU Screen Recorder produces Matroska segments, so even an uninterrupted
-recording is remuxed to MP4 with FFmpeg without re-encoding.
+recording is remuxed to MP4 with FFmpeg without re-encoding. Matroska keeps
+frame times in whole milliseconds; the remux puts each frame back on its exact
+slot so playback does not judder.
 Separate dual-monitor mode creates one native-resolution clip per output.
 Combined mode arranges both outputs like the Hyprland layout. With GPU Screen
 Recorder, equal output scales and a layout up to 4096 pixels per side it records
