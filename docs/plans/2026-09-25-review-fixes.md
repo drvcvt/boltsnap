@@ -1,6 +1,7 @@
 # Review-Fixes: Spezifikation und Implementierungsplan
 
-Stand: 25.09.2026. Status: A1 freigegeben und umgesetzt; übrige Items geplant.
+Stand: 25.09.2026. Status: alle 15 Fehler-Items umgesetzt (A1 bis H1); F1 ohne
+Code entschieden. Live-Checks offen (Abschnitt 5).
 Ursprüngliche Basis: `7e736ad`; vertieftes Review: `cf243b5`.
 Ursprünglich erstellt mit dem lokalen Skill
 `/home/mt/.codex/skills/spec-plan/SKILL.md`.
@@ -9,10 +10,10 @@ Ursprünglich erstellt mit dem lokalen Skill
 
 Dieser Plan behandelt die neun ursprünglichen Befunde, sechs zusätzliche Befunde
 aus dem vertieften Review und die separat aufgeführte Cursor-Verhaltensfrage.
-Damit sind 14 Fehler offen und A1 behoben; F1 ist eine Verhaltensentscheidung.
+Alle 15 Fehler sind inzwischen behoben (Abschnitt 5); F1 ist eine
+Verhaltensentscheidung ohne Code.
 Der versionierbare aktuelle
-[Befundstand](../codebase.md#open-review-findings) enthält die Codebelege und
-kennzeichnet A1 als behoben. Der historische Review liegt lokal unter
+[Befundstand](../codebase.md#open-review-findings) fasst die Fixes zusammen. Der historische Review liegt lokal unter
 `docs/reviews/2026-09-25-linux-review.md`; `docs/reviews/` ist absichtlich
 Git-ignoriert und in einem frischen Checkout nicht vorhanden. Die dortigen
 isolierten Repros (`docs/reviews/2026-09-25-repros.patch`) sind Ausgangspunkte für
@@ -22,8 +23,9 @@ der Container-Test Platzhalterbytes, keine echte Matroska-Datei
 
 Die Empfehlungen in Abschnitt 4 sind Planungsannahmen, keine bereits
 getroffenen Nutzerentscheidungen. Nach Erläuterung der lokalen atomaren
-Dateiveröffentlichung wurde A1 zur Umsetzung freigegeben. Die übrigen Items
-bleiben geplant. Keine Installation und kein Eingriff in den laufenden Daemon.
+Dateiveröffentlichung wurde A1 zur Umsetzung freigegeben, am 25.09. dann alle
+übrigen Items mit den in Abschnitt 4 festgehaltenen Entscheidungen. Keine
+Installation und kein Eingriff in den laufenden Daemon.
 Die Arbeit erfolgt ohne Subagents gemäß der Projektvorgabe des Nutzers.
 Ursachenbelege und unveränderte Planungsabschnitte zitieren die ursprüngliche
 Basisrevision; G1 bis H1 und die A4-Ergänzung beziehen sich auf `cf243b5`.
@@ -40,21 +42,21 @@ Shelf nach Daemon-Neustart. Der Shelf ist ausdrücklich RAM-only
 | ID | Review-Befund | Priorität / Nachweis |
 | --- | --- | --- |
 | A1 | 4: kollidierende Part-Dateien | P2, reproduziert und behoben; Regressionstest grün |
-| A2 | 1: Bild-Save überschreibt Dateien | P1, Codepfad; Test fehlt |
-| A3 | 3: Dismiss/Eviction gegen Video-Save | P1, Codepfad; Scheduling-Test fehlt |
-| A4 | 5: falsche Videoendung und MIME-Angabe | P2, Endung reproduziert, MIME im Code |
-| B1 | 6: Video-Import über Symlink | P2, reproduziert |
-| C1 | 7: doppelte Imports nach ACK-Abbruch | P2, reproduziert |
-| D1 | 8: vollständiger Video-Read beim Drag | P2, Codepfad; RAM-Test fehlt |
-| D2 | 9: Bild-Save im UI-Thread | P2, Codepfad; Blockier-Test fehlt |
-| E1 | 2: Combined-Recovery und Resume | P1, reproduziert |
+| A2 | 1: Bild-Save überschreibt Dateien | P1, Codepfad; Test fehlt; behoben |
+| A3 | 3: Dismiss/Eviction gegen Video-Save | P1, Codepfad; Scheduling-Test fehlt; behoben |
+| A4 | 5: falsche Videoendung und MIME-Angabe | P2, Endung reproduziert, MIME im Code; behoben |
+| B1 | 6: Video-Import über Symlink | P2, reproduziert; behoben |
+| C1 | 7: doppelte Imports nach ACK-Abbruch | P2, reproduziert; behoben |
+| D1 | 8: vollständiger Video-Read beim Drag | P2, Codepfad; RAM-Test fehlt; behoben |
+| D2 | 9: Bild-Save im UI-Thread | P2, Codepfad; Blockier-Test fehlt; behoben |
+| E1 | 2: Combined-Recovery und Resume | P1, reproduziert; behoben |
 | F1 | Cursor-Handover | bestätigtes Verhalten, kein freigegebener Fix |
-| G1 | Daemon-Cleanup vor exklusiver Startabsicherung | P1, vollständiger Codepfad; Race nicht live ausgelöst |
-| G2 | Replay-Remux-Partials überleben die Neustartbereinigung | P2, Namensprüfung reproduziert |
-| G3 | Prozess-Timeout begrenzt geerbte Ausgabepipes nicht | P2, reproduziert: 40 ms werden 1,202 s |
-| G4 | RecordingWatch hält getrennte Idle-Clients unbegrenzt | P2, vollständiger Codepfad; FD-Stress nicht ausgeführt |
-| G5 | Replay-Watchdog erkennt eine gehaltene Auswahl nicht | P2, Worker-Zustand synthetisch reproduziert; Neustart aus Code belegt |
-| H1 | Nix-Paket meldet Version 0.4.3 statt 1.0.1 | P3, Manifeste direkt verglichen |
+| G1 | Daemon-Cleanup vor exklusiver Startabsicherung | P1, vollständiger Codepfad; Race nicht live ausgelöst; behoben |
+| G2 | Replay-Remux-Partials überleben die Neustartbereinigung | P2, Namensprüfung reproduziert; behoben |
+| G3 | Prozess-Timeout begrenzt geerbte Ausgabepipes nicht | P2, reproduziert: 40 ms werden 1,202 s; behoben |
+| G4 | RecordingWatch hält getrennte Idle-Clients unbegrenzt | P2, vollständiger Codepfad; FD-Stress nicht ausgeführt; behoben |
+| G5 | Replay-Watchdog erkennt eine gehaltene Auswahl nicht | P2, Worker-Zustand synthetisch reproduziert; Neustart aus Code belegt; behoben |
+| H1 | Nix-Paket meldet Version 0.4.3 statt 1.0.1 | P3, Manifeste direkt verglichen; behoben |
 
 ## 2. Wellen und Abhängigkeiten
 
@@ -1000,10 +1002,23 @@ Cursor-Fix).
 
 ## 5. Status
 
-A1 ist implementiert und geprüft. Es bleibt bei einer Fähigkeit pro Commit,
-ID im Commit und Projektchecks vor jedem Commit; keine AI-/Agent-Coauthor-Trailer.
-Der Commit-Titel identifiziert den A1-Abschluss inklusive dieses Dokuments.
-Alle anderen Items sind offen. F1 erhält unter Empfehlung A keinen Code-Commit.
+Alle Fehler-Items sind implementiert, je ein Commit mit ID im Titel, ohne
+AI-/Agent-Coauthor-Trailer. F1 erhält unter Entscheidung 5 A keinen Code. Vor
+jedem Commit liefen `cargo fmt --check`, `nice -n 19 cargo test --locked -j 4`
+und `nice -n 19 cargo clippy --locked --all-targets -j 4` ohne Warnungen; am
+Ende 23 Library- plus 322 Binary-Tests, zwei ignoriert. Für G3 und G5 zusätzlich
+die Worker-Checks aus den Abschlussnotizen. Das Cursor-Plugin ist unverändert.
+Nicht geprüft: Windows-Target (kein Toolchain-Target lokal; Windows-Aufrufer
+behalten ihre Signaturen), Nix (H1), Release-Builds.
+
+Offene Live-Checks, keiner davon ausgeführt (kein Install, kein
+Daemon-Neustart): Cold-Start über CLI und systemd (G1), zwei schnelle Bild-Saves
+und nicht schreibbares Ziel (A2), Save+Close auf langsamem Ziel (A3, D2),
+Recovery-Popup nach Disk-Fehler (E1), Replay-Save und Drag in Datei- und
+Byte-Ziele (A4), Import großer Clips (B1), Drop großer Videos (D1),
+Widget-Reconnect gegen idle Daemon (G4), Auswahl bei echtem Capture-Ausfall
+(G5). Nach dem Install braucht ein laufender alter Daemon einen Neustart,
+sonst landen Screenshots nicht im Shelf (C1).
 
 | Welle | ID | Item | Commit |
 | --- | --- | --- | --- |
@@ -1016,7 +1031,7 @@ Alle anderen Items sind offen. F1 erhält unter Empfehlung A keinen Code-Commit.
 | 3 | C1 | sichere IPC-Kompatibilitätswahl | `C1: send a screenshot to the shelf only once` |
 | 4 | D1 | Streaming beim Drag | `D1: stream dragged files` |
 | 4 | D2 | asynchroner Bild-Save | `D2: save image cards off the event loop` |
-| keine | F1 | Cursor-Verhalten beibehalten | |
+| keine | F1 | Cursor-Verhalten beibehalten | kein Code (Entscheidung 5 A) |
 | 0 | G1 | exklusiver Daemon-Start vor Cleanup | `G1: lock the daemon before cleanup` |
 | 5 | G2 | Remux-Partials bei exklusivem Neustart erkennen | `G2: clean up failed replay remux partials on start` |
 | 5 | G3 | Deadline inklusive Prozessausgabe | `G3: hold the process deadline over its output pipes` |

@@ -43,35 +43,35 @@ from `Cargo.toml`.
 
 ## Open review findings
 
-Rechecked against `cf243b5`. The [fix plan](plans/2026-09-25-review-fixes.md) is
-the canonical issue record, with causes, proposed fixes, implementation sequence
-and regression/live checks. Only A1 is implemented; 14 defects remain open.
-The deeper review reproduced G2/G3 in an isolated source snapshot and G5 with
-synthetic media. Its scripts are versioned next to the plan. Older isolated
-repros remain local ignored artifacts; no live daemon races were triggered.
+All fifteen defects from the 2026-09-25 reviews are fixed in code, one commit
+each (A1 in `a430ceb`, the rest from `da75eda` to `bf784fc`). The
+[fix plan](plans/2026-09-25-review-fixes.md) is the canonical record: causes,
+decisions, what each fix does, the tests that cover it and the checks that
+remain. What is still open is live validation, listed in the plan's section 5;
+no fix was installed or run against the desktop daemon.
 
-| Priority / ID | Trigger, consequence and current code evidence |
+| ID | Fixed behavior |
 | --- | --- |
-| P1 / A2 | Two image-card Saves in the same second choose the same filename. [`save_card`](../src/platform/linux/shelf/mod.rs) calls `fs::copy` without no-replace protection, overwriting the earlier screenshot. [`paths::local_timestamp`](../src/platform/linux/paths.rs) only supplies second precision |
-| P1 / A3 | Close-animation completion or cache eviction calls `remove_card_now` while the video Save thread may not yet have opened its source. [`shelf/mod.rs`](../src/platform/linux/shelf/mod.rs) removes the card/file and its `saving_cards` entry; [`Thumb::delete_file_on_dismiss`](../src/shelf/model.rs) deletes temporary media and sidecar. This can lose the only recording before Save starts |
-| P1 / E1 | Multi-stream Combined composition succeeds, then Disk Save fails. [`finalize_recording`](../src/record/finalize.rs) returns the composed clip under key `None`; the shelf restores it and [`finalize_failed`](../src/record/session.rs) permits Resume. New named-output groups mix with `None`, so the next `combined_layout` fails with `combined recording is missing monitor layout data` |
-| P2 / A4 | [`promote_recording`](../src/record/finalize.rs) always chooses a `.mp4` destination through `unique_recording_path`, even for replay Matroska. Bytes are unchanged. [`begin_drag`](../src/platform/linux/shelf/mod.rs) also advertises all videos as `video/mp4`; its cancelled-drag callback treats only MP4 as video and sends MKV into the image clipboard fallback |
-| P2 / B1 | [`prepare_shelf_video`](../src/platform/linux/shelf/mod.rs) validates through `metadata` but then hard-links the supplied path. A relative symlink becomes invalid in the cache directory while import reports success. Regular-file hardlinks also remain sensitive to in-place writes to the original |
-| P2 / C1 | [`ipc::add_with`](../src/platform/linux/ipc.rs) retries a mutating `add_thumb` as `add` on every `UnexpectedEof`, including a truncated ACK after successful insertion. That can create two cards for one screenshot |
-| P2 / D1 | [`DataSourceHandler::send_request`](../src/platform/linux/shelf/mod.rs) uses `fs::read` for a requested byte transfer. A large video is fully resident in daemon RAM until the receiver finishes; the background thread does not bound memory |
-| P2 / D2 | Image [`save_card`](../src/platform/linux/shelf/mod.rs) performs directory creation and copying in the Wayland/IPC eventloop. Slow storage blocks shelf interaction and recording controls |
-| P1 / G1 | [`run_daemon`](../src/platform/linux/shelf/mod.rs) removes the socket and cached media after a nonexclusive alive check, before binding. Concurrent starts can remove a newly active daemon's socket and recordings |
-| P2 / G2 | [`export::create_partial`](../src/platform/linux/replay/worker/src/export.rs) ends remux partial names in `.partial`; [`is_orphan_rec_file`](../src/platform/linux/paths.rs) only recognizes replay names ending in `.mkv`. Failed partials survive startup and consume the cache quota |
-| P2 / G3 | [`process::output_with_interval`](../src/platform/linux/replay/process.rs) joins pipe reader threads without a deadline. A finished child with an output-inheriting descendant bypasses the timeout; reproduced at 1.202 s for a 40-ms limit |
-| P2 / G4 | [`RecordingWatch` and `publish_recording_snapshot`](../src/platform/linux/shelf/mod.rs) retain disconnected idle clients until a status change and impose no subscription limit, allowing file descriptors to accumulate |
-| P2 / G5 | [`live.rs`](../src/platform/linux/replay/worker/src/live.rs) retains a valid frozen snapshot while reporting `busy=false`; after input failure, [`watchdog`](../src/platform/linux/replay/mod.rs) sees neither ready nor busy and replaces the session despite the held selection |
-| P3 / H1 | [`flake.nix`](../flake.nix) hardcodes main package version `0.4.3` while Cargo declares `1.0.1` |
+| G1 | [`run_daemon`](../src/platform/linux/shelf/mod.rs) takes an `flock` on `boltsnap.lock` before log rotation and cleanup; only a real socket is removed as stale |
+| A2 | Image saves publish through [`copy_noreplace`](../src/platform/linux/files.rs) under a fresh `-N` name; existing files and symlinks stay |
+| A3 | A card being saved stays until the save ends; close waits for success, eviction skips it ([`shelf/save.rs`](../src/platform/linux/shelf/save.rs)) |
+| E1 | After a failed save the recording offers Save and Discard only; the popup reads SAVE FAILED ([`session.rs`](../src/record/session.rs)) |
+| A4 | Saved cards keep their container extension; drags offer the file's MIME type; a cancelled video drag never reaches the image clipboard |
+| B1 | Video import copies the checked file handle into the cache instead of hard-linking the path |
+| C1 | [`add_to_shelf`](../src/platform/linux/ipc.rs) sends once; a lost answer is reported with the path of `last.png`. An older daemon needs a restart |
+| D1 | Drag transfers stream the file |
+| D2 | Image saves run off the event loop |
+| G2 | Startup cleanup removes `clip-*.mkv.<pid>.<seq>.partial` remux leftovers |
+| G3 | [`process::output_with_interval`](../src/platform/linux/replay/process.rs) reads both pipes with `poll` under one deadline |
+| G4 | Closed recording watchers are dropped before each new watch; at most 16 stay open |
+| G5 | The worker reports `selection_active`; watchdog and manual Start leave an open selection alone |
+| H1 | [`flake.nix`](../flake.nix) reads the package version from `Cargo.toml` (not evaluated: no Nix here) |
 
 A1 is **Integrated / Automated green**: [`files::copy_noreplace`](../src/platform/linux/files.rs)
 uses PID/sequence part names, `create_new`, sync-before-publish and no-replace
 rename. Tests cover concurrent copies, another operation's partial file, read
-failure, non-UTF-8 paths and the finalizer's copy/move behavior. This fixes part
-file collisions, not image overwrites or card lifetime races. A real shelf Save
+failure, non-UTF-8 paths and the finalizer's copy/move behavior. It fixes part
+file collisions; image overwrites and card lifetime races were A2 and A3. A real shelf Save
 to another physical disk is still owed.
 
 F1 is a behavior decision, not an approved fix: [`Sources::sample` and
@@ -93,12 +93,19 @@ not guaranteed. The README now states that limitation.
   teardown; reaping continues in the background. Current end-to-end latency
   and live acceptance remain unmeasured here. Direct libway RGB canvas remains
   planned and unimplemented. See the [performance plan](plans/2026-09-24-performance-save-and-screenshot.md).
-- All open findings above remain planned. The fix plan's policy recommendations are
-  not accepted product decisions. Windows work remains frozen.
+- The review fixes above are code-complete; their live checks are open. Policy
+  decisions are recorded in the fix plan. Windows work remains frozen.
 
 ## Verification at this baseline
 
-All deeper-review builds used an isolated archive snapshot with separate target
+After the review fixes, on `bf784fc`: `cargo fmt --check`,
+`nice -n 19 cargo test --locked -j 4` (**23 library + 322 binary tests**, two
+ignored) and `cargo clippy --locked --all-targets` without warnings. The replay
+worker passed `cargo fmt --check`, `cargo test --locked` (24), a debug build,
+`tests/probe.py`, `tests/live.py` and the G5 freeze repro against that debug
+build. Not run: Windows target, Nix, release builds, anything live.
+
+Earlier, all deeper-review builds used an isolated archive snapshot with separate target
 outputs because `src/record/session.rs` was being edited concurrently. On
 `cf243b5`, `cargo fmt --check` and `cargo test --locked -j 4` passed: **23 library
 + 303 binary tests**, two ignored. A worker debug build also passed. New G2/G3
