@@ -24,6 +24,21 @@ es zurück. `save_dir` wird ebenfalls nur beim Start gelesen (`mod.rs:1185`).
 nur den geänderten Schlüssel setzen. Größe S-M. Betroffen: `shelf/mod.rs`
 (`recording_prefs`, `persist_tray_prefs`, Start-Pfad), `config.rs`.
 
+**Umgesetzt:** statt nur geänderte Schlüssel zu schreiben (der Schreib-Thread
+fasst Schreibvorgänge zusammen, einzelne Schlüssel gingen dabei verloren)
+liest der Daemon die Datei neu, bevor er eine Einstellung ändert oder eine
+Aufnahme startet: `refresh_recording_prefs` vor jeder Tray-Aktion, im
+`StartRecording`-Request, in `start_recording`, `start_default_recording` und
+`start_recording_outputs`. Das Schreiben danach gibt die frischen Werte
+zurück. Übersprungen wird der Refresh, solange ein eigener Schreibvorgang offen
+ist (`settled_prefs_generation` hinter `prefs_generation`); eine fehlende oder
+kaputte Datei (`Config::load_valid`) ersetzt nie die bekannten Werte.
+`save_dir` wird beim Speichern einer Bildkarte frisch aufgelöst, `--save-dir`
+hat weiter Vorrang. Rest-Race: eine Handänderung in den Millisekunden zwischen
+Refresh und Schreiben geht verloren. Kein automatischer Test für den
+Eventloop-Pfad; live offen: Datei bei laufendem Daemon ändern, Tray-Toggle,
+Datei prüfen.
+
 ### K2 (P2): Speichern der Einstellungen sortiert und löscht Kommentare
 
 `save_recording_prefs` geht über `toml::Table` und `to_string_pretty`
@@ -74,4 +89,5 @@ Nutzer-Entscheidung 26.09.: K1 und K2 zusammen, danach V1 und V2.
 
 | ID | Stand |
 | --- | --- |
+| K1 | umgesetzt, live offen |
 | K2 | umgesetzt |
