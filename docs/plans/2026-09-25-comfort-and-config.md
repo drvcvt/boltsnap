@@ -30,6 +30,12 @@ nur den geänderten Schlüssel setzen. Größe S-M. Betroffen: `shelf/mod.rs`
 (`src/config.rs:306-356`). Kommentare und Reihenfolge der Datei gehen verloren.
 `toml_edit` ist über `toml` 0.8 schon im Baum und erhält beides. Passt zu K1.
 
+**Umgesetzt:** `save_recording_prefs_at` liest die Datei als
+`toml_edit::Document` (0.20.2, war schon im Lock) und setzt nur die sieben
+Werte. Bestehende Schlüssel behalten Platz und Inline-Kommentar, neue landen
+auf oberster Ebene vor `[replay]`. Eine kaputte Datei wird weiter nicht
+überschrieben. Test `recording_prefs_write_keeps_comments_order_and_tables`.
+
 ### K3 (P3): `--save` ignoriert `save_dir`
 
 `paths::default_save_path` (`src/platform/linux/paths.rs:130-137`) schreibt fest
@@ -64,4 +70,8 @@ ganzen Clip speichern; das muss ein Fehler werden.
 
 ## 3. Stand
 
-Nur erfasst. Entscheidung des Nutzers ausstehend.
+Nutzer-Entscheidung 26.09.: K1 und K2 zusammen, danach V1 und V2.
+
+| ID | Stand |
+| --- | --- |
+| K2 | umgesetzt |

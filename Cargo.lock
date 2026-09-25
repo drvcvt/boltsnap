@@ -332,6 +332,7 @@ dependencies = [
  "softbuffer",
  "tiny-skia",
  "toml 0.8.2",
+ "toml_edit 0.20.2",
  "tray-icon",
  "wasapi",
  "wayland-client",

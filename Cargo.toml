@@ -23,6 +23,9 @@ ab_glyph = "0.2"
 # Parse ~/.config/boltsnap/config.toml (save_dir + editor). Read via toml::Value,
 # so no serde-derive is needed in this crate.
 toml = "0.8"
+# Writes the recording settings back without dropping comments or key order.
+# Already in the tree through `toml`.
+toml_edit = "0.20"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # Vendored until libway has a published release; see vendor/README.md.
