@@ -146,7 +146,7 @@ pub fn temp_file(prefix: &str, ext: &str) -> PathBuf {
     unique_path_in(&env::temp_dir(), prefix, ext)
 }
 
-fn unique_path_in(dir: &Path, prefix: &str, ext: &str) -> PathBuf {
+pub(crate) fn unique_path_in(dir: &Path, prefix: &str, ext: &str) -> PathBuf {
     dir.join(format!(
         "boltsnap-{prefix}-{}-{}-{}.{ext}",
         std::process::id(),
@@ -200,11 +200,6 @@ pub fn clean_orphan_shelf_temps() -> usize {
 /// the system temp dir, which on this setup is tmpfs (RAM-backed).
 pub fn rec_dir() -> PathBuf {
     cache_dir().join("rec")
-}
-
-/// A unique path in `rec_dir`, removed with the other orphans at startup.
-pub fn rec_file(prefix: &str, ext: &str) -> PathBuf {
-    unique_path_in(&rec_dir(), prefix, ext)
 }
 
 /// Delete leftover recording files in `rec_dir`. Called at daemon startup: the
