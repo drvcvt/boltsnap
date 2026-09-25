@@ -259,7 +259,7 @@ pub fn run(
                         state_guard.busy = true;
                         state_guard.next_id += 1;
                         let path = directory.join(format!(
-                            "clip-{}-{}-{}.mkv",
+                            "clip-{}-{}-{}.mp4",
                             std::process::id(),
                             std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)

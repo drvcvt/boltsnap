@@ -10,7 +10,7 @@ import subprocess
 import tempfile
 import time
 
-from probe import ffmpeg, run, frame_hashes
+from probe import assert_frame_grid, ffmpeg, run, frame_hashes
 
 
 def main():
@@ -123,10 +123,12 @@ os.execv({shutil.which('ffmpeg')!r}, ['ffmpeg'] + sys.argv[1:])
             assert video["avg_frame_rate"] == "60/1", video
             assert int(video["nb_read_frames"]) == round(result["duration_us"] * 60 / 1_000_000), video
             assert any(s["codec_type"] == "audio" for s in streams)
+            assert path.endswith(".mp4"), path
+            assert_frame_grid(path, 60)
         (directory / "report.json").write_text(json.dumps({"frozen": frozen, "cropped": cropped, "full": full, "crop_export_seconds": export_seconds}, indent=2))
         assert call("stop")["ok"]
         worker.wait(timeout=5)
-        print("passed: live buffer, frozen crop, concurrent status, export limit, stale snapshot, full clip, audio, decode")
+        print("passed: live buffer, frozen crop, concurrent status, export limit, stale snapshot, full clip, audio, decode, exact frame times")
     finally:
         for child in [worker, producer]:
             if child.poll() is None:

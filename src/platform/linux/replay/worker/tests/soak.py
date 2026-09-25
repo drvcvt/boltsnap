@@ -32,7 +32,7 @@ def main():
                                         stdout=subprocess.PIPE, stderr=producer_log)
             children.append(producer)
             worker = subprocess.Popen([str(args.worker.resolve()), "probe", "--input", "-",
-                                       "--output", str(directory / "clip.mkv"), "--seconds", "3",
+                                       "--output", str(directory / "clip.mp4"), "--seconds", "3",
                                        "--memory-mib", "8", "--closed-gop"],
                                       stdin=producer.stdout, stdout=subprocess.PIPE, stderr=worker_log)
             children.append(worker)
@@ -77,7 +77,7 @@ def main():
     if report.get("rss_growth_kib", 0) > 4096:
         raise AssertionError(f"RSS grew after warmup; see {directory / 'report.json'}")
     decode = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-xerror",
-                             "-i", str(directory / "clip.mkv"), "-f", "null", "-"], capture_output=True, timeout=30)
+                             "-i", str(directory / "clip.mp4"), "-f", "null", "-"], capture_output=True, timeout=30)
     if decode.returncode:
         raise AssertionError(decode.stderr.decode(errors="replace"))
     print(json.dumps({key: value for key, value in report.items() if key != "rss_samples"}))

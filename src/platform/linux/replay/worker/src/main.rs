@@ -72,7 +72,7 @@ fn run() -> Result<(), String> {
                 "ingest_ms": ingest_ms, "output_bytes": saved_bytes, "output": output.to_string_lossy()}));
             Ok(())
         },
-        _ => Err("usage: boltsnap-replay-worker capabilities | check-encoder ENCODER | live SOCKET DIRECTORY SECONDS MEMORY_MIB ENCODER | probe --input PATH|- --output FILE.mkv --closed-gop [--seconds N] [--memory-mib N]".into()),
+        _ => Err("usage: boltsnap-replay-worker capabilities | check-encoder ENCODER | live SOCKET DIRECTORY SECONDS MEMORY_MIB ENCODER | probe --input PATH|- --output FILE.mp4 --closed-gop [--seconds N] [--memory-mib N]".into()),
     }
 }
 

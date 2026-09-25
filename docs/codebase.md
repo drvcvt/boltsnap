@@ -67,7 +67,7 @@ live checks in the plan's section 5 are open.
 | C1 | [`add_to_shelf`](../src/platform/linux/ipc.rs) sends once; a lost answer is reported with the path of `last.png`. An older daemon needs a restart |
 | D1 | Drag transfers stream the file |
 | D2 | Image saves run off the event loop |
-| G2 | Startup cleanup removes `clip-*.mkv.<pid>.<seq>.partial` remux leftovers |
+| G2 | Startup cleanup removes `clip-*.{mp4,mkv}.<pid>.<seq>.partial` remux leftovers |
 | G3 | [`process::output_with_interval`](../src/platform/linux/replay/process.rs) reads both pipes with `poll` under one deadline |
 | G4 | Closed recording watchers are dropped before each new watch; at most 16 stay open |
 | G5 | The worker reports `selection_active`; watchdog and manual Start leave an open selection alone |
@@ -100,8 +100,9 @@ not guaranteed. The README now states that limitation.
   the [performance plan](plans/2026-09-24-performance-save-and-screenshot.md).
 - Exact frame times for saved recordings are Integrated (`b11e5b2`) and live
   accepted by the user (cursor reported clean, 1684 frames on the 8.333 ms
-  grid). Replay clips are still Matroska with millisecond frame times; not
-  changed. Occasional stalls during playback in Eddy (separate repository,
+  grid). Replay clips are MP4 with the capture's exact frame times (`1/fps`
+  time base kept, see [replay](replay.md)); synthetic worker tests check the
+  grid, live replay saves are not yet checked. Occasional stalls during playback in Eddy (separate repository,
   Qt Multimedia) are reported by the user and not investigated.
 - The review fixes above are code-complete; their live checks are open except
   G1. Policy decisions are recorded in the fix plan. Windows work remains frozen.
