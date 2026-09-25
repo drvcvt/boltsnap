@@ -629,7 +629,13 @@ mod tests {
         assert_eq!(won.iter().filter(|lock| lock.is_some()).count(), 1);
         assert!(lock_file(&path).unwrap().is_none());
         drop(won);
-        assert!(lock_file(&path).unwrap().is_some());
+        // A process another test spawns right now holds a copy of the fd, and
+        // with it the flock, until its exec closes it.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while lock_file(&path).unwrap().is_none() {
+            assert!(std::time::Instant::now() < deadline, "lock stayed held");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
         std::fs::remove_dir_all(dir).unwrap();
     }
 
