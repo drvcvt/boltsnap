@@ -332,12 +332,29 @@ pub fn draw_marker_border(canvas: &mut [u8], w: u32, h: u32, border: u32, radius
     }
 }
 
+// The frozen Windows shelf keeps calling the version without recovery.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn draw_recording_popup(
     canvas: &mut [u8],
     w: u32,
     h: u32,
     state: crate::record::session::PublicRecordingState,
     enabled: bool,
+    elapsed: &str,
+    font: &FontVec,
+) {
+    draw_recording_popup_with(canvas, w, h, state, enabled, false, elapsed, font);
+}
+
+/// `recovery`: saving failed; the title says so and Resume is dimmed.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_recording_popup_with(
+    canvas: &mut [u8],
+    w: u32,
+    h: u32,
+    state: crate::record::session::PublicRecordingState,
+    enabled: bool,
+    recovery: bool,
     elapsed: &str,
     font: &FontVec,
 ) {
@@ -353,6 +370,7 @@ pub fn draw_recording_popup(
     let title = match state {
         PublicRecordingState::Idle => "IDLE",
         PublicRecordingState::Recording => "RECORDING",
+        PublicRecordingState::Paused if recovery => "SAVE FAILED",
         PublicRecordingState::Paused => "PAUSED",
         PublicRecordingState::Finalizing => "SAVING...",
     };
@@ -388,7 +406,7 @@ pub fn draw_recording_popup(
     } else {
         0.45
     };
-    for ((x, y, bw, bh), label, destructive) in [
+    for ((x, y, bw, bh), label, destructive, inert) in [
         (
             pause_resume_rect(),
             if state == PublicRecordingState::Paused {
@@ -397,12 +415,14 @@ pub fn draw_recording_popup(
                 "PAUSE"
             },
             false,
+            recovery,
         ),
-        (save_shelf_rect(), "SHELF SAVE", false),
-        (save_disk_rect(), "DISK SAVE", false),
-        (discard_rect(), "DISCARD", true),
+        (save_shelf_rect(), "SHELF SAVE", false, false),
+        (save_disk_rect(), "DISK SAVE", false, false),
+        (discard_rect(), "DISCARD", true, false),
     ] {
-        fill_round_rect(canvas, w, h, x, y, bw, bh, 10.0, IND_BTN_BG, button_alpha);
+        let alpha = if inert { 0.45 } else { button_alpha };
+        fill_round_rect(canvas, w, h, x, y, bw, bh, 10.0, IND_BTN_BG, alpha);
         let color = if destructive {
             GLYPH_CLOSE_RGB
         } else {

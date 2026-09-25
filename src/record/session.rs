@@ -123,6 +123,10 @@ pub struct RecordingSession {
     pub active_elapsed: Duration,
     pub active_started: Option<Instant>,
     pub last_error: Option<String>,
+    /// Set when saving itself failed. The recovered files (a composed Combined
+    /// clip among them) no longer match new segments, so only Save and
+    /// Discard remain.
+    pub resume_blocked: bool,
 }
 
 impl RecordingSession {
@@ -155,6 +159,7 @@ impl RecordingSession {
             active_elapsed: Duration::ZERO,
             active_started: Some(now),
             last_error: None,
+            resume_blocked: false,
         }
     }
 
@@ -212,6 +217,10 @@ impl RecordingSession {
             stop_and_reap(active);
             return Err(error);
         }
+        if self.resume_blocked {
+            stop_and_reap(active);
+            return Err(RESUME_BLOCKED.into());
+        }
         self.active = active;
         self.active_started = Some(now);
         self.last_error = None;
@@ -228,10 +237,19 @@ impl RecordingSession {
         Ok(())
     }
 
+    /// The recorders did not stop cleanly; the kept segments can still resume.
     pub fn finalize_failed(&mut self, error: String) -> Result<(), String> {
         self.require_phase(SessionPhase::Finalizing, "recover finalization")?;
         self.last_error = Some(error);
         self.phase = SessionPhase::Paused;
+        Ok(())
+    }
+
+    /// Saving failed after it started on the files: keep them for Save or
+    /// Discard, but not for Resume.
+    pub fn save_failed(&mut self, error: String) -> Result<(), String> {
+        self.finalize_failed(format!("{error}; {RESUME_BLOCKED}"))?;
+        self.resume_blocked = true;
         Ok(())
     }
 
@@ -255,7 +273,7 @@ impl RecordingSession {
                         | RecordingAction::Discard
                 )
                 | (SessionPhase::Paused, RecordingAction::Resume)
-        )
+        ) && !(action == RecordingAction::Resume && self.resume_blocked)
     }
 
     pub fn public_state(&self) -> PublicRecordingState {
@@ -293,6 +311,8 @@ impl RecordingSession {
         }
     }
 }
+
+const RESUME_BLOCKED: &str = "save again or discard; resume is off after a failed save";
 
 static SEGMENT_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -1207,6 +1227,47 @@ while :; do sleep 1; done
             assert!(ids.windows(2).all(|pair| pair[0] < pair[1]));
         }
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_failed_save_allows_save_and_discard_but_not_resume() {
+        let mut session = RecordingSession::new_for_test(Instant::now());
+        session.begin_finalize(Instant::now()).unwrap();
+        session.save_failed("disk full".into()).unwrap();
+
+        assert_eq!(session.phase, SessionPhase::Paused);
+        assert!(session.actions_enabled());
+        assert!(!session.can_accept(RecordingAction::Resume));
+        for action in [
+            RecordingAction::SaveShelf,
+            RecordingAction::SaveDisk,
+            RecordingAction::Discard,
+        ] {
+            assert!(session.can_accept(action), "{action:?}");
+        }
+        assert!(
+            session
+                .last_error
+                .as_deref()
+                .unwrap()
+                .starts_with("disk full; ")
+        );
+        assert_eq!(
+            session.resume(Vec::new(), Instant::now()).unwrap_err(),
+            RESUME_BLOCKED
+        );
+        assert_eq!(session.phase, SessionPhase::Paused);
+        session.begin_finalize(Instant::now()).unwrap();
+    }
+
+    #[test]
+    fn a_failed_recorder_stop_can_still_resume() {
+        let mut session = RecordingSession::new_for_test(Instant::now());
+        session.begin_finalize(Instant::now()).unwrap();
+        session.finalize_failed("recorder exited".into()).unwrap();
+        assert!(session.can_accept(RecordingAction::Resume));
+        session.resume(Vec::new(), Instant::now()).unwrap();
+        assert_eq!(session.phase, SessionPhase::Recording);
     }
 
     #[test]

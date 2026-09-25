@@ -569,6 +569,23 @@ Sidecar-Retry und UI-Hit-/Renderzustand testen.
 und provoziertem Disk-Fehler speichern, Retry vollständig dekodieren. Manuell
 Recovery-Popup prüfen. Keine Änderung von Capture-Timing oder Encoderwahl.
 
+**Abschluss E1 (Entscheidung 1 A):** `RecordingSession::save_failed` ruft
+`finalize_failed` und setzt `resume_blocked`; nur `DaemonEvent::Finalized(Err)`
+verwendet es. Der `ChildrenStopped`-Fehler bleibt bei `finalize_failed` und damit
+fortsetzbar. `can_accept(Resume)` und `resume` lehnen ab, bevor ein Recorder
+startet; `handle_recording_action` meldet „cannot resume after a failed save“.
+`last_error` erklärt den Zustand, Phase und öffentliche Statusnamen bleiben
+(`Paused`, `actions_enabled` true). Popup: `popup_hit_with` und
+`draw_recording_popup_with` nehmen `recovery`; Titel „SAVE FAILED“, Resume
+gedimmt und ohne Treffer. Die alten Signaturen bleiben als Wrapper für die
+unveränderte Windows-Shell. Tests: Save/Discard erlaubt, Resume abgelehnt und
+Phase unverändert; Stop-Fehler bleibt fortsetzbar; Popup-Treffer im
+Recovery-Zustand; echter `finalize_recording`-Retry nach Combined->Disk-Fehler
+nur mit `recoverable_segments` landet bytegleich auf der Disk und nimmt
+`cursor.json` mit. Ohne das Flag ist der Session-Test rot. Der Retry-Test war
+schon vorher grün und schützt den Weg, der jetzt der einzige ist. Kein
+UI-Render-Test; manueller Check des Recovery-Popups offen. README angepasst.
+
 **Alternative bei Entscheidung 1:** Resume nach jedem Fehler erhalten. Dafür
 Finalize transaktional gestalten, Originalgruppen und Sidecar-Zeitachsen bis zur
 vollständigen Veröffentlichung behalten und Teil-Erfolge von separaten Saves
@@ -872,7 +889,7 @@ Alle anderen Items sind offen. F1 erhält unter Empfehlung A keinen Code-Commit.
 | 1 | A1 | eigene Part-Dateien / atomare Veröffentlichung | `A1: isolate partial files for atomic saves` (dieser Commit) |
 | 1 | A2 | Bild-Save ohne Überschreiben | `A2: never overwrite on image save` |
 | 1 | A3 | Schutz laufender Saves vor Dismiss/Eviction | `A3: keep a card until its save ends` |
-| 2 | E1 | sicherer Recovery-Zustand nach Finalisierung | |
+| 2 | E1 | sicherer Recovery-Zustand nach Finalisierung | `E1: allow only save or discard after a failed save` |
 | 3 | A4 | Containerendung und Drag-MIME | |
 | 3 | B1 | unabhängiger regulärer Video-Import | |
 | 3 | C1 | sichere IPC-Kompatibilitätswahl | |

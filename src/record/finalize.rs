@@ -849,6 +849,54 @@ mod tests {
         }
     }
 
+    /// E1: after a composed Combined clip failed to reach the disk, saving the
+    /// recovered files again (no resume in between) works.
+    #[test]
+    fn a_failed_combined_disk_save_can_be_saved_again() {
+        let dir = temp_dir("combined-retry");
+        let ffmpeg = fake_ffmpeg(&dir, true);
+        let blocked = file(&dir.join("not-a-directory"), b"blocked");
+        let segments = BTreeMap::from([
+            (Some("A".into()), vec![file(&dir.join("a.mp4"), b"a")]),
+            (Some("B".into()), vec![file(&dir.join("b.mp4"), b"b")]),
+        ]);
+        let mut first = request(
+            segments,
+            RecordBothMode::Combined,
+            SaveDestination::Disk(blocked),
+        );
+        first.monitors = vec![monitor("A", 0), monitor("B", 1920)];
+        let failure = finalize_recording(first, &tools(&dir, &ffmpeg)).unwrap_err();
+        assert_eq!(
+            failure.recoverable_segments.keys().collect::<Vec<_>>(),
+            [&None]
+        );
+        let composed = failure.recoverable_segments[&None][0].clone();
+        let bytes = fs::read(&composed).unwrap();
+        let sidecar = file(&crate::record::cursor::sidecar_path(&composed), b"track");
+
+        let saved = dir.join("saved");
+        let mut retry = request(
+            failure.recoverable_segments,
+            RecordBothMode::Combined,
+            SaveDestination::Disk(saved.clone()),
+        );
+        retry.monitors = vec![monitor("A", 0), monitor("B", 1920)];
+        let clips = finalize_recording(retry, &tools(&dir, &ffmpeg)).unwrap();
+
+        assert_eq!(clips.len(), 1);
+        assert!(clips[0].permanent);
+        assert!(clips[0].path.starts_with(&saved));
+        assert_eq!(fs::read(&clips[0].path).unwrap(), bytes);
+        assert!(!composed.exists());
+        assert!(!sidecar.exists());
+        assert_eq!(
+            fs::read(crate::record::cursor::sidecar_path(&clips[0].path)).unwrap(),
+            b"track"
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn one_stream_combined_clips_map_the_cursor_over_both_outputs() {
         let mut req = request(

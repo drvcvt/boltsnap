@@ -360,10 +360,11 @@ and composed on save, the only ordinary path that re-encodes, with
 high-quality settings intended to be visually lossless. The composed canvas
 uses the highest output scale; with a hardware encoder it shrinks to at most
 4096 pixels per side, the H.264 limit. Failed finalization retains recoverable
-files, which may already be remuxed or composed. After a failed multi-stream
-Combined save, retry Save before resuming: Resume currently mixes the composed
-recovery with new output segments and the next save fails. Other outstanding
-save issues are listed in the [codebase inventory](docs/codebase.md#open-review-findings).
+files, which may already be remuxed or composed. The popup then reads
+**SAVE FAILED**: Shelf Save, Disk Save and Discard still work, Resume stays off
+because the recovered files no longer match new segments. A recorder that
+merely failed to stop cleanly keeps its segments and can still resume. Other
+outstanding save issues are listed in the [codebase inventory](docs/codebase.md#open-review-findings).
 
 Video cards carry a **▶** badge; on Linux, clicking one opens the video in the
 desktop default app. Right-click copies its file reference.
