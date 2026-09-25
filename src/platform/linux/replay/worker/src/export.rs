@@ -90,8 +90,8 @@ pub(crate) fn publish(source: &Path, destination: &Path) -> Result<(), String> {
 }
 
 pub fn remux(recording: &Recording, path: &Path, limit: u64) -> Result<u64, String> {
-    if path.extension().and_then(|s| s.to_str()) != Some("mkv") {
-        return Err("probe output must use the .mkv extension".into());
+    if path.extension().and_then(|s| s.to_str()) != Some("mp4") {
+        return Err("clip output must use the .mp4 extension".into());
     }
     if path
         .try_exists()
@@ -101,7 +101,7 @@ pub fn remux(recording: &Recording, path: &Path, limit: u64) -> Result<u64, Stri
     }
     let (temporary, writer, handle) = create_partial(path, limit)?;
     let result: Result<u64, String> = (|| {
-        mux(recording, writer)?;
+        mux(recording, writer, "mp4")?;
         handle.sync_all().map_err(|e| format!("sync output: {e}"))?;
         let bytes = handle
             .metadata()
@@ -116,15 +116,17 @@ pub fn remux(recording: &Recording, path: &Path, limit: u64) -> Result<u64, Stri
     result.map_err(|e| format!("{e}; partial output: {}", temporary.display()))
 }
 
+/// NUT keeps the capture's `1/fps` time base for the crop encoder; MP4 keeps
+/// it in the clip. Matroska would round every frame to whole milliseconds.
 pub fn to_file(recording: &Recording, file: File, limit: u64) -> Result<(), String> {
-    mux(recording, LimitedFile { file, limit })
+    mux(recording, LimitedFile { file, limit }, "nut")
 }
 
-fn mux(recording: &Recording, writer: LimitedFile) -> Result<(), String> {
+fn mux(recording: &Recording, writer: LimitedFile, container: &str) -> Result<(), String> {
     let (start, _) = recording.ring.bounds()?;
     let io = format::context::StreamIo::from_write_seek(writer)
         .map_err(|e| format!("output stream: {e}"))?;
-    let mut output = format::output_to_stream(io, None, Some("matroska"))
+    let mut output = format::output_to_stream(io, None, Some(container))
         .map_err(|e| format!("output container: {e}"))?;
     for stream in &recording.streams {
         let mut target = output
@@ -221,7 +223,7 @@ mod tests {
         let directory =
             std::env::temp_dir().join(format!("boltsnap-export-{}-{nonce}", std::process::id()));
         std::fs::create_dir(&directory).unwrap();
-        let destination = directory.join("clip.mkv");
+        let destination = directory.join("clip.mp4");
         let (partial, mut writer, handle) = create_partial(&destination, 3).unwrap();
         writer.write_all(b"new").unwrap();
         assert!(writer.write_all(b"!").is_err());

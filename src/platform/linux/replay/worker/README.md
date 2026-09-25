@@ -5,7 +5,8 @@ The main Boltsnap binary does not link FFmpeg. User controls and installation
 are documented in [replay setup](../../../../../docs/replay.md).
 
 The probe reads a finite compressed stream into a time- and byte-limited GOP
-ring, then remuxes its retained history into Matroska. Video and audio remain
+ring, then remuxes its retained history into MP4 (`--output` must end in
+`.mp4`), keeping the input time base. Video and audio remain
 encoded. Input must have closed GOPs, no frame reordering, positive packet
 durations, one video stream and at most one audio stream. `--closed-gop` is an
 explicit assertion about the test source, not bitstream validation.
@@ -37,7 +38,7 @@ cargo fmt --manifest-path src/platform/linux/replay/worker/Cargo.toml --check
 ```sh
 src/platform/linux/replay/worker/target/release/boltsnap-replay-worker capabilities
 src/platform/linux/replay/worker/target/release/boltsnap-replay-worker probe \
-  --input source.nut --output clip.mkv --closed-gop --seconds 30 --memory-mib 128
+  --input source.nut --output clip.mp4 --closed-gop --seconds 30 --memory-mib 128
 ```
 
 `--input -` reads stdin. The finite probe ends at EOF. The separate

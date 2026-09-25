@@ -474,3 +474,76 @@ Refcounted Pakete und Codec-/Hardwareabfragen bilden die Basis des Workers. Owne
 GPU-Crop ist pfadspezifisch: NVIDIA dokumentiert Decoder-Crop; FFmpeg enthält Crop-Unterstützung im QSV-VPP und die Verarbeitung von Crop-Rechtecken im VA-API-VPP. Keine universelle Filterkette daraus ableiten. [NVIDIA](https://docs.nvidia.com/video-technologies/video-codec-sdk/13.0/ffmpeg-with-nvidia-gpu/index.html), [QSV](https://ffmpeg.org/doxygen/trunk/vf__vpp__qsv_8c_source.html), [VA-API](https://ffmpeg.org/doxygen/trunk/vaapi__vpp_8c_source.html)
 
 Planungsbaseline am 20.09.2026: `cargo test` besteht mit 214 Tests. `cargo fmt --check` meldet schon vor diesem Dokument Formatierungsabweichungen in `src/platform/linux/capture.rs`, `paths.rs` und `portal.rs`. Diese vorhandenen Änderungen wurden nicht angepasst. Das Anlegen dieses Plans implementiert keine Replay-Funktion.
+
+## 12. Exakte Frame-Zeiten in Replay-Clips (2026-09-25)
+
+**Priorität:** mittel. **Auslöser:** jeder Replay-Save, Vollbild wie Bereich.
+**Wirkung:** Clips tragen Frame-Zeiten in ganzen Millisekunden (bei 120 FPS
+0, 8, 17, 25 ms). Ein Player zeigt ein aufgerundetes Frame erst eine
+Bildwiederholung später; schnelle Bewegung und der Cursor ruckeln regelmäßig.
+Dieselbe Ursache hatten gespeicherte Aufnahmen bis `b11e5b2`.
+
+**Beleg:** gsr liefert dem Worker NUT mit Zeitbasis `1/fps`
+(`gpu-screen-recorder` `src/recorder/video_codec.c:57`, `muxer.c:29`), der Ring
+ist also exakt. Erst der Export schreibt Matroska (`worker/src/export.rs`,
+`mux`), und FFmpegs Matroska-Muxer speichert immer 1/1000. Der Bereichsexport
+liest dieselbe Matroska-Zwischendatei (`crop.rs`, `source_file`) und schreibt
+wieder Matroska. **Reproduziert** mit einem synthetischen 60-FPS-Clip aus
+`tests/live.py`: Zeitbasis 1/1000, Pakete bei 19, 36, 52, 69, 86, 102 ms.
+
+**Fix:** Replay-Clips werden MP4. MP4 behält die angeforderte Zeitbasis
+`1/fps` (FFmpeg verdoppelt sie bis mindestens 10000, bei 120 FPS 15360, also
+128 Ticks je Frame), ohne Neukodierung.
+
+- Vollbild: `export::remux`/`mux` schreibt `mp4` statt `matroska` in einem
+  Stream-Copy-Durchgang, weiter über die begrenzte, seekbare Partial-Datei.
+- Bereich: die memfd-Zwischendatei (`export::to_file`, auch für die Vorschau)
+  wird NUT, damit der Encoder exakte Zeiten sieht. ffmpeg schreibt das MP4
+  direkt in die vorher mit `create_new`/0600 angelegte Partial-Datei (`-y`
+  behält Inode und Rechte). Das Budget erzwingt `-fs`, danach prüft der Worker
+  die Größe; die Pipe-Kopierschleife entfällt.
+- Worker benennt Clips `clip-*.mp4`; `probe` verlangt `.mp4`.
+- Daemon: `replay/mod.rs` akzeptiert `mp4` und weiter `mkv` (Versionsmix
+  Worker/Daemon); `paths::is_orphan_rec_file` räumt beide Endungen auf.
+  Save, Drag und MIME folgen seit A4 der Endung.
+
+**Abwägungen:** Clips heißen `.mp4` statt `.mkv`. Ein im Export abgebrochenes
+MP4-Partial ist ohne `moov` nicht abspielbar (Matroska wäre es teilweise); das
+Fenster ist nur der Export selbst. `-fs` hält das Budget bis auf den
+nachgeschriebenen `moov` ein; ein Clip, der die Grenze erreicht, gilt als
+Fehler. Fragmentiertes MP4 über die Pipe wäre kürzer, trägt aber keine Dauer
+im Kopf; Qt Multimedia (Eddy) braucht die. Verworfen.
+
+**Betroffene Dateien:** `worker/src/export.rs`, `crop.rs`, `live.rs`,
+`main.rs`, `worker/README.md`, `worker/tests/probe.py`, `live.py`, `soak.py`;
+`src/platform/linux/replay/mod.rs`, `src/platform/linux/paths.rs`;
+`docs/replay.md`, `docs/codebase.md`.
+
+**Reihenfolge:** Worker-Export und Tests, dann Daemon-Annahme und Cleanup,
+dann Doku. Worker und Daemon werden zusammen installiert; der Daemon nimmt
+beide Endungen, ein alter Worker bleibt also nutzbar.
+
+**Regressionschecks:** Root `cargo fmt --check`, `nice -n 19 cargo test
+--locked -j 4`, `nice -n 19 cargo clippy --locked --all-targets -j 4`. Worker:
+fmt, `cargo test --locked`, Debug-Build, `tests/probe.py` und `tests/live.py`,
+beide mit neuer Prüfung, dass alle Videopakete auf dem Frame-Raster liegen.
+Live (nur mit Okay): Release-Build und Install von Daemon und Worker,
+Daemon-Neustart, ein Vollbild- und ein Bereichs-Save, `ffprobe` der Zeiten,
+Abspielen in Eddy, Save und Drag der Karte.
+
+**Stand:** implementiert (Commit „Keep exact frame times in replay clips“),
+vom Nutzer freigegeben am 25.09. Abweichung vom Plan: `-fs` hielt das Budget
+nicht ein (Probe: 265 KB bei 50 KB Grenze, weil Frames im Encoder schon
+unterwegs sind). Stattdessen prüft die ohnehin laufende 20-ms-Warteschleife
+die Größe der Partial-Datei und beendet ffmpeg beim Überschreiten; der
+Überhang ist auf das begrenzt, was ffmpeg in 20 ms schreibt.
+
+Gelaufen: Root `cargo fmt --check`, `nice -n 19 cargo test --locked -j 4`
+(23 + 322, drei ignoriert), `cargo clippy --locked --all-targets` ohne
+Warnungen. Worker: fmt, `cargo test --locked` (24), Debug-Build (bekannte
+`output_setup`-Warnung), `tests/probe.py` und `tests/live.py` grün, beide mit
+Raster-Prüfung. Gegenprobe: dieselbe Prüfung schlägt auf einem alten
+Matroska-Clip fehl (Zeitbasis 1/1000, 19/36/52 ms). Vollbild-Clip: Zeitbasis
+1/61440, Bereichs-Clip 1/15360, beide Rechte 0600. Nicht automatisiert
+getestet: der Budget-Abbruch des Bereichsexports. Offen: Live-Checks oben
+(Release-Build, Install, Neustart nur mit Okay).

@@ -2,7 +2,7 @@
 
 The replay service continuously captures one display and system output audio.
 It keeps encoded packets in memory. Full-display exports copy these packets to
-Matroska without re-encoding. Region exports decode and crop on the CPU, then
+MP4 without re-encoding. Region exports decode and crop on the CPU, then
 use the selected hardware encoder. The buffer continues during export.
 
 ## Controls
@@ -96,15 +96,15 @@ paced to the clip duration. The shelf receives the completed file immediately
 after export. Full-display remux still avoids encoding. Capture uses the
 very-high quality preset because the selector also displays a decoded buffer
 frame; region export uses QP/CRF 18 to limit the additional encoding loss. Stop
-cancels the capture and any unfinished export; a partial file can remain for
-recovery. Completed clips are privately
+cancels the capture and any unfinished export; a partial file can remain, but
+an MP4 cut off before its index is not playable. Completed clips are privately
 created in the recording cache and published without replacing existing files.
-The shelf is RAM-only, so the daemon removes leftover `clip-*.mkv` files with the
+The shelf is RAM-only, so the daemon removes leftover `clip-*.mp4` files (and `.mkv` from older workers) with the
 other orphaned recordings when it starts. Existing cache and disk
 reserve checks apply; concurrent ordinary recording is not a shared disk
 reservation. Do not treat that preflight check as a hard system-wide disk cap.
 
-A failed remux keeps its `clip-*.mkv.<pid>.<seq>.partial` file for diagnosis
+A failed remux keeps its `clip-*.mp4.<pid>.<seq>.partial` file for diagnosis
 until the daemon restarts; startup cleanup then removes it with the other
 orphans, so it no longer fills the cache quota for good.
 
@@ -114,18 +114,20 @@ watchdog nor a manual Start replaces the session meanwhile. Start answers that
 a selection or export is still open. A worker older than the daemon lacks the
 field and is treated as holding no selection.
 
-Saving a replay card moves its Matroska bytes unchanged and keeps the `.mkv`
-name; dragging it offers `video/x-matroska` next to the file reference.
-Nothing converts the container. Replay clips therefore keep Matroska's
-millisecond frame times (at 120 FPS 0, 8, 17, 25 ms), which can make fast
-motion judder slightly; ordinary recordings are snapped to exact frame times
-when they are remuxed.
+Replay clips are MP4. The capture stream carries a `1/fps` time base and MP4
+keeps it, so every frame sits exactly on its slot; Matroska would round frame
+times to whole milliseconds (at 120 FPS 0, 8, 17, 25 ms), which makes fast
+motion judder. Region exports read a NUT copy of the buffer for the same
+reason. Saving a replay card moves its bytes unchanged and keeps the `.mp4`
+name; dragging it offers `video/mp4` next to the file reference. The daemon
+still accepts `.mkv` clips from an older worker.
 
 ## Verification and limits
 
 Synthetic live tests cover retained duration, frozen selection, preview pixels,
 crop dimensions, audio, complete decoding, concurrent buffer/status processing,
-export exclusion and stale selections. Hardware encoding has been tested locally
+export exclusion, stale selections and exact frame times of full and region
+clips (every video packet on the `1/fps` grid). Hardware encoding has been tested locally
 with H.264 Vulkan on an RTX 4060 / FFmpeg 8.1.2.
 
 The supervisor-to-shelf path also passed with a synthetic capture executable.

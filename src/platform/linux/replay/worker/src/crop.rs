@@ -1,5 +1,5 @@
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{Seek, SeekFrom};
 use std::os::fd::FromRawFd;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
@@ -131,8 +131,10 @@ pub fn save(
     limit: u64,
 ) -> Result<u64, String> {
     let source = source_file(recording, limit)?;
-    let partial = path.with_extension("partial.mkv");
-    let mut output = OpenOptions::new()
+    let partial = path.with_extension("partial.mp4");
+    // Reserve the private file; ffmpeg reopens it by path because MP4 needs
+    // to seek back for its index.
+    let output = OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(0o600)
@@ -180,14 +182,17 @@ pub fn save(
     } else if encoder == "libx264" || encoder == "libx265" {
         command.args(["-preset", "veryfast", "-crf", "18"]);
     }
+    // `file:` keeps a colon in the path from selecting another protocol.
+    let mut target = std::ffi::OsString::from("file:");
+    target.push(&partial);
     command
-        .args(["-c:a", "copy", "-f", "matroska", "pipe:1"])
+        .args(["-c:a", "copy", "-f", "mp4", "-y"])
+        .arg(target)
         .stdin(Stdio::from(source))
-        .stdout(Stdio::piped())
+        .stdout(Stdio::null())
         .stderr(Stdio::inherit());
-    let mut child = crate::process::spawn(&mut command, Some(19))
+    let child = crate::process::spawn(&mut command, Some(19))
         .map_err(|e| format!("start crop encoder: {e}"))?;
-    let mut encoded = child.stdout.take().ok_or("crop output pipe missing")?;
     let child = Arc::new(Mutex::new(child));
     let watchdog = child.clone();
     let seconds = recording
@@ -204,46 +209,51 @@ pub fn save(
             let _ = watchdog.lock().unwrap().kill();
         }
     });
-    let copied = (|| {
-        let mut bytes = [0; 64 * 1024];
-        let mut total = 0_u64;
-        loop {
-            let count = encoded.read(&mut bytes).map_err(|e| e.to_string())?;
-            if count == 0 {
-                break;
-            }
-            total = total
-                .checked_add(count as u64)
-                .ok_or("crop size overflow")?;
-            if total > limit {
-                return Err("crop output exceeds its disk budget".into());
-            }
-            output
-                .write_all(&bytes[..count])
-                .map_err(|e| format!("write crop: {e}"))?;
-        }
-        output.sync_all().map_err(|e| format!("sync crop: {e}"))?;
-        Ok(total)
-    })();
-    if copied.is_err() {
-        let _ = child.lock().unwrap().kill();
-    }
+    let mut exceeded = false;
     let status = loop {
-        match child.lock().unwrap().try_wait() {
+        let mut child = child.lock().unwrap();
+        match child.try_wait() {
             Ok(Some(status)) => break Ok(status),
             Err(e) => break Err(e.to_string()),
-            Ok(None) => std::thread::sleep(Duration::from_millis(20)),
+            Ok(None) => {
+                if !exceeded && output.metadata().is_ok_and(|m| m.len() > limit) {
+                    exceeded = true;
+                    let _ = child.kill();
+                }
+            }
         }
+        drop(child);
+        std::thread::sleep(Duration::from_millis(20));
     };
     let _ = done.send(());
     let _ = watcher.join();
-    let bytes =
-        copied.map_err(|e: String| format!("{e}; partial output: {}", partial.display()))?;
-    if !status?.success() || bytes == 0 {
+    if exceeded {
+        return Err(format!(
+            "crop output exceeds its disk budget; partial output: {}",
+            partial.display()
+        ));
+    }
+    if !status?.success() {
         return Err(format!(
             "crop encoder failed; partial output: {}",
             partial.display()
         ));
+    }
+    output
+        .sync_all()
+        .map_err(|e| format!("sync crop: {e}; partial output: {}", partial.display()))?;
+    let bytes = output
+        .metadata()
+        .map_err(|e| format!("crop metadata: {e}"))?
+        .len();
+    if bytes > limit {
+        return Err(format!(
+            "crop output exceeds its disk budget; partial output: {}",
+            partial.display()
+        ));
+    }
+    if bytes == 0 {
+        return Err(format!("empty crop output: {}", partial.display()));
     }
     crate::export::publish(&partial, path)?;
     Ok(bytes)

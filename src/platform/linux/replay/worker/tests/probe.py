@@ -1,4 +1,5 @@
 import argparse
+from fractions import Fraction
 import hashlib
 import json
 from pathlib import Path
@@ -23,6 +24,18 @@ def frame_hashes(path, filters=None):
         args += ["-vf", filters]
     result = ffmpeg(*args, "-vsync", "0", "-f", "framemd5", "-")
     return [line.rsplit(b",", 1)[1].strip() for line in result.stdout.splitlines() if not line.startswith(b"#")]
+
+
+def assert_frame_grid(path, fps):
+    """Every video packet sits exactly on a 1/fps slot; Matroska would round to ms."""
+    result = run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                  "stream=time_base:packet=pts", "-of", "json", str(path)])
+    data = json.loads(result.stdout)
+    base = Fraction(data["streams"][0]["time_base"])
+    pts = [packet["pts"] for packet in data["packets"]]
+    assert len(pts) > 1, path
+    offsets = [(value - pts[0]) * base * fps for value in pts]
+    assert all(offset.denominator == 1 for offset in offsets), (path, base, pts[:6])
 
 
 def audio_packets(path):
@@ -53,13 +66,14 @@ def main():
                       "--seconds", str(seconds), "--memory-mib", str(memory), "--closed-gop"], success=success)
         return json.loads(result.stdout) if success else result
 
-    report = probe(source, "clip.mkv")
-    clip = directory / "clip.mkv"
+    report = probe(source, "clip.mp4")
+    clip = directory / "clip.mp4"
     assert report["duration_us"] == 3_000_000, report
     assert report["evicted_gops"] == 9, report
     assert report["peak_accounted_bytes"] <= report["budget_bytes"], report
     ffmpeg("-xerror", "-i", clip, "-f", "null", "-")
     assert frame_hashes(clip) == frame_hashes(source, "select=gte(n\\,540)")
+    assert_frame_grid(clip, 60)
 
     original_audio = audio_packets(source)
     saved_audio = audio_packets(clip)
@@ -72,33 +86,33 @@ def main():
 
     between_keys = directory / "between-keys.nut"
     ffmpeg("-i", source, "-map", "0:v", "-c", "copy", "-frames:v", "690", between_keys)
-    shortened = probe(between_keys, "between-keys.mkv")
+    shortened = probe(between_keys, "between-keys.mp4")
     assert shortened["duration_us"] == 2_500_000, shortened
-    ffmpeg("-xerror", "-i", directory / "between-keys.mkv", "-f", "null", "-")
-    assert frame_hashes(directory / "between-keys.mkv") == frame_hashes(source, "select=gte(n\\,540)*lt(n\\,690)")
+    ffmpeg("-xerror", "-i", directory / "between-keys.mp4", "-f", "null", "-")
+    assert frame_hashes(directory / "between-keys.mp4") == frame_hashes(source, "select=gte(n\\,540)*lt(n\\,690)")
 
     before = hashlib.sha256(clip.read_bytes()).digest()
-    probe(source, "clip.mkv", success=False)
+    probe(source, "clip.mp4", success=False)
     assert hashlib.sha256(clip.read_bytes()).digest() == before
 
-    pressure = probe(source, "pressure.mkv", seconds=10, memory=1)
+    pressure = probe(source, "pressure.mp4", seconds=10, memory=1)
     assert 0 < pressure["duration_us"] < 10_000_000, pressure
     assert pressure["peak_accounted_bytes"] <= pressure["budget_bytes"], pressure
-    ffmpeg("-xerror", "-i", directory / "pressure.mkv", "-f", "null", "-")
+    ffmpeg("-xerror", "-i", directory / "pressure.mp4", "-f", "null", "-")
 
     reordered = directory / "reordered.nut"
     ffmpeg("-f", "lavfi", "-i", "testsrc2=size=320x180:rate=30", "-t", "2",
            "-c:v", "libx264", "-threads:v", "2", "-g", "30", "-bf", "2", reordered)
-    rejected = probe(reordered, "reordered.mkv", success=False)
+    rejected = probe(reordered, "reordered.mp4", success=False)
     assert b"frame reordering" in rejected.stderr or b"no DTS" in rejected.stderr
-    assert not (directory / "reordered.mkv").exists()
+    assert not (directory / "reordered.mp4").exists()
 
     producer = subprocess.Popen(["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin",
                                  "-i", str(source), "-c", "copy", "-f", "nut", "-write_index", "0",
                                  "-syncpoints", "none", "-strict", "experimental",
                                  "-flush_packets", "1", "pipe:1"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
-        piped = subprocess.run([worker, "probe", "--input", "-", "--output", str(directory / "pipe.mkv"),
+        piped = subprocess.run([worker, "probe", "--input", "-", "--output", str(directory / "pipe.mp4"),
                                 "--seconds", "3", "--memory-mib", "8", "--closed-gop"],
                                stdin=producer.stdout, capture_output=True, timeout=30)
         producer.stdout.close()
@@ -112,7 +126,8 @@ def main():
         producer.stdout.close()
         producer.stderr.close()
     assert piped.returncode == 0, piped.stderr
-    assert frame_hashes(directory / "pipe.mkv") == frame_hashes(clip)
+    assert frame_hashes(directory / "pipe.mp4") == frame_hashes(clip)
+    assert_frame_grid(directory / "pipe.mp4", 60)
 
     if args.vulkan:
         gpu = ["-init_hw_device", "vulkan=vk:0", "-filter_hw_device", "vk"]
@@ -135,7 +150,7 @@ def main():
 
     (directory / "report.json").write_text(json.dumps({"normal": report, "between_keys": shortened, "pressure": pressure,
                                                     "vulkan_tested": args.vulkan}, indent=2))
-    print("passed: decode, frame identity, audio identity, time window, memory pressure, no overwrite, rejected B-frames, stream input"
+    print("passed: decode, frame identity, audio identity, time window, memory pressure, no overwrite, rejected B-frames, stream input, exact frame times"
           + (", Vulkan crop identity and encode" if args.vulkan else ""))
 
 

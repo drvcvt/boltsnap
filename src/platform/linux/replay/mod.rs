@@ -745,7 +745,8 @@ pub(crate) fn serve(sender: calloop::channel::Sender<DaemonEvent>) -> Result<Ser
                             .collect::<Result<Vec<_>, _>>()?;
                         let path = PathBuf::from(std::ffi::OsString::from_vec(bytes));
                         if path.parent() != Some(crate::paths::rec_dir().as_path())
-                            || path.extension().is_none_or(|ext| ext != "mkv")
+                            // Older workers still publish Matroska clips.
+                            || path.extension().is_none_or(|ext| ext != "mp4" && ext != "mkv")
                         {
                             return Err("clip response is outside the recording cache".into());
                         }
