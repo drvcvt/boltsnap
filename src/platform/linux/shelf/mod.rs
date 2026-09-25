@@ -3131,6 +3131,7 @@ impl Daemon {
             monitors: session.monitors.clone(),
             both_mode: session.both_mode,
             codec: session.codec.clone(),
+            fps: session.profile.fps(),
             destination,
             cursor: session.cursor,
             region: match &session.scope {

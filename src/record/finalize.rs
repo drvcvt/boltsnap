@@ -22,6 +22,8 @@ pub struct FinalizeRequest {
     pub monitors: Vec<Monitor>,
     pub both_mode: RecordBothMode,
     pub codec: String,
+    /// Recording frame rate; the remux snaps frame times back onto its grid.
+    pub fps: u32,
     pub destination: SaveDestination,
     /// Smooth modes keep the recorded pointer track as `X.cursor.json`.
     pub cursor: RecordCursor,
@@ -83,7 +85,7 @@ pub fn finalize_recording(
 
     let mut ready = req.segments.clone();
     for (output, segments) in ready.clone() {
-        match finalize_group(output.as_deref(), &segments, tools) {
+        match finalize_group(output.as_deref(), &segments, req.fps, tools) {
             Ok(path) => {
                 ready.insert(output, vec![path]);
             }
@@ -228,6 +230,7 @@ fn clips_from(
 fn finalize_group(
     output: Option<&str>,
     segments: &[PathBuf],
+    fps: u32,
     tools: &RecorderTools,
 ) -> Result<PathBuf, String> {
     for segment in segments {
@@ -250,7 +253,13 @@ fn finalize_group(
         remove_work_file(&list);
         return Err(format!("write concat list: {error}"));
     }
-    if let Err(error) = run_ffmpeg(&tools.ffmpeg, &build_concat_args(&list, &final_path)) {
+    // Only gsr's Matroska segments are constant rate; wf-recorder's frames
+    // follow damage and could collide on a fixed grid.
+    let grid = segments
+        .iter()
+        .all(|segment| segment.extension().is_some_and(|ext| ext == "mkv"))
+        .then_some(fps);
+    if let Err(error) = run_ffmpeg(&tools.ffmpeg, &build_concat_args(&list, &final_path, grid)) {
         remove_work_file(&final_path);
         remove_work_file(&list);
         return Err(error);
@@ -425,12 +434,21 @@ fn move_sidecars(source: &Path, destination: &Path) {
     }
 }
 
-pub fn build_concat_args(list: &Path, output: &Path) -> Vec<String> {
+/// Stream-copy the segments into one MP4. Matroska keeps frame times in whole
+/// milliseconds (0, 8, 17, 25 ms at 120 FPS), and a player shows a frame at
+/// the first refresh after its time, so a frame rounded up misses its refresh
+/// and the motion judders. For constant-rate video, a timescale of `grid`
+/// frames per second rounds every frame back onto its exact slot.
+pub fn build_concat_args(list: &Path, output: &Path, grid: Option<u32>) -> Vec<String> {
+    let timescale = grid
+        .into_iter()
+        .flat_map(|fps| ["-video_track_timescale".to_owned(), fps.to_string()]);
     ["-y", "-f", "concat", "-safe", "0", "-i"]
         .into_iter()
         .map(str::to_owned)
         .chain([list.to_string_lossy().into_owned()])
         .chain(["-c".into(), "copy".into()])
+        .chain(timescale)
         .chain([output.to_string_lossy().into_owned()])
         .collect()
 }
@@ -848,6 +866,7 @@ mod tests {
             monitors: Vec::new(),
             both_mode: mode,
             codec: "h264_nvenc".into(),
+            fps: 120,
             destination,
             cursor: RecordCursor::System,
             region: None,
@@ -981,7 +1000,11 @@ mod tests {
 
     #[test]
     fn concat_uses_demuxer_and_stream_copy() {
-        let args = build_concat_args(Path::new("/tmp/list.txt"), Path::new("/tmp/out.mp4"));
+        let args = build_concat_args(
+            Path::new("/tmp/list.txt"),
+            Path::new("/tmp/out.mp4"),
+            Some(120),
+        );
         assert_eq!(
             args,
             vec![
@@ -994,9 +1017,58 @@ mod tests {
                 "/tmp/list.txt",
                 "-c",
                 "copy",
+                "-video_track_timescale",
+                "120",
                 "/tmp/out.mp4"
             ]
         );
+        let variable = build_concat_args(Path::new("/tmp/l.txt"), Path::new("/tmp/o.mp4"), None);
+        assert!(!variable.iter().any(|arg| arg == "-video_track_timescale"));
+    }
+
+    #[test]
+    #[ignore = "requires the FFmpeg CLI with libx264"]
+    fn remuxed_gsr_segments_keep_exact_frame_times() {
+        let dir = temp_dir("frame-grid");
+        // Matroska stores whole milliseconds, like gsr's segments.
+        let segment = dir.join("segment.mkv");
+        let status = Command::new("ffmpeg")
+            .args([
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=64x36:rate=120",
+            ])
+            .args(["-t", "0.5", "-c:v", "libx264", "-bf", "0", "-f", "matroska"])
+            .arg(&segment)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let tools = tools(&dir, Path::new("ffmpeg"));
+        let clip = finalize_group(None, std::slice::from_ref(&segment), 120, &tools).unwrap();
+
+        let probe = Command::new("ffprobe")
+            .args(["-v", "error", "-select_streams", "v:0"])
+            .args(["-show_entries", "packet=pts_time", "-of", "csv=p=0"])
+            .arg(&clip)
+            .output()
+            .unwrap();
+        let times: Vec<f64> = String::from_utf8(probe.stdout)
+            .unwrap()
+            .lines()
+            .map(|line| line.parse().unwrap())
+            .collect();
+        assert_eq!(times.len(), 60);
+        for time in times {
+            let slot = (time * 120.0).round() / 120.0;
+            assert!(
+                (time - slot).abs() < 1e-5,
+                "frame at {time} s is off its slot"
+            );
+        }
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
