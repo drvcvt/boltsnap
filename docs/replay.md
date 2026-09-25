@@ -108,10 +108,11 @@ A failed remux keeps its `clip-*.mkv.<pid>.<seq>.partial` file for diagnosis
 until the daemon restarts; startup cleanup then removes it with the other
 orphans, so it no longer fills the cache quota for good.
 
-Known gap: after capture input fails, the watchdog currently overlooks a retained
-selection once preview generation finishes and can restart its worker before
-the selection expires. See G2 and G5 in the
-[fix plan](plans/2026-09-25-review-fixes.md).
+An open selection survives a failed input: the worker reports it as
+`selection_active` until Save, Cancel or its 120-second expiry, and neither the
+watchdog nor a manual Start replaces the session meanwhile. Start answers that
+a selection or export is still open. A worker older than the daemon lacks the
+field and is treated as holding no selection.
 
 Saving a replay card moves its Matroska bytes unchanged and keeps the `.mkv`
 name; dragging it offers `video/x-matroska` next to the file reference.

@@ -18,6 +18,9 @@ struct Frozen {
     created: Instant,
 }
 
+/// How long a frozen selection waits for Save or Cancel.
+const SELECTION_TTL: Duration = Duration::from_secs(120);
+
 struct State {
     recording: Option<Recording>,
     frozen: Option<Frozen>,
@@ -108,7 +111,7 @@ pub fn run(
             if state
                 .frozen
                 .as_ref()
-                .is_some_and(|f| f.created.elapsed() > Duration::from_secs(120))
+                .is_some_and(|f| f.created.elapsed() > SELECTION_TTL)
             {
                 state.frozen = None;
             }
@@ -154,9 +157,16 @@ pub fn run(
                     .recording
                     .as_ref()
                     .and_then(|r| r.ring.bounds().ok());
+                // An open selection still holds a saveable snapshot, even
+                // once the input has failed and `ready` is false.
+                let selection_active = state_guard
+                    .frozen
+                    .as_ref()
+                    .is_some_and(|f| f.created.elapsed() <= SELECTION_TTL);
                 Ok(
                     json!({"ready": state_guard.error.is_none() && bounds.is_some() && state_guard.updated.elapsed() < Duration::from_secs(3),
                     "duration_us": bounds.map(|(s,e)| e-s).unwrap_or(0), "busy": state_guard.busy,
+                    "selection_active": selection_active,
                     "error": state_guard.error, "encoder": encoder, "seconds": seconds}),
                 )
             }

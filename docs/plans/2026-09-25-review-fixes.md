@@ -927,7 +927,23 @@ Auswahl bleibt bis Save/Cancel/TTL geschützt; danach darf der Watchdog einen
 toten Input ersetzen. Zeit in Tests injizieren, nicht 120 Sekunden schlafen.
 Race Freeze-vor-Ersetzung gezielt synchronisieren. Worker-Checks und bestehende
 `probe.py`/`live.py`; später tatsächliche Auswahl bei kontrolliertem Capture-Ausfall
-prüfen. **Status: geplant.**
+prüfen. **Status: umgesetzt, Live-Check offen.**
+
+**Abschluss G5:** Der Worker meldet `selection_active`, solange eine eingefrorene
+Auswahl innerhalb von `SELECTION_TTL` (120 s) liegt; `busy` bleibt unverändert.
+Der Supervisor behandelt `ready || busy || selection_active` als belegt
+(`in_use`, fehlendes Feld = false). Der Watchdog prüft vor dem Ersetzen unter
+dem Owner-Lock erneut; es bleibt ein Fenster von Millisekunden zwischen dieser
+Prüfung und dem Beenden, in dem ein gerade ankommendes `freeze` mit einem
+sichtbaren Fehler endet statt eine offene Auswahl still zu verlieren. Der
+manuelle Start fragt den Status, sobald der Worker lebt (auch bei totem
+Capture), und lehnt bei `busy`/`selection_active` mit „a replay selection or
+export is still open“ ab; Stop bleibt wirksam. Tests: Supervisor-Regel inklusive
+altem Worker ohne Feld. Der synthetische Python-Repro (Freeze, EOF, Save) ist
+jetzt grün: nach EOF `ready=false`, `busy=false`, `selection_active=true`, Save
+erfolgreich (vorher Exit 1). Worker `cargo fmt --check`, `cargo test --locked`
+(24), `cargo build --locked`, `tests/probe.py` und `tests/live.py` gegen den
+Debug-Worker grün; kein Release-Build. `docs/replay.md` angepasst.
 
 ### H1: Nix-Paketversion an Cargo koppeln
 
@@ -999,7 +1015,7 @@ Alle anderen Items sind offen. F1 erhält unter Empfehlung A keinen Code-Commit.
 | 5 | G2 | Remux-Partials bei exklusivem Neustart erkennen | `G2: clean up failed replay remux partials on start` |
 | 5 | G3 | Deadline inklusive Prozessausgabe | `G3: hold the process deadline over its output pipes` |
 | 5 | G4 | begrenzte und bereinigte Recording-Watches | `G4: drop closed recording watchers and cap them` |
-| 5 | G5 | gehaltene Replay-Auswahl vor Restart schützen | |
+| 5 | G5 | gehaltene Replay-Auswahl vor Restart schützen | `G5: keep an open replay selection from a restart` |
 | 6 | H1 | Nix-Version aus Cargo lesen | |
 
 ## 6. Vertieftes Review und tatsächlich ausgeführte Checks
