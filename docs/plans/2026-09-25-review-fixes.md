@@ -256,7 +256,7 @@ laufende Saves. Dies gilt später identisch für asynchrone Bildkopien.
    Das bisherige Eviction-Verfahren berechnet seine Kandidaten ohne Save-Zustand
    (`src/platform/linux/shelf/mod.rs:318`); nur den anschließenden Remove-Aufruf
    zu überspringen reicht für konsistente Kapazitätsberechnung nicht.
-3. `CardPromoted` behandelt Erfolg zuerst als Promotion, danach den Close-Wunsch.
+3. `CardPromoted` (seit D2 `CardSaved`) behandelt Erfolg zuerst als Promotion, danach den Close-Wunsch.
    Bei Fehler Pin aufheben, Close-Wunsch verwerfen und Quelle behalten
    (`src/platform/linux/shelf/mod.rs:2930`, `src/shelf/model.rs:114`).
 4. Cache-Grenzen weiter einhalten: Wenn alle entfernbaren Karten geschützte Saves
@@ -555,6 +555,17 @@ erneutes Speichern möglich, Close-/Eviction-Tests aus A3 auch für Bilder.
 **Verifikation:** gemeinsame Checks; großes PNG und langsames Testziel, während
 des Saves andere Karte anklicken und Recording-Control bedienen. Relative
 Responsivität messen, keinen unbelegten pauschalen Millisekundenwert versprechen.
+
+**Abschluss D2:** `save_card` startet für Bild- und Videokarten einen Thread und
+schützt die Karte über `CardSaves` (A3); Verzeichnisanlage, Namenssuche und Kopie
+laufen dort (`save::save_image`). Das bisherige `CardPromoted` heißt jetzt
+`CardSaved { promote }`: Nur Videos werden promotet, eine Bildkarte behält ihre
+temporäre Datei und kann erneut gespeichert werden. Erfolgsblitz erst nach dem
+Publish, ein Doppelklick während des Saves startet nichts, ein Close wartet,
+ein Fehler meldet sich per Notification. Kein neuer Unit-Test: Die Verdrahtung
+braucht einen Wayland-Daemon, ihre Teile sind durch die A2-/A3-Tests gedeckt;
+der Test mit injizierter blockierender Kopie entfällt deshalb. Manueller Check
+mit langsamem Ziel offen.
 
 ### E1: Recovery nach Finalisierung ohne kaputtes Resume
 
@@ -943,7 +954,7 @@ Alle anderen Items sind offen. F1 erhält unter Empfehlung A keinen Code-Commit.
 | 3 | B1 | unabhängiger regulärer Video-Import | `B1: copy imported videos instead of linking them` |
 | 3 | C1 | sichere IPC-Kompatibilitätswahl | `C1: send a screenshot to the shelf only once` |
 | 4 | D1 | Streaming beim Drag | `D1: stream dragged files` |
-| 4 | D2 | asynchroner Bild-Save | |
+| 4 | D2 | asynchroner Bild-Save | `D2: save image cards off the event loop` |
 | keine | F1 | Cursor-Verhalten beibehalten | |
 | 0 | G1 | exklusiver Daemon-Start vor Cleanup | `G1: lock the daemon before cleanup` |
 | 5 | G2 | Remux-Partials bei exklusivem Neustart erkennen | |
