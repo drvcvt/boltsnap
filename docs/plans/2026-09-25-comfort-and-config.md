@@ -78,6 +78,17 @@ bleibt gleich.
 | V7 | Fenster-Snapping im Selector über `hyprctl clients -j` | M-L | `hypr.rs`, `select_skia/`, `src/selector/` | ja |
 | V8 | `boltsnap replay save [SECONDS]` (nur die letzten N Sekunden) | M | `replay/mod.rs`, Worker `live.rs`, `src/replay/ring.rs` | ja |
 
+**V1 umgesetzt:** `tray.rs`: `recording_entries` setzt während einer Aufnahme
+Pause bzw. Resume, „Save recording to shelf“ und „Save recording to disk“ an
+den Menüanfang (`TrayAction::Recording`, im Daemon über
+`handle_recording_action`, Fehler als Benachrichtigung); beim Speichern ein
+grauer Eintrag „Saving recording…“. Discard bewusst nicht im Tray. Der
+Snap-Punkt des Icons wird rot (Aufnahme, Speichern) bzw. gelb (Pause), Alpha
+und Körper bleiben unverändert; ksni meldet das Icon neu, sobald der Snapshot
+wechselt. „Clip fullscreen to shelf“ ist nur bei laufendem Replay aktiv. Tests
+für Einträge, Clip-Sperre und Einfärbung; ob die Tray-Leiste (Waybar) das neue
+Icon sofort zeigt, ist live offen.
+
 Risiken: V2/V3 berühren mit Windows geteilte Shelf-Dateien (alte Signaturen
 behalten wie bei E1). V7 muss auf anderen Compositors auf die Bereichsauswahl
 zurückfallen. V8: ein alter Worker ignoriert das neue Feld und würde still den
@@ -91,3 +102,4 @@ Nutzer-Entscheidung 26.09.: K1 und K2 zusammen, danach V1 und V2.
 | --- | --- |
 | K1 | umgesetzt, live offen |
 | K2 | umgesetzt |
+| V1 | umgesetzt, live offen |

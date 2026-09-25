@@ -2,7 +2,7 @@ use crate::config::{
     RecordAudioSource, RecordBothMode, RecordCursor, RecordDefaultTarget, RecordingPrefs,
 };
 use crate::record::Monitor;
-use crate::record::session::PublicRecordingState;
+use crate::record::session::{PublicRecordingState, RecordingAction};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 
@@ -32,6 +32,33 @@ fn tray_icons() -> &'static [ksni::Icon] {
         .collect()
     });
     ICONS.as_slice()
+}
+
+/// The mark's snap dot doubles as the recording light: red while recording or
+/// saving, amber while paused. Position and radius are fractions of the icon
+/// size and fit both embedded sizes.
+fn tray_icons_for(state: PublicRecordingState) -> Vec<ksni::Icon> {
+    let (red, green, blue) = match state {
+        PublicRecordingState::Idle => return tray_icons().to_vec(),
+        PublicRecordingState::Paused => (0xff, 0xb0, 0x20),
+        PublicRecordingState::Recording | PublicRecordingState::Finalizing => (0xff, 0x45, 0x3a),
+    };
+    tray_icons()
+        .iter()
+        .map(|icon| {
+            let mut icon = icon.clone();
+            let size = icon.width as f32;
+            let (cx, cy, radius) = (0.71 * size, 0.40 * size, 0.085 * size);
+            for (index, pixel) in icon.data.chunks_exact_mut(4).enumerate() {
+                let x = (index as i32 % icon.width) as f32 + 0.5;
+                let y = (index as i32 / icon.width) as f32 + 0.5;
+                if (x - cx).hypot(y - cy) <= radius {
+                    pixel[1..].copy_from_slice(&[red, green, blue]);
+                }
+            }
+            icon
+        })
+        .collect()
 }
 
 pub(crate) struct LatestValue<T>(Mutex<Option<T>>);
@@ -66,6 +93,7 @@ pub enum TrayAction {
     /// checkmark says which.
     ReplayToggle,
     ReplaySave,
+    Recording(RecordingAction),
     StartRegion,
     StartDefault,
     SetDefaultTarget(RecordDefaultTarget),
@@ -78,6 +106,8 @@ pub enum TrayAction {
 
 struct TrayMenuModel {
     replay_running: bool,
+    /// A fullscreen clip needs a running buffer.
+    clip_enabled: bool,
     start_region_enabled: bool,
     start_default_enabled: bool,
     default_labels: Vec<String>,
@@ -103,6 +133,22 @@ fn audio_source_at(index: usize) -> RecordAudioSource {
         2 => RecordAudioSource::System,
         _ => RecordAudioSource::SystemAndMic,
     }
+}
+
+/// Recording controls at the top of the menu. Discard stays in the popup, where
+/// it is one deliberate click away from its neighbours, not in a quick menu.
+fn recording_entries(state: PublicRecordingState) -> Vec<(&'static str, Option<RecordingAction>)> {
+    let pause = match state {
+        PublicRecordingState::Idle => return Vec::new(),
+        PublicRecordingState::Finalizing => return vec![("Saving recording…", None)],
+        PublicRecordingState::Recording => ("Pause recording", RecordingAction::Pause),
+        PublicRecordingState::Paused => ("Resume recording", RecordingAction::Resume),
+    };
+    vec![
+        (pause.0, Some(pause.1)),
+        ("Save recording to shelf", Some(RecordingAction::SaveShelf)),
+        ("Save recording to disk", Some(RecordingAction::SaveDisk)),
+    ]
 }
 
 fn monitor_label(monitor: &Monitor) -> String {
@@ -133,6 +179,7 @@ fn menu_model(snapshot: &TraySnapshot) -> TrayMenuModel {
     };
     TrayMenuModel {
         replay_running: snapshot.replay_running,
+        clip_enabled: snapshot.replay_running,
         start_region_enabled: snapshot.state == PublicRecordingState::Idle,
         start_default_enabled: snapshot.state == PublicRecordingState::Idle,
         default_labels: snapshot
@@ -232,7 +279,7 @@ impl ksni::Tray for BoltsnapTray {
     }
 
     fn icon_pixmap(&self) -> Vec<ksni::Icon> {
-        tray_icons().to_vec()
+        tray_icons_for(self.snapshot.state)
     }
 
     fn status(&self) -> ksni::Status {
@@ -258,9 +305,29 @@ impl ksni::Tray for BoltsnapTray {
                 ..Default::default()
             })
             .collect();
-        vec![
+        let mut items: Vec<ksni::MenuItem<Self>> = recording_entries(self.snapshot.state)
+            .into_iter()
+            .map(|(label, action)| {
+                StandardItem {
+                    label: label.into(),
+                    enabled: action.is_some(),
+                    activate: Box::new(move |tray: &mut Self| {
+                        if let Some(action) = action {
+                            tray.send(TrayAction::Recording(action));
+                        }
+                    }),
+                    ..Default::default()
+                }
+                .into()
+            })
+            .collect();
+        if !items.is_empty() {
+            items.push(ksni::MenuItem::Separator);
+        }
+        items.extend([
             StandardItem {
                 label: "Clip fullscreen to shelf".into(),
+                enabled: model.clip_enabled,
                 activate: Box::new(|tray: &mut Self| tray.send(TrayAction::ReplaySave)),
                 ..Default::default()
             }
@@ -417,7 +484,8 @@ impl ksni::Tray for BoltsnapTray {
                 ..Default::default()
             }
             .into(),
-        ]
+        ]);
+        items
     }
 }
 
@@ -559,6 +627,71 @@ mod tests {
         assert!(alpha_at(29, 56) > 200, "the base must remain continuous");
         assert!(alpha_at(39, 25) < 64, "the snap cutout must stay open");
         assert!(alpha_at(45, 25) > 200, "the snap dot must stay opaque");
+    }
+
+    #[test]
+    fn recording_controls_follow_the_recording_state() {
+        let labels = |state| recording_entries(state);
+        assert!(labels(PublicRecordingState::Idle).is_empty());
+        assert_eq!(
+            labels(PublicRecordingState::Recording),
+            [
+                ("Pause recording", Some(RecordingAction::Pause)),
+                ("Save recording to shelf", Some(RecordingAction::SaveShelf)),
+                ("Save recording to disk", Some(RecordingAction::SaveDisk)),
+            ]
+        );
+        assert_eq!(
+            labels(PublicRecordingState::Paused)[0],
+            ("Resume recording", Some(RecordingAction::Resume))
+        );
+        assert_eq!(
+            labels(PublicRecordingState::Finalizing),
+            [("Saving recording…", None)]
+        );
+        assert!(
+            [
+                PublicRecordingState::Recording,
+                PublicRecordingState::Paused
+            ]
+            .into_iter()
+            .flat_map(recording_entries)
+            .all(|(_, action)| action != Some(RecordingAction::Discard))
+        );
+    }
+
+    #[test]
+    fn fullscreen_clip_needs_a_running_buffer() {
+        assert!(!menu_model(&snapshot(PublicRecordingState::Idle)).clip_enabled);
+        let mut running = snapshot(PublicRecordingState::Idle);
+        running.replay_running = true;
+        assert!(menu_model(&running).clip_enabled);
+    }
+
+    #[test]
+    fn recording_tints_only_the_snap_dot() {
+        let rgb = |icons: &[ksni::Icon], size: i32, x: i32, y: i32| {
+            let icon = icons.iter().find(|icon| icon.width == size).unwrap();
+            let at = ((y * icon.width + x) * 4) as usize;
+            (icon.data[at + 1], icon.data[at + 2], icon.data[at + 3])
+        };
+        let idle = tray_icons_for(PublicRecordingState::Idle);
+        let recording = tray_icons_for(PublicRecordingState::Recording);
+        let paused = tray_icons_for(PublicRecordingState::Paused);
+        assert!(idle.iter().zip(tray_icons()).all(|(a, b)| a.data == b.data));
+        for (size, dot, body) in [(32, (22, 12), (10, 20)), (64, (45, 25), (24, 56))] {
+            assert_eq!(rgb(&recording, size, dot.0, dot.1), (0xff, 0x45, 0x3a));
+            assert_eq!(rgb(&paused, size, dot.0, dot.1), (0xff, 0xb0, 0x20));
+            assert_eq!(rgb(&recording, size, body.0, body.1), (0xff, 0xff, 0xff));
+        }
+        // Alpha is untouched, so the mark keeps its shape.
+        assert!(recording.iter().zip(tray_icons()).all(|(tinted, plain)| {
+            tinted
+                .data
+                .chunks_exact(4)
+                .zip(plain.data.chunks_exact(4))
+                .all(|(a, b)| a[0] == b[0])
+        }));
     }
 
     #[test]

@@ -1553,6 +1553,13 @@ impl Daemon {
                     let _ = event_tx.send(DaemonEvent::ReplayStateChanged);
                 });
             }
+            TrayAction::Recording(action) => {
+                if let Some(qh) = self.qh.clone()
+                    && let Err(error) = self.handle_recording_action(action, &qh)
+                {
+                    notify(&format!("Recording: {error}"));
+                }
+            }
             TrayAction::StartRegion => {
                 if self.recording.is_some() {
                     notify("A recording is already in progress");

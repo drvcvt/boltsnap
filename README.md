@@ -328,6 +328,10 @@ This makes an `Alt+Print` binding a state-aware recording toggle.
 The native tray icon is available whenever the daemon is running. On Windows,
 its menu provides area/fullscreen screenshots, area/fullscreen recordings,
 recording controls, and a daemon quit action.
+On Linux the icon's dot turns red while a recording runs or is being saved and
+amber while it is paused. During a recording the menu starts with Pause or
+Resume, Save to shelf and Save to disk; Discard stays in the recording controls.
+"Clip fullscreen to shelf" is only enabled while the replay buffer runs.
 
 The recording controls offer:
 
