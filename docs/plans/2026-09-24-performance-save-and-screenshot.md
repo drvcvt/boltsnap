@@ -1,6 +1,7 @@
 # Performance: Speichern von Aufnahmen und Screenshot-Pfad, 2026-09-24
 
-Status: freigegeben 2026-09-24, Umsetzung läuft (siehe Status-Tabelle).
+Status am 25.09.2026: Wellen 1 bis 3 umgesetzt; A3 umgesetzt, live noch
+ungemessen; B4 nicht umgesetzt (siehe Status-Tabelle und Umsetzungsnotizen).
 Nur Linux; das Windows-Backend bleibt eingefroren.
 
 ## 1. Zusammenfassung
@@ -318,7 +319,8 @@ dimensionierter Puffer, `chunks_exact_mut(3).zip(chunks_exact(4))`. Greift bei
 `DynamicImage::into_rgb8` für ein kleines Bild mit gemischten Alpha-Werten; die
 `strip_uniform_border`-Tests laufen mit. Manuell: 3-5 Läufe
 `BOLTSNAP_TIMINGS=1 boltsnap full --no-copy -o /tmp/x.png`, `rgb_and_trim`
-vorher und nachher, Datei mit `/usr/bin/rm` löschen.
+vorher und nachher, exakte Testdatei prüfen und mit
+`/home/mt/.local/bin/safe-rm` in den Papierkorb verschieben.
 
 ### B3: Weniger Speicherdurchgänge in libway
 

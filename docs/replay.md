@@ -95,13 +95,26 @@ priority but runs as fast as the decoder and encoder allow. It is no longer
 paced to the clip duration. The shelf receives the completed file immediately
 after export. Full-display remux still avoids encoding. Capture uses the
 very-high quality preset because the selector also displays a decoded buffer
-frame; region export uses QP/CRF 18 to limit the additional encoding loss. Stop cancels the capture and any unfinished export; a partial file
-can remain for recovery until the daemon restarts. Completed clips are privately
+frame; region export uses QP/CRF 18 to limit the additional encoding loss. Stop
+cancels the capture and any unfinished export; a partial file can remain for
+recovery. Completed clips are privately
 created in the recording cache and published without replacing existing files.
 The shelf is RAM-only, so the daemon removes leftover `clip-*.mkv` files with the
 other orphaned recordings when it starts. Existing cache and disk
 reserve checks apply; concurrent ordinary recording is not a shared disk
 reservation. Do not treat that preflight check as a hard system-wide disk cap.
+
+Known cleanup gap: failed remux files ending in `.mkv.<pid>.<seq>.partial`
+are not recognized by startup cleanup and continue to consume cache space.
+Also, after capture input fails, the watchdog currently overlooks a retained
+selection once preview generation finishes and can restart its worker before
+the selection expires. See G2 and G5 in the
+[fix plan](plans/2026-09-25-review-fixes.md).
+
+Known shelf limitation: saving a replay card permanently currently gives its
+unchanged Matroska bytes an `.mp4` filename, and video drag offers `video/mp4`.
+This does not convert the container. See A4 in the
+[open review findings](codebase.md#open-review-findings).
 
 ## Verification and limits
 
@@ -117,8 +130,9 @@ Native KMS capture then ran locally on GPU Screen Recorder 6.1.2 with
 decodes without errors. Region export from the selector is not covered by that
 run.
 
-Real desktop capture, gaming frame times, long-running real-time stability,
-monitor changes and AMD/Intel drivers still need validation. The GPU-only crop
+The native fullscreen run above is limited live evidence. Interactive region
+export, gaming frame times, long-running real-time stability, monitor changes
+and AMD/Intel drivers still need validation. The GPU-only crop
 prototype failed a pixel comparison on padded video surfaces and is not enabled.
 No claim of imperceptible capture overhead follows from the synthetic tests.
 See [benchmark results](replay-benchmarks.md) and the
