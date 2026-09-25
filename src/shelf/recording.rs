@@ -52,9 +52,22 @@ pub fn discard_rect() -> (f32, f32, f32, f32) {
     )
 }
 
+// The frozen Windows shelf keeps calling the version without recovery.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn popup_hit(
     state: PublicRecordingState,
     enabled: bool,
+    x: f64,
+    y: f64,
+) -> Option<PopupButton> {
+    popup_hit_with(state, enabled, false, x, y)
+}
+
+/// `recovery`: saving failed, so Resume is inert while Save and Discard work.
+pub fn popup_hit_with(
+    state: PublicRecordingState,
+    enabled: bool,
+    recovery: bool,
     x: f64,
     y: f64,
 ) -> Option<PopupButton> {
@@ -77,6 +90,7 @@ pub fn popup_hit(
         (x >= bx as f64 && x < (bx + bw) as f64 && y >= by as f64 && y < (by + bh) as f64)
             .then_some(button)
     })
+    .filter(|button| !(recovery && *button == PopupButton::PauseResume))
 }
 
 pub fn fmt_elapsed(secs: u64) -> String {
@@ -87,6 +101,24 @@ pub fn fmt_elapsed(secs: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recovery_popup_only_drops_resume() {
+        let center =
+            |(x, y, w, h): (f32, f32, f32, f32)| ((x + w / 2.0) as f64, (y + h / 2.0) as f64);
+        let hit = |recovery, rect| {
+            let (x, y) = center(rect);
+            popup_hit_with(PublicRecordingState::Paused, true, recovery, x, y)
+        };
+        assert_eq!(
+            hit(false, pause_resume_rect()),
+            Some(PopupButton::PauseResume)
+        );
+        assert_eq!(hit(true, pause_resume_rect()), None);
+        assert_eq!(hit(true, save_shelf_rect()), Some(PopupButton::SaveShelf));
+        assert_eq!(hit(true, save_disk_rect()), Some(PopupButton::SaveDisk));
+        assert_eq!(hit(true, discard_rect()), Some(PopupButton::Discard));
+    }
 
     #[test]
     fn finalizing_popup_has_no_live_buttons() {

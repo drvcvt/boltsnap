@@ -2500,10 +2500,11 @@ impl Daemon {
         if !self.popup_configured {
             return;
         }
-        let (state, enabled, elapsed) = match self.recording.as_ref() {
+        let (state, enabled, recovery, elapsed) = match self.recording.as_ref() {
             Some(session) => (
                 session.public_state(),
                 session.actions_enabled(),
+                session.resume_blocked,
                 crate::shelf::recording::fmt_elapsed(
                     session.elapsed_at(std::time::Instant::now()).as_secs(),
                 ),
@@ -2524,12 +2525,13 @@ impl Daemon {
             Ok(v) => v,
             Err(_) => return,
         };
-        crate::shelf::paint::draw_recording_popup(
+        crate::shelf::paint::draw_recording_popup_with(
             canvas,
             POPUP_W,
             POPUP_H,
             state,
             enabled,
+            recovery,
             &elapsed,
             &self.popup_font,
         );
@@ -2669,6 +2671,9 @@ impl Daemon {
             .as_ref()
             .ok_or_else(|| "there is no active recording".to_string())?;
         if !session.can_accept(action) {
+            if session.resume_blocked && action == RecordingAction::Resume {
+                return Err("cannot resume after a failed save; save again or discard".into());
+            }
             return Err(format!(
                 "cannot {} while {:?}",
                 recording_action_label(action),
@@ -2936,7 +2941,7 @@ impl Daemon {
                 self.add_finalized_cards(failure.completed, shelf_card);
                 if let Some(session) = self.recording.as_mut() {
                     session.completed = failure.recoverable_segments;
-                    let _ = session.finalize_failed(failure.error.clone());
+                    let _ = session.save_failed(failure.error.clone());
                 }
                 notify(&format!(
                     "Recording could not be finalized: {}",
@@ -3217,9 +3222,10 @@ impl Daemon {
         let Some(session) = self.recording.as_ref() else {
             return;
         };
-        let action = match crate::shelf::recording::popup_hit(
+        let action = match crate::shelf::recording::popup_hit_with(
             session.public_state(),
             session.actions_enabled(),
+            session.resume_blocked,
             pos.0,
             pos.1,
         ) {
