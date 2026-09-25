@@ -869,7 +869,20 @@ für dieses Cleanup einführen.
 ohne Statuswechsel ausführen; Zahl gehaltener FDs bleibt begrenzt und ein neuer
 Client kommt nach altem Disconnect hinein. Lebende Clients bis zum Limit,
 Ablehnung darüber, BrokenPipe und partielle Writes testen. Gemeinsame Checks;
-später Widget-Reconnect mit idle Daemon beobachten. **Status: geplant.**
+später Widget-Reconnect mit idle Daemon beobachten. **Status: umgesetzt.**
+
+**Abschluss G4:** Vor jeder neuen Subscription entfernt `watcher_connected`
+getrennte Peers (`recv` mit `MSG_PEEK|MSG_DONTWAIT`: 0 heißt getrennt,
+`EAGAIN` verbunden, anderer Fehler getrennt; ungelesene Clientbytes zählen als
+verbunden und werden nicht gelesen). Danach gilt `MAX_RECORDING_WATCHERS = 16`;
+darüber schließt der Daemon mit Logzeile, und `boltsnap recording watch`
+meldet eine Verbindung ohne erste Statuszeile als Fehler. Das Abräumen beim
+Publizieren über fehlgeschlagene Writes bleibt. Kein eigener Typ, kein
+Idle-Timer, keine calloop-Registrierung. Tests: offener, sendender, getrennter
+und blockierender Socket; 100 Verbinden-und-Schließen-Runden ohne
+Statuswechsel halten höchstens einen Eintrag (ohne Abräumen wären es 100). Die
+Limit-Ablehnung im Daemon braucht Wayland und ist nur per Code geprüft;
+Widget-Reconnect gegen einen idle Daemon offen.
 
 ### G5: Replay-Auswahl vor automatischem Restart schützen
 
@@ -985,7 +998,7 @@ Alle anderen Items sind offen. F1 erhält unter Empfehlung A keinen Code-Commit.
 | 0 | G1 | exklusiver Daemon-Start vor Cleanup | `G1: lock the daemon before cleanup` |
 | 5 | G2 | Remux-Partials bei exklusivem Neustart erkennen | `G2: clean up failed replay remux partials on start` |
 | 5 | G3 | Deadline inklusive Prozessausgabe | `G3: hold the process deadline over its output pipes` |
-| 5 | G4 | begrenzte und bereinigte Recording-Watches | |
+| 5 | G4 | begrenzte und bereinigte Recording-Watches | `G4: drop closed recording watchers and cap them` |
 | 5 | G5 | gehaltene Replay-Auswahl vor Restart schützen | |
 | 6 | H1 | Nix-Version aus Cargo lesen | |
 

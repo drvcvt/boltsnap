@@ -465,10 +465,16 @@ fn recording_command(args: &Args) -> DynResult<()> {
                 .map_err(|error| format!("recording daemon unavailable: {error}"))?;
             let mut reader = BufReader::new(stream);
             let mut line = String::new();
+            let mut lines = 0;
             while reader.read_line(&mut line)? != 0 {
                 print!("{line}");
                 std::io::stdout().flush()?;
                 line.clear();
+                lines += 1;
+            }
+            if lines == 0 {
+                // The daemon refuses watches beyond its limit by closing.
+                return Err("the daemon closed the watch without a status".into());
             }
             Ok(())
         }
