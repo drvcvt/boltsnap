@@ -730,6 +730,14 @@ Symlink bleiben. Die Tests prüfen neue Funktionen und waren vorher nicht
 kompilierbar statt rot. Die Verdrahtung in `run_daemon` braucht Wayland und
 ist nur per Code geprüft.
 
+**Nachtrag 26.09.:** Der Lock-Test schlug in einem vollen `cargo test`-Lauf
+einmal fehl (Zeile „nach Freigabe wieder frei“), einzeln dreimal grün.
+Ursache: `flock` gehört zur geöffneten Dateibeschreibung; ein Prozess, den ein
+anderer Test gleichzeitig startet, hält bis zu seinem `exec` eine Kopie des
+FDs. Das Produkt ist nicht betroffen (der Daemon hält den Lock ohnehin bis zum
+Ende, `CLOEXEC` schließt ihn beim `exec`). Der Test wartet jetzt bis 2 s auf
+die Freigabe.
+
 ### G2: Replay-Remux-Partials bei Neustart erkennen
 
 **Priorität / Nachweis:** P2, reine Namensprüfung reproduziert.
