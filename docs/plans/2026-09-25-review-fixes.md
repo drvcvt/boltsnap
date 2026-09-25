@@ -1,15 +1,21 @@
 # Review-Fixes: Spezifikation und Implementierungsplan
 
 Stand: 25.09.2026. Status: A1 freigegeben und umgesetzt; übrige Items geplant.
-Basis: `7e736ad`. Erstellt mit dem lokalen Skill
+Ursprüngliche Basis: `7e736ad`; vertieftes Review: `cf243b5`.
+Ursprünglich erstellt mit dem lokalen Skill
 `/home/mt/.codex/skills/spec-plan/SKILL.md`.
 
 ## 1. Zusammenfassung und Grenzen
 
-Dieser Plan behandelt alle neun Befunde aus
-[dem Linux-Review](../reviews/2026-09-25-linux-review.md) sowie die dort separat
-aufgeführte Cursor-Verhaltensfrage. Die
-[isolierten Repros](../reviews/2026-09-25-repros.patch) sind Ausgangspunkte für
+Dieser Plan behandelt die neun ursprünglichen Befunde, sechs zusätzliche Befunde
+aus dem vertieften Review und die separat aufgeführte Cursor-Verhaltensfrage.
+Damit sind 14 Fehler offen und A1 behoben; F1 ist eine Verhaltensentscheidung.
+Der versionierbare aktuelle
+[Befundstand](../codebase.md#open-review-findings) enthält die Codebelege und
+kennzeichnet A1 als behoben. Der historische Review liegt lokal unter
+`docs/reviews/2026-09-25-linux-review.md`; `docs/reviews/` ist absichtlich
+Git-ignoriert und in einem frischen Checkout nicht vorhanden. Die dortigen
+isolierten Repros (`docs/reviews/2026-09-25-repros.patch`) sind Ausgangspunkte für
 Regressionstests, kein fertig übernehmbarer Test-Patch. Insbesondere enthält
 der Container-Test Platzhalterbytes, keine echte Matroska-Datei
 (`docs/reviews/2026-09-25-repros.patch:33`).
@@ -19,8 +25,9 @@ getroffenen Nutzerentscheidungen. Nach Erläuterung der lokalen atomaren
 Dateiveröffentlichung wurde A1 zur Umsetzung freigegeben. Die übrigen Items
 bleiben geplant. Keine Installation und kein Eingriff in den laufenden Daemon.
 Die Arbeit erfolgt ohne Subagents gemäß der Projektvorgabe des Nutzers.
-Ursachenbelege und unveränderte Planungsabschnitte zitieren die Basisrevision;
-der A1-Abschluss unten nennt die aktuellen Stellen.
+Ursachenbelege und unveränderte Planungsabschnitte zitieren die ursprüngliche
+Basisrevision; G1 bis H1 und die A4-Ergänzung beziehen sich auf `cf243b5`.
+Abschnitt 6 dokumentiert Prüfumfang, isolierte Repros und parallele Arbeit.
 
 Linux bleibt der einzige Implementierungsumfang. Neue OS-Dateioperationen
 gehören unter `src/platform/linux/`; Windows bleibt eingefroren. Gemeinsame
@@ -42,15 +49,24 @@ Shelf nach Daemon-Neustart. Der Shelf ist ausdrücklich RAM-only
 | D2 | 9: Bild-Save im UI-Thread | P2, Codepfad; Blockier-Test fehlt |
 | E1 | 2: Combined-Recovery und Resume | P1, reproduziert |
 | F1 | Cursor-Handover | bestätigtes Verhalten, kein freigegebener Fix |
+| G1 | Daemon-Cleanup vor exklusiver Startabsicherung | P1, vollständiger Codepfad; Race nicht live ausgelöst |
+| G2 | Replay-Remux-Partials überleben die Neustartbereinigung | P2, Namensprüfung reproduziert |
+| G3 | Prozess-Timeout begrenzt geerbte Ausgabepipes nicht | P2, reproduziert: 40 ms werden 1,202 s |
+| G4 | RecordingWatch hält getrennte Idle-Clients unbegrenzt | P2, vollständiger Codepfad; FD-Stress nicht ausgeführt |
+| G5 | Replay-Watchdog erkennt eine gehaltene Auswahl nicht | P2, Worker-Zustand synthetisch reproduziert; Neustart aus Code belegt |
+| H1 | Nix-Paket meldet Version 0.4.3 statt 1.0.1 | P3, Manifeste direkt verglichen |
 
 ## 2. Wellen und Abhängigkeiten
 
 | Welle | IDs in Reihenfolge | Ergebnis |
 | --- | --- | --- |
+| 0 | G1 | genau ein Daemon besitzt Socket und Startbereinigung |
 | 1 | A1, A2, A3 | sichere Dateiveröffentlichung, kein Überschreiben, Schutz laufender Saves |
 | 2 | E1 | fehlgeschlagene Finalisierung bleibt bedienbar und speicherbar |
 | 3 | A4, B1, C1 | richtige Mediennamen, zuverlässiger Import, kein mutierendes IPC-Retry |
 | 4 | D1, D2 | begrenzter Transferspeicher und responsive Bild-Saves |
+| 5 | G2, G3, G4, G5 | begrenzter Cache, wirksame Deadlines, begrenzte Watches, geschützte Replay-Auswahl |
+| 6 | H1 | Paketversion aus derselben Quelle wie Cargo |
 | keine | F1 | Entscheidung dokumentieren, vorerst kein Produktcode |
 
 A1 stellt die Kopier-/Veröffentlichungsprimitive für A2 bereit. A3 muss vor D2
@@ -61,6 +77,11 @@ Dateioperationen aus A1 wiederverwenden. E1 braucht eine Produktentscheidung und
 gezielte UI-/Session-Tests, wird wegen P1 vor die übrigen Komfort-/Performance-
 Korrekturen gezogen. Keine Welle als vollständige Fehlerbereinigung ausgeben,
 solange andere Befunde offen sind.
+
+G1 hat wegen möglicher Löschung noch verwendeter Medien Vorrang vor weiterer
+Cleanup-Arbeit. G2 setzt diese abgesicherte Eigentümerschaft voraus. G3, G4 und
+G5 sind voneinander unabhängig, werden aber jeweils einzeln umgesetzt. G5 berührt
+Supervisor und Worker-Protokoll gemeinsam; kein isolierter Worker-only-Fix.
 
 ### Gemeinsame Verifikation nach Umsetzung
 
@@ -258,6 +279,11 @@ Replay bleibt `.mkv`, MP4 bleibt `.mp4`; beim reinen Save findet keine Umwandlun
 statt. Bekannte Endungen bekommen den passenden angebotenen MIME-Typ, unbekannte
 Dateitypen mindestens `text/uri-list`, ohne falsches MP4-Versprechen.
 
+**Vertiefung auf `cf243b5`:** `DataSourceHandler::cancelled` erkennt ausschließlich
+`.mp4` als Video (`src/platform/linux/shelf/mod.rs:3638`). Ein abgebrochener
+Replay-MKV-Drag fällt deshalb in den Bild-Clipboard-Pfad. Die bereits bekannte
+falsche Typbehandlung umfasst auch diesen Callback, nicht nur Save und MIME.
+
 **Phase 2: Umsetzung**
 
 1. `promote_recording` benutzt die erweiterungsfähige Linux-Namenswahl aus A2.
@@ -271,6 +297,9 @@ Dateitypen mindestens `text/uri-list`, ohne falsches MP4-Versprechen.
    zugehörigem Sidecar einen anderen Basisnamen wählen; atomarer Sidecar-Move
    bleibt geschützt (`src/record/cursor_sidecar.rs:258`).
 4. Replay-Dokumentation um unveränderten Container beim Shelf-Save ergänzen.
+5. Den vorhandenen Kartentyp beim Drag-Start bis `clear_drag` behalten und im
+   Cancel-Callback auswerten. Nicht erneut aus einer kurzen Endungsliste raten.
+   `begin_drag`, `cancelled`, `dnd_finished` und alle Abbruchpfade zusammen prüfen.
 
 **Risiken:** normale Recording-Finalisierung erzeugt ausdrücklich MP4
 (`src/record/finalize.rs:240`); diese Pfade behalten ihre Endung. Bestehende falsch
@@ -280,6 +309,8 @@ Dateiname in `text/uri-list` müssen übereinstimmen.
 **Roter Test:** vorhandener Endungs-Repro; ergänzend echte synthetische MKV-Datei
 vor/nach Promotion auf identische Bytes und ffprobe-Container prüfen. MIME-Auswahl
 für MP4/MKV/WebM/unbekannt und Sidecar-Kollision testen.
+Abgebrochener MKV-/WebM-Drag darf keine Bild-Clipboard-Operation auslösen;
+der Screenshot-Fallback muss weiterhin funktionieren.
 
 **Verifikation:** gemeinsame und Replay-Checks; manuell gespeicherten Replay-Clip
 öffnen und in ein Ziel mit Datei- sowie Byte-Import ziehen.
@@ -293,8 +324,10 @@ den Link selbst (`src/platform/linux/shelf/mod.rs:483`,
 `src/platform/linux/shelf/mod.rs:500`). Der isolierte Symlink-Repro schlägt fehl
 (`docs/reviews/2026-09-25-repros.patch:50`).
 
-Empfehlung: den in `README.md:272` zugesagten eigenen Dateiinhalt unabhängig vom
-Original übernehmen. Relative/absolute Symlinks auf gültige reguläre Dateien sind
+Empfehlung: künftig einen vom Original unabhängigen Dateiinhalt übernehmen.
+Die README beschreibt inzwischen korrekt den vorhandenen Hardlink; die frühere
+Zusage einer eigenen Kopie war zu weitgehend. Eine echte Kopie bleibt der hier
+vorgeschlagene, noch nicht beschlossene Fix. Relative/absolute Symlinks auf gültige reguläre Dateien sind
 erlaubt. Nach erfolgreichem ACK darf Entfernen oder Überschreiben des Originals
 den Shelf-Clip nicht verändern. Annahme: Der Produzent hält die Datei während des
 Imports stabil; eine transaktionale Momentaufnahme eines gleichzeitig schreibenden
@@ -528,6 +561,230 @@ Tracker-Reihenfolge, echtes Leave, mehrere Displays und Latenz erstellen.
 Dann portable Motion-Tests, Plugin-Tests einschließlich GL und echte
 Monitorwechsel prüfen; das ist ausdrücklich außerhalb dieser neun Fixes.
 
+### G1: Daemon-Eigentümerschaft vor Socket- und Cache-Cleanup
+
+**Priorität / Nachweis:** P1, auf `cf243b5` statisch durchgängig bestätigt.
+Keine absichtliche Race gegen den laufenden Desktop ausgelöst.
+
+**Ursache und Auswirkung:** `run_daemon` prüft zuerst `daemon_alive`, entfernt
+dann den vermeintlich alten Socket und bereinigt Shelf-Dateien, Recording-Cache
+und Audiomixe (`src/platform/linux/shelf/mod.rs:1053`). Erst nach Wayland-Aufbau
+bindet es den Socket (`:1180`). `ipc::ensure_daemon` kann beim direkten Fallback
+mehrere Prozesse starten (`src/platform/linux/ipc.rs:38`). Zwei Starts können
+beide die anfängliche Prüfung passieren. Ein verzögerter zweiter Start kann
+anschließend den Socket und temporäre Medien des inzwischen laufenden ersten
+Daemons entfernen. Der erste Listener lebt ohne erreichbaren Pfad weiter;
+der zweite Prozess kann später am bereits belegten Replay-Socket scheitern.
+Ein erfolgreicher Ping ist kein exklusiver Eigentumsnachweis.
+
+**Fix und Abwägung:** ein Linux-Lock über die gesamte Daemon-Lebensdauer, vor
+jedem Cleanup und vor Logrotation. `flock` auf einer stabilen privaten Lockdatei
+ist kleiner als ein neues Startprotokoll. Die Datei nach Freigabe nicht unlinken,
+sonst können verschiedene Inodes gleichzeitig gelockt werden. Ein früheres
+Socket-Bind allein löst die sichere Behandlung eines alten Socketpfads nicht.
+
+**Implementierungsplan:**
+
+1. In `src/platform/linux/ipc.rs` einen kleinen RAII-Lock mit bestehendem `libc`
+   vorsehen; Pfadauflösung über `linux/paths.rs`. Kein OS-Code in portable Module.
+   Eigenen privaten Laufzeitpfad, sichere Dateieröffnung und `CLOEXEC` verwenden.
+2. In `run_daemon` zuerst Lock erwerben, dann Alive-/Stale-Prüfung und Cleanup.
+   Verlierer starten keine Bereinigung. Fremde oder unerwartete Pfadtypen nicht
+   als vermeintlich alten Socket entfernen. Bind-Fehler dürfen keinen aktiven
+   Socket eines anderen Besitzers unlinken.
+3. Lock bis zum tatsächlichen Daemon-Ende halten. Alle frühen Fehlerpfade geben
+   nur den eigenen Lock frei. Aufrufer aus CLI, `ensure_daemon` und systemd
+   prüfen; gleichzeitige Clients müssen den Gewinner weiter erreichen können.
+4. Erst nach diesem Startschutz den Cleanup-Fix G2 umsetzen. Keine Audio-/Replay-
+   Refaktoren neben diesem Startschutz.
+
+**Regression und Abnahme:** zwei isolierte Prozesse per Barrier vor Lock-Erwerb
+starten; nur einer erreicht einen injizierten Cleanup-Zähler und Bind. Ein
+verzögerter Verlierer darf den Gewinner nicht beeinträchtigen. Lock-Freigabe bei
+normalem Exit und Crash, Stale-Socket-Recovery und unerwarteten Pfadtyp prüfen.
+Keine echten Benutzerdateien als Lösch-Fixtures. Gemeinsame Linux-Checks;
+später separater Cold-Start-Test über CLI und systemd, kein Neustart während
+anderer laufender Aufnahmen. **Status: geplant.**
+
+### G2: Replay-Remux-Partials bei Neustart erkennen
+
+**Priorität / Nachweis:** P2, reine Namensprüfung reproduziert.
+`worker/src/export.rs:42` erzeugt mit `create_partial` Namen wie
+`clip-123-456-1.mkv.123.0.partial`. Bei Remux-/Sync-/Publish-Fehler bleiben sie
+absichtlich als Diagnoseartefakt erhalten (`:92`).
+`linux/paths.rs:230` erkennt dagegen nur `boltsnap-*` oder `clip-*.mkv`.
+Remux-Partials enden auf `.partial`, bleiben also auch nach Neustart liegen.
+Die Cache-Quota zählt reguläre Dateien mit (`src/record/finalize.rs:657`);
+wiederholte Fehler können dadurch die 2-GiB-Grenze dauerhaft belegen.
+Crop-Partials mit Endung `.partial.mkv` sind von dieser Namenslücke nicht betroffen.
+
+**Fix und Abwägung:** bestehende Remux-Namen eng erkennen. Nicht pauschal jedes
+`clip-*` löschen und keine neue laufende Garbage Collection hinzufügen. Ein
+einheitliches neues Namensschema wäre ebenfalls möglich, müsste aber auch bereits
+zurückgelassene Dateien erkennen und würde den Fix unnötig vergrößern.
+
+**Implementierungsplan:**
+
+1. `is_orphan_rec_file` um genau das erzeugte Remux-Schema erweitern: numerische
+   PID/Zeitstempel/Sequenz-Felder sowie exakte `.mkv.<pid>.<seq>.partial`-Suffixe.
+   Produzenten in `worker/src/live.rs`, `export.rs` und `crop.rs` abgleichen.
+2. Vorhandene fertige Clip-/Recording-Erkennung erhalten. Startbereinigung erst
+   unter dem G1-Lock; Partials einer laufenden Session dürfen nicht erfasst werden.
+3. README/Replay-Fehlerdokumentation zwischen Erhalt bis zum Neustart und danach
+   stattfindender Bereinigung unterscheiden. Keine manuelle Reparatur behaupten.
+
+**Regression und Abnahme:** der beigefügte G2-Test ist aktuell rot. Ergänzend
+fertige MKV-, Crop-Partial-, Remux-Partial-Namen, kaputte Nummernfelder und
+unbeteiligte `clip-notes.txt` abdecken. Synthetisch einen Exportfehler erzeugen,
+Artefakt bis zum Ende der Session erhalten und nach kontrolliertem exklusivem
+Neustart die vorgesehene Auswahl zur Bereinigung prüfen. Gemeinsame Linux- und
+Worker-Checks. **Status: geplant.**
+
+### G3: Prozess-Deadline auch für stdout/stderr einhalten
+
+**Priorität / Nachweis:** P2, reproduziert. Bei einer Deadline von 40 ms kehrt
+`output` mit `Ok` erst nach **1,201791424 s** zurück. Der gestartete Shell-Prozess
+ist bereits beendet, sein endlicher `sleep`-Nachkomme hält die Pipes offen.
+
+**Ursache und Auswirkung:** `replay/process.rs:66` begrenzt das Warten auf den
+direkten Child-Prozess, ruft anschließend aber unbeschränkt `join` auf zwei
+`read_to_end`-Threads auf (`:102`). Das Byte-Limit begrenzt keinen wartenden Read.
+Ein Wrapper mit langlebigem Nachkommen kann Font-/Hyprland-Setup, Thumbnail- oder
+Medien-Probes trotz Timeout unbegrenzt festhalten. Aufrufer liegen in
+`linux/hypr.rs`, `shelf/font.rs`, `shelf/thumbnail.rs`, `gsr.rs`, `replay/mod.rs`
+und `worker/src/crop.rs`; `output_setup` teilt denselben Fehler.
+
+**Fix und Abwägung:** den vorhandenen kleinen Runner auf nichtblockierende
+Ausgabepipes und `poll` mit einer absoluten Deadline umstellen. Erfolg benötigt
+Prozessstatus und abgeschlossene Pipe-Lektüre. Ein bloßes zeitbegrenztes Warten
+auf Reader-Threads würde blockierte Threads zurücklassen. Fremde Nachkommen
+nicht anhand unbekannter PIDs töten; Prozessgruppen wären eine eigene Policy.
+
+**Implementierungsplan:**
+
+1. In `replay/process.rs` stdout/stderr gleichzeitig begrenzt lesen, Deadline
+   über Child-Wait und beide Streams gemeinsam auswerten. Byte-Limits und
+   `output_setup`-Latenz erhalten; große stderr-Ausgabe darf stdout nicht blockieren.
+2. Bei Fristablauf eigene Pipe-Enden schließen und Timeout zurückgeben, auch
+   wenn der direkte Child schon erfolgreich beendet ist. Noch laufenden eigenen
+   Child mit klar begrenzter Eskalation reap-en. Diese zusätzliche Cleanup-Frist
+   ausdrücklich dokumentieren; keine unbegrenzten Joins.
+3. Alle genannten Aufrufer auf Fehlerweitergabe prüfen. Keine stillschweigende
+   Verwendung unvollständiger Probe-Ausgabe als erfolgreiches Ergebnis.
+4. Worker-Mitbenutzung desselben Moduls separat bauen und prüfen; keine zweite
+   fast identische Prozessimplementierung hinzufügen.
+
+**Regression und Abnahme:** beigefügter G3-Repro ist rot. stdout und stderr
+jeweils durch einen Nachkommen offen halten; erfolgreicher direkter Child darf
+die Deadline nicht umgehen. Normaler Output bleibt bytegleich; Output-Limit,
+leerer Output, direkt hängender Prozess, sauberes Reaping und kein Thread-Leak
+prüfen. Der Review-Repro benutzt einen endlichen 1,2-s-Child; produktiver Test
+soll kontrollierte Synchronisation und großzügige Scheduler-Toleranz verwenden.
+Gemeinsame Linux- und Worker-Checks. **Status: geplant.**
+
+### G4: RecordingWatch-Verbindungen begrenzen und abräumen
+
+**Priorität / Nachweis:** P2, durchgängiger Codepfad bestätigt; keine absichtliche
+FD-Erschöpfung im laufenden Daemon erzeugt.
+
+**Ursache und Auswirkung:** `RecordingWatch` legt nach der ersten Statuszeile
+jeden Stream in `watchers` ab (`linux/shelf/mod.rs:1610`). Der Request-Permit
+endet mit der Eventbearbeitung, begrenzt also keine dauerhaften Subscriptions.
+Entfernt werden Watches erst beim Schreiben eines geänderten Recording-Status
+(`:3144`). Im Idle bleibt dieser Status gleich. Wiederholtes Verbinden, Lesen
+der ersten Zeile und Schließen sammelt deshalb daemonseitige FDs bis zum nächsten
+Statuswechsel. Auch lebende Watches haben kein Limit. Bei genügend Wiederholungen
+scheitern neue Socket-/Dateioperationen, nicht nur die Statusanzeige.
+
+**Fix und Abwägung:** separates kleines Subscription-Limit plus Bereinigung
+geschlossener Peers. Empfehlung für den kleinsten belastbaren Eingriff: vor jeder
+neuen Subscription und bei Statuspublikation vorhandene Streams per nonblocking
+Peek prüfen, EOF entfernen und anschließend das Limit anwenden. So bleiben auch
+ohne Recording-Aktivität höchstens die begrenzte Anzahl Rest-FDs erhalten.
+Sofortige Freigabe jedes Idle-Disconnects über calloop-HUP ist möglich, benötigt
+aber zusätzliche Registrierungsverwaltung. Keinen periodischen Idle-Timer nur
+für dieses Cleanup einführen.
+
+**Implementierungsplan:**
+
+1. Watch-Verwaltung als kleine Linux-interne Einheit mit festem Limit, z. B. 16,
+   kapseln. Annehmen erst nach Peer-Prüfung und Kapazitätsprüfung; Überschreitung
+   nachvollziehbar ablehnen. Watch-Permits von kurzlebigen Request-Limits trennen.
+2. Peek muss `WouldBlock` als weiter verbunden, EOF als getrennt behandeln.
+   Definieren, wie unerwartete Clientdaten behandelt werden; keine unbegrenzte
+   Leseschleife. Bestehende Behandlung langsamer/fehlgeschlagener Writes erhalten.
+3. `RecordingWatch`, `publish_recording_snapshot`, Watch-CLI und Protokolltests
+   gemeinsam prüfen. Statusänderungen weiterhin sofort publizieren; kein Polling
+   im UI-Thread und kein zusätzliches öffentliches OS-spezifisches Protokoll.
+
+**Regression und Abnahme:** über echte Socketpaare viele Subscribe/Close-Runden
+ohne Statuswechsel ausführen; Zahl gehaltener FDs bleibt begrenzt und ein neuer
+Client kommt nach altem Disconnect hinein. Lebende Clients bis zum Limit,
+Ablehnung darüber, BrokenPipe und partielle Writes testen. Gemeinsame Checks;
+später Widget-Reconnect mit idle Daemon beobachten. **Status: geplant.**
+
+### G5: Replay-Auswahl vor automatischem Restart schützen
+
+**Priorität / Nachweis:** P2. Synthetischer Worker-Repro bestätigt einen noch
+exportierbaren Snapshot bei `ready=false` und `busy=false`. Dass der Watchdog
+diesen Zustand neu startet, folgt aus seinem geprüften Codepfad; der echte
+Supervisor wurde für das Review nicht gestartet oder neugestartet.
+
+**Ursache und Auswirkung:** `worker/src/live.rs:159` meldet `busy` während
+Preview/Export, nach fertiger Preview aber wieder false (`:185`). `frozen`
+bleibt für bis zu 120 Sekunden erhalten und kann auch nach Input-Ausfall noch
+gespeichert werden (`:229`). Der Watchdog prüft nur `ready || busy`
+(`linux/replay/mod.rs:253`). Nach drei negativen Prüfungen im 5-s-Raster verwirft
+er die Session. Eine offene Auswahl verliert so vor ihrem regulären Ablauf die
+einzige eingefrorene Aufnahme. Auch der manuelle Startpfad prüft nur `ready`
+(`:637`) und muss dieselbe Eigentumspolitik beachten.
+
+**Fix und Abwägung:** gehaltene Auswahl explizit im Worker-Status melden, etwa
+als `selection_active`, und in der Supervisor-Restartentscheidung berücksichtigen.
+Nicht `busy` für die gesamte Auswahl setzen: Save/Cancel-Dispatch benutzt diesen
+Wert bereits als Ausschluss gegen laufende Jobs. Eingangsfehler bleiben sichtbar;
+der Schutz muss mit Cancel, Verbrauch oder bestehender TTL enden.
+
+**Implementierungsplan:**
+
+1. `worker/src/live.rs` um das additive Statusfeld aus tatsächlichem `frozen`
+   ergänzen. Lifecycle für Previewfehler, Save, Cancel, TTL und Stop durchgehen.
+2. Supervisor-Watchdog schützt `ready || busy || selection_active`; der explizite
+   Startpfad darf eine gültige Auswahl oder einen Export ebenfalls nicht unbemerkt
+   ersetzen. Explizites Stop bleibt wirksam. Worker und Supervisor gemeinsam
+   ausliefern; fehlendes Feld alter Worker als false behandeln und die verbleibende
+   Einschränkung bei gemischten Versionen dokumentieren.
+3. Schutz im Zeitpunkt der Ersetzung erneut prüfen: zwischen Statusabfrage und
+   `guard.take()` kann ein Freeze eintreffen. Die Entscheidung mit der bestehenden
+   Start-/Session-Verwaltung serialisieren; keine neue globale Polling-Schleife.
+4. `docs/replay.md` um den Vertrag für Auswahl, Capture-Ausfall und TTL ergänzen.
+
+**Regression und Abnahme:** beigefügter Python-Repro friert synthetisches Video
+ein, wartet auf EOF und speichert den Snapshot erfolgreich, bevor die aktuell rote
+Statusassertion ausgewertet wird. Anschließend Status/Restart-Policy testen:
+Auswahl bleibt bis Save/Cancel/TTL geschützt; danach darf der Watchdog einen
+toten Input ersetzen. Zeit in Tests injizieren, nicht 120 Sekunden schlafen.
+Race Freeze-vor-Ersetzung gezielt synchronisieren. Worker-Checks und bestehende
+`probe.py`/`live.py`; später tatsächliche Auswahl bei kontrolliertem Capture-Ausfall
+prüfen. **Status: geplant.**
+
+### H1: Nix-Paketversion an Cargo koppeln
+
+**Priorität / Nachweis:** P3, `flake.nix:54` setzt für das Hauptpaket `0.4.3`,
+`Cargo.toml` setzt `1.0.1`. Das Nix-Paket trägt dadurch veraltete Metadaten.
+Kein Nix-Build zur Feststellung nötig; Runtime-Funktionsfehler nicht behauptet.
+
+**Fix und Implementierungsplan:** beim Hauptpaket die Version mit
+`(builtins.fromTOML (builtins.readFile ./Cargo.toml)).package.version` beziehen.
+Kein neuer Versionsgenerator und keine Änderung der separaten Cursor-Plugin-
+Version `0.1.0`. Die Nutzerreferenzen in README und Codebase-Inventar aktualisieren.
+
+**Verifikation:** Nix-Evaluation von `.#packages.x86_64-linux.default.version`
+mit Cargo vergleichen, danach vorhandenen Nix-Paketcheck/-Build ausführen, sofern
+eine passende Nix-Umgebung vorhanden ist. Keine Hostinstallation als Ersatz für
+eine Prüfung. Gemeinsame Projektchecks weiterhin ausführen.
+**Status: geplant; Nix-Evaluation und -Build noch offen.**
+
 ## 4. Entscheidungen
 
 1. **E1, Fortsetzen nach fehlgeschlagener Finalisierung:**
@@ -539,8 +796,8 @@ Monitorwechsel prüfen; das ist ausdrücklich außerhalb dieser neun Fixes.
    rekonstruiert die Karte auf Fehler. **Empfehlung A**, weniger Zustandsverwaltung.
 3. **B1, eigener Videoimport:** A: unabhängige Kopie mit mehr I/O.
    B: Symlink korrekt auflösen, Hardlink erhalten und In-place-Änderungen des
-   Originals ausdrücklich nicht absichern. **Empfehlung A**, passend zur Zusage
-   einer eigenen Kopie (`README.md:272`).
+   Originals ausdrücklich nicht absichern. **Empfehlung A** für unabhängigen Dateiinhalt. Die README dokumentiert
+   inzwischen den vorhandenen Hardlink und verspricht keine unabhängige Kopie.
 4. **C1, alte Daemons:** A: additive optionale Capability in der vorhandenen
    Statusantwort, eine Vorab-Roundtrip. B: mutierendes Retry entfernen und
    Thumbnail-Kompatibilität mit alten Daemons bis zu deren Neustart aufgeben.
@@ -572,3 +829,53 @@ Alle anderen Items sind offen. F1 erhält unter Empfehlung A keinen Code-Commit.
 | 4 | D1 | Streaming beim Drag | |
 | 4 | D2 | asynchroner Bild-Save | |
 | keine | F1 | Cursor-Verhalten beibehalten | |
+| 0 | G1 | exklusiver Daemon-Start vor Cleanup | |
+| 5 | G2 | Remux-Partials bei exklusivem Neustart erkennen | |
+| 5 | G3 | Deadline inklusive Prozessausgabe | |
+| 5 | G4 | begrenzte und bereinigte Recording-Watches | |
+| 5 | G5 | gehaltene Replay-Auswahl vor Restart schützen | |
+| 6 | H1 | Nix-Version aus Cargo lesen | |
+
+## 6. Vertieftes Review und tatsächlich ausgeführte Checks
+
+**Scope:** Linux-Start und IPC vom CLI bis zum Eventloop, Dateiimport und
+Shelf-Save/Close/Drag, Recording-Stop/Recovery/Finalisierung, Replay-Supervisor,
+Worker-Freeze/Export/Fehlerpfade, Prozessrunner und Paketregistrierung. Betrachtet
+wurden Aufrufer und Eigentums-/Fehlerübergänge, nicht nur einzelne Funktionen.
+Kein vollständiges Audit aller vendorten Bibliotheken oder Windows-Implementierungen.
+
+**Parallele Arbeit:** Der Nutzer bestätigte laufende Änderungen an
+`src/record/session.rs`. Dieser Pfad wurde nicht bearbeitet. Alle Builds und Tests
+dieser Vertiefung liefen im separaten Archiv-Snapshot
+`/tmp/boltsnap-deep-review-20260925-7KTRFG`, mit eigenem Target-Verzeichnis.
+Ausgangsbasis war `a430ceb`; nach dem konkurrierenden Commit wurde die feststehende
+Revision `cf243b5` übernommen. Die neuen Stop-/Reaper-Pfade wurden mitgelesen und
+deren vier Tests mitgeprüft. Kein Test gegen bewegliche gemeinsame Build-Eingaben.
+Der gsr-Saved-Path-Fast-Path ist jetzt implementiert; reale Stop-Latenz und
+Recorder-/Cursor-Abnahme wurden hier nicht gemessen.
+
+| Prüfung | Ergebnis und Grenze |
+| --- | --- |
+| `cargo fmt --check`, `cargo test --locked -j 4` auf unverändertem Snapshot `cf243b5` | Grün: 23 Library- und 303 Binary-Tests, zwei standardmäßig ignoriert |
+| Zusätzliche Rust-Repros G2/G3 im Snapshot | Zwei erwartete Fehler; keine Änderung am Produktcode im Arbeitsverzeichnis |
+| Worker `cargo build --locked -j 4` im Snapshot | Debug-Build erfolgreich; bestehende Warnung zu unbenutztem `output_setup` |
+| Synthetischer Freeze/EOF/Save-Repro G5 mit diesem Worker | Save erfolgreich, Statusassertion erwartungsgemäß rot; keine Desktop-Aufnahme |
+| G1/G4 und H1 | Code-/Manifestbelege; keine Live-Race, FD-Erschöpfung oder Nix-Ausführung |
+| Dokumentation und Review-Artefakte | `git diff --check`, lokale Markdown-Ziele/Anker und Python-Syntax geprüft; Rust-Repro-Patch formatiert und erneut mit denselben zwei erwarteten Fehlern ausgeführt |
+
+Reproduzierbare Review-Artefakte sind versionierbar neben diesem Plan:
+[Rust-Repros](2026-09-25-deep-review-repros.patch) und
+[synthetischer Freeze-Repro](2026-09-25-replay-freeze-repro.py).
+Der Patch wird ausschließlich auf einen separaten Checkout von `cf243b5`
+angewendet. Dort `cargo test --locked --bin boltsnap deep_review_ -- --nocapture`
+ausführen. Der Python-Repro benötigt FFmpeg mit libx264 und den separat gebauten
+Worker: `python3 docs/plans/2026-09-25-replay-freeze-repro.py --worker /absoluter/pfad/boltsnap-replay-worker`.
+Beide Aufrufe sollen vor den Fixes fehlschlagen. Sie sind Belegmaterial, noch
+keine in die reguläre Testsuite aufgenommenen Regressionstests.
+
+Logs liegen im Snapshot als `cf243b5-tests.log`, `repros.log`,
+`repros-formatted.log`, `worker-build.log` und `freeze-repro.log`.
+Der Freeze-Repro behält seine generierten Medien und
+`report.json` unter `/tmp/boltsnap-freeze-review-mxr8cus4`. Keine dieser lokalen
+Ausgabedateien ist Bestandteil des Repositories. Die Fixes bleiben geplant;
+grüne bestehende Tests widerlegen die zusätzlich nachgewiesenen Lücken nicht.

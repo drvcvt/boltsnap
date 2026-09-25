@@ -5,6 +5,9 @@ Boltsnap's Linux screenshot backend now uses our independent Rust library
 the unpublished source is included in `vendor/libway` to keep normal checkouts,
 CI and Nix builds self-contained. [Snapshot workflow](../vendor/README.md).
 
+The dated validation below records the integration revision. Current Boltsnap
+test results and later changes are tracked in the [codebase inventory](codebase.md).
+
 Full screenshots, active-window regions and the frozen desktop used by the area
 and window selectors use CPU SHM frames. EXT image-copy-capture with an output
 capture source is preferred; WLR screencopy is selected when EXT is unavailable

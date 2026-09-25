@@ -1,0 +1,49 @@
+--- a/src/platform/linux/paths.rs
++++ b/src/platform/linux/paths.rs
+@@ -428,3 +428,14 @@
+         let _ = fs::remove_dir_all(dir);
+     }
+ }
++
++#[cfg(test)]
++mod deep_review_repros {
++    #[test]
++    fn deep_review_remux_partial_is_an_orphan_candidate() {
++        // export::create_partial appends PID/sequence/.partial to clip-*.mkv.
++        assert!(super::is_orphan_rec_file(
++            "clip-123-456-1.mkv.123.0.partial"
++        ));
++    }
++}
+--- a/src/platform/linux/replay/process.rs
++++ b/src/platform/linux/replay/process.rs
+@@ -119,3 +119,29 @@
+         assert!(started.elapsed() < Duration::from_secs(2));
+     }
+ }
++
++#[cfg(test)]
++mod deep_review_repros {
++    use std::process::Command;
++    use std::time::{Duration, Instant};
++
++    #[test]
++    fn deep_review_probe_deadline_includes_inherited_output_pipes() {
++        // The shell exits promptly; its finite child keeps stdout/stderr open.
++        // No existing process is signalled and no file is deleted.
++        let started = Instant::now();
++        let result = super::output(
++            Command::new("sh").args(["-c", "sleep 1.2 & exit 0"]),
++            Duration::from_millis(40),
++        );
++        let elapsed = started.elapsed();
++        eprintln!(
++            "deadline=40ms elapsed={elapsed:?} result_ok={}",
++            result.is_ok()
++        );
++        assert!(
++            elapsed < Duration::from_millis(300),
++            "pipe reads outlive deadline: {elapsed:?}"
++        );
++    }
++}

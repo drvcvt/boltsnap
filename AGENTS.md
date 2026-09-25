@@ -13,6 +13,17 @@ These rules apply to the whole repository.
 - Keep each change limited to one capability; do not perform unrelated platform
   refactors.
 
+## Review findings and fix plans
+
+- Always write review issues to a versioned file under `docs/plans/`, not only
+  to chat or ignored review artifacts. Extend the relevant existing plan.
+- For each issue, record priority, trigger/impact, code evidence and whether it
+  was reproduced. Investigate a concrete fix and document its tradeoffs.
+- Plan the implementation in the same file: affected files/callers, ordered
+  changes, dependencies, regression checks and any remaining live validation.
+- Keep decisions, implementation status and checks actually run up to date.
+  Link the codebase inventory to that plan; do not treat a proposal as a fix.
+
 ## Platform boundary
 
 Boltsnap supports Linux and retains an unmaintained experimental Windows

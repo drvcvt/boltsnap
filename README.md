@@ -128,7 +128,7 @@ nix-shell                                  # uses shell.nix
 cargo build --release
 ```
 
-The flake bakes RPATH so the binary finds wayland, libxkbcommon, vulkan-loader,
+The flake bakes RPATH so the binary finds wayland, libxkbcommon,
 libGL, libdrm, libgbm and the xorg stack from the nix store at runtime.
 
 **Don't run a `cargo build`'d binary directly on NixOS.** Errors like
@@ -269,12 +269,17 @@ header, then the payload.
 
 - `{"cmd":"add","source":"…","output":"DP-1"}` with PNG bytes as payload.
 - `{"cmd":"add_video","path":"/abs/clip.mp4","source":"…","output":"DP-1"}`
-  with no payload. The shelf keeps its own copy of the file and answers with a
+  with no payload. The shelf imports the file into its cache and answers with a
   frame whose header is `{"ok":true,"path":"…"}` (or `"ok":false` with an
   `"error"`). Linux only; the unmaintained Windows backend answers with an
   error.
 
 `output` is optional and picks the monitor the shelf appears on.
+
+Video import currently uses a hard link when possible, otherwise a copy.
+Pass a regular file, not a symlink, and do not modify its contents after import:
+a hard-linked cache entry shares those contents. See the
+[known save/import issues](docs/codebase.md#open-review-findings).
 
 Flags still work: `--copy` also copies to the clipboard on capture, `-o PATH`
 / `--save` write a file (no shelf), and `-o -` streams PNG to stdout. **X11 is
@@ -343,8 +348,10 @@ The recording controls offer:
 - **Discard** — stop the recorder, remove its cache segments, and create no card
   or permanent file.
 
-A single uninterrupted recording is moved directly and skips FFmpeg at save
-time. Separate dual-monitor mode creates one native-resolution clip per output.
+A single MP4 segment is moved directly and skips FFmpeg at save time.
+GPU Screen Recorder produces Matroska segments, so even an uninterrupted
+recording is remuxed to MP4 with FFmpeg without re-encoding.
+Separate dual-monitor mode creates one native-resolution clip per output.
 Combined mode arranges both outputs like the Hyprland layout. With GPU Screen
 Recorder, equal output scales and a layout up to 4096 pixels per side it records
 them as one stream, so saving only remuxes; otherwise (or with wf-recorder) each
@@ -352,8 +359,11 @@ output is recorded separately
 and composed on save, the only ordinary path that re-encodes, with
 high-quality settings intended to be visually lossless. The composed canvas
 uses the highest output scale; with a hardware encoder it shrinks to at most
-4096 pixels per side, the H.264 limit. Failed saves keep their source segments so they can be
-retried or discarded instead of losing the recording.
+4096 pixels per side, the H.264 limit. Failed finalization retains recoverable
+files, which may already be remuxed or composed. After a failed multi-stream
+Combined save, retry Save before resuming: Resume currently mixes the composed
+recovery with new output segments and the next save fails. Other outstanding
+save issues are listed in the [codebase inventory](docs/codebase.md#open-review-findings).
 
 Video cards carry a **▶** badge; on Linux, clicking one opens the video in the
 desktop default app. Right-click copies its file reference.
@@ -389,8 +399,9 @@ move after about 0.5 s), quick follows closely (about 0.11 s). The arrow is
 rasterized at four times the video resolution and area-filtered per pixel, so
 it stays sharp at subpixel positions and in motion. The cursor is part of the video, so saving only remuxes, as
 with the system cursor. Single outputs, areas, both outputs (Separate and
-Combined) and the replay buffer are covered; across two outputs the cursor
-glides over the border. Scaled outputs work: positions are logical and the
+Combined) and the replay buffer are covered. At a monitor boundary the cursor
+can snap if the old tracker reports Leave before the new tracker reports Enter.
+Scaled outputs work: positions are logical and the
 arrow grows with the scale (checked on Hyprland at 1.5).
 
 Build the plugin and put it beside the `boltsnap` binary (packaged installs may
@@ -400,6 +411,9 @@ use `../lib/boltsnap/` relative to it):
 cargo build --release --locked --manifest-path src/platform/linux/gsr_cursor/Cargo.toml
 cp src/platform/linux/gsr_cursor/target/release/libboltsnap_gsr_cursor.so ~/.cargo/bin/
 ```
+
+The Nix package includes the plugin. The current tarball and Debian packaging
+do not; those installations need the separate plugin build for smooth cursor modes.
 
 Beside each recorded clip `X.mp4` Boltsnap keeps `X.cursor.json` (raw pointer
 samples in clip pixels, format `boltsnap.cursor` v1, `cursor_in_video: true`,
@@ -498,6 +512,10 @@ Audio sources follow the current default sink and microphone. Per-device
 pickers and volume controls are intentionally left to the desktop audio mixer.
 
 ## Contributing
+
+Start with the [codebase inventory](docs/codebase.md) for runtime entry points,
+separate builds, current verification and open review findings. Dated performance
+reports below preserve measurements from their stated revisions.
 
 The Linux performance changes and their local validation are recorded in
 [the performance report](docs/performance.md). The subsequent screenshot,

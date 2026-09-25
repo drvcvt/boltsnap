@@ -31,10 +31,12 @@ Verbindliche Grundsätze:
 
 ## Implementierungsstand
 
-Phasen 0 bis 4 sind für den Windows-MVP umgesetzt. Phase 5 ist bis auf
-Multi-Monitor-Recording und den Live-Watch-Stream umgesetzt.
+Der experimentelle Code deckt wesentliche Laufzeitpfade der Phasen 0 bis 5
+ab. Das ist keine vollständige Phasenabnahme: Geräte-, Fehlerfall- und
+Windows-Smoke-Tests bleiben offen. Aktuelle Module und Linux-Prüfergebnisse
+stehen im [Codebase-Inventar](docs/codebase.md).
 
-Umgesetzt:
+Im Code integriert:
 
 - `src/lib.rs` als plattformneutral testbarer gemeinsamer Kern
 - portable IPC-Typen und Binärframing in `src/protocol.rs`
@@ -44,12 +46,13 @@ Umgesetzt:
 - unveränderter Linux-IPC-Transport in `src/platform/linux/ipc.rs`
 - nativer Windows-Named-Pipe-Client in `src/platform/windows/ipc.rs`
 - gemeinsame, Linux- und Windows-spezifische Cargo-Abhängigkeiten getrennt
-- alle Linux-Betriebssystemmodule unter `src/platform/linux/` eingeordnet
+- Linux-Plattformadapter unter `src/platform/linux/`; ältere Linux-gegatete
+  Recording-Module liegen weiterhin unter `src/record/`
 - Windows-Pfade über Known Folders und native Prozesshilfen implementiert
 - Bild-Clipboard über die native Windows-Zwischenablage implementiert
 - gemeinsames Shelf-, Selector- und Bild-Rendering ohne Design-Fork übernommen
-- Windows-Binary, Doctor, Self-Test und gemeinsames Shelf-Debug-Rendering lauffähig
-- Windows-Gesamttests und plattformneutrale Protokolltests erfolgreich
+- Windows-Binary, Doctor, Self-Test und gemeinsames Shelf-Debug-Rendering vorhanden
+- Windows-Unit-Tests in CI registriert; kein aktueller lokaler Windows-Testnachweis
 - DXGI-Capture für Monitor, virtuellen Desktop und Regionen mit GDI-Fallback
 - Windows Graphics Capture für Fenster, aktive Fenster und Videoaufnahmen
 - nativer Selector, Shelf, Recording-Controls und Tray mit gemeinsamem Rendering
@@ -83,56 +86,14 @@ Noch offen:
 - Tray-Menü-Sprache angleichen (Windows deutsch, Linux englisch)
 - HDR-Tonemapping, Hotplug/RDP/Sleep-Wake-Härtung und ARM64-Gerätetests
 - Code Signing, automatischer Updatepfad und vollständige Windows-10/11-Testmatrix
-- Linux-Gesamttests in einer Linux-Umgebung ausführen
 
 ## Repository-Struktur
 
-```text
-src/
-├── main.rs
-├── config.rs
-├── image.rs
-├── protocol.rs
-├── selector/
-│   ├── mod.rs
-│   ├── edit.rs
-│   └── render.rs
-├── shelf/
-│   ├── mod.rs
-│   ├── model.rs
-│   ├── layout.rs
-│   ├── paint.rs
-│   ├── thumbnail.rs
-│   └── recording.rs
-├── record/
-│   ├── mod.rs
-│   ├── session.rs
-│   └── finalize.rs
-└── platform/
-    ├── mod.rs
-    ├── linux/
-    │   ├── mod.rs
-    │   ├── capture.rs
-    │   ├── clipboard.rs
-    │   ├── window.rs
-    │   ├── ipc.rs
-    │   ├── paths.rs
-    │   ├── tray.rs
-    │   ├── recording.rs
-    │   ├── audio.rs
-    │   └── process.rs
-    └── windows/
-        ├── mod.rs
-        ├── capture.rs
-        ├── clipboard.rs
-        ├── window.rs
-        ├── ipc.rs
-        ├── paths.rs
-        ├── tray.rs
-        ├── recording.rs
-        ├── audio.rs
-        └── process.rs
-```
+Die aktuelle Dateizuordnung steht im [Codebase-Inventar](docs/codebase.md#runtime-and-build-owners).
+Die frühere Zielstruktur an dieser Stelle enthielt nicht vorhandene Module
+wie `platform/linux/recording.rs` und `platform/*/window.rs`; sie war kein
+Abbild des implementierten Baums. Linux-Lifecycle und Finalisierung liegen
+weiterhin Linux-gegatet unter `src/record/`.
 
 `src/platform/mod.rs` ist die einzige zentrale Auswahlstelle:
 
@@ -370,7 +331,7 @@ strikt getrennt:
 
 ```toml
 [target.'cfg(target_os = "linux")'.dependencies]
-libwayshot = "..."
+libway = { path = "vendor/libway" }
 wayland-client = "..."
 x11rb = "..."
 ksni = "..."

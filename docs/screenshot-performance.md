@@ -4,6 +4,14 @@ Ausgangspunkt: `398e44e`. Optimierung von Bildkopien, Bildübergabe,
 Selector-Rendering und Startaufwand, ergänzt um kompaktere Selector-Elemente
 mit größerer Schrift.
 
+Einordnung vom 25.09.: Die Messwerte unten bleiben historische Ergebnisse.
+Seit der [libway-Integration](libway.md) ist libwayshot ersetzt; die damalige
+Ablehnung einer eigenen Capture-Library und des libwayshot-Shortcuts beschreibt
+den Stand vom 21.09. Aktuelle Architektur und Validierung stehen im
+[Codebase-Inventar](codebase.md). Beim später ergänzten `add_thumb`-Fallback
+ist außerdem C1 offen: Ein abgebrochenes ACK kann einen doppelten Import
+auslösen; der erfolgreiche Alt-Daemon-Test schließt diesen Fehler nicht aus.
+
 ## Aktiv im normalen Linux-Pfad
 
 - Capture übernimmt vorhandene RGBA-Puffer mit `into_rgba8`.

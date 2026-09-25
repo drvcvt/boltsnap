@@ -4,6 +4,11 @@ Die Änderungen betreffen den Linux-Pfad. Das vorhandene Arbeitsverzeichnis
 enthielt bereits Replay- und Portal-Arbeit; diese wurde beibehalten. Der laufende
 Daemon und die Benutzerkonfiguration wurden für diese Prüfung nicht ersetzt.
 
+Historischer Messbericht: Spätere Selector-Schadensverwaltung und PNG-Thumbnail-
+Übergabe stehen im [Screenshot-Bericht](screenshot-performance.md), geteilte
+GOP-Deskriptoren im [Snapshot-Bericht](recording-smoothing.md). Den aktuellen
+Modul- und Prüfstand führt das [Codebase-Inventar](codebase.md).
+
 ## Implementiert
 
 - **Screenshot-Eingang:** höchstens 16 laufende oder wartende Client-Aufträge,
