@@ -343,8 +343,29 @@ pub fn draw_recording_popup(
     elapsed: &str,
     font: &FontVec,
 ) {
-    draw_recording_popup_with(canvas, w, h, state, enabled, false, elapsed, font);
+    draw_recording_popup_with(
+        canvas,
+        w,
+        h,
+        state,
+        enabled,
+        false,
+        PopupHints::default(),
+        elapsed,
+        font,
+    );
 }
+
+/// Linux popup extras; the frozen Windows shell draws without them.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PopupHints {
+    /// Discard waits for a second press; its button asks for it.
+    pub discard_armed: bool,
+    /// Show each button's key under its label.
+    pub keys: bool,
+}
+
+const HINT_RGB: (u8, u8, u8) = (150, 150, 160);
 
 /// `recovery`: saving failed; the title says so and Resume is dimmed.
 #[allow(clippy::too_many_arguments)]
@@ -355,6 +376,7 @@ pub fn draw_recording_popup_with(
     state: crate::record::session::PublicRecordingState,
     enabled: bool,
     recovery: bool,
+    hints: PopupHints,
     elapsed: &str,
     font: &FontVec,
 ) {
@@ -406,7 +428,7 @@ pub fn draw_recording_popup_with(
     } else {
         0.45
     };
-    for ((x, y, bw, bh), label, destructive, inert) in [
+    for ((x, y, bw, bh), label, key, destructive, inert) in [
         (
             pause_resume_rect(),
             if state == PublicRecordingState::Paused {
@@ -414,12 +436,23 @@ pub fn draw_recording_popup_with(
             } else {
                 "PAUSE"
             },
+            "SPACE",
             false,
             recovery,
         ),
-        (save_shelf_rect(), "SHELF SAVE", false, false),
-        (save_disk_rect(), "DISK SAVE", false, false),
-        (discard_rect(), "DISCARD", true, false),
+        (save_shelf_rect(), "SHELF SAVE", "ENTER", false, false),
+        (save_disk_rect(), "DISK SAVE", "D", false, false),
+        (
+            discard_rect(),
+            if hints.discard_armed {
+                "CONFIRM"
+            } else {
+                "DISCARD"
+            },
+            "DEL",
+            true,
+            false,
+        ),
     ] {
         let alpha = if inert { 0.45 } else { button_alpha };
         fill_round_rect(canvas, w, h, x, y, bw, bh, 10.0, IND_BTN_BG, alpha);
@@ -430,17 +463,32 @@ pub fn draw_recording_popup_with(
         };
         let text_px = 14.0;
         let scaled = font.as_scaled(PxScale::from(text_px));
+        let lift = if hints.keys { 7.0 } else { 0.0 };
         draw_font_text(
             canvas,
             w,
             h,
             font,
             x + (bw - text_width(font, label, text_px)) / 2.0,
-            y + bh / 2.0 + (scaled.ascent() + scaled.descent()) / 2.0,
+            y + bh / 2.0 + (scaled.ascent() + scaled.descent()) / 2.0 - lift,
             label,
             text_px,
             color,
         );
+        if hints.keys {
+            let key_px = 10.0;
+            draw_font_text(
+                canvas,
+                w,
+                h,
+                font,
+                x + (bw - text_width(font, key, key_px)) / 2.0,
+                y + bh / 2.0 + 15.0,
+                key,
+                key_px,
+                HINT_RGB,
+            );
+        }
     }
 }
 
@@ -1008,6 +1056,49 @@ mod tests {
         // Centre is transparent (interior not captured into the video).
         let mid = (((h / 2) * w + w / 2) * 4) as usize;
         assert_eq!(buf[mid + 3], 0, "marker interior must stay transparent");
+    }
+
+    #[test]
+    fn popup_hints_and_armed_discard_change_the_buttons() {
+        use crate::record::session::PublicRecordingState;
+        use crate::shelf::recording::{POPUP_H, POPUP_W, discard_rect};
+
+        let font = crate::shelf::font::fallback_popup_font();
+        let draw = |hints: PopupHints| {
+            let mut buf = vec![0u8; (POPUP_W * POPUP_H * 4) as usize];
+            draw_recording_popup_with(
+                &mut buf,
+                POPUP_W,
+                POPUP_H,
+                PublicRecordingState::Recording,
+                true,
+                false,
+                hints,
+                "01:23",
+                &font,
+            );
+            buf
+        };
+        let (x, y, w, h) = discard_rect();
+        let cell = |buf: &[u8]| {
+            (y as u32..(y + h) as u32)
+                .flat_map(|py| {
+                    let start = ((py * POPUP_W + x as u32) * 4) as usize;
+                    buf[start..start + (w as usize) * 4].to_vec()
+                })
+                .collect::<Vec<_>>()
+        };
+        let plain = draw(PopupHints::default());
+        let armed = draw(PopupHints {
+            discard_armed: true,
+            keys: false,
+        });
+        let keys = draw(PopupHints {
+            discard_armed: false,
+            keys: true,
+        });
+        assert_ne!(cell(&plain), cell(&armed));
+        assert_ne!(cell(&plain), cell(&keys));
     }
 
     #[test]

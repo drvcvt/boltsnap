@@ -89,6 +89,18 @@ wechselt. „Clip fullscreen to shelf“ ist nur bei laufendem Replay aktiv. Tes
 für Einträge, Clip-Sperre und Einfärbung; ob die Tray-Leiste (Waybar) das neue
 Icon sofort zeigt, ist live offen.
 
+**V2 umgesetzt:** Klick und Taste laufen über `press_popup_button`
+(`shelf/mod.rs`). Tasten nur bei offenem Popup: Space, Enter/KP_Enter, d/D,
+Delete/KP_Delete (`popup_key_button`), Esc schließt wie bisher. Discard
+schaltet beim ersten Druck auf CONFIRM und verwirft erst bei einem zweiten
+innerhalb von 3 s (`DISCARD_CONFIRM`); jeder andere Button und Esc entschärfen,
+`tick_recording` zeichnet nach Ablauf neu. SCTK 0.19 liefert über
+`get_keyboard(.., None)` keine Tastenwiederholung, Gedrückthalten bestätigt
+also nicht. `paint::PopupHints` zeichnet Tastennamen unter die Labels; die
+Windows-Shell ruft weiter `draw_recording_popup` ohne Hinweise, Signatur
+unverändert. Tests: Tastenzuordnung, Bestätigungsfenster, Pixel der Hinweise
+und des CONFIRM-Zustands. Live offen.
+
 Risiken: V2/V3 berühren mit Windows geteilte Shelf-Dateien (alte Signaturen
 behalten wie bei E1). V7 muss auf anderen Compositors auf die Bereichsauswahl
 zurückfallen. V8: ein alter Worker ignoriert das neue Feld und würde still den
@@ -103,3 +115,4 @@ Nutzer-Entscheidung 26.09.: K1 und K2 zusammen, danach V1 und V2.
 | K1 | umgesetzt, live offen |
 | K2 | umgesetzt |
 | V1 | umgesetzt, live offen |
+| V2 | umgesetzt, live offen |

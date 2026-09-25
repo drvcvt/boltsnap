@@ -131,6 +131,8 @@ pub struct Daemon {
     popup: Option<LayerSurface>,
     popup_pool: Option<SlotPool>,
     popup_font: ab_glyph::FontVec,
+    /// First Discard press; a second one within `DISCARD_CONFIRM` discards.
+    discard_armed: Option<std::time::Instant>,
     /// `ui_font` the popup font was loaded for; `None` before the first load.
     popup_font_family: Option<Option<String>>,
     popup_configured: bool,
@@ -1233,6 +1235,7 @@ pub fn run_daemon(save_dir_cli: Option<std::path::PathBuf>) -> DynResult<()> {
         popup: None,
         popup_pool: None,
         popup_font: font::fallback_popup_font(),
+        discard_armed: None,
         popup_font_family: None,
         popup_configured: false,
         watchers: Vec::new(),
@@ -2653,6 +2656,10 @@ impl Daemon {
             state,
             enabled,
             recovery,
+            crate::shelf::paint::PopupHints {
+                discard_armed: self.discard_armed.is_some(),
+                keys: true,
+            },
             &elapsed,
             &self.popup_font,
         );
@@ -2712,7 +2719,13 @@ impl Daemon {
             self.stop_children(AfterStop::Recover(error), children);
         }
         let snapshot = self.recording_snapshot();
-        if snapshot != self.last_recording_snapshot {
+        let discard_expired = self
+            .discard_armed
+            .is_some_and(|at| !discard_confirmed(Some(at), std::time::Instant::now()));
+        if discard_expired {
+            self.discard_armed = None;
+        }
+        if snapshot != self.last_recording_snapshot || discard_expired {
             self.draw_popup();
             self.publish_recording_snapshot();
         }
@@ -3352,27 +3365,71 @@ impl Daemon {
         let Some(session) = self.recording.as_ref() else {
             return;
         };
-        let action = match crate::shelf::recording::popup_hit_with(
+        if let Some(button) = crate::shelf::recording::popup_hit_with(
             session.public_state(),
             session.actions_enabled(),
             session.resume_blocked,
             pos.0,
             pos.1,
         ) {
-            Some(PopupButton::PauseResume)
-                if session.public_state() == PublicRecordingState::Paused =>
-            {
+            self.press_popup_button(button);
+        }
+    }
+
+    /// A popup button pressed by click or key. Discard only acts on a second
+    /// press within `DISCARD_CONFIRM`; any other button disarms it.
+    fn press_popup_button(&mut self, button: PopupButton) {
+        let Some(session) = self.recording.as_ref() else {
+            return;
+        };
+        let state = session.public_state();
+        if !session.actions_enabled()
+            || matches!(
+                state,
+                PublicRecordingState::Idle | PublicRecordingState::Finalizing
+            )
+            || (button == PopupButton::PauseResume && session.resume_blocked)
+        {
+            return;
+        }
+        let now = std::time::Instant::now();
+        let confirmed = discard_confirmed(self.discard_armed.take(), now);
+        let action = match button {
+            PopupButton::PauseResume if state == PublicRecordingState::Paused => {
                 RecordingAction::Resume
             }
-            Some(PopupButton::PauseResume) => RecordingAction::Pause,
-            Some(PopupButton::SaveShelf) => RecordingAction::SaveShelf,
-            Some(PopupButton::SaveDisk) => RecordingAction::SaveDisk,
-            Some(PopupButton::Discard) => RecordingAction::Discard,
-            None => return,
+            PopupButton::PauseResume => RecordingAction::Pause,
+            PopupButton::SaveShelf => RecordingAction::SaveShelf,
+            PopupButton::SaveDisk => RecordingAction::SaveDisk,
+            PopupButton::Discard if confirmed => RecordingAction::Discard,
+            PopupButton::Discard => {
+                self.discard_armed = Some(now);
+                self.draw_popup();
+                return;
+            }
         };
         if let Some(qh) = self.qh.clone() {
             let _ = self.handle_recording_action(action, &qh);
         }
+        self.draw_popup();
+    }
+}
+
+const DISCARD_CONFIRM: std::time::Duration = std::time::Duration::from_secs(3);
+
+fn discard_confirmed(armed: Option<std::time::Instant>, now: std::time::Instant) -> bool {
+    armed.is_some_and(|at| now.saturating_duration_since(at) < DISCARD_CONFIRM)
+}
+
+/// Popup keys: Space pauses or resumes, Enter saves to the shelf, D to disk,
+/// Delete discards (with confirmation).
+fn popup_key_button(keysym: Keysym) -> Option<PopupButton> {
+    match keysym {
+        Keysym::space => Some(PopupButton::PauseResume),
+        Keysym::Return | Keysym::KP_Enter => Some(PopupButton::SaveShelf),
+        Keysym::d | Keysym::D => Some(PopupButton::SaveDisk),
+        Keysym::Delete | Keysym::KP_Delete => Some(PopupButton::Discard),
+        _ => None,
     }
 }
 
@@ -3698,8 +3755,14 @@ impl KeyboardHandler for Daemon {
         _: u32,
         event: KeyEvent,
     ) {
+        if self.popup.is_none() {
+            return;
+        }
         if event.keysym == Keysym::Escape {
+            self.discard_armed = None;
             self.remove_popup();
+        } else if let Some(button) = popup_key_button(event.keysym) {
+            self.press_popup_button(button);
         }
     }
     fn release_key(
@@ -3880,6 +3943,38 @@ delegate_registry!(Daemon);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn popup_keys_map_to_their_buttons() {
+        assert_eq!(
+            popup_key_button(Keysym::space),
+            Some(PopupButton::PauseResume)
+        );
+        assert_eq!(
+            popup_key_button(Keysym::Return),
+            Some(PopupButton::SaveShelf)
+        );
+        assert_eq!(
+            popup_key_button(Keysym::KP_Enter),
+            Some(PopupButton::SaveShelf)
+        );
+        assert_eq!(popup_key_button(Keysym::d), Some(PopupButton::SaveDisk));
+        assert_eq!(popup_key_button(Keysym::D), Some(PopupButton::SaveDisk));
+        assert_eq!(popup_key_button(Keysym::Delete), Some(PopupButton::Discard));
+        assert_eq!(popup_key_button(Keysym::x), None);
+        assert_eq!(popup_key_button(Keysym::Escape), None);
+    }
+
+    #[test]
+    fn discard_needs_a_second_press_in_time() {
+        let now = std::time::Instant::now();
+        assert!(!discard_confirmed(None, now));
+        assert!(discard_confirmed(
+            Some(now),
+            now + std::time::Duration::from_secs(2)
+        ));
+        assert!(!discard_confirmed(Some(now), now + DISCARD_CONFIRM));
+    }
     use std::io::{Read, Write};
     use std::time::{Duration, Instant};
 

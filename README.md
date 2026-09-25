@@ -350,7 +350,11 @@ The recording controls offer:
   enabled, the shelf card references that same permanent file; it does not make
   a second copy, and dismissing the card never deletes the disk file.
 - **Discard** — stop the recorder, remove its cache segments, and create no card
-  or permanent file.
+  or permanent file. On Linux the button first asks CONFIRM; a second press
+  within three seconds discards.
+
+On Linux the open controls also take keys: Space pauses or resumes, Enter saves
+to the shelf, D saves to disk, Delete discards (twice), Esc closes them.
 
 A single MP4 segment is moved directly and skips FFmpeg at save time.
 GPU Screen Recorder produces Matroska segments, so even an uninterrupted
