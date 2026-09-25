@@ -573,7 +573,7 @@ fn capture_flow(args: &Args) -> DynResult<()> {
             fs::write(&output, &png)?;
             copy_temporary_capture(&output, resolved)?;
         }
-        crate::paths::publish_last_png(&png)?;
+        let last = crate::paths::publish_last_png(&png)?;
         send_shelf_add(crate::ipc::Request::Add {
             source: mode.label().into(),
             png,
@@ -583,7 +583,8 @@ fn capture_flow(args: &Args) -> DynResult<()> {
                 height: thumb.height(),
                 rgba: thumb.into_raw(),
             }),
-        })?;
+        })
+        .map_err(|error| format!("{error}; the screenshot is kept at {}", last.display()))?;
         println!(
             "Boltsnap sent {} to shelf{}",
             mode.label(),

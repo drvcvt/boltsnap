@@ -419,6 +419,8 @@ Bestätigt vom User (2026-09-24): 1 (a), 2 (a), 3 (a), 4 (b) erst messen,
   5-6 Läufen).
 - A3-Messung siehe Abschnitt A3: Datei fertig 9-19 ms nach SIGINT, Exit nach
   162-210 ms.
+- B1: Der Rückfall auf `add` wurde am 25.09. mit Review-Fix C1 entfernt (ein
+  abgebrochenes ACK importierte doppelt). Stand bei B1:
 - B1: CLI-Thumbnail live 3,1 ms (`card_thumbnail`). Rückfall live gegen den
   Daemon von `c50adfe` geprüft: `bad request: unknown cmd: Some("add_thumb")`,
   danach normales `add`, Karte kam an. Der alte Weg kostete dabei

@@ -8,9 +8,9 @@ Einordnung vom 25.09.: Die Messwerte unten bleiben historische Ergebnisse.
 Seit der [libway-Integration](libway.md) ist libwayshot ersetzt; die damalige
 Ablehnung einer eigenen Capture-Library und des libwayshot-Shortcuts beschreibt
 den Stand vom 21.09. Aktuelle Architektur und Validierung stehen im
-[Codebase-Inventar](codebase.md). Beim später ergänzten `add_thumb`-Fallback
-ist außerdem C1 offen: Ein abgebrochenes ACK kann einen doppelten Import
-auslösen; der erfolgreiche Alt-Daemon-Test schließt diesen Fehler nicht aus.
+[Codebase-Inventar](codebase.md). Den später ergänzten `add_thumb`-Rückfall
+auf `add` hat C1 wieder entfernt: Ein abgebrochenes ACK löste damit einen
+doppelten Import aus.
 
 ## Aktiv im normalen Linux-Pfad
 
@@ -45,8 +45,10 @@ auslösen; der erfolgreiche Alt-Daemon-Test schließt diesen Fehler nicht aus.
   voll zu dekodieren; gemessen kostete der alte Weg `shelf_png_prepare` 21,5 ms
   bei 3840x1080. Ein Thumbnail wird nur vom eigenen User und nur in Kartengröße
   angenommen, sonst dekodiert der Daemon wie bisher. Ein älterer Daemon verwirft
-  `add_thumb` ohne Nebenwirkung und schließt; das CLI schickt dann ein normales
-  `add` (live gegen den Daemon von `c50adfe` geprüft). Plan:
+  `add_thumb` ohne Nebenwirkung und schließt. Seit C1 (25.09.) schickt das CLI
+  dann kein zweites `add` mehr, sondern meldet eine fehlende Antwort und den
+  Pfad von `last.png`; ein älterer Daemon braucht nach dem Install einen
+  Neustart. Plan:
   [2026-09-24-performance-save-and-screenshot.md](plans/2026-09-24-performance-save-and-screenshot.md), B1.
 
 ## Selector-UI
