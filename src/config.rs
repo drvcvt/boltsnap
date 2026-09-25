@@ -241,6 +241,14 @@ impl Config {
         }
     }
 
+    /// Like `load`, but `None` when the file is missing or does not parse, so
+    /// a half-edited file never replaces known settings with defaults.
+    pub fn load_valid() -> Option<Config> {
+        let text = std::fs::read_to_string(config_path()).ok()?;
+        toml::from_str::<toml::Value>(&text).ok()?;
+        Some(Config::parse(&text))
+    }
+
     /// Recordings at least this long are saved permanently to `record_dir` even
     /// when saved to the shelf (they still get a shelf card), and stop counting
     /// toward the temporary cache quota once they reach it. Default 60 s; 0

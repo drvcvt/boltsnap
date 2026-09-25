@@ -110,8 +110,8 @@ pub struct Daemon {
     width: u32,
     height: u32,
     hovered: Option<u64>,
-    /// Directory the Save button writes to (config/flag/default).
-    save_dir: std::path::PathBuf,
+    /// `--save-dir`; otherwise the Save button follows the config at save time.
+    save_dir_cli: Option<std::path::PathBuf>,
     /// Card id + start time of the transient ✓ "saved" flash on its Save button.
     save_flash: Option<(u64, std::time::Instant)>,
     /// When the shelf's last animation frame callback was requested.
@@ -147,6 +147,8 @@ pub struct Daemon {
     persisted_recording_prefs: crate::config::RecordingPrefs,
     prefs_generation: u64,
     persisted_prefs_generation: u64,
+    /// Newest write that finished, successfully or not.
+    settled_prefs_generation: u64,
     prefs_writer: PrefsWriter,
     tray: Option<crate::tray::TrayPublisher>,
     /// Whether the replay buffer is capturing, for the tray's on/off entry.
@@ -1182,7 +1184,6 @@ pub fn run_daemon(save_dir_cli: Option<std::path::PathBuf>) -> DynResult<()> {
 
     let cfg = LayoutConfig::default();
     let config = crate::config::Config::load();
-    let save_dir = crate::config::resolve_save_dir(save_dir_cli.as_deref(), &config);
     let recording_prefs = config.recording_prefs();
     let (event_tx, event_rx) = calloop::channel::channel::<DaemonEvent>();
     let prefs_writer = PrefsWriter::spawn(event_tx.clone());
@@ -1216,7 +1217,7 @@ pub fn run_daemon(save_dir_cli: Option<std::path::PathBuf>) -> DynResult<()> {
         width: 1,
         height: 1,
         hovered: None,
-        save_dir,
+        save_dir_cli,
         save_flash: None,
         frame_requested: None,
         saves: save::CardSaves::default(),
@@ -1247,6 +1248,7 @@ pub fn run_daemon(save_dir_cli: Option<std::path::PathBuf>) -> DynResult<()> {
         recording_prefs,
         prefs_generation: 0,
         persisted_prefs_generation: 0,
+        settled_prefs_generation: 0,
         prefs_writer,
         tray: None,
         replay_running: None,
@@ -1490,6 +1492,28 @@ impl Daemon {
         }
     }
 
+    /// Adopt edits to the config file made since the daemon read it, by hand or
+    /// by the selector process. An own write still in flight is newer than the
+    /// file, so the refresh waits for it.
+    fn refresh_recording_prefs(&mut self) {
+        if self.settled_prefs_generation != self.prefs_generation {
+            return;
+        }
+        let Some(prefs) = crate::config::Config::load_valid().map(|c| c.recording_prefs()) else {
+            return;
+        };
+        if prefs == self.recording_prefs {
+            return;
+        }
+        let show_frame_changed = self.recording_prefs.show_frame != prefs.show_frame;
+        self.recording_prefs = prefs.clone();
+        self.persisted_recording_prefs = prefs;
+        if show_frame_changed {
+            self.apply_show_frame_pref(self.recording_prefs.show_frame);
+        }
+        self.publish_tray_snapshot();
+    }
+
     fn persist_tray_prefs(&mut self, prefs: crate::config::RecordingPrefs) {
         let show_frame_changed = self.recording_prefs.show_frame != prefs.show_frame;
         self.recording_prefs = prefs.clone();
@@ -1506,6 +1530,7 @@ impl Daemon {
 
     fn handle_tray_action(&mut self, action: crate::tray::TrayAction) {
         use crate::tray::TrayAction;
+        self.refresh_recording_prefs();
 
         match action {
             TrayAction::ReplayToggle | TrayAction::ReplaySave => {
@@ -1753,6 +1778,7 @@ impl Daemon {
                 show_frame,
                 audio_enabled,
             } => {
+                self.refresh_recording_prefs();
                 // The selector already persisted this value in its process. Feed it
                 // through the ordered writer too so an older in-flight tray write
                 // cannot restore a stale frame preference afterward.
@@ -1940,7 +1966,10 @@ impl Daemon {
                 });
             });
         } else {
-            let dir = self.save_dir.clone();
+            let dir = crate::config::resolve_save_dir(
+                self.save_dir_cli.as_deref(),
+                &crate::config::Config::load(),
+            );
             std::thread::spawn(move || {
                 let result = save::save_image(&src, &dir).map_err(|error| error.to_string());
                 let _ = tx.send(DaemonEvent::CardSaved {
@@ -2334,6 +2363,7 @@ impl Daemon {
             return Err("a recording is already in progress".into());
         }
         validate_recording_dimensions(w, h)?;
+        self.refresh_recording_prefs();
         let config = crate::config::Config::load();
         let tools = RecorderTools::default();
         let codec = tools.session_codec(&crate::config::resolve_record_codec(None, &config))?;
@@ -2374,6 +2404,7 @@ impl Daemon {
         &mut self,
         focus_snapshot: &Result<Vec<crate::record::Monitor>, String>,
     ) -> Result<(), String> {
+        self.refresh_recording_prefs();
         let plan = default_start_plan(
             &self.recording_prefs,
             focus_snapshot,
@@ -2414,6 +2445,7 @@ impl Daemon {
         if self.recording.is_some() {
             return Err("a recording is already in progress".into());
         }
+        self.refresh_recording_prefs();
         let config = crate::config::Config::load();
         let tools = RecorderTools::default();
         let codec = tools.session_codec(&crate::config::resolve_record_codec(None, &config))?;
@@ -3093,31 +3125,34 @@ impl Daemon {
                 generation,
                 prefs,
                 error,
-            } => match prefs_completion(
-                self.prefs_generation,
-                self.persisted_prefs_generation,
-                generation,
-                error.is_some(),
-            ) {
-                PrefsCompletion::Persisted => {
-                    self.persisted_prefs_generation = generation;
-                    self.persisted_recording_prefs = prefs;
-                }
-                PrefsCompletion::Rollback => {
-                    let show_frame_changed = self.recording_prefs.show_frame
-                        != self.persisted_recording_prefs.show_frame;
-                    self.recording_prefs = self.persisted_recording_prefs.clone();
-                    if show_frame_changed {
-                        self.apply_show_frame_pref(self.recording_prefs.show_frame);
+            } => {
+                self.settled_prefs_generation = self.settled_prefs_generation.max(generation);
+                match prefs_completion(
+                    self.prefs_generation,
+                    self.persisted_prefs_generation,
+                    generation,
+                    error.is_some(),
+                ) {
+                    PrefsCompletion::Persisted => {
+                        self.persisted_prefs_generation = generation;
+                        self.persisted_recording_prefs = prefs;
                     }
-                    notify(&format!(
-                        "Recording settings could not be saved: {}",
-                        error.unwrap_or_else(|| "unknown error".into())
-                    ));
-                    self.publish_tray_snapshot();
+                    PrefsCompletion::Rollback => {
+                        let show_frame_changed = self.recording_prefs.show_frame
+                            != self.persisted_recording_prefs.show_frame;
+                        self.recording_prefs = self.persisted_recording_prefs.clone();
+                        if show_frame_changed {
+                            self.apply_show_frame_pref(self.recording_prefs.show_frame);
+                        }
+                        notify(&format!(
+                            "Recording settings could not be saved: {}",
+                            error.unwrap_or_else(|| "unknown error".into())
+                        ));
+                        self.publish_tray_snapshot();
+                    }
+                    PrefsCompletion::Stale => {}
                 }
-                PrefsCompletion::Stale => {}
-            },
+            }
         }
         self.publish_recording_snapshot();
     }
