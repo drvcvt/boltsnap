@@ -1011,8 +1011,10 @@ die Worker-Checks aus den Abschlussnotizen. Das Cursor-Plugin ist unverändert.
 Nicht geprüft: Windows-Target (kein Toolchain-Target lokal; Windows-Aufrufer
 behalten ihre Signaturen), Nix (H1), Release-Builds.
 
-Offene Live-Checks, keiner davon ausgeführt (kein Install, kein
-Daemon-Neustart): Cold-Start über CLI und systemd (G1), zwei schnelle Bild-Saves
+Installiert und neu gestartet am 25.09. (Build `abe1363`, danach `b11e5b2`).
+Live geprüft: Ein zweiter `boltsnap daemon` gegen den laufenden endet nach
+3 ms mit Exit 0, Socket-Inode und Log unverändert (G1). Offene Live-Checks:
+Cold-Start über CLI und systemd (G1; auf dem Host gibt es kein `systemctl`), zwei schnelle Bild-Saves
 und nicht schreibbares Ziel (A2), Save+Close auf langsamem Ziel (A3, D2),
 Recovery-Popup nach Disk-Fehler (E1), Replay-Save und Drag in Datei- und
 Byte-Ziele (A4), Import großer Clips (B1), Drop großer Videos (D1),

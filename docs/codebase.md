@@ -1,6 +1,6 @@
 # Codebase inventory
 
-Verified source baseline: `cf243b5` (2026-09-25), version 1.0.1 in
+Verified source baseline: `eaf0b13` (2026-09-25), version 1.0.1 in
 [`Cargo.toml`](../Cargo.toml). This is the maintained navigation and status map;
 module declarations and manifests remain authoritative. Dated plans and benchmark
 reports describe their own revisions, not the current acceptance state.
@@ -20,7 +20,7 @@ Linux is supported. Windows remains experimental, unmaintained and frozen.
 | Screenshots | [`linux/capture.rs`](../src/platform/linux/capture.rs), [`portal.rs`](../src/platform/linux/portal.rs), [`vendor/libway`](../vendor/README.md) | Integrated: Wayland EXT/WLR CPU capture plus scoped portal fallback; X11 via x11rb. No X11 area selector or shelf |
 | Frozen desktop selector | [`selector/`](../src/selector/mod.rs), [`linux/select_skia/`](../src/platform/linux/select_skia/mod.rs) | Shared geometry/rendering; Linux Wayland input and SHM surfaces. Screenshot regions span outputs; recording/replay regions use one target output |
 | Shelf | [`shelf/`](../src/shelf/mod.rs), [`linux/shelf/`](../src/platform/linux/shelf/mod.rs), [`tray.rs`](../src/platform/linux/tray.rs) | Shared model/layout/paint; Linux eventloop owns cards, controls, thumbnail jobs and recorder/replay lifecycle. RAM-only card state |
-| Image transport and clipboard | [`protocol.rs`](../src/protocol.rs), [`linux/ipc.rs`](../src/platform/linux/ipc.rs), [`image_transfer.rs`](../src/platform/linux/image_transfer.rs), [`clipboard.rs`](../src/platform/linux/clipboard.rs) | Integrated: normal PNG plus CLI thumbnail (`add_thumb`); raw RGB memfd path is opt-in via `BOLTSNAP_RAW_TRANSFER=1`. EOF retry issue C1 remains |
+| Image transport and clipboard | [`protocol.rs`](../src/protocol.rs), [`linux/ipc.rs`](../src/platform/linux/ipc.rs), [`image_transfer.rs`](../src/platform/linux/image_transfer.rs), [`clipboard.rs`](../src/platform/linux/clipboard.rs) | Integrated: normal PNG plus CLI thumbnail (`add_thumb`); raw RGB memfd path is opt-in via `BOLTSNAP_RAW_TRANSFER=1`. Each screenshot is sent once; a daemon older than `add_thumb` needs a restart |
 | Recording and saves | [`record.rs`](../src/record.rs), [`record/session.rs`](../src/record/session.rs), [`finalize.rs`](../src/record/finalize.rs), [`audio.rs`](../src/record/audio.rs), [`linux/gsr.rs`](../src/platform/linux/gsr.rs), [`files.rs`](../src/platform/linux/files.rs) | Integrated Linux lifecycle, audio, pause/concat/compose, cache and no-replace video publication. Session/audio/finalize/sidecar modules are Linux-gated despite their `src/record/` location |
 | Cursor | [`record/cursor.rs`](../src/record/cursor.rs), [`cursor_motion.rs`](../src/record/cursor_motion.rs), [`cursor_sidecar.rs`](../src/record/cursor_sidecar.rs), [`linux/cursor_track.rs`](../src/platform/linux/cursor_track.rs) | Integrated: EXT pointer feed, portable spring/frame clock and raw sidecars; plugin burns an arrow into video. No cursor-free copy or shape tracking |
 | Cursor plugin | [`gsr_cursor/Cargo.toml`](../src/platform/linux/gsr_cursor/Cargo.toml), [`src/lib.rs`](../src/platform/linux/gsr_cursor/src/lib.rs) | Separate Linux cdylib, directly includes shared `cursor_motion.rs`; ordinary root Cargo commands do not build/test it |
@@ -29,8 +29,13 @@ Linux is supported. Windows remains experimental, unmaintained and frozen.
 
 The normal recording path uses gsr when installed, otherwise wf-recorder. gsr
 writes Matroska segments, which are remuxed to MP4 even for a single segment.
+Matroska stores frame times in whole milliseconds; the remux of gsr segments
+uses the recording's frame rate as video timescale, which puts every frame
+back on its exact slot ([`build_concat_args`](../src/record/finalize.rs)).
 The direct-move optimization applies to an existing single MP4. Compatible
 pause segments use stream copy; multi-stream Combined composition re-encodes.
+The stop wait finishes a gsr segment on gsr's saved-path stdout line and reaps
+the process in the background ([`StopChildrenJob`](../src/record/session.rs)).
 
 Build registration is in [CI](../.github/workflows/ci.yml),
 [release packaging](../.github/workflows/release.yml) and
@@ -47,8 +52,9 @@ All fifteen defects from the 2026-09-25 reviews are fixed in code, one commit
 each (A1 in `a430ceb`, the rest from `da75eda` to `bf784fc`). The
 [fix plan](plans/2026-09-25-review-fixes.md) is the canonical record: causes,
 decisions, what each fix does, the tests that cover it and the checks that
-remain. What is still open is live validation, listed in the plan's section 5;
-no fix was installed or run against the desktop daemon.
+remain. The build of `b11e5b2` is installed and running. Live-checked so far:
+a second daemon start exits without touching the running one (G1). The other
+live checks in the plan's section 5 are open.
 
 | ID | Fixed behavior |
 | --- | --- |
@@ -88,22 +94,29 @@ not guaranteed. The README now states that limitation.
   recorders. See [libway integration](libway.md).
 - GPU-only replay crop is Unavailable for release use: its recorded pixel
   comparison failed. CPU crop plus the selected encoder remains active.
-- gsr stdout-before-exit saving is Integrated in `cf243b5`, with four automated
-  stop/reaper tests. The saved-path line can finish a segment before process
-  teardown; reaping continues in the background. Current end-to-end latency
-  and live acceptance remain unmeasured here. Direct libway RGB canvas remains
-  planned and unimplemented. See the [performance plan](plans/2026-09-24-performance-save-and-screenshot.md).
-- The review fixes above are code-complete; their live checks are open. Policy
-  decisions are recorded in the fix plan. Windows work remains frozen.
+- gsr stdout-before-exit saving is Integrated (`cf243b5`) and was measured once
+  live: 145 ms from Save to card for a 14 s 120 FPS recording, previously
+  0.33-0.40 s. Direct libway RGB canvas remains planned and unimplemented. See
+  the [performance plan](plans/2026-09-24-performance-save-and-screenshot.md).
+- Exact frame times for saved recordings are Integrated (`b11e5b2`) and live
+  accepted by the user (cursor reported clean, 1684 frames on the 8.333 ms
+  grid). Replay clips are still Matroska with millisecond frame times; not
+  changed. Occasional stalls during playback in Eddy (separate repository,
+  Qt Multimedia) are reported by the user and not investigated.
+- The review fixes above are code-complete; their live checks are open except
+  G1. Policy decisions are recorded in the fix plan. Windows work remains frozen.
 
 ## Verification at this baseline
 
-After the review fixes, on `bf784fc`: `cargo fmt --check`,
-`nice -n 19 cargo test --locked -j 4` (**23 library + 322 binary tests**, two
-ignored) and `cargo clippy --locked --all-targets` without warnings. The replay
+On `eaf0b13`: `cargo fmt --check`, `nice -n 19 cargo test --locked -j 4`
+(**23 library + 322 binary tests**, three ignored) and
+`cargo clippy --locked --all-targets` without warnings. The ignored FFmpeg test
+`remuxed_gsr_segments_keep_exact_frame_times` passed on `b11e5b2`. The replay
 worker passed `cargo fmt --check`, `cargo test --locked` (24), a debug build,
-`tests/probe.py`, `tests/live.py` and the G5 freeze repro against that debug
-build. Not run: Windows target, Nix, release builds, anything live.
+`tests/probe.py`, `tests/live.py` and the G5 freeze repro on `aed223f`. Release
+builds of `boltsnap` (`b11e5b2`) and the replay worker (`abe1363`) are
+installed in `~/.cargo/bin`; the cursor plugin and `boltsnap-background` are
+unchanged since `c8cf56b`. Not run: Windows target, Nix, cursor plugin crate.
 
 Earlier, all deeper-review builds used an isolated archive snapshot with separate target
 outputs because `src/record/session.rs` was being edited concurrently. On
@@ -134,7 +147,7 @@ and media logs share that prefix. Synthetic media artifacts are
 These local temporary artifacts are not part of the repository.
 
 No live desktop capture, daemon replacement, installation, Windows tests,
-release build, Nix build or long-running soak was performed in this review.
+release build, Nix build or long-running soak was performed in that deep review.
 The ignored `live_smooth_cursor_recording` test was not run. Dated
 [cursor implementation notes](plans/2026-09-24-live-cursor-plugin.md#5-implementation-notes)
 record user acceptance of area cursor playback and narrower live checks of
