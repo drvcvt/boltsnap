@@ -1,6 +1,7 @@
 pub mod capture;
 pub mod clipboard;
 pub(crate) mod cursor_track;
+pub(crate) mod files;
 pub mod gsr;
 pub(crate) mod hypr;
 pub(crate) mod image_transfer;

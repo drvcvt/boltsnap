@@ -1,8 +1,9 @@
 use super::Monitor;
 use super::session::RecorderTools;
 use crate::config::{RecordBothMode, RecordCursor};
+use crate::platform::files::{copy_noreplace, rename_noreplace};
 use std::collections::BTreeMap;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io::{self, Write};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -718,67 +719,14 @@ fn copy_then_remove(source: &Path, destination: &Path) -> io::Result<()> {
     let size = fs::metadata(source)?.len();
     ensure_free_space(destination.parent().unwrap_or(Path::new(".")), size)
         .map_err(io::Error::other)?;
-    let part = PathBuf::from(format!(
-        "{}.part-{}",
-        destination.display(),
-        std::process::id()
-    ));
-    let result = (|| {
-        let mut input = File::open(source)?;
-        let mut output = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&part)?;
-        io::copy(&mut input, &mut output)?;
-        output.sync_all()?;
-        rename_noreplace(&part, destination)?;
-        if let Err(error) = fs::remove_file(source) {
-            eprintln!(
-                "boltsnap: saved {}, but could not remove source {}: {error}",
-                destination.display(),
-                source.display()
-            );
-        }
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(part);
-    }
-    result
-}
-
-fn rename_noreplace(source: &Path, destination: &Path) -> io::Result<()> {
-    let source_c = std::ffi::CString::new(source.as_os_str().as_encoded_bytes())
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "source path contains NUL"))?;
-    let destination_c = std::ffi::CString::new(destination.as_os_str().as_encoded_bytes())
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "target path contains NUL"))?;
-    let result = unsafe {
-        libc::syscall(
-            libc::SYS_renameat2,
-            libc::AT_FDCWD,
-            source_c.as_ptr(),
-            libc::AT_FDCWD,
-            destination_c.as_ptr(),
-            libc::RENAME_NOREPLACE,
-        )
-    };
-    if result == 0 {
-        return Ok(());
-    }
-    let error = io::Error::last_os_error();
-    if error.raw_os_error() != Some(libc::ENOSYS) {
-        return Err(error);
-    }
-
-    fs::hard_link(source, destination)?;
+    let mut input = File::open(source)?;
+    copy_noreplace(&mut input, destination)?;
     if let Err(error) = fs::remove_file(source) {
-        if let Err(cleanup) = fs::remove_file(destination) {
-            eprintln!(
-                "boltsnap: failed to roll back no-replace link {}: {cleanup}",
-                destination.display()
-            );
-        }
-        return Err(error);
+        eprintln!(
+            "boltsnap: saved {}, but could not remove source {}: {error}",
+            destination.display(),
+            source.display()
+        );
     }
     Ok(())
 }
@@ -811,6 +759,7 @@ fn work_path(dir: &Path, prefix: &str, output: Option<&str>, extension: &str) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs::OpenOptions;
     use std::os::unix::fs::PermissionsExt;
 
     fn temp_dir(label: &str) -> PathBuf {
@@ -1545,6 +1494,23 @@ mod tests {
                 .contains("-DP-1.mp4")
         );
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn copy_preserves_another_operations_partial_file() {
+        let dir = temp_dir("foreign-part");
+        let source = file(&dir.join("source.mp4"), b"video");
+        let destination = dir.join("saved.mp4");
+        let part = file(
+            &dir.join(format!("saved.mp4.part-{}", std::process::id())),
+            b"another save",
+        );
+
+        let result = copy_then_remove(&source, &destination);
+        assert_eq!(fs::read(part).unwrap(), b"another save");
+        result.unwrap();
+        assert_eq!(fs::read(destination).unwrap(), b"video");
+        assert!(!source.exists());
     }
 
     #[test]
