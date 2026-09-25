@@ -443,6 +443,18 @@ Socket-Tests, Screenshot-Latenz mit/ohne Probe messen. Alternative Entscheidung 
 EOF-Fallback schlicht entfernen, dann kann ein alter laufender Daemon bis zum
 Neustart keine Thumbnail-Requests neuer Clients verarbeiten. Nicht empfohlen.
 
+**Abschluss C1 (Entscheidung 4 B, gegen die Empfehlung):** Das mutierende Retry
+ist entfernt. `add_with` nimmt genau einen Stream und sendet einmal; ein EOF vor
+der Antwort wird als `UnexpectedEof` mit dem Hinweis gemeldet, dass die Karte
+fehlen kann und ein älterer Daemon einen Neustart braucht. Das CLI legt den
+Screenshot vorher als `last.png` ab und nennt diesen Pfad in der Fehlermeldung.
+Keine Capability-Abfrage, keine zusätzliche Roundtrip. Folge: Nach einem Install
+ohne Daemon-Neustart landen Screenshots bis zum Neustart nicht im Shelf. Test:
+Ein Fake-Daemon nimmt das `add_thumb`-Frame, schickt die halbe Antwort und
+schließt die Schreibseite; der Client meldet den Fehler, und auf dem Socket
+kommt danach nichts mehr an. Der alte Rückfall-Test entfällt; der alte Code hätte
+hier ein zweites Frame gesendet (Review-Repro `repros.patch:68`).
+
 ### D1: Drag-Dateien streamen
 
 **Phase 1: Verhalten und Ursache**
@@ -892,7 +904,7 @@ Alle anderen Items sind offen. F1 erhält unter Empfehlung A keinen Code-Commit.
 | 2 | E1 | sicherer Recovery-Zustand nach Finalisierung | `E1: allow only save or discard after a failed save` |
 | 3 | A4 | Containerendung und Drag-MIME | |
 | 3 | B1 | unabhängiger regulärer Video-Import | |
-| 3 | C1 | sichere IPC-Kompatibilitätswahl | |
+| 3 | C1 | sichere IPC-Kompatibilitätswahl | `C1: send a screenshot to the shelf only once` |
 | 4 | D1 | Streaming beim Drag | |
 | 4 | D2 | asynchroner Bild-Save | |
 | keine | F1 | Cursor-Verhalten beibehalten | |

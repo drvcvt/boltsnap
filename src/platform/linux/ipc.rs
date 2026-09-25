@@ -119,37 +119,25 @@ pub fn call_daemon(req: Request) -> io::Result<Response> {
     send(&mut connect()?, &req)
 }
 
-/// Send a screenshot to the shelf. A daemon older than `add_thumb` reads the
-/// frame, rejects the command and closes without a reply; the PNG then goes
-/// again as a plain `add`.
+/// Send a screenshot to the shelf, exactly once. When the connection closes
+/// before the answer, the card may or may not have arrived, so it is not sent
+/// again. A daemon older than `add_thumb` also closes; it needs a restart.
 pub fn add_to_shelf(req: Request) -> io::Result<Response> {
-    add_with(connect, req)
+    add_with(connect()?, &req)
 }
 
-fn add_with(
-    mut connect: impl FnMut() -> io::Result<UnixStream>,
-    req: Request,
-) -> io::Result<Response> {
-    match (send(&mut connect()?, &req), req) {
-        (
-            Err(error),
-            Request::Add {
-                source,
-                png,
-                output,
-                thumb: Some(_),
-            },
-        ) if error.kind() == io::ErrorKind::UnexpectedEof => {
-            let legacy = Request::Add {
-                source,
-                png,
-                output,
-                thumb: None,
-            };
-            send(&mut connect()?, &legacy)
+fn add_with(mut stream: UnixStream, req: &Request) -> io::Result<Response> {
+    send(&mut stream, req).map_err(|error| {
+        if error.kind() == io::ErrorKind::UnexpectedEof {
+            io::Error::new(
+                error.kind(),
+                "the daemon closed without an answer, so the card may be missing \
+                 (a daemon older than this CLI needs a restart)",
+            )
+        } else {
+            error
         }
-        (response, _) => response,
-    }
+    })
 }
 
 fn connect() -> io::Result<UnixStream> {
@@ -417,28 +405,23 @@ mod tests {
     }
 
     #[test]
-    fn add_falls_back_to_plain_add_when_an_old_daemon_closes() {
-        let (first, mut old) = UnixStream::pair().unwrap();
-        let (second, mut new) = UnixStream::pair().unwrap();
-        // The old daemon reads the whole frame, rejects add_thumb, and closes.
-        let old_daemon = std::thread::spawn(move || {
-            let (header, _) = read_frame(&mut old).unwrap();
-            assert!(String::from_utf8(header).unwrap().contains("add_thumb"));
-        });
+    fn a_lost_answer_is_reported_and_not_sent_again() {
+        let (client, mut daemon) = UnixStream::pair().unwrap();
+        // The daemon takes the card, then the answer breaks off.
         let daemon = std::thread::spawn(move || {
-            match Request::read(&mut new).unwrap() {
-                Request::Add { png, thumb, .. } => {
-                    assert_eq!(png, vec![1, 2, 3]);
-                    assert_eq!(thumb, None);
-                }
-                other => panic!("wrong variant: {other:?}"),
-            }
-            new.write_all(&Response::ok(None).encode()).unwrap();
+            let (header, _) = read_frame(&mut daemon).unwrap();
+            assert!(String::from_utf8(header).unwrap().contains("add_thumb"));
+            let answer = Response::ok(None).encode();
+            daemon.write_all(&answer[..answer.len() / 2]).unwrap();
+            daemon.shutdown(std::net::Shutdown::Write).unwrap();
+            // Anything sent after this would be a second import.
+            let mut rest = Vec::new();
+            io::Read::read_to_end(&mut daemon, &mut rest).unwrap();
+            rest
         });
-        let mut streams = vec![second, first];
-        let response = add_with(
-            || Ok(streams.pop().unwrap()),
-            Request::Add {
+        let error = add_with(
+            client,
+            &Request::Add {
                 source: "full".into(),
                 png: vec![1, 2, 3],
                 output: None,
@@ -449,10 +432,10 @@ mod tests {
                 }),
             },
         )
-        .unwrap();
-        assert!(response.ok);
-        old_daemon.join().unwrap();
-        daemon.join().unwrap();
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
+        assert!(error.to_string().contains("may be missing"));
+        assert!(daemon.join().unwrap().is_empty());
     }
 
     #[test]
