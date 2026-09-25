@@ -516,6 +516,12 @@ mit kontrollierter Fixture, nicht die Desktop-Sitzung mit GiB belasten.
 **Verifikation:** gemeinsame Checks; Datei- und Byte-Drop kleiner/großer Videos
 und PNGs, Abbruch des Zielprogramms; RSS darf nicht proportional zur Datei wachsen.
 
+**Abschluss D1:** `send_file` streamt mit `File::open` plus `io::copy` im
+vorhandenen Transfer-Thread; der URI-Pfad bleibt. Test mit 1-MiB-Datei: gleiche
+Bytes, größter einzelner Write höchstens 64 KiB (mit der alten Logik rot: ein
+Write von 1.048.576 Bytes); geschlossener Empfänger und fehlende Datei enden
+mit Fehler. Keine RSS-Messung im Daemon; manueller Drop großer Videos offen.
+
 ### D2: Bild-Save außerhalb des Eventloops
 
 **Phase 1: Verhalten und Ursache**
@@ -936,7 +942,7 @@ Alle anderen Items sind offen. F1 erhält unter Empfehlung A keinen Code-Commit.
 | 3 | A4 | Containerendung und Drag-MIME | `A4: keep the container on save and drag` |
 | 3 | B1 | unabhängiger regulärer Video-Import | `B1: copy imported videos instead of linking them` |
 | 3 | C1 | sichere IPC-Kompatibilitätswahl | `C1: send a screenshot to the shelf only once` |
-| 4 | D1 | Streaming beim Drag | |
+| 4 | D1 | Streaming beim Drag | `D1: stream dragged files` |
 | 4 | D2 | asynchroner Bild-Save | |
 | keine | F1 | Cursor-Verhalten beibehalten | |
 | 0 | G1 | exklusiver Daemon-Start vor Cleanup | `G1: lock the daemon before cleanup` |
