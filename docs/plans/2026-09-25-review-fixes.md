@@ -960,7 +960,13 @@ Version `0.1.0`. Die Nutzerreferenzen in README und Codebase-Inventar aktualisie
 mit Cargo vergleichen, danach vorhandenen Nix-Paketcheck/-Build ausführen, sofern
 eine passende Nix-Umgebung vorhanden ist. Keine Hostinstallation als Ersatz für
 eine Prüfung. Gemeinsame Projektchecks weiterhin ausführen.
-**Status: geplant; Nix-Evaluation und -Build noch offen.**
+**Status: umgesetzt; Nix-Evaluation und -Build noch offen.**
+
+**Abschluss H1:** `flake.nix` setzt die Version des Hauptpakets mit
+`(builtins.fromTOML (builtins.readFile ./Cargo.toml)).package.version`; das
+Cursor-Plugin bleibt bei `0.1.0`. Auf diesem Rechner gibt es kein `nix`, also
+weder Evaluation noch Build. Geprüft ist nur, dass `Cargo.toml` als TOML parst
+und `package.version = 1.0.1` liefert (Python `tomllib`). Inventar angepasst.
 
 ## 4. Entscheidungen
 
@@ -1016,7 +1022,7 @@ Alle anderen Items sind offen. F1 erhält unter Empfehlung A keinen Code-Commit.
 | 5 | G3 | Deadline inklusive Prozessausgabe | `G3: hold the process deadline over its output pipes` |
 | 5 | G4 | begrenzte und bereinigte Recording-Watches | `G4: drop closed recording watchers and cap them` |
 | 5 | G5 | gehaltene Replay-Auswahl vor Restart schützen | `G5: keep an open replay selection from a restart` |
-| 6 | H1 | Nix-Version aus Cargo lesen | |
+| 6 | H1 | Nix-Version aus Cargo lesen | `H1: take the Nix package version from Cargo` |
 
 ## 6. Vertieftes Review und tatsächlich ausgeführte Checks
 

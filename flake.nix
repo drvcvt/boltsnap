@@ -51,7 +51,8 @@
       {
         packages.default = pkgs.rustPlatform.buildRustPackage {
           pname = "boltsnap";
-          version = "0.4.3";
+          # One version: the one Cargo builds.
+          version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).package.version;
           src = ./.;
           cargoLock.lockFile = ./Cargo.lock;
 

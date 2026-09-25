@@ -38,8 +38,8 @@ Build registration is in [CI](../.github/workflows/ci.yml),
 libway consumer tests, the replay worker and the cursor plugin. This is coverage
 configuration, not a claim that remote CI ran in this review.
 The Nix package includes the cursor plugin; tarball/Debian packaging currently
-includes neither plugin nor replay worker. The Nix package version is still
-`0.4.3`, unlike Cargo's `1.0.1`; that packaging metadata is stale.
+includes neither plugin nor replay worker. The Nix package reads its version
+from `Cargo.toml`.
 
 ## Open review findings
 
