@@ -1,7 +1,7 @@
 # Performance: Speichern von Aufnahmen und Screenshot-Pfad, 2026-09-24
 
-Status am 25.09.2026: Wellen 1 bis 3 umgesetzt; A3 umgesetzt, live noch
-ungemessen; B4 nicht umgesetzt (siehe Status-Tabelle und Umsetzungsnotizen).
+Status am 25.09.2026: Wellen 1 bis 3 umgesetzt; A3 umgesetzt und live
+gemessen (145 ms statt 0,33-0,40 s); B4 nicht umgesetzt (siehe Status-Tabelle und Umsetzungsnotizen).
 Nur Linux; das Windows-Backend bleibt eingefroren.
 
 ## 1. Zusammenfassung
@@ -454,6 +454,9 @@ Bestätigt vom User (2026-09-24): 1 (a), 2 (a), 3 (a), 4 (b) erst messen,
   gewartet. Der Test für den gekillten Recorder läuft jetzt mit Pipe. Mit
   abgeschaltetem Zeilen-Warten schlagen die beiden Zeilen-Tests fehl.
   `cargo fmt --check` ok, `nice -n 19 cargo test --locked -j 4` 303 + 23
-  bestanden, clippy ohne Warnungen. Live noch nicht gemessen (kein Install,
-  kein Daemon-Neustart).
+  bestanden, clippy ohne Warnungen.
+- A3 live am 25.09. (Daemon aus `b11e5b2`): eine Aufnahme des Users, 14 s,
+  1920x1080 bei 120 FPS, Smooth-Cursor, Ton, ohne Rahmen. `recording watch`
+  mit Zeitstempeln: `finalizing` bis `idle` (Stop, Remux, Karte) 145 ms, vorher
+  0,33-0,40 s. Eine einzelne Messung.
 - B4 nicht umgesetzt (siehe oben).
