@@ -413,6 +413,20 @@ Thumbnail/Öffnen/Save prüfen, I/O-Zeit gegenüber Hardlink-Baseline berichten.
 Alternative Entscheidung 3: aufgelöste reguläre Datei weiter hardlinken, aber dann
 explizit keine Unabhängigkeit gegenüber In-place-Änderungen versprechen.
 
+**Abschluss B1 (Entscheidung 3 A):** `import_shelf_video` öffnet die Quelle einmal
+(Symlinks werden aufgelöst, `O_NONBLOCK`, damit eine FIFO nicht hängt), prüft
+Typ und Größe auf diesem Handle, lässt die Cache-/Reserveprüfung über einen
+injizierbaren `reserve`-Callback laufen und kopiert genau die geprüfte Größe mit
+`files::copy_noreplace` in eine neue Cache-Datei. Weicht die veröffentlichte
+Größe ab, wird die eigene Datei entfernt und ein Fehler gemeldet. Kein
+Hardlink mehr; `paths::rec_file` entfällt. Tests mit eigenem Cache-Verzeichnis:
+reguläre Datei, relativer und absoluter Symlink ergeben reguläre Kopien, die
+eine In-place-Änderung des Originals nicht sehen (mit dem alten Hardlink rot,
+der relative Symlink war dort sogar hängend); leere Datei, Verzeichnis,
+hängender Symlink, FIFO und abgelehnte Reservierung legen nichts an. Kosten:
+eine volle Kopie statt Hardlink; I/O-Zeit gegen die Hardlink-Baseline nicht
+gemessen. README angepasst.
+
 ### C1: Kein erneuter Import nach unklarem ACK
 
 **Phase 1: Verhalten und Ursache**
@@ -920,7 +934,7 @@ Alle anderen Items sind offen. F1 erhält unter Empfehlung A keinen Code-Commit.
 | 1 | A3 | Schutz laufender Saves vor Dismiss/Eviction | `A3: keep a card until its save ends` |
 | 2 | E1 | sicherer Recovery-Zustand nach Finalisierung | `E1: allow only save or discard after a failed save` |
 | 3 | A4 | Containerendung und Drag-MIME | `A4: keep the container on save and drag` |
-| 3 | B1 | unabhängiger regulärer Video-Import | |
+| 3 | B1 | unabhängiger regulärer Video-Import | `B1: copy imported videos instead of linking them` |
 | 3 | C1 | sichere IPC-Kompatibilitätswahl | `C1: send a screenshot to the shelf only once` |
 | 4 | D1 | Streaming beim Drag | |
 | 4 | D2 | asynchroner Bild-Save | |

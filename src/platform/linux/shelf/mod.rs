@@ -506,32 +506,57 @@ fn prepare_recording_cache() -> Result<(), String> {
     check_recording_reserve(&dir)
 }
 
-/// Take a client's video into the recording cache so the card owns its file.
-/// A hard link costs nothing on the same filesystem; otherwise copy.
+/// Copy a client's video into the recording cache so the card owns its bytes;
+/// later changes to the original do not reach the shelf.
 fn prepare_shelf_video(path: &std::path::Path) -> Result<std::path::PathBuf, String> {
-    let metadata =
-        std::fs::metadata(path).map_err(|error| format!("inspect shelf video: {error}"))?;
+    let dir = crate::paths::rec_dir();
+    import_shelf_video(path, &dir, |bytes| {
+        prepare_recording_cache()?;
+        check_recording_cache_capacity(&dir, bytes)
+    })
+}
+
+/// Opens `path` once, following a symlink, checks that very file and copies
+/// the size it had into a new file in `dir`. `reserve` vets that size first.
+fn import_shelf_video(
+    path: &std::path::Path,
+    dir: &std::path::Path,
+    reserve: impl FnOnce(u64) -> Result<(), String>,
+) -> Result<std::path::PathBuf, String> {
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    // Nonblocking, so a FIFO fails the file check instead of hanging the open.
+    let input = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)
+        .map_err(|error| format!("open shelf video: {error}"))?;
+    let metadata = input
+        .metadata()
+        .map_err(|error| format!("inspect shelf video: {error}"))?;
     if !metadata.is_file() || metadata.len() == 0 {
         return Err("shelf video is not a non-empty file".into());
     }
     if metadata.len() >= RECORDING_CACHE_LIMIT_BYTES {
         return Err("video exceeds the 2 GiB temporary shelf limit".into());
     }
-    prepare_recording_cache()?;
-    check_recording_cache_capacity(&crate::paths::rec_dir(), metadata.len())?;
+    reserve(metadata.len())?;
     let ext = path
         .extension()
         .and_then(|value| value.to_str())
         .filter(|ext| !ext.is_empty() && ext.chars().all(|c| c.is_ascii_alphanumeric()))
         .unwrap_or("mp4");
-    let target = crate::paths::rec_file("shelf-video", ext);
-    if std::fs::hard_link(path, &target).is_err() {
-        std::fs::copy(path, &target).map_err(|error| {
+    let target = crate::paths::unique_path_in(dir, "shelf-video", ext);
+    crate::platform::files::copy_noreplace(&mut input.take(metadata.len()), &target)
+        .map_err(|error| format!("copy shelf video: {error}"))?;
+    // A source that shrank while copying would leave a cut clip.
+    match std::fs::metadata(&target) {
+        Ok(copied) if copied.len() == metadata.len() => Ok(target),
+        _ => {
             let _ = std::fs::remove_file(&target);
-            format!("copy shelf video: {error}")
-        })?;
+            Err("shelf video changed while it was copied".into())
+        }
     }
-    Ok(target)
 }
 
 fn validate_recording_dimensions(width: u32, height: u32) -> Result<(), String> {
@@ -3901,6 +3926,74 @@ mod tests {
             assert_eq!(command.get_program(), "xdg-open");
             assert_eq!(command.get_args().collect::<Vec<_>>(), [path.as_os_str()]);
         }
+    }
+
+    fn import_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "boltsnap-import-{name}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("input")).unwrap();
+        std::fs::create_dir_all(dir.join("cache")).unwrap();
+        dir
+    }
+
+    fn cache_entries(dir: &std::path::Path) -> usize {
+        std::fs::read_dir(dir.join("cache")).unwrap().count()
+    }
+
+    #[test]
+    fn imported_videos_own_their_bytes() {
+        let dir = import_dir("own");
+        let input = dir.join("input");
+        let real = input.join("real.mp4");
+        std::fs::write(&real, b"video").unwrap();
+        std::os::unix::fs::symlink("real.mp4", input.join("relative.mp4")).unwrap();
+        std::os::unix::fs::symlink(&real, input.join("absolute.mp4")).unwrap();
+
+        for name in ["real.mp4", "relative.mp4", "absolute.mp4"] {
+            let imported =
+                import_shelf_video(&input.join(name), &dir.join("cache"), |_| Ok(())).unwrap();
+            let metadata = std::fs::symlink_metadata(&imported).unwrap();
+            assert!(metadata.file_type().is_file(), "{name}");
+            // An in-place write to the original must not reach the card.
+            std::fs::write(&real, b"VIDEO").unwrap();
+            assert_eq!(std::fs::read(&imported).unwrap(), b"video", "{name}");
+            std::fs::write(&real, b"video").unwrap();
+        }
+        std::fs::remove_file(&real).unwrap();
+        assert_eq!(cache_entries(&dir), 3);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn unusable_video_sources_import_nothing() {
+        let dir = import_dir("reject");
+        let input = dir.join("input");
+        std::fs::write(input.join("empty.mp4"), b"").unwrap();
+        std::fs::create_dir(input.join("folder.mp4")).unwrap();
+        std::os::unix::fs::symlink("gone.mp4", input.join("dangling.mp4")).unwrap();
+        let fifo =
+            std::ffi::CString::new(input.join("pipe.mp4").into_os_string().into_encoded_bytes())
+                .unwrap();
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        std::fs::write(input.join("big.mp4"), b"video").unwrap();
+
+        for name in ["empty.mp4", "folder.mp4", "dangling.mp4", "pipe.mp4"] {
+            assert!(
+                import_shelf_video(&input.join(name), &dir.join("cache"), |_| Ok(())).is_err(),
+                "{name}"
+            );
+        }
+        let refused = import_shelf_video(&input.join("big.mp4"), &dir.join("cache"), |bytes| {
+            assert_eq!(bytes, 5);
+            Err("cache full".into())
+        });
+        assert_eq!(refused.unwrap_err(), "cache full");
+        assert_eq!(cache_entries(&dir), 0);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

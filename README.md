@@ -276,10 +276,10 @@ header, then the payload.
 
 `output` is optional and picks the monitor the shelf appears on.
 
-Video import currently uses a hard link when possible, otherwise a copy.
-Pass a regular file, not a symlink, and do not modify its contents after import:
-a hard-linked cache entry shares those contents. See the
-[known save/import issues](docs/codebase.md#open-review-findings).
+Video import copies the file (a symlink is followed) into the shelf cache
+before the answer, so later changes to the original do not reach the card.
+Keep the file unchanged while the import runs; a copy that comes out shorter
+than the file was is rejected.
 
 Flags still work: `--copy` also copies to the clipboard on capture, `-o PATH`
 / `--save` write a file (no shelf), and `-o -` streams PNG to stdout. **X11 is
