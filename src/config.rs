@@ -303,57 +303,50 @@ pub fn save_recording_prefs_at(path: &Path, prefs: &RecordingPrefs) -> io::Resul
         std::fs::create_dir_all(parent)?;
     }
 
-    let mut table = match std::fs::read_to_string(path) {
-        Ok(text) => toml::from_str::<toml::Table>(&text)
+    let mut document = match std::fs::read_to_string(path) {
+        Ok(text) => text
+            .parse::<toml_edit::Document>()
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => toml::Table::new(),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => toml_edit::Document::new(),
         Err(error) => return Err(error),
+    };
+    // Keep each key's place and its trailing comment; only the value changes.
+    let mut set = |key: &str, value: toml_edit::Value| {
+        let mut value = value;
+        if let Some(old) = document.get(key).and_then(|item| item.as_value()) {
+            *value.decor_mut() = old.decor().clone();
+        }
+        document[key] = toml_edit::Item::Value(value);
     };
     let target = match &prefs.default_target {
         RecordDefaultTarget::Focused => "focused".to_string(),
         RecordDefaultTarget::Output(name) => format!("output:{name}"),
         RecordDefaultTarget::Both => "both".to_string(),
     };
-    table.insert("record_default_target".into(), toml::Value::String(target));
-    table.insert(
-        "record_both_mode".into(),
-        toml::Value::String(
-            match prefs.both_mode {
-                RecordBothMode::Separate => "separate",
-                RecordBothMode::Combined => "combined",
-            }
-            .into(),
-        ),
+    set("record_default_target", target.into());
+    set(
+        "record_both_mode",
+        match prefs.both_mode {
+            RecordBothMode::Separate => "separate",
+            RecordBothMode::Combined => "combined",
+        }
+        .into(),
     );
-    table.insert(
-        "record_cursor".into(),
-        toml::Value::String(prefs.cursor.key().into()),
-    );
-    table.insert(
-        "record_show_frame".into(),
-        toml::Value::Boolean(prefs.show_frame),
-    );
-    table.insert(
-        "record_disk_add_to_shelf".into(),
-        toml::Value::Boolean(prefs.disk_add_to_shelf),
-    );
-    table.insert(
-        "record_audio_enabled".into(),
-        toml::Value::Boolean(prefs.audio_enabled),
-    );
-    table.insert(
-        "record_audio_source".into(),
-        toml::Value::String(
-            match prefs.audio_source {
-                RecordAudioSource::SystemAndMic => "system-and-mic",
-                RecordAudioSource::Mic => "mic",
-                RecordAudioSource::System => "system",
-            }
-            .into(),
-        ),
+    set("record_cursor", prefs.cursor.key().into());
+    set("record_show_frame", prefs.show_frame.into());
+    set("record_disk_add_to_shelf", prefs.disk_add_to_shelf.into());
+    set("record_audio_enabled", prefs.audio_enabled.into());
+    set(
+        "record_audio_source",
+        match prefs.audio_source {
+            RecordAudioSource::SystemAndMic => "system-and-mic",
+            RecordAudioSource::Mic => "mic",
+            RecordAudioSource::System => "system",
+        }
+        .into(),
     );
 
-    let text = toml::to_string_pretty(&table).map_err(io::Error::other)?;
+    let text = document.to_string();
     let file_name = path.file_name().unwrap_or_default().to_string_lossy();
     let temporary = path.with_file_name(format!("{file_name}.tmp-{}", std::process::id()));
     let result = (|| {
@@ -656,6 +649,27 @@ unrelated = "keep-me"
         let written = std::fs::read_to_string(&path).unwrap();
         assert!(written.contains("custom = 7"));
         assert_eq!(Config::parse(&written).recording_prefs(), prefs);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn recording_prefs_write_keeps_comments_order_and_tables() {
+        let path = temp_config("prefs-comments");
+        let original = "# my settings\nzeta = 1\nrecord_cursor = \"system\" # smooth later\nalpha = 2\n\n[replay]\n# ten seconds\nduration_seconds = 10\n";
+        std::fs::write(&path, original).unwrap();
+        let prefs = RecordingPrefs {
+            cursor: RecordCursor::Mellow,
+            ..RecordingPrefs::default()
+        };
+        save_recording_prefs_at(&path, &prefs).unwrap();
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(written.starts_with(
+            "# my settings\nzeta = 1\nrecord_cursor = \"mellow\" # smooth later\nalpha = 2\n"
+        ));
+        assert!(written.contains("[replay]\n# ten seconds\nduration_seconds = 10\n"));
+        // New keys stay top-level, not inside [replay].
+        assert_eq!(Config::parse(&written).recording_prefs(), prefs);
+        assert_eq!(Config::parse_replay_settings(&written).unwrap().seconds, 10);
         std::fs::remove_file(path).unwrap();
     }
 
