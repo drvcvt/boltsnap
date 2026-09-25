@@ -1,5 +1,6 @@
 pub(crate) mod font;
 mod limits;
+mod save;
 mod thumbnail;
 
 use limits::{ClientLimits, Limit, Permit};
@@ -1811,7 +1812,7 @@ impl Daemon {
     }
 
     /// Save the full-res file of card `id` and flash a ✓ on its Save button.
-    /// Image cards go to `<save_dir>/boltsnap-<ts>.png`; video cards go to
+    /// Image cards are copied to `<save_dir>/boltsnap-<ts>[-N].png`; video cards go to
     /// `<record_dir>/boltsnap-<ts>.<ext>` (ext from the source file, usually mp4).
     fn save_card(&mut self, id: u64) {
         let (src, kind) = match self.model.get(id) {
@@ -1837,20 +1838,15 @@ impl Daemon {
             return;
         }
 
-        let stamp = crate::paths::local_timestamp();
-        let name = crate::paths::boltsnap_filename_ext(&stamp, "png");
-        let dir = self.save_dir.clone();
-        let dest = dir.join(name);
-        if let Err(e) = std::fs::create_dir_all(&dir) {
-            eprintln!("boltsnap daemon: save mkdir failed: {e}");
-            return;
-        }
-        match std::fs::copy(&src, &dest) {
-            Ok(_) => {
+        match save::save_image(&src, &self.save_dir) {
+            Ok(dest) => {
                 eprintln!("boltsnap daemon: saved {}", dest.display());
                 self.flash_saved(id);
             }
-            Err(e) => eprintln!("boltsnap daemon: save failed: {e}"),
+            Err(error) => {
+                eprintln!("boltsnap daemon: save failed: {error}");
+                notify(&format!("Screenshot could not be saved: {error}"));
+            }
         }
     }
 
