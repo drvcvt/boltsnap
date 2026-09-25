@@ -282,6 +282,25 @@ fehlgeschlagener Save und neue Karte während Save. Alternative aus Entscheidung
 sofortiges Verstecken braucht einen separaten Besitzer samt Wiederherstellung
 der Karte bei Fehler und ist daher eine größere Änderung.
 
+**Abschluss A3 (Entscheidung 2 A):** `shelf/save.rs::CardSaves` ersetzt
+`saving_cards` und merkt Close-Wünsche. `remove_card_now` entfernt eine Karte
+mit laufendem Save nicht, sondern merkt den Close vor; das deckt Close-Klick,
+eine schon laufende Dismiss-Animation und alle weiteren Remove-Pfade ab. Der
+Close-Klick startet für eine solche Karte keine Animation. Die Eviction zählt
+laufende Saves mit, wählt sie aber nie als Kandidaten. `CardPromoted` beendet
+den Save: Erfolg promotet, schließt bei vorgemerktem Close und trimmt den
+Cache nach; ein Fehler verwirft den Close-Wunsch, die Karte bleibt mit Quelle
+und Sidecar für einen neuen Versuch und wird nicht sofort nachgetrimmt.
+**Abweichung von Schritt 4:** Neue Screenshots werden nicht abgelehnt, wenn nur
+gespeicherte Karten entfernbar wären. Der Cache kann dann kurz um die Zahl
+laufender Saves über den Grenzen liegen; das ist durch Klicks begrenzt und
+endet mit dem Save. Tests: `CardSaves` (Close wartet auf Erfolg, Fehler behält
+die Karte, Doppelstart abgelehnt) und die Eviction mit geschützten Karten. Die
+Eviction-Signatur ist neu; der alte Code hätte die gespeicherte Karte 1
+entfernt. Die Verdrahtung im Daemon braucht Wayland und ist nur per Code
+geprüft; der manuelle Save+Close-Check auf langsamem Ziel bleibt offen. Bild-
+Saves laufen bis D2 synchron und brauchen den Schutz noch nicht.
+
 ### A4: Containerendung und Drag-MIME erhalten
 
 **Phase 1: Verhalten und Ursache**
@@ -852,7 +871,7 @@ Alle anderen Items sind offen. F1 erhält unter Empfehlung A keinen Code-Commit.
 | --- | --- | --- | --- |
 | 1 | A1 | eigene Part-Dateien / atomare Veröffentlichung | `A1: isolate partial files for atomic saves` (dieser Commit) |
 | 1 | A2 | Bild-Save ohne Überschreiben | `A2: never overwrite on image save` |
-| 1 | A3 | Schutz laufender Saves vor Dismiss/Eviction | |
+| 1 | A3 | Schutz laufender Saves vor Dismiss/Eviction | `A3: keep a card until its save ends` |
 | 2 | E1 | sicherer Recovery-Zustand nach Finalisierung | |
 | 3 | A4 | Containerendung und Drag-MIME | |
 | 3 | B1 | unabhängiger regulärer Video-Import | |

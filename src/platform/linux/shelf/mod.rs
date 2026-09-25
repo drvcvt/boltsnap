@@ -115,7 +115,7 @@ pub struct Daemon {
     save_flash: Option<(u64, std::time::Instant)>,
     /// When the shelf's last animation frame callback was requested.
     frame_requested: Option<std::time::Instant>,
-    saving_cards: std::collections::HashSet<u64>,
+    saves: save::CardSaves,
     press: Option<PressState>,
     /// In-flight per-card appear/dismiss animations.
     anims: Vec<CardAnim>,
@@ -316,10 +316,13 @@ fn visible_cards(model: &ShelfModel) -> impl Iterator<Item = &Thumb> {
     model.newest_first().take(MAX_VISIBLE_CARDS)
 }
 
+/// Oldest cards to drop until the cache fits. `saving` cards still count
+/// but are never dropped, so the shelf can briefly exceed its limits.
 fn shelf_cache_evictions_with_limits(
     newest_first: &[(u64, CardKind, FileLifetime, u64)],
     max_cards: usize,
     max_image_bytes: u64,
+    saving: impl Fn(u64) -> bool,
 ) -> Vec<u64> {
     let mut cards = newest_first.len();
     let mut image_bytes = newest_first
@@ -333,6 +336,9 @@ fn shelf_cache_evictions_with_limits(
     for (id, kind, lifetime, bytes) in newest_first.iter().rev() {
         if cards <= max_cards && image_bytes <= max_image_bytes {
             break;
+        }
+        if saving(*id) {
+            continue;
         }
         evictions.push(*id);
         cards -= 1;
@@ -1137,7 +1143,7 @@ pub fn run_daemon(save_dir_cli: Option<std::path::PathBuf>) -> DynResult<()> {
         save_dir,
         save_flash: None,
         frame_requested: None,
-        saving_cards: std::collections::HashSet::new(),
+        saves: save::CardSaves::default(),
         press: None,
         anims: Vec::new(),
         exit: false,
@@ -1756,20 +1762,27 @@ impl Daemon {
                 (card.id, card.kind, card.lifetime, bytes)
             })
             .collect::<Vec<_>>();
-        for id in
-            shelf_cache_evictions_with_limits(&cards, MAX_CACHED_CARDS, MAX_CACHED_IMAGE_BYTES)
-        {
+        for id in shelf_cache_evictions_with_limits(
+            &cards,
+            MAX_CACHED_CARDS,
+            MAX_CACHED_IMAGE_BYTES,
+            |id| self.saves.is_saving(id),
+        ) {
             self.remove_card_now(id);
         }
     }
 
+    /// Drop a card and its temporary file. A card being saved stays; it closes
+    /// once the save succeeds.
     fn remove_card_now(&mut self, id: u64) -> bool {
+        if !self.saves.request_close(id) {
+            return false;
+        }
         let Some(card) = self.model.remove(id) else {
             return false;
         };
         let _ = card.delete_file_on_dismiss();
         self.anims.retain(|animation| animation.id != id);
-        self.saving_cards.remove(&id);
         if self.hovered == Some(id) {
             self.hovered = None;
         }
@@ -1826,7 +1839,7 @@ impl Daemon {
             None => return,
         };
         if kind == CardKind::Video {
-            if !self.saving_cards.insert(id) {
+            if !self.saves.start(id) {
                 return;
             }
             let dir = crate::config::resolve_record_dir(&crate::config::Config::load());
@@ -1864,7 +1877,10 @@ impl Daemon {
                 if self.hovered == Some(id) {
                     self.hovered = None;
                 }
-                self.start_anim(id, AnimKind::Disappear);
+                // A card being saved stays until the save ends.
+                if self.saves.request_close(id) {
+                    self.start_anim(id, AnimKind::Disappear);
+                }
                 *redraw = true;
             }
         }
@@ -2929,12 +2945,21 @@ impl Daemon {
                 self.draw_popup();
             }
             DaemonEvent::CardPromoted { id, result } => {
-                self.saving_cards.remove(&id);
+                let close = self.saves.finish(id, result.is_ok());
                 match result {
                     Ok(path) => {
                         eprintln!("boltsnap daemon: saved {}", path.display());
                         if self.model.promote(id, path) {
                             self.flash_saved(id);
+                        }
+                        if close {
+                            self.start_anim(id, AnimKind::Disappear);
+                        }
+                        // Evictions skipped while the card was saving.
+                        self.trim_shelf_cache();
+                        self.relayout();
+                        if let Some(qh) = self.qh.clone() {
+                            self.draw(&qh);
                         }
                     }
                     Err(error) => {
@@ -3873,8 +3898,17 @@ mod tests {
         ];
 
         assert_eq!(
-            shelf_cache_evictions_with_limits(&newest_first, 4, 100),
+            shelf_cache_evictions_with_limits(&newest_first, 4, 100, |_| false),
             vec![1, 2]
+        );
+        // A card being saved is skipped; the next oldest goes instead.
+        assert_eq!(
+            shelf_cache_evictions_with_limits(&newest_first, 4, 100, |id| id == 1),
+            vec![2, 3, 4]
+        );
+        assert_eq!(
+            shelf_cache_evictions_with_limits(&newest_first, 1, 0, |id| id != 5),
+            vec![5]
         );
     }
 

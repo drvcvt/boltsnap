@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::{self, Seek};
 use std::path::{Path, PathBuf};
@@ -22,9 +23,68 @@ fn save_image_at(source: &Path, dir: &Path, stamp: &str) -> io::Result<PathBuf> 
     }
 }
 
+/// Cards with a save in flight. They stay on the shelf, with their source,
+/// until the save ends; a close asked for meanwhile waits for the result.
+#[derive(Default)]
+pub(super) struct CardSaves {
+    saving: HashSet<u64>,
+    close_after: HashSet<u64>,
+}
+
+impl CardSaves {
+    /// False when this card is already being saved.
+    pub(super) fn start(&mut self, id: u64) -> bool {
+        self.saving.insert(id)
+    }
+
+    pub(super) fn is_saving(&self, id: u64) -> bool {
+        self.saving.contains(&id)
+    }
+
+    /// True when the card may go now; otherwise it closes after a successful save.
+    pub(super) fn request_close(&mut self, id: u64) -> bool {
+        if self.is_saving(id) {
+            self.close_after.insert(id);
+            false
+        } else {
+            true
+        }
+    }
+
+    /// Ends the save of `id`; true when a waiting close should happen now. A
+    /// failed save drops the close so the card stays for another try.
+    pub(super) fn finish(&mut self, id: u64, saved: bool) -> bool {
+        self.saving.remove(&id);
+        self.close_after.remove(&id) && saved
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_close_during_a_save_waits_for_its_success() {
+        let mut saves = CardSaves::default();
+        assert!(saves.request_close(1));
+        assert!(saves.start(1));
+        assert!(!saves.start(1));
+        assert!(!saves.request_close(1));
+        assert!(saves.is_saving(1));
+        assert!(saves.finish(1, true));
+        assert!(!saves.is_saving(1));
+        assert!(saves.request_close(1));
+    }
+
+    #[test]
+    fn a_failed_save_keeps_the_card_for_another_try() {
+        let mut saves = CardSaves::default();
+        saves.start(1);
+        assert!(!saves.request_close(1));
+        assert!(!saves.finish(1, false));
+        assert!(saves.start(1));
+        assert!(!saves.finish(1, true));
+    }
 
     const STAMP: &str = "2026-09-25_12-00-00";
 
