@@ -812,7 +812,23 @@ die Deadline nicht umgehen. Normaler Output bleibt bytegleich; Output-Limit,
 leerer Output, direkt hängender Prozess, sauberes Reaping und kein Thread-Leak
 prüfen. Der Review-Repro benutzt einen endlichen 1,2-s-Child; produktiver Test
 soll kontrollierte Synchronisation und großzügige Scheduler-Toleranz verwenden.
-Gemeinsame Linux- und Worker-Checks. **Status: geplant.**
+Gemeinsame Linux- und Worker-Checks. **Status: umgesetzt.**
+
+**Abschluss G3:** `output_with_interval` hat keine Reader-Threads mehr. stdout
+und stderr werden nichtblockierend im aufrufenden Thread per `poll` gelesen;
+eine absolute Deadline ab Start gilt für Exit und beide Pipes. Erfolg erst mit
+Exit-Status und EOF auf beiden Pipes. Bei Fristablauf, Lesefehler oder
+Überschreiten des Byte-Limits wird der eigene Child mit dem bestehenden
+`terminate` (SIGTERM, nach 2 s SIGKILL, dann reap) beendet und die eigenen
+Pipe-Enden geschlossen; Nachkommen werden nicht angefasst. Das Poll-Intervall
+begrenzt nur die Exit-Erkennung, `output_setup` behält 1 ms. Tests: Nachkomme hält
+stdout, stderr oder beide (40-ms-Frist, zurück unter 600 ms statt 1,2 s; der
+Review-Repro war rot); Ausgabe mit NUL-Byte und Exit-Code bytegleich; leere
+Ausgabe; je 200 kB auf beiden Streams ohne Deadlock; Limit-Überschreitung.
+Aufrufer (`hypr.rs`, `font.rs`, `thumbnail.rs`, `gsr.rs`, `replay/mod.rs`,
+Worker `crop.rs`) behandeln `Err` bereits als Fehler. Worker per `#[path]`:
+`cargo fmt --check`, `cargo test --locked` (24, inklusive der neuen) und
+`cargo build --locked` grün; die bestehende Warnung zu `output_setup` bleibt.
 
 ### G4: RecordingWatch-Verbindungen begrenzen und abräumen
 
@@ -968,7 +984,7 @@ Alle anderen Items sind offen. F1 erhält unter Empfehlung A keinen Code-Commit.
 | keine | F1 | Cursor-Verhalten beibehalten | |
 | 0 | G1 | exklusiver Daemon-Start vor Cleanup | `G1: lock the daemon before cleanup` |
 | 5 | G2 | Remux-Partials bei exklusivem Neustart erkennen | `G2: clean up failed replay remux partials on start` |
-| 5 | G3 | Deadline inklusive Prozessausgabe | |
+| 5 | G3 | Deadline inklusive Prozessausgabe | `G3: hold the process deadline over its output pipes` |
 | 5 | G4 | begrenzte und bereinigte Recording-Watches | |
 | 5 | G5 | gehaltene Replay-Auswahl vor Restart schützen | |
 | 6 | H1 | Nix-Version aus Cargo lesen | |
