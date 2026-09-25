@@ -111,10 +111,9 @@ selection once preview generation finishes and can restart its worker before
 the selection expires. See G2 and G5 in the
 [fix plan](plans/2026-09-25-review-fixes.md).
 
-Known shelf limitation: saving a replay card permanently currently gives its
-unchanged Matroska bytes an `.mp4` filename, and video drag offers `video/mp4`.
-This does not convert the container. See A4 in the
-[open review findings](codebase.md#open-review-findings).
+Saving a replay card moves its Matroska bytes unchanged and keeps the `.mkv`
+name; dragging it offers `video/x-matroska` next to the file reference.
+Nothing converts the container.
 
 ## Verification and limits
 

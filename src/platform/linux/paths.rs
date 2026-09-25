@@ -258,9 +258,12 @@ pub fn unique_recording_path(dir: &Path, output: Option<&str>) -> PathBuf {
     unique_saved_path(dir, output, "mp4")
 }
 
-/// Pick a free `boltsnap-<local time>[-<output>][-N].<ext>` in `dir`. A name
-/// taken by anything, a dangling symlink included, is skipped; callers still
-/// publish without replacing and pick again when they lose a race.
+/// Pick a free `boltsnap-<local time>[-<output>][-N].<ext>` in `dir` (no
+/// extension when `ext` is empty). The whole stem must be free: `X.mp4`,
+/// `X.mkv` and `X.webm` would share the sidecar `X.cursor.json`, so any of
+/// them, the sidecar or the name itself existing as anything (a dangling
+/// symlink included) takes it. Callers still publish without replacing and
+/// pick again when they lose a race.
 pub fn unique_saved_path(dir: &Path, output: Option<&str>, ext: &str) -> PathBuf {
     unique_saved_path_at(dir, output, &local_timestamp(), ext)
 }
@@ -282,8 +285,13 @@ pub(crate) fn unique_saved_path_at(
         } else {
             format!("-{suffix}")
         };
-        let path = dir.join(format!("boltsnap-{stamp}{output}{suffix}.{ext}"));
-        if fs::symlink_metadata(&path).is_err() {
+        let dot = if ext.is_empty() { "" } else { "." };
+        let path = dir.join(format!("boltsnap-{stamp}{output}{suffix}{dot}{ext}"));
+        let taken = |path: &Path| fs::symlink_metadata(path).is_ok();
+        let stem_taken = ["cursor.json", "mp4", "mkv", "webm"]
+            .into_iter()
+            .any(|sibling| taken(&path.with_extension(sibling)));
+        if !taken(&path) && !stem_taken {
             return path;
         }
     }
@@ -420,6 +428,12 @@ mod tests {
                 .to_string_lossy()
                 .ends_with("-1.mp4")
         );
+        // A replay clip may not reuse the sidecar name of that saved MP4.
+        fs::write(second.with_extension("cursor.json"), b"{}").unwrap();
+        let third = unique_saved_path_at(&dir, Some("DP 1/left"), "2026-07-12_12-00-00", "mkv");
+        assert!(third.to_string_lossy().ends_with("-DP-1-left-2.mkv"));
+        let bare = unique_saved_path_at(&dir, None, "2026-07-12_12-00-00", "");
+        assert_eq!(bare, dir.join("boltsnap-2026-07-12_12-00-00"));
         let _ = fs::remove_dir_all(dir);
     }
 }
