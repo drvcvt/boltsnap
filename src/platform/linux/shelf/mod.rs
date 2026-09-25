@@ -350,6 +350,12 @@ fn shelf_cache_evictions_with_limits(
     evictions
 }
 
+/// Stream a dragged file to the drop target without holding it in memory. A
+/// receiver that closes early ends the copy with an error.
+fn send_file(path: &std::path::Path, out: &mut impl std::io::Write) -> std::io::Result<u64> {
+    std::io::copy(&mut std::fs::File::open(path)?, out)
+}
+
 /// What a drag offers: the bytes under the MIME type of the file, and always a
 /// file reference. A video of unknown type goes as a reference only.
 fn drag_mime_types(kind: CardKind, path: &std::path::Path) -> Vec<&'static str> {
@@ -3686,9 +3692,7 @@ impl DataSourceHandler for Daemon {
                     let _ = file.write_all(uri.as_bytes());
                 }
                 _ => {
-                    if let Ok(bytes) = std::fs::read(&path) {
-                        let _ = file.write_all(&bytes);
-                    }
+                    let _ = send_file(&path, &mut file);
                 }
             }
         });
@@ -3993,6 +3997,38 @@ mod tests {
         });
         assert_eq!(refused.unwrap_err(), "cache full");
         assert_eq!(cache_entries(&dir), 0);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn dragged_files_are_streamed_in_small_writes() {
+        /// Keeps what it gets and the largest single write.
+        struct Receiver(Vec<u8>, usize);
+        impl std::io::Write for Receiver {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.1 = self.1.max(bytes.len());
+                self.0.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let dir = import_dir("drag");
+        let path = dir.join("input/clip.mp4");
+        let bytes: Vec<u8> = (0..1024 * 1024).map(|i| (i % 251) as u8).collect();
+        std::fs::write(&path, &bytes).unwrap();
+
+        let mut receiver = Receiver(Vec::new(), 0);
+        assert_eq!(send_file(&path, &mut receiver).unwrap(), bytes.len() as u64);
+        assert!(receiver.0 == bytes);
+        assert!(receiver.1 <= 64 * 1024, "one write of {} bytes", receiver.1);
+
+        // A receiver that goes away stops the transfer.
+        let (reader, mut writer) = std::os::unix::net::UnixStream::pair().unwrap();
+        drop(reader);
+        assert!(send_file(&path, &mut writer).is_err());
+        assert!(send_file(&dir.join("input/gone.mp4"), &mut Receiver(Vec::new(), 0)).is_err());
         std::fs::remove_dir_all(dir).unwrap();
     }
 
