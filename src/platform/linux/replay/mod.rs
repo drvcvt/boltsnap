@@ -227,6 +227,21 @@ impl Drop for FrozenSelection {
 /// in that state can never produce a clip again. Nothing downstream notices, so
 /// the service has to: it replaces the session the way a manual Start would.
 const WATCHDOG_INTERVAL: Duration = Duration::from_secs(5);
+
+/// An export or an open selection still uses the buffer, even after its input
+/// failed. Older workers lack `selection_active`.
+fn holds_buffer(status: &Value) -> bool {
+    status["busy"] == true || status["selection_active"] == true
+}
+
+fn in_use(status: &Value) -> bool {
+    status["ready"] == true || holds_buffer(status)
+}
+
+fn session_in_use(name: &str) -> bool {
+    socket_call(name, &json!({"version":1,"command":"status"}))
+        .is_ok_and(|(status, _)| in_use(&status))
+}
 const WATCHDOG_STRIKES: u32 = 3;
 
 fn watchdog(
@@ -249,9 +264,7 @@ fn watchdog(
                 strikes = 0;
                 continue;
             };
-            let healthy = socket_call(&name, &json!({"version":1,"command":"status"}))
-                .is_ok_and(|(status, _)| status["ready"] == true || status["busy"] == true);
-            if healthy {
+            if session_in_use(&name) {
                 strikes = 0;
                 continue;
             }
@@ -265,8 +278,9 @@ fn watchdog(
                 Err(_) => continue,
             };
             let mut guard = owner.lock().unwrap();
-            // Only replace the session the strikes were counted against.
-            if guard.as_ref().is_none_or(|s| s.name != name) {
+            // Only replace the session the strikes were counted against, and
+            // ask once more under the lock: a selection may have opened since.
+            if guard.as_ref().is_none_or(|s| s.name != name) || session_in_use(&name) {
                 continue;
             }
             let dead = guard.take();
@@ -627,16 +641,30 @@ pub(crate) fn serve(sender: calloop::channel::Sender<DaemonEvent>) -> Result<Ser
                             // is stalled for good: no clip can ever come out of
                             // it, and refusing to start would leave no way back
                             // except Stop. Only a session the worker still
-                            // calls ready blocks a restart.
-                            let capturing = capture_alive
-                                && worker_alive
-                                && socket_call(
-                                    &session.name,
-                                    &json!({"version":1,"command":"status"}),
-                                )
-                                .is_ok_and(|(status, _)| status["ready"] == true);
-                            if capturing {
+                            // calls ready blocks a restart, and an open
+                            // selection or export must end first.
+                            let status = worker_alive
+                                .then(|| {
+                                    socket_call(
+                                        &session.name,
+                                        &json!({"version":1,"command":"status"}),
+                                    )
+                                    .ok()
+                                })
+                                .flatten()
+                                .map(|(status, _)| status);
+                            if capture_alive
+                                && status
+                                    .as_ref()
+                                    .is_some_and(|status| status["ready"] == true)
+                            {
                                 return Err("replay is already running".into());
+                            }
+                            if status.as_ref().is_some_and(holds_buffer) {
+                                return Err(
+                                    "a replay selection or export is still open; save or cancel it first"
+                                        .into(),
+                                );
                             }
                             guard.take();
                         }
@@ -758,4 +786,30 @@ pub(crate) fn serve(sender: calloop::channel::Sender<DaemonEvent>) -> Result<Ser
         });
     }
     Ok(service)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_held_selection_keeps_a_stalled_session() {
+        let status = |ready, busy, selection: Option<bool>| {
+            let mut status = json!({"ready": ready, "busy": busy});
+            if let Some(selection) = selection {
+                status["selection_active"] = json!(selection);
+            }
+            status
+        };
+        // G5: input gone, preview done, selection still open.
+        assert!(in_use(&status(false, false, Some(true))));
+        assert!(holds_buffer(&status(false, false, Some(true))));
+        assert!(in_use(&status(true, false, Some(false))));
+        assert!(!holds_buffer(&status(true, false, Some(false))));
+        assert!(holds_buffer(&status(false, true, None)));
+        // A stalled session without a selection may be replaced; an older
+        // worker without the field reads as no selection.
+        assert!(!in_use(&status(false, false, Some(false))));
+        assert!(!in_use(&status(false, false, None)));
+    }
 }
