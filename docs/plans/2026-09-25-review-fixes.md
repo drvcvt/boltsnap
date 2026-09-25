@@ -604,7 +604,19 @@ verzögerter Verlierer darf den Gewinner nicht beeinträchtigen. Lock-Freigabe b
 normalem Exit und Crash, Stale-Socket-Recovery und unerwarteten Pfadtyp prüfen.
 Keine echten Benutzerdateien als Lösch-Fixtures. Gemeinsame Linux-Checks;
 später separater Cold-Start-Test über CLI und systemd, kein Neustart während
-anderer laufender Aufnahmen. **Status: geplant.**
+anderer laufender Aufnahmen. **Status: umgesetzt, Cold-Start-Test offen.**
+
+**Abschluss G1:** `ipc::lock_daemon` nimmt `flock(LOCK_EX|LOCK_NB)` auf
+`boltsnap.lock` neben dem Socket (`O_NOFOLLOW`, `0600`, `CLOEXEC` über std).
+`run_daemon` holt den Lock vor Log-Rotation, Alive-Prüfung und Cleanup; ein
+Verlierer beendet sich ohne Nebenwirkung. Die Alive-Prüfung bleibt für Daemons
+von vor dem Lock. `remove_stale_socket` entfernt nur echte Sockets; eine
+Datei oder ein Symlink am Socketpfad bricht den Start mit Fehler ab. Tests:
+zwei per Barrier gestartete Lock-Versuche ergeben genau einen Besitzer, nach
+Freigabe ist der Lock wieder frei; alter Socket wird entfernt, Datei und
+Symlink bleiben. Die Tests prüfen neue Funktionen und waren vorher nicht
+kompilierbar statt rot. Die Verdrahtung in `run_daemon` braucht Wayland und
+ist nur per Code geprüft.
 
 ### G2: Replay-Remux-Partials bei Neustart erkennen
 
@@ -810,6 +822,11 @@ vorgaben und benötigen keine zusätzliche Einzelabstimmung. Bei einem späteren
 Go die gewählten Optionen hier festhalten. Ändert eine Erkenntnis den Umfang
 anderer Items, zuerst den Plan korrigieren und die Abweichung klären.
 
+**Beschlossen vom Nutzer am 25.09.2026 (Umsetzungsauftrag für alle Items):**
+1 A (nur Save/Discard), 2 A (Karte anheften), 3 A (unabhängige Kopie),
+4 **B** (mutierendes Retry streichen, gegen die Empfehlung), 5 A (kein
+Cursor-Fix).
+
 ## 5. Status
 
 A1 ist implementiert und geprüft. Es bleibt bei einer Fähigkeit pro Commit,
@@ -829,7 +846,7 @@ Alle anderen Items sind offen. F1 erhält unter Empfehlung A keinen Code-Commit.
 | 4 | D1 | Streaming beim Drag | |
 | 4 | D2 | asynchroner Bild-Save | |
 | keine | F1 | Cursor-Verhalten beibehalten | |
-| 0 | G1 | exklusiver Daemon-Start vor Cleanup | |
+| 0 | G1 | exklusiver Daemon-Start vor Cleanup | `G1: lock the daemon before cleanup` |
 | 5 | G2 | Remux-Partials bei exklusivem Neustart erkennen | |
 | 5 | G3 | Deadline inklusive Prozessausgabe | |
 | 5 | G4 | begrenzte und bereinigte Recording-Watches | |

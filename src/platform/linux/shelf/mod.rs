@@ -1051,13 +1051,18 @@ fn log_to_file_when_detached() {
 }
 
 pub fn run_daemon(save_dir_cli: Option<std::path::PathBuf>) -> DynResult<()> {
-    // Single-instance: if a daemon already answers, do nothing.
+    // Single instance: the lock decides before any log rotation or cleanup, so
+    // a racing second start cannot delete the winner's socket or media.
+    let Some(_lock) = crate::ipc::lock_daemon()? else {
+        return Ok(());
+    };
+    // A daemon from before the lock existed may still answer.
     if crate::ipc::daemon_alive() {
         return Ok(());
     }
     log_to_file_when_detached();
     let sock = crate::ipc::socket_path();
-    let _ = std::fs::remove_file(&sock); // clear stale socket
+    crate::ipc::remove_stale_socket(&sock)?;
 
     // No daemon was running, so the shelf is empty: any leftover shelf tempfiles
     // are orphans from a previous run/crash. Remove them so the RAM-only shelf
