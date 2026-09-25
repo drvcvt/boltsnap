@@ -221,9 +221,19 @@ pub fn clean_orphan_rec_files() -> usize {
     removed
 }
 
-/// Recordings and shelf copies, plus the replay worker's `clip-*.mkv` exports.
+/// Recordings and shelf copies, plus the replay worker's `clip-*.mkv` exports
+/// and the `clip-*.mkv.<pid>.<seq>.partial` files a failed remux leaves.
 fn is_orphan_rec_file(name: &str) -> bool {
-    name.starts_with("boltsnap-") || (name.starts_with("clip-") && name.ends_with(".mkv"))
+    let is_clip = |name: &str| name.starts_with("clip-") && name.ends_with(".mkv");
+    let number = |field: &str| !field.is_empty() && field.bytes().all(|b| b.is_ascii_digit());
+    let remux_partial = name.strip_suffix(".partial").is_some_and(|rest| {
+        let mut fields = rest.rsplitn(3, '.');
+        matches!(
+            (fields.next(), fields.next(), fields.next()),
+            (Some(seq), Some(pid), Some(clip)) if number(seq) && number(pid) && is_clip(clip)
+        )
+    });
+    name.starts_with("boltsnap-") || is_clip(name) || remux_partial
 }
 
 pub fn timestamp() -> u128 {
@@ -386,6 +396,19 @@ mod tests {
         assert!(is_orphan_rec_file("clip-3233529-1790267666021572148-1.mkv"));
         assert!(!is_orphan_rec_file("clip-notes.txt"));
         assert!(!is_orphan_rec_file("other.mkv"));
+        // Crop partials already end in .mkv; remux partials end in .partial.
+        assert!(is_orphan_rec_file("clip-3-4-1.partial.mkv"));
+        assert!(is_orphan_rec_file("clip-123-456-1.mkv.123.0.partial"));
+        for kept in [
+            "clip-123-456-1.mkv.x.0.partial",
+            "clip-123-456-1.mkv.123..partial",
+            "clip-123-456-1.mkv.123.partial",
+            "notes.mkv.123.0.partial",
+            "clip-notes.txt.123.0.partial",
+            "clip-1.mkv.123.0.partial.bak",
+        ] {
+            assert!(!is_orphan_rec_file(kept), "{kept}");
+        }
     }
 
     #[test]

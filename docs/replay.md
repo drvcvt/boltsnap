@@ -104,9 +104,11 @@ other orphaned recordings when it starts. Existing cache and disk
 reserve checks apply; concurrent ordinary recording is not a shared disk
 reservation. Do not treat that preflight check as a hard system-wide disk cap.
 
-Known cleanup gap: failed remux files ending in `.mkv.<pid>.<seq>.partial`
-are not recognized by startup cleanup and continue to consume cache space.
-Also, after capture input fails, the watchdog currently overlooks a retained
+A failed remux keeps its `clip-*.mkv.<pid>.<seq>.partial` file for diagnosis
+until the daemon restarts; startup cleanup then removes it with the other
+orphans, so it no longer fills the cache quota for good.
+
+Known gap: after capture input fails, the watchdog currently overlooks a retained
 selection once preview generation finishes and can restart its worker before
 the selection expires. See G2 and G5 in the
 [fix plan](plans/2026-09-25-review-fixes.md).

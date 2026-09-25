@@ -760,7 +760,17 @@ fertige MKV-, Crop-Partial-, Remux-Partial-Namen, kaputte Nummernfelder und
 unbeteiligte `clip-notes.txt` abdecken. Synthetisch einen Exportfehler erzeugen,
 Artefakt bis zum Ende der Session erhalten und nach kontrolliertem exklusivem
 Neustart die vorgesehene Auswahl zur Bereinigung prüfen. Gemeinsame Linux- und
-Worker-Checks. **Status: geplant.**
+Worker-Checks. **Status: umgesetzt.**
+
+**Abschluss G2:** `is_orphan_rec_file` erkennt zusätzlich genau
+`<clip-*.mkv>.<Ziffern>.<Ziffern>.partial`, wie `export::create_partial` sie
+aus dem `clip-<pid>-<nanos>-<id>.mkv`-Namen von `live.rs` bildet; Crop-Partials
+(`.partial.mkv`) waren schon erfasst. Die Bereinigung läuft nur beim Start
+unter dem G1-Lock. Test: der Review-Repro-Name (vorher rot) und ein
+Crop-Partial werden erkannt; nicht numerische, leere oder fehlende Felder,
+fremde Basen, `clip-notes.txt` und angehängte Endungen bleiben. Kein Worker-Code
+geändert, daher keine Worker-Läufe; der synthetische Exportfehler mit
+anschließendem Neustart ist nicht ausgeführt. `docs/replay.md` angepasst.
 
 ### G3: Prozess-Deadline auch für stdout/stderr einhalten
 
@@ -957,7 +967,7 @@ Alle anderen Items sind offen. F1 erhält unter Empfehlung A keinen Code-Commit.
 | 4 | D2 | asynchroner Bild-Save | `D2: save image cards off the event loop` |
 | keine | F1 | Cursor-Verhalten beibehalten | |
 | 0 | G1 | exklusiver Daemon-Start vor Cleanup | `G1: lock the daemon before cleanup` |
-| 5 | G2 | Remux-Partials bei exklusivem Neustart erkennen | |
+| 5 | G2 | Remux-Partials bei exklusivem Neustart erkennen | `G2: clean up failed replay remux partials on start` |
 | 5 | G3 | Deadline inklusive Prozessausgabe | |
 | 5 | G4 | begrenzte und bereinigte Recording-Watches | |
 | 5 | G5 | gehaltene Replay-Auswahl vor Restart schützen | |
