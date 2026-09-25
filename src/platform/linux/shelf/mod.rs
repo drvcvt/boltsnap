@@ -195,8 +195,11 @@ pub(crate) enum DaemonEvent {
         result: StopChildrenResult,
     },
     Finalized(Result<Vec<FinalizedClip>, FinalizeFailure>),
-    CardPromoted {
+    /// A card save ended. A video card moves to the saved file (`promote`); an
+    /// image card is copied and keeps its temporary file.
+    CardSaved {
         id: u64,
+        promote: bool,
         result: Result<std::path::PathBuf, String>,
     },
     FocusResolved(Result<Vec<crate::record::Monitor>, String>),
@@ -1890,28 +1893,32 @@ impl Daemon {
             Some(t) => (t.png_path.clone(), t.kind),
             None => return,
         };
-        if kind == CardKind::Video {
-            if !self.saves.start(id) {
-                return;
-            }
-            let dir = crate::config::resolve_record_dir(&crate::config::Config::load());
-            let tx = self.event_tx.clone();
-            std::thread::spawn(move || {
-                let result = promote_recording(&src, &dir, None);
-                let _ = tx.send(DaemonEvent::CardPromoted { id, result });
-            });
+        // Off the event loop: a slow target must not stall the shelf. The
+        // card stays protected until the result arrives.
+        if !self.saves.start(id) {
             return;
         }
-
-        match save::save_image(&src, &self.save_dir) {
-            Ok(dest) => {
-                eprintln!("boltsnap daemon: saved {}", dest.display());
-                self.flash_saved(id);
-            }
-            Err(error) => {
-                eprintln!("boltsnap daemon: save failed: {error}");
-                notify(&format!("Screenshot could not be saved: {error}"));
-            }
+        let tx = self.event_tx.clone();
+        if kind == CardKind::Video {
+            let dir = crate::config::resolve_record_dir(&crate::config::Config::load());
+            std::thread::spawn(move || {
+                let result = promote_recording(&src, &dir, None);
+                let _ = tx.send(DaemonEvent::CardSaved {
+                    id,
+                    promote: true,
+                    result,
+                });
+            });
+        } else {
+            let dir = self.save_dir.clone();
+            std::thread::spawn(move || {
+                let result = save::save_image(&src, &dir).map_err(|error| error.to_string());
+                let _ = tx.send(DaemonEvent::CardSaved {
+                    id,
+                    promote: false,
+                    result,
+                });
+            });
         }
     }
 
@@ -2994,12 +3001,16 @@ impl Daemon {
                 ));
                 self.draw_popup();
             }
-            DaemonEvent::CardPromoted { id, result } => {
+            DaemonEvent::CardSaved {
+                id,
+                promote,
+                result,
+            } => {
                 let close = self.saves.finish(id, result.is_ok());
                 match result {
                     Ok(path) => {
                         eprintln!("boltsnap daemon: saved {}", path.display());
-                        if self.model.promote(id, path) {
+                        if !promote || self.model.promote(id, path) {
                             self.flash_saved(id);
                         }
                         if close {
@@ -3013,8 +3024,9 @@ impl Daemon {
                         }
                     }
                     Err(error) => {
-                        eprintln!("boltsnap daemon: video save failed: {error}");
-                        notify(&format!("Video could not be saved: {error}"));
+                        eprintln!("boltsnap daemon: save failed: {error}");
+                        let what = if promote { "Video" } else { "Screenshot" };
+                        notify(&format!("{what} could not be saved: {error}"));
                     }
                 }
             }
