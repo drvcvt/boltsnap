@@ -1,6 +1,6 @@
 use std::io::{self, Write};
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
@@ -27,6 +27,49 @@ pub fn daemon_alive() -> bool {
             true
         }
         Err(_) => false,
+    }
+}
+
+/// Takes the daemon lock beside the socket, or `None` while another daemon
+/// holds it. Hold the file for the daemon's lifetime; the lock file itself
+/// stays, so every start locks the same inode.
+pub fn lock_daemon() -> io::Result<Option<std::fs::File>> {
+    lock_file(&socket_path().with_extension("lock"))
+}
+
+fn lock_file(path: &Path) -> io::Result<Option<std::fs::File>> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::OpenOptionsExt;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)?;
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+        return Ok(Some(file));
+    }
+    let error = io::Error::last_os_error();
+    if error.kind() == io::ErrorKind::WouldBlock {
+        Ok(None)
+    } else {
+        Err(error)
+    }
+}
+
+/// Removes a leftover socket of a dead daemon. Anything that is not a socket
+/// is left alone and reported.
+pub fn remove_stale_socket(path: &Path) -> io::Result<()> {
+    use std::os::unix::fs::FileTypeExt;
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_socket() => std::fs::remove_file(path),
+        Ok(_) => Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!("{} exists and is not a socket", path.display()),
+        )),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
     }
 }
 
@@ -568,6 +611,71 @@ mod tests {
             Some(v) => unsafe { std::env::set_var("XDG_RUNTIME_DIR", v) },
             None => unsafe { std::env::remove_var("XDG_RUNTIME_DIR") },
         }
+    }
+
+    fn scratch_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "boltsnap-ipc-{name}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn daemon_lock_admits_one_owner_until_released() {
+        let dir = scratch_dir("lock");
+        let path = dir.join("boltsnap.lock");
+        let barrier = std::sync::Barrier::new(2);
+        let won = std::thread::scope(|scope| {
+            let racers: Vec<_> = (0..2)
+                .map(|_| {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        lock_file(&path).unwrap()
+                    })
+                })
+                .collect();
+            racers
+                .into_iter()
+                .map(|racer| racer.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(won.iter().filter(|lock| lock.is_some()).count(), 1);
+        assert!(lock_file(&path).unwrap().is_none());
+        drop(won);
+        assert!(lock_file(&path).unwrap().is_some());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn only_a_stale_socket_is_removed() {
+        let dir = scratch_dir("stale");
+        let missing = dir.join("missing.sock");
+        remove_stale_socket(&missing).unwrap();
+
+        let stale = dir.join("stale.sock");
+        drop(UnixListener::bind(&stale).unwrap());
+        remove_stale_socket(&stale).unwrap();
+        assert!(!stale.exists());
+
+        let file = dir.join("file.sock");
+        std::fs::write(&file, b"keep").unwrap();
+        let link = dir.join("link.sock");
+        let target = dir.join("target.sock");
+        let _listener = UnixListener::bind(&target).unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        for path in [&file, &link] {
+            assert_eq!(
+                remove_stale_socket(path).unwrap_err().kind(),
+                io::ErrorKind::AlreadyExists
+            );
+            assert!(std::fs::symlink_metadata(path).is_ok());
+        }
+        assert_eq!(std::fs::read(&file).unwrap(), b"keep");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
