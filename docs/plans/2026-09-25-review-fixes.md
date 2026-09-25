@@ -348,6 +348,23 @@ der Screenshot-Fallback muss weiterhin funktionieren.
 **Verifikation:** gemeinsame und Replay-Checks; manuell gespeicherten Replay-Clip
 öffnen und in ein Ziel mit Datei- sowie Byte-Import ziehen.
 
+**Abschluss A4:** `promote_recording` wählt den Namen über
+`paths::unique_saved_path` mit der kleingeschriebenen Quellendung (1-8
+ASCII-Alphanumerische), sonst ohne Endung; die Bytes wandern unverändert.
+Die Namenssuche reserviert jetzt den ganzen Stamm: `X` ist belegt, sobald `X`
+selbst, `X.cursor.json`, `X.mp4`, `X.mkv` oder `X.webm` existiert. Damit
+beansprucht kein neuer Clip den Sidecar eines vorhandenen. `drag_mime_types`
+bietet `video/mp4`, `video/x-matroska` oder `video/webm` nach Endung an,
+unbekannte Videos nur `text/uri-list`. `drag_card` merkt Pfad und Kartentyp
+beim Drag-Start bis `clear_drag`; `cancelled` wertet den Typ aus, also fällt
+kein abgebrochener Video-Drag mehr in den Bild-Clipboard-Pfad. Tests: Promotion
+von mkv/mp4/WebM/ungültiger/fehlender Endung (Bytes gleich, Endung erhalten,
+Quelle weg; mit dem alten Code rot wie der Review-Repro), Namenssuche mit
+belegtem Sidecar-Stamm und leerer Endung, MIME-Auswahl. Der Cancel-Pfad braucht
+Wayland und ist nur per Code geprüft. Replay-Worker unverändert; deshalb keine
+Worker-, `probe.py`- oder `live.py`-Läufe. Normale Finalisierung bleibt MP4.
+Manueller Drag-/Save-Check offen.
+
 ### B1: Video-Import übernimmt reguläre Dateiinhalte
 
 **Phase 1: Verhalten und Ursache**
@@ -902,7 +919,7 @@ Alle anderen Items sind offen. F1 erhält unter Empfehlung A keinen Code-Commit.
 | 1 | A2 | Bild-Save ohne Überschreiben | `A2: never overwrite on image save` |
 | 1 | A3 | Schutz laufender Saves vor Dismiss/Eviction | `A3: keep a card until its save ends` |
 | 2 | E1 | sicherer Recovery-Zustand nach Finalisierung | `E1: allow only save or discard after a failed save` |
-| 3 | A4 | Containerendung und Drag-MIME | |
+| 3 | A4 | Containerendung und Drag-MIME | `A4: keep the container on save and drag` |
 | 3 | B1 | unabhängiger regulärer Video-Import | |
 | 3 | C1 | sichere IPC-Kompatibilitätswahl | `C1: send a screenshot to the shelf only once` |
 | 4 | D1 | Streaming beim Drag | |

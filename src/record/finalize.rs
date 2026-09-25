@@ -337,14 +337,18 @@ pub fn promote_recording(
     output: Option<&str>,
 ) -> Result<PathBuf, String> {
     fs::create_dir_all(dir).map_err(|error| format!("create recording directory: {error}"))?;
+    // Saving moves the bytes unchanged, so the container keeps its extension.
+    let extension = media_extension(source);
     loop {
-        let destination = crate::paths::unique_recording_path(dir, output);
+        let destination = crate::paths::unique_saved_path(dir, output, &extension);
         match move_final_file(source, &destination) {
             Ok(()) => {
                 move_sidecars(source, &destination);
                 return Ok(destination);
             }
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists && destination.exists() => {}
+            Err(error)
+                if error.kind() == io::ErrorKind::AlreadyExists
+                    && fs::symlink_metadata(&destination).is_ok() => {}
             Err(error) => {
                 return Err(format!(
                     "save recording to {}: {error}",
@@ -353,6 +357,20 @@ pub fn promote_recording(
             }
         }
     }
+}
+
+/// The source's extension, lowercased, when it looks like one; otherwise none
+/// rather than a claim the bytes do not back.
+fn media_extension(source: &Path) -> String {
+    source
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .filter(|extension| {
+            (1..=8).contains(&extension.len())
+                && extension.bytes().all(|byte| byte.is_ascii_alphanumeric())
+        })
+        .unwrap_or_default()
+        .to_ascii_lowercase()
 }
 
 fn move_to_disk_with(
@@ -847,6 +865,29 @@ mod tests {
             scale: 1.0,
             focused: x == 0,
         }
+    }
+
+    #[test]
+    fn promotion_keeps_the_container_extension() {
+        let dir = temp_dir("promote-extension");
+        for (name, extension) in [
+            ("clip-1.mkv", Some("mkv")),
+            ("rec.mp4", Some("mp4")),
+            ("in.WebM", Some("webm")),
+            ("odd.not an ext", None),
+            ("bare", None),
+        ] {
+            let source = file(&dir.join(name), name.as_bytes());
+            let saved = promote_recording(&source, &dir.join("saved"), None).unwrap();
+            assert_eq!(fs::read(&saved).unwrap(), name.as_bytes(), "{name}");
+            assert_eq!(
+                saved.extension().and_then(|e| e.to_str()),
+                extension,
+                "{name}"
+            );
+            assert!(!source.exists(), "{name}");
+        }
+        let _ = fs::remove_dir_all(dir);
     }
 
     /// E1: after a composed Combined clip failed to reach the disk, saving the

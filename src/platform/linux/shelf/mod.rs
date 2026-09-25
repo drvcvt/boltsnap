@@ -91,7 +91,8 @@ pub struct Daemon {
     ddm: DataDeviceManagerState,
     data_device: Option<DataDevice>,
     drag_source: Option<DragSource>,
-    drag_path: Option<std::path::PathBuf>,
+    /// File and kind of the card being dragged, until the drag ends.
+    drag_card: Option<(std::path::PathBuf, CardKind)>,
     drop_ok: bool,
     icon_surface: Option<WlSurface>,
     /// Dedicated pool kept alive for the whole drag so the shelf's `pool` can't
@@ -347,6 +348,26 @@ fn shelf_cache_evictions_with_limits(
         }
     }
     evictions
+}
+
+/// What a drag offers: the bytes under the MIME type of the file, and always a
+/// file reference. A video of unknown type goes as a reference only.
+fn drag_mime_types(kind: CardKind, path: &std::path::Path) -> Vec<&'static str> {
+    let bytes = match kind {
+        CardKind::Image => Some("image/png"),
+        CardKind::Video => match path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .map(str::to_ascii_lowercase)
+            .as_deref()
+        {
+            Some("mp4") => Some("video/mp4"),
+            Some("mkv") => Some("video/x-matroska"),
+            Some("webm") => Some("video/webm"),
+            _ => None,
+        },
+    };
+    bytes.into_iter().chain(["text/uri-list"]).collect()
 }
 
 fn ease_out_cubic(progress: f32) -> f32 {
@@ -1129,7 +1150,7 @@ pub fn run_daemon(save_dir_cli: Option<std::path::PathBuf>) -> DynResult<()> {
         ddm,
         data_device: None,
         drag_source: None,
-        drag_path: None,
+        drag_card: None,
         drag_icon_pool: None,
         drag_icon_buffer: None,
         drop_ok: false,
@@ -1914,18 +1935,11 @@ impl Daemon {
         // the icon flash and then vanish inconsistently — and reliably broke when
         // the drag crossed to another output, where the compositor re-maps the
         // icon and found it in a bad state.
-        let source = match kind {
-            crate::shelf::model::CardKind::Image => self.ddm.create_drag_and_drop_source(
-                &qh,
-                ["image/png", "text/uri-list"],
-                DndAction::Copy,
-            ),
-            crate::shelf::model::CardKind::Video => self.ddm.create_drag_and_drop_source(
-                &qh,
-                ["video/mp4", "text/uri-list"],
-                DndAction::Copy,
-            ),
-        };
+        let source = self.ddm.create_drag_and_drop_source(
+            &qh,
+            drag_mime_types(kind, &path),
+            DndAction::Copy,
+        );
         let icon = self.compositor.create_surface(&qh);
         {
             let device = self.data_device.as_ref().unwrap();
@@ -1961,7 +1975,7 @@ impl Daemon {
             }
         }
 
-        self.drag_path = Some(path);
+        self.drag_card = Some((path, kind));
         self.drop_ok = false;
         self.icon_surface = Some(icon);
         self.drag_source = Some(source);
@@ -1972,7 +1986,7 @@ impl Daemon {
     /// `cancelled` and `dnd_finished` paths), then repaint the shelf once.
     fn clear_drag(&mut self) {
         self.drag_source = None;
-        self.drag_path = None;
+        self.drag_card = None;
         self.icon_surface = None;
         self.drag_icon_buffer = None;
         self.drag_icon_pool = None;
@@ -3627,7 +3641,7 @@ impl DataSourceHandler for Daemon {
         if !is_ours {
             return;
         }
-        let Some(path) = self.drag_path.clone() else {
+        let Some((path, _)) = self.drag_card.clone() else {
             return;
         };
         // Write the requested data on a DETACHED THREAD, never on the calloop
@@ -3660,15 +3674,11 @@ impl DataSourceHandler for Daemon {
         // the target rejected it): fall back to copying the image to the clipboard
         // so the drag is never wasted.
         if !self.drop_ok
-            && let Some(path) = self.drag_path.clone()
+            && let Some((path, kind)) = self.drag_card.clone()
         {
             // Only screenshots fall back to a clipboard image copy; a video's
             // raw bytes aren't meaningful on the clipboard (mirrors copy_card).
-            let is_video = path
-                .extension()
-                .and_then(|e| e.to_str())
-                .is_some_and(|e| e.eq_ignore_ascii_case("mp4"));
-            if is_video {
+            if kind == CardKind::Video {
                 eprintln!(
                     "boltsnap daemon: drag cancelled for a video card; not copying to clipboard (use Save)"
                 );
@@ -3891,6 +3901,29 @@ mod tests {
             assert_eq!(command.get_program(), "xdg-open");
             assert_eq!(command.get_args().collect::<Vec<_>>(), [path.as_os_str()]);
         }
+    }
+
+    #[test]
+    fn drags_offer_the_mime_type_of_the_file() {
+        let offer = |kind, name| drag_mime_types(kind, std::path::Path::new(name));
+        assert_eq!(
+            offer(CardKind::Image, "/c/shot.png"),
+            ["image/png", "text/uri-list"]
+        );
+        assert_eq!(
+            offer(CardKind::Video, "/c/rec.mp4"),
+            ["video/mp4", "text/uri-list"]
+        );
+        assert_eq!(
+            offer(CardKind::Video, "/c/clip-1.MKV"),
+            ["video/x-matroska", "text/uri-list"]
+        );
+        assert_eq!(
+            offer(CardKind::Video, "/c/in.webm"),
+            ["video/webm", "text/uri-list"]
+        );
+        assert_eq!(offer(CardKind::Video, "/c/odd.avi"), ["text/uri-list"]);
+        assert_eq!(offer(CardKind::Video, "/c/bare"), ["text/uri-list"]);
     }
 
     #[test]
