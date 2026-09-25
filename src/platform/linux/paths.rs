@@ -238,11 +238,6 @@ pub fn timestamp() -> u128 {
         .as_millis()
 }
 
-/// Saved-file filename from a wall-clock stamp and extension: `boltsnap-<stamp>.<ext>`.
-pub fn boltsnap_filename_ext(stamp: &str, ext: &str) -> String {
-    format!("boltsnap-{stamp}.{ext}")
-}
-
 pub fn sanitize_recording_output(output: &str) -> String {
     output
         .chars()
@@ -260,10 +255,22 @@ pub fn sanitize_recording_output(output: &str) -> String {
 
 /// Pick a non-existing permanent recording path without overwriting an older clip.
 pub fn unique_recording_path(dir: &Path, output: Option<&str>) -> PathBuf {
-    unique_recording_path_at(dir, output, &local_timestamp())
+    unique_saved_path(dir, output, "mp4")
 }
 
-fn unique_recording_path_at(dir: &Path, output: Option<&str>, stamp: &str) -> PathBuf {
+/// Pick a free `boltsnap-<local time>[-<output>][-N].<ext>` in `dir`. A name
+/// taken by anything, a dangling symlink included, is skipped; callers still
+/// publish without replacing and pick again when they lose a race.
+pub fn unique_saved_path(dir: &Path, output: Option<&str>, ext: &str) -> PathBuf {
+    unique_saved_path_at(dir, output, &local_timestamp(), ext)
+}
+
+pub(crate) fn unique_saved_path_at(
+    dir: &Path,
+    output: Option<&str>,
+    stamp: &str,
+    ext: &str,
+) -> PathBuf {
     let output = output
         .map(sanitize_recording_output)
         .filter(|name| !name.is_empty())
@@ -275,8 +282,8 @@ fn unique_recording_path_at(dir: &Path, output: Option<&str>, stamp: &str) -> Pa
         } else {
             format!("-{suffix}")
         };
-        let path = dir.join(format!("boltsnap-{stamp}{output}{suffix}.mp4"));
-        if !path.exists() {
+        let path = dir.join(format!("boltsnap-{stamp}{output}{suffix}.{ext}"));
+        if fs::symlink_metadata(&path).is_err() {
             return path;
         }
     }
@@ -371,18 +378,6 @@ mod tests {
     }
 
     #[test]
-    fn filename_ext_uses_given_extension() {
-        assert_eq!(
-            boltsnap_filename_ext("2026-06-01_14-23-05", "mp4"),
-            "boltsnap-2026-06-01_14-23-05.mp4"
-        );
-        assert_eq!(
-            boltsnap_filename_ext("2026-06-01_14-23-05", "png"),
-            "boltsnap-2026-06-01_14-23-05.png"
-        );
-    }
-
-    #[test]
     fn replay_clips_are_orphan_recording_files() {
         assert!(is_orphan_rec_file("boltsnap-final-12-3.mp4"));
         assert!(is_orphan_rec_file("clip-3233529-1790267666021572148-1.mkv"));
@@ -407,7 +402,7 @@ mod tests {
                 Err(error) => panic!("create unique test directory: {error}"),
             })
             .unwrap();
-        let first = unique_recording_path_at(&dir, Some("DP 1/left"), "2026-07-12_12-00-00");
+        let first = unique_saved_path_at(&dir, Some("DP 1/left"), "2026-07-12_12-00-00", "mp4");
         assert!(
             first
                 .file_name()
@@ -416,7 +411,7 @@ mod tests {
                 .contains("-DP-1-left.mp4")
         );
         fs::write(&first, b"existing").unwrap();
-        let second = unique_recording_path_at(&dir, Some("DP 1/left"), "2026-07-12_12-00-00");
+        let second = unique_saved_path_at(&dir, Some("DP 1/left"), "2026-07-12_12-00-00", "mp4");
         assert_ne!(first, second);
         assert!(
             second

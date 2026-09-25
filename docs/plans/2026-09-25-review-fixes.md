@@ -220,6 +220,20 @@ verändern. Test der echten Save-Operation statt nur des Formatstrings.
 speichern und beide Bilder sowie Fehlerrückmeldung bei nicht schreibbarem Ziel
 prüfen.
 
+**Abschluss A2:** `shelf/save.rs::save_image` legt das Zielverzeichnis an, öffnet
+die Quelle einmal und veröffentlicht mit `files::copy_noreplace`; bei
+`AlreadyExists` wird die Quelle zurückgespult und der nächste Suffix gewählt.
+`paths::unique_saved_path` ersetzt die feste `.mp4`-Namenssuche durch eine mit
+freier Endung und prüft mit `symlink_metadata`, erkennt also auch hängende
+Symlinks; `unique_recording_path` bleibt als `.mp4`-Wrapper (A4 nutzt die neue
+Funktion). `boltsnap_filename_ext` entfällt. Fehler melden sich jetzt auch per
+Notification. Tests mit fester Uhrzeit: zwei Saves derselben Sekunde ergeben
+`boltsnap-<t>.png` und `-1.png` mit jeweils eigenem Inhalt; ein hängender
+Symlink auf dem ersten Namen bleibt unverändert und sein Ziel wird nicht
+angelegt; fehlende Quelle legt nichts an. Mit der alten Logik (fester Name +
+`fs::copy`) sind die ersten beiden rot. Die Verdrahtung in `save_card` bleibt
+synchron (D2); manueller Check offen.
+
 ### A3: Karte während eines Saves vor Löschung schützen
 
 **Phase 1: Verhalten und Ursache**
@@ -837,7 +851,7 @@ Alle anderen Items sind offen. F1 erhält unter Empfehlung A keinen Code-Commit.
 | Welle | ID | Item | Commit |
 | --- | --- | --- | --- |
 | 1 | A1 | eigene Part-Dateien / atomare Veröffentlichung | `A1: isolate partial files for atomic saves` (dieser Commit) |
-| 1 | A2 | Bild-Save ohne Überschreiben | |
+| 1 | A2 | Bild-Save ohne Überschreiben | `A2: never overwrite on image save` |
 | 1 | A3 | Schutz laufender Saves vor Dismiss/Eviction | |
 | 2 | E1 | sicherer Recovery-Zustand nach Finalisierung | |
 | 3 | A4 | Containerendung und Drag-MIME | |
