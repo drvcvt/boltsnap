@@ -363,8 +363,9 @@ uses the highest output scale; with a hardware encoder it shrinks to at most
 files, which may already be remuxed or composed. The popup then reads
 **SAVE FAILED**: Shelf Save, Disk Save and Discard still work, Resume stays off
 because the recovered files no longer match new segments. A recorder that
-merely failed to stop cleanly keeps its segments and can still resume. Other
-outstanding save issues are listed in the [codebase inventory](docs/codebase.md#open-review-findings).
+merely failed to stop cleanly keeps its segments and can still resume. The
+[codebase inventory](docs/codebase.md#open-review-findings) lists the review
+fixes around saving and what still needs a live check.
 
 Video cards carry a **▶** badge; on Linux, clicking one opens the video in the
 desktop default app. Right-click copies its file reference.
