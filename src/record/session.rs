@@ -5,12 +5,13 @@ pub use crate::protocol::{PublicRecordingState, RecordingAction};
 use crate::record::audio::AudioCapture;
 use std::collections::BTreeMap;
 use std::fs;
-use std::io;
+use std::io::{self, BufRead};
 use std::os::fd::AsRawFd;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, ChildStdout, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -318,10 +319,7 @@ pub fn spawn_segment(
         tools,
         |command| {
             let parent = unsafe { libc::getpid() };
-            command
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::inherit());
+            command.stdin(Stdio::null()).stderr(Stdio::inherit());
             unsafe {
                 command.pre_exec(move || {
                     if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) != 0 {
@@ -509,6 +507,12 @@ fn spawn_segment_with(
         };
         let mut command = Command::new(program);
         command.args(&args);
+        // gsr prints the segment path once the file is complete (`watch_saved`).
+        command.stdout(if gsr_codec.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        });
         let mut trackers = Vec::new();
         if let Some(smooth) = &mut smooth {
             let fd = smooth.feeds.readers[index].as_raw_fd();
@@ -663,25 +667,28 @@ impl StopChildrenJob {
     ) -> StopChildrenResult {
         let mut stopped = Vec::with_capacity(self.children.len());
         let mut errors = Vec::new();
-        for recorder in &mut self.children {
-            match wait_for_exit(&mut recorder.child, graceful_timeout).and_then(|status| {
-                if let Some(status) = status {
-                    return Ok(status);
-                }
-                send_signal(&recorder.child, libc::SIGTERM)?;
-                if let Some(status) = wait_for_exit(&mut recorder.child, terminate_timeout)? {
-                    return Ok(status);
-                }
-                recorder.child.kill()?;
-                recorder.child.wait()
-            }) {
-                Ok(status)
-                    if (status.success() || is_streamed(&recorder.path))
+        let mut running = vec![false; self.children.len()];
+        for (index, recorder) in self.children.iter_mut().enumerate() {
+            let saved = recorder
+                .child
+                .stdout
+                .take()
+                .map(|stdout| watch_saved(stdout, &recorder.path));
+            let stop = stop_child(
+                &mut recorder.child,
+                saved.as_ref(),
+                graceful_timeout,
+                terminate_timeout,
+            );
+            running[index] = matches!(stop, Ok(Stop::Saved | Stop::SaveFailed));
+            match stop {
+                Ok(stop)
+                    if (stop.succeeded() || is_streamed(&recorder.path))
                         && is_nonempty(&recorder.path) =>
                 {
-                    if !status.success() {
+                    if !stop.succeeded() {
                         eprintln!(
-                            "boltsnap daemon: recorder for {} exited with {status}; keeping its streamed segment",
+                            "boltsnap daemon: recorder for {} {stop}; keeping its streamed segment",
                             recorder.output.as_deref().unwrap_or("area")
                         );
                     }
@@ -690,9 +697,7 @@ impl StopChildrenJob {
                         path: recorder.path.clone(),
                     });
                 }
-                Ok(status) if !status.success() => {
-                    errors.push(format!("recorder exited with {status}"));
-                }
+                Ok(stop) if !stop.succeeded() => errors.push(format!("recorder {stop}")),
                 Ok(_) => errors.push(format!(
                     "empty recording segment: {}",
                     recorder.path.display()
@@ -700,7 +705,7 @@ impl StopChildrenJob {
                 Err(error) => errors.push(format!("wait for recorder: {error}")),
             }
         }
-        if errors.is_empty() {
+        let result = if errors.is_empty() {
             StopChildrenResult::Ready(stopped)
         } else {
             for recorder in &self.children {
@@ -718,23 +723,124 @@ impl StopChildrenJob {
                     .collect(),
                 error: errors.join("; "),
             }
+        };
+        // Recorders that reported their file are still tearing down; reap them
+        // with the same deadlines without holding up the save. Their trackers
+        // are joined here.
+        let running: Vec<Child> = self
+            .children
+            .into_iter()
+            .zip(running)
+            .filter_map(|(recorder, running)| running.then_some(recorder.child))
+            .collect();
+        if !running.is_empty() {
+            std::thread::spawn(move || {
+                for mut child in running {
+                    match stop_child(&mut child, None, graceful_timeout, terminate_timeout) {
+                        Ok(stop) if stop.succeeded() => {}
+                        Ok(stop) => {
+                            eprintln!("boltsnap daemon: recorder {stop} after saving its segment")
+                        }
+                        Err(error) => {
+                            eprintln!("boltsnap daemon: reap recorder after saving: {error}")
+                        }
+                    }
+                }
+            });
+        }
+        result
+    }
+}
+
+/// How a recorder finished its segment: by exiting, or, for gsr, by printing
+/// the saved path (or its save error) before the encoder teardown, which
+/// takes another ~150-190 ms.
+enum Stop {
+    Exited(ExitStatus),
+    Saved,
+    SaveFailed,
+}
+
+impl Stop {
+    fn succeeded(&self) -> bool {
+        match self {
+            Stop::Exited(status) => status.success(),
+            Stop::Saved => true,
+            Stop::SaveFailed => false,
         }
     }
 }
 
-fn wait_for_exit(
+impl std::fmt::Display for Stop {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Stop::Exited(status) => write!(f, "exited with {status}"),
+            Stop::Saved => f.write_str("saved its segment"),
+            Stop::SaveFailed => f.write_str("failed to save its segment"),
+        }
+    }
+}
+
+/// Reads gsr's stdout until it closes. gsr prints the output path after the
+/// Matroska trailer, or `gsr error: Failed to save recording`. Draining to EOF
+/// keeps a late write from killing gsr with SIGPIPE.
+fn watch_saved(stdout: ChildStdout, path: &Path) -> mpsc::Receiver<Stop> {
+    // Same conversion as the `-o` argument in `gsr::args`.
+    let path = path.to_string_lossy().into_owned().into_bytes();
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        for line in io::BufReader::new(stdout)
+            .split(b'\n')
+            .map_while(Result::ok)
+        {
+            if line == path {
+                let _ = tx.send(Stop::Saved);
+            } else if line.starts_with(b"gsr error: Failed to save recording") {
+                let _ = tx.send(Stop::SaveFailed);
+            }
+        }
+    });
+    rx
+}
+
+/// Waits for the recorder, escalating to SIGTERM and SIGKILL at the deadlines.
+fn stop_child(
     child: &mut Child,
+    saved: Option<&mpsc::Receiver<Stop>>,
+    graceful_timeout: Duration,
+    terminate_timeout: Duration,
+) -> io::Result<Stop> {
+    if let Some(stop) = wait_for_stop(child, saved, graceful_timeout)? {
+        return Ok(stop);
+    }
+    send_signal(child, libc::SIGTERM)?;
+    if let Some(stop) = wait_for_stop(child, saved, terminate_timeout)? {
+        return Ok(stop);
+    }
+    child.kill()?;
+    child.wait().map(Stop::Exited)
+}
+
+fn wait_for_stop(
+    child: &mut Child,
+    saved: Option<&mpsc::Receiver<Stop>>,
     timeout: Duration,
-) -> io::Result<Option<std::process::ExitStatus>> {
+) -> io::Result<Option<Stop>> {
     let deadline = Instant::now() + timeout;
     loop {
         if let Some(status) = child.try_wait()? {
-            return Ok(Some(status));
+            return Ok(Some(Stop::Exited(status)));
         }
-        if Instant::now() >= deadline {
+        let now = Instant::now();
+        if now >= deadline {
             return Ok(None);
         }
-        std::thread::sleep(Duration::from_millis(10));
+        let tick = Duration::from_millis(10).min(deadline - now);
+        match saved.map(|saved| saved.recv_timeout(tick)) {
+            Some(Ok(stop)) => return Ok(Some(stop)),
+            Some(Err(mpsc::RecvTimeoutError::Timeout)) => {}
+            Some(Err(mpsc::RecvTimeoutError::Disconnected)) | None => std::thread::sleep(tick),
+        }
     }
 }
 
@@ -1322,6 +1428,8 @@ while :; do sleep 1; done
                     "sh",
                     path.to_str().unwrap(),
                 ])
+                // Silent on stdout like a hung gsr.
+                .stdout(Stdio::piped())
                 .spawn()
                 .unwrap();
             assert!(wait_for(Duration::from_secs(1), || is_nonempty(&path)));
@@ -1374,6 +1482,122 @@ while :; do sleep 1; done
 
         assert!(started.elapsed() < Duration::from_secs(1));
         assert!(matches!(result, StopChildrenResult::Ready(_)));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A gsr stand-in with gsr's piped stdout: writes the segment, then runs
+    /// `on_int` on SIGINT with the segment path as `$1`.
+    fn gsr_like(path: &Path, on_int: &str) -> StopChildrenJob {
+        let script = format!("trap '{on_int}' INT; printf video > \"$1\"; while :; do :; done");
+        let child = Command::new("sh")
+            .args(["-c", &script, "sh", path.to_str().unwrap()])
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        assert!(wait_for(Duration::from_secs(1), || is_nonempty(path)));
+        StopChildrenJob {
+            children: vec![ActiveRecorder {
+                output: None,
+                path: path.to_path_buf(),
+                child,
+                cursor: Vec::new(),
+            }],
+        }
+    }
+
+    // A zombie still accepts signal 0, so a vanished pid means it was reaped.
+    fn reaped(job: &StopChildrenJob) -> impl Fn() -> bool + use<> {
+        let pid = job.children[0].child.id();
+        move || !process_exists(pid)
+    }
+
+    #[test]
+    fn saved_path_line_ends_the_wait_before_the_recorder_exits() {
+        let dir = test_dir();
+        let path = dir.join("saved.mkv");
+        let job = gsr_like(&path, r#"printf "%s\n" "$1"; sleep 1; exit 0"#);
+        let reaped = reaped(&job);
+        job.interrupt().unwrap();
+
+        let started = Instant::now();
+        let result = job.wait();
+
+        assert!(started.elapsed() < Duration::from_millis(500));
+        assert_eq!(
+            result,
+            StopChildrenResult::Ready(vec![StoppedSegment {
+                output: None,
+                path: path.clone()
+            }])
+        );
+        assert!(!reaped());
+        assert!(wait_for(Duration::from_secs(3), reaped));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn recorder_hanging_after_its_path_line_is_killed_in_the_background() {
+        let dir = test_dir();
+        let path = dir.join("hung-after-save.mkv");
+        let job = gsr_like(
+            &path,
+            r#"trap "" TERM; printf "%s\n" "$1"; while :; do :; done"#,
+        );
+        let reaped = reaped(&job);
+        job.interrupt().unwrap();
+
+        let result = job.wait_with_timeouts(Duration::from_millis(50), Duration::from_millis(50));
+
+        assert!(matches!(result, StopChildrenResult::Ready(_)));
+        assert!(wait_for(Duration::from_secs(2), reaped));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn save_error_line_ends_the_wait_as_a_failed_stop() {
+        for (name, kept) in [("failed.mkv", true), ("failed.mp4", false)] {
+            let dir = test_dir();
+            let path = dir.join(name);
+            let job = gsr_like(
+                &path,
+                r#"echo "gsr error: Failed to save recording"; sleep 1; exit 0"#,
+            );
+            let reaped = reaped(&job);
+            job.interrupt().unwrap();
+
+            let started = Instant::now();
+            let result = job.wait();
+
+            assert!(started.elapsed() < Duration::from_millis(500), "{name}");
+            if kept {
+                assert!(matches!(result, StopChildrenResult::Ready(_)), "{name}");
+            } else {
+                assert!(
+                    matches!(&result, StopChildrenResult::Failed { error, .. }
+                        if error == "recorder failed to save its segment"),
+                    "{name}: {result:?}"
+                );
+            }
+            assert!(wait_for(Duration::from_secs(3), reaped), "{name}");
+            fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[test]
+    fn recorder_without_a_path_line_is_waited_for_until_it_exits() {
+        let dir = test_dir();
+        let path = dir.join("silent.mkv");
+        // Other output is ignored; closing stdout falls back to polling the exit.
+        let job = gsr_like(&path, r#"echo unrelated; exec >&-; sleep 0.3; exit 0"#);
+        let reaped = reaped(&job);
+        job.interrupt().unwrap();
+
+        let started = Instant::now();
+        let result = job.wait();
+
+        assert!(started.elapsed() >= Duration::from_millis(300));
+        assert!(matches!(result, StopChildrenResult::Ready(_)));
+        assert!(reaped());
         fs::remove_dir_all(dir).unwrap();
     }
 

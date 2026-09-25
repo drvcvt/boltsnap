@@ -398,7 +398,7 @@ Bestätigt vom User (2026-09-24): 1 (a), 2 (a), 3 (a), 4 (b) erst messen,
 | 1 | B2 | schnellerer RGB-Drop | `3204f01` |
 | 2 | B3 | weniger Speicherdurchgänge in libway | libway `d5760c3`, Sync `bd63bb5` |
 | 3 | B1 | Thumbnail vom CLI | `ad708a3` |
-| 4 | A3 | gsr-stdout statt Exit | |
+| 4 | A3 | gsr-stdout statt Exit | `Finish a gsr segment on its saved-path line instead of its exit` |
 | 4 | B4 | RGB-Canvas aus libway | |
 
 ## 6. Umsetzungsnotizen
@@ -430,5 +430,26 @@ Bestätigt vom User (2026-09-24): 1 (a), 2 (a), 3 (a), 4 (b) erst messen,
   `png_transfer_and_shelf_ack` 1,6-5,3 ms statt 24 ms (vorher mit Rückfall
   gegen den alten Daemon gemessen). Beim Start löschte der Daemon die drei
   alten `clip-*.mkv` (A-Welle, `30dcfcb`).
-- A3 offen: Messung liegt vor, Entscheidung des Users steht aus.
+- A3 nach Freigabe am 25.09. gebaut (`src/record/session.rs`). stdout ist nur
+  bei gsr eine Pipe, wf-recorder bleibt bei `Stdio::null()`. `watch_saved`
+  liest die Pipe in einem Thread bis EOF, damit ein spätes stdout-Write gsr
+  nicht per SIGPIPE beendet. `wait_for_stop` wartet mit `recv_timeout` statt
+  `sleep`: Die Pfad-Zeile heißt fertig, `gsr error: Failed to save recording`
+  heißt Fehler. Ein Matroska-Segment bleibt dann erhalten wie beim gekillten
+  Recorder. Ohne Zeile gelten Exit und Fristen wie bisher. Recorder, die per
+  Zeile fertig sind, reapt ein Hintergrund-Thread mit denselben Fristen
+  (`stop_child`). Die Tracker werden weiter vor dem Return gejoint.
+- gsr-Quelle: Bei normalen Aufnahmen kommt die Pfad-Zeile auch dann, wenn
+  `av_write_trailer` fehlschlägt (`recorder.c:914-920`, der Rückgabewert wird
+  ignoriert). Die Fehlerzeile gibt es nur im Replay-Modus `-ro`, den Boltsnap
+  nicht nutzt. Ein Trailer-Fehler verhält sich also wie vorher.
+- A3-Tests: vier neue mit `sh -c` statt Fake-Datei, also ohne ETXTBSY-Risiko.
+  Pfad-Zeile und 1 s Schlaf: `wait()` unter 500 ms, danach gereapt. Hänger nach
+  der Zeile: im Hintergrund per SIGKILL beendet und gereapt. Fehlerzeile bei mkv
+  und mp4. Fremde Zeile und geschlossenes stdout: Es wird auf den Exit
+  gewartet. Der Test für den gekillten Recorder läuft jetzt mit Pipe. Mit
+  abgeschaltetem Zeilen-Warten schlagen die beiden Zeilen-Tests fehl.
+  `cargo fmt --check` ok, `nice -n 19 cargo test --locked -j 4` 303 + 23
+  bestanden, clippy ohne Warnungen. Live noch nicht gemessen (kein Install,
+  kein Daemon-Neustart).
 - B4 nicht umgesetzt (siehe oben).
