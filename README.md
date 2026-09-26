@@ -353,8 +353,11 @@ The recording controls offer:
   or permanent file. On Linux the button first asks CONFIRM; a second press
   within three seconds discards.
 
-On Linux the open controls also take keys: Space pauses or resumes, Enter saves
-to the shelf, D saves to disk, Delete discards (twice), Esc closes them.
+On Linux opening the controls during a recording pauses it first and shows
+them once the recorder has stopped, so they never end up in the video; each
+opening adds one lossless segment boundary. Esc or Resume hides them and
+continues. The open controls take keys: Space resumes, Enter saves to the
+shelf, D saves to disk, Delete discards (twice).
 
 A single MP4 segment is moved directly and skips FFmpeg at save time.
 GPU Screen Recorder produces Matroska segments, so even an uninterrupted

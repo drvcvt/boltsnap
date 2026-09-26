@@ -35,11 +35,6 @@ fn fontconfig_source(query: &str) -> Option<(PathBuf, u32)> {
     parse_fc_match(&String::from_utf8(output.stdout).ok()?)
 }
 
-fn load_fontconfig_font(query: &str) -> Option<FontVec> {
-    let (path, index) = fontconfig_source(query)?;
-    FontVec::try_from_vec_and_index(std::fs::read(path).ok()?, index).ok()
-}
-
 /// The face the chrome should use, as bytes, so one read serves every weight.
 fn ui_font_bytes(family: Option<&str>) -> Option<(Vec<u8>, u32)> {
     let (path, index) = family
@@ -48,19 +43,6 @@ fn ui_font_bytes(family: Option<&str>) -> Option<(Vec<u8>, u32)> {
         .or_else(|| desktop_font_family().as_deref().and_then(fontconfig_source))
         .or_else(|| fontconfig_source("sans-serif"))?;
     Some((std::fs::read(path).ok()?, index))
-}
-
-/// Load the family boltsnap's chrome is configured with, falling back to the
-/// desktop font when the config names none.
-pub fn load_ui_font(family: Option<&str>) -> FontVec {
-    let mut font = family
-        .filter(|family| !family.is_empty())
-        .and_then(load_fontconfig_font)
-        .unwrap_or_else(load_popup_font);
-    // Variable files can default to Thin (Outfit does). Match the selector's
-    // Medium text instead of relying on the font's default variation instance.
-    font.set_variation(b"wght", 500.0);
-    font
 }
 
 /// The chrome font at two variable weights, resolving fontconfig and reading
@@ -91,14 +73,6 @@ fn desktop_font_family() -> Option<String> {
     .filter(|output| output.status.success())
     .and_then(|output| String::from_utf8(output.stdout).ok())
     .and_then(|output| parse_gsettings_font(&output))
-}
-
-pub fn load_popup_font() -> FontVec {
-    desktop_font_family()
-        .as_deref()
-        .and_then(load_fontconfig_font)
-        .or_else(|| load_fontconfig_font("sans-serif"))
-        .unwrap_or_else(fallback_popup_font)
 }
 
 #[cfg(test)]

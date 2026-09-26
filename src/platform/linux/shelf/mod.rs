@@ -63,7 +63,7 @@ use crate::record::session::{
 };
 use crate::shelf::layout::{Hit, Layout, LayoutConfig, ThumbRect};
 use crate::shelf::model::{CardKind, FileLifetime, ShelfModel, Thumb};
-use crate::shelf::recording::{POPUP_H, POPUP_W, PopupButton};
+use crate::shelf::recording::PopupButton;
 
 pub struct Daemon {
     registry_state: RegistryState,
@@ -130,7 +130,13 @@ pub struct Daemon {
     marker_configured: bool,
     popup: Option<LayerSurface>,
     popup_pool: Option<SlotPool>,
-    popup_font: ab_glyph::FontVec,
+    /// Controls text at weights 500 and 600.
+    popup_fonts: (ab_glyph::FontVec, ab_glyph::FontVec),
+    popup_layout: crate::shelf::paint::controls::ControlsLayout,
+    /// The controls paused the recording themselves; Esc resumes it.
+    auto_paused: bool,
+    /// Show the controls once the pause they started has stopped the recorders.
+    controls_pending: bool,
     /// First Discard press; a second one within `DISCARD_CONFIRM` discards.
     discard_armed: Option<std::time::Instant>,
     /// `ui_font` the popup font was loaded for; `None` before the first load.
@@ -1234,7 +1240,10 @@ pub fn run_daemon(save_dir_cli: Option<std::path::PathBuf>) -> DynResult<()> {
         marker_configured: false,
         popup: None,
         popup_pool: None,
-        popup_font: font::fallback_popup_font(),
+        popup_layout: crate::shelf::paint::controls::controls_layout(&font::fallback_popup_font()),
+        popup_fonts: (font::fallback_popup_font(), font::fallback_popup_font()),
+        auto_paused: false,
+        controls_pending: false,
         discard_armed: None,
         popup_font_family: None,
         popup_configured: false,
@@ -1321,10 +1330,15 @@ pub fn run_daemon(save_dir_cli: Option<std::path::PathBuf>) -> DynResult<()> {
             daemon.animating(),
             daemon.recording.as_ref().map(|s| s.phase),
         );
-        let timeout = match (timeout, daemon.save_flash_remaining()) {
+        let timeout = [
+            daemon.save_flash_remaining(),
+            daemon.discard_confirm_remaining(),
+        ]
+        .into_iter()
+        .fold(timeout, |a, b| match (a, b) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
-        };
+        });
         event_loop
             .dispatch(timeout, &mut daemon)
             .map_err(|e| format!("dispatch: {e}"))?;
@@ -1332,6 +1346,7 @@ pub fn run_daemon(save_dir_cli: Option<std::path::PathBuf>) -> DynResult<()> {
             daemon.tick_animations(&qh);
         }
         daemon.expire_save_flash(&qh);
+        daemon.expire_discard_confirm();
         // Publish whole-second progress and notice an unexpected recorder exit.
         daemon.tick_recording(&qh);
     }
@@ -2557,10 +2572,12 @@ impl Daemon {
         // fontconfig and the font file cost ~10 ms; reload only when `ui_font` changes.
         let family = crate::config::Config::load().ui_font;
         if self.popup_font_family.as_ref() != Some(&family) {
-            self.popup_font = font::load_ui_font(family.as_deref());
+            self.popup_fonts = font::load_ui_font_weights(family.as_deref(), (500.0, 600.0));
+            self.popup_layout = crate::shelf::paint::controls::controls_layout(&self.popup_fonts.0);
             self.popup_font_family = Some(family);
         }
-        let pool = SlotPool::new((POPUP_W * POPUP_H * 4) as usize, &self.shm)
+        let (width, height) = (self.popup_layout.width, self.popup_layout.height);
+        let pool = SlotPool::new((width * height * 4) as usize, &self.shm)
             .map_err(|error| format!("allocate recording controls: {error}"))?;
         let surface = self.compositor.create_surface(qh);
         let (_name, output) = self.target_output(self.focused_output.as_deref());
@@ -2571,7 +2588,7 @@ impl Daemon {
             Some("boltsnap-recording-controls"),
             output.as_ref(),
         );
-        layer.set_size(POPUP_W, POPUP_H);
+        layer.set_size(width, height);
         layer.set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
         layer.set_exclusive_zone(-1);
         layer.commit();
@@ -2639,32 +2656,29 @@ impl Daemon {
             (Some(l), Some(p)) => (l, p),
             _ => return,
         };
-        let stride = (POPUP_W * 4) as i32;
+        let (width, height) = (self.popup_layout.width, self.popup_layout.height);
+        let stride = (width * 4) as i32;
         let (buffer, canvas) = match pool.create_buffer(
-            POPUP_W as i32,
-            POPUP_H as i32,
+            width as i32,
+            height as i32,
             stride,
             wayland_client::protocol::wl_shm::Format::Argb8888,
         ) {
             Ok(v) => v,
             Err(_) => return,
         };
-        crate::shelf::paint::draw_recording_popup_with(
+        crate::shelf::paint::controls::draw_recording_controls(
             canvas,
-            POPUP_W,
-            POPUP_H,
+            &self.popup_layout,
             state,
             enabled,
             recovery,
-            crate::shelf::paint::PopupHints {
-                discard_armed: self.discard_armed.is_some(),
-                keys: true,
-            },
+            self.discard_armed.is_some(),
             &elapsed,
-            &self.popup_font,
+            (&self.popup_fonts.0, &self.popup_fonts.1),
         );
         let surface = layer.wl_surface();
-        surface.damage_buffer(0, 0, POPUP_W as i32, POPUP_H as i32);
+        surface.damage_buffer(0, 0, width as i32, height as i32);
         let _ = buffer.attach_to(surface);
         layer.commit();
     }
@@ -2719,13 +2733,7 @@ impl Daemon {
             self.stop_children(AfterStop::Recover(error), children);
         }
         let snapshot = self.recording_snapshot();
-        let discard_expired = self
-            .discard_armed
-            .is_some_and(|at| !discard_confirmed(Some(at), std::time::Instant::now()));
-        if discard_expired {
-            self.discard_armed = None;
-        }
-        if snapshot != self.last_recording_snapshot || discard_expired {
+        if snapshot != self.last_recording_snapshot {
             self.draw_popup();
             self.publish_recording_snapshot();
         }
@@ -2787,10 +2795,23 @@ impl Daemon {
         {
             return Err("recording controls are unavailable".into());
         }
-        if self.popup.is_none() {
-            self.create_popup(qh)?;
-        } else {
-            self.draw_popup();
+        let phase = self.recording.as_ref().map(|session| session.phase);
+        match phase.map(controls_open_plan) {
+            // Pause first: gsr reads the composed scanout, so the controls would
+            // be recorded. They appear once the recorders have stopped.
+            Some(ControlsOpen::PauseFirst) => {
+                self.handle_recording_action(RecordingAction::Pause, qh)?;
+                self.auto_paused = true;
+                self.controls_pending = true;
+            }
+            Some(ControlsOpen::AfterPause) => self.controls_pending = true,
+            Some(ControlsOpen::Now) | None => {
+                if self.popup.is_none() {
+                    self.create_popup(qh)?;
+                } else {
+                    self.draw_popup();
+                }
+            }
         }
         Ok(())
     }
@@ -2814,6 +2835,10 @@ impl Daemon {
                 session.phase
             ));
         }
+        self.auto_paused = false;
+        if action != RecordingAction::Pause {
+            self.controls_pending = false;
+        }
 
         match action {
             RecordingAction::Pause => {
@@ -2824,6 +2849,9 @@ impl Daemon {
                 self.stop_children(AfterStop::Pause, children);
             }
             RecordingAction::Resume => {
+                // Gone before the next segment's first frame, whoever resumes.
+                let had_controls = self.popup.is_some();
+                self.remove_popup();
                 let session = self.recording.as_ref().unwrap();
                 let active = match spawn_segment(
                     &session.scope,
@@ -2841,6 +2869,9 @@ impl Daemon {
                             session.last_error = Some(error.clone());
                         }
                         self.publish_recording_snapshot();
+                        if had_controls {
+                            let _ = self.show_recording_controls(qh);
+                        }
                         return Err(error);
                     }
                 };
@@ -3018,6 +3049,11 @@ impl Daemon {
                             }
                         }
                         self.draw_popup();
+                        if std::mem::take(&mut self.controls_pending)
+                            && let Some(qh) = self.qh.clone()
+                        {
+                            let _ = self.show_recording_controls(&qh);
+                        }
                     }
                     AfterStop::Save(destination) => {
                         if let Some(error) = error {
@@ -3341,6 +3377,7 @@ impl Daemon {
     }
 
     fn remove_popup(&mut self) {
+        self.discard_armed = None;
         self.popup = None;
         self.popup_pool = None;
         self.popup_configured = false;
@@ -3362,17 +3399,24 @@ impl Daemon {
     }
 
     fn on_popup_click(&mut self, pos: (f64, f64)) {
-        let Some(session) = self.recording.as_ref() else {
-            return;
-        };
-        if let Some(button) = crate::shelf::recording::popup_hit_with(
-            session.public_state(),
-            session.actions_enabled(),
-            session.resume_blocked,
-            pos.0,
-            pos.1,
-        ) {
+        if let Some(button) = self.popup_layout.hit(pos.0, pos.1) {
             self.press_popup_button(button);
+        }
+    }
+
+    fn discard_confirm_remaining(&self) -> Option<std::time::Duration> {
+        self.discard_armed
+            .map(|at| DISCARD_CONFIRM.saturating_sub(at.elapsed()))
+    }
+
+    /// Discard falls back from Confirm once its window has passed.
+    fn expire_discard_confirm(&mut self) {
+        if self
+            .discard_armed
+            .is_some_and(|at| !discard_confirmed(Some(at), std::time::Instant::now()))
+        {
+            self.discard_armed = None;
+            self.draw_popup();
         }
     }
 
@@ -3413,6 +3457,29 @@ impl Daemon {
         }
         self.draw_popup();
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ControlsOpen {
+    /// Recording: pause, show the controls when the recorders have stopped.
+    PauseFirst,
+    /// A pause is already stopping the recorders.
+    AfterPause,
+    /// Nothing is being recorded.
+    Now,
+}
+
+fn controls_open_plan(phase: SessionPhase) -> ControlsOpen {
+    match phase {
+        SessionPhase::Recording => ControlsOpen::PauseFirst,
+        SessionPhase::Pausing => ControlsOpen::AfterPause,
+        _ => ControlsOpen::Now,
+    }
+}
+
+/// Esc continues a recording only when the controls paused it themselves.
+fn esc_resumes(auto_paused: bool, phase: SessionPhase, resume_blocked: bool) -> bool {
+    auto_paused && phase == SessionPhase::Paused && !resume_blocked
 }
 
 const DISCARD_CONFIRM: std::time::Duration = std::time::Duration::from_secs(3);
@@ -3760,7 +3827,13 @@ impl KeyboardHandler for Daemon {
         }
         if event.keysym == Keysym::Escape {
             self.discard_armed = None;
+            let resume = self.recording.as_ref().is_some_and(|session| {
+                esc_resumes(self.auto_paused, session.phase, session.resume_blocked)
+            });
             self.remove_popup();
+            if resume && let Some(qh) = self.qh.clone() {
+                let _ = self.handle_recording_action(RecordingAction::Resume, &qh);
+            }
         } else if let Some(button) = popup_key_button(event.keysym) {
             self.press_popup_button(button);
         }
@@ -3963,6 +4036,29 @@ mod tests {
         assert_eq!(popup_key_button(Keysym::Delete), Some(PopupButton::Discard));
         assert_eq!(popup_key_button(Keysym::x), None);
         assert_eq!(popup_key_button(Keysym::Escape), None);
+    }
+
+    #[test]
+    fn controls_pause_a_running_recording_before_they_show() {
+        assert_eq!(
+            controls_open_plan(SessionPhase::Recording),
+            ControlsOpen::PauseFirst
+        );
+        assert_eq!(
+            controls_open_plan(SessionPhase::Pausing),
+            ControlsOpen::AfterPause
+        );
+        for phase in [SessionPhase::Paused, SessionPhase::Finalizing] {
+            assert_eq!(controls_open_plan(phase), ControlsOpen::Now);
+        }
+    }
+
+    #[test]
+    fn esc_resumes_only_what_the_controls_paused() {
+        assert!(esc_resumes(true, SessionPhase::Paused, false));
+        assert!(!esc_resumes(false, SessionPhase::Paused, false));
+        assert!(!esc_resumes(true, SessionPhase::Paused, true));
+        assert!(!esc_resumes(true, SessionPhase::Finalizing, false));
     }
 
     #[test]

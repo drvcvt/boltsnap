@@ -101,6 +101,77 @@ Windows-Shell ruft weiter `draw_recording_popup` ohne Hinweise, Signatur
 unverändert. Tests: Tastenzuordnung, Bestätigungsfenster, Pixel der Hinweise
 und des CONFIRM-Zustands. Live offen.
 
+### V9: Recording-Controls im neuen Stil, nie in der Aufnahme (26.09.)
+
+**Wunsch des Nutzers:** der Popup-Stil gefällt nicht, und das Popup soll aus
+Aufnahmen herausbleiben.
+
+**Befund:** gsr nimmt Monitore per KMS auf (`gsr-src/src/capture/kms.c`), also
+aus dem fertig komponierten Scanout-Buffer. Hyprland 0.56 hat die Layer-Regel
+`noScreenShare` (`LayerRuleApplicator.hpp`), die greift aber nur bei
+Screencopy/Portal und malt dort ein schwarzes Rechteck. Ausblenden per
+Compositor geht damit nicht.
+
+**Entscheidung (Nutzer):** Auto-Pause. Öffnen der Controls während einer
+Aufnahme pausiert sie; das Popup erscheint erst, wenn die Segmente gestoppt
+sind (gsr-Stop über die Pfadzeile, live etwa 150 ms). Esc schließt und nimmt
+weiter auf, wenn die Controls selbst pausiert haben; Resume (Space) ebenso.
+Jede Fortsetzung, egal über welchen Weg (Tray, IPC), entfernt das Popup vor
+dem Start des neuen Segments. Kosten: eine verlustfreie Segmentgrenze pro
+Öffnen. Verworfen: Platzierung auf einem nicht aufgenommenen Monitor (hilft
+nicht, wenn beide Monitore aufgenommen werden, was der Nutzer meist tut).
+
+**Stil (Entwurf vom Nutzer abgenommen):** mt-ui-style, dunkel, opak `#121212`,
+Radius 14, Rand 16 rundum. Kopfzeile: Statuspunkt (grau bei Pause, rot bei
+Aufnahme), Titel 15 px Gewicht 600 in Satzschreibung („Paused“, „Save failed“,
+„Saving…“), Timer 15 px in `sub`. Darunter eine Reihe 30 px hoher Buttons
+(Radius 9, Abstand 8, Innenrand 12), Label 13 px, Taste 11 px gedimmt rechts;
+„Save to shelf“ als einziger invertierter Hauptbutton, sonst `#222222`.
+Button-Breite aus dem breitesten möglichen Label (Pause/Resume,
+Discard/Confirm), damit nichts springt; Popup-Größe aus dem Layout statt der
+festen 408×148.
+
+**Umsetzung:**
+1. `src/shelf/paint.rs`: `controls_layout(font)` (Größe und Button-Rechtecke)
+   und `draw_recording_controls(...)` für Linux; `draw_recording_popup` und
+   `popup_hit` bleiben für die eingefrorene Windows-Shell unverändert. Die
+   V2-`PopupHints` fallen wieder weg.
+2. `src/platform/linux/shelf/mod.rs`: zwei Schriftgewichte (500/600) über
+   `font::load_ui_font_weights`; Layout beim Erzeugen des Popups; Hit-Test über
+   das Layout. `show_recording_controls` pausiert bei laufender Aufnahme
+   (`auto_paused`, `controls_pending`) und erzeugt das Popup im
+   `ChildrenStopped(Pause)`-Zweig. Esc fortsetzen nur bei `auto_paused`;
+   `handle_recording_action(Resume)` entfernt das Popup vorher.
+3. Tests: Layout (gleicher Rand, gleiche Höhen, keine Überlappung, Hit-Test),
+   Zeichnen aller Zustände, Entscheidungsfunktionen für Öffnen und Esc.
+4. README und dieser Plan.
+
+**Risiko:** Das Entfernen des Popups und der Start des neuen gsr-Segments
+laufen im selben Eventloop-Durchgang; das Zerstören geht erst beim Flush nach
+dem Dispatch raus. gsr braucht bis zum ersten Frame deutlich länger (Prozess,
+KMS, NVENC), live zu prüfen. Nicht umfasst: das Tray-Menü selbst ist Teil der
+Waybar und bleibt in Aufnahmen sichtbar.
+
+**Umgesetzt:** `paint::controls` (`controls_layout`, `draw_recording_controls`,
+431×92 mit Outfit), Daemon mit `popup_fonts` (500/600 über
+`load_ui_font_weights`), `popup_layout` für Größe und Hit-Test.
+`show_recording_controls` folgt `controls_open_plan`: Recording → Pause und
+`controls_pending`, Pausing → warten, sonst sofort; der
+`ChildrenStopped(Pause)`-Zweig zeigt die wartenden Controls. Esc setzt nur
+fort, wenn `esc_resumes` (von den Controls pausiert, nicht nach fehlgeschlagenem
+Save). `handle_recording_action(Resume)` entfernt das Popup vor dem Spawn und
+zeigt es wieder, wenn der Start scheitert. Der CONFIRM-Zustand bekommt einen
+eigenen Eventloop-Timeout (`discard_confirm_remaining`,
+`expire_discard_confirm`), weil im pausierten Zustand kein Aufnahme-Tick läuft;
+`remove_popup` entschärft. Weggefallen: `PopupHints` aus V2 (der Windows-Painter
+ist wieder wie vor V2), `font::load_ui_font`, `load_popup_font`,
+`load_fontconfig_font` (unbenutzt). Tests: Layout (Rand 16 auf drei Seiten,
+Abstand 8, Höhe 30, Hit-Test), Zeichnen (einziger Hauptbutton, Confirm,
+Speichern ohne Hauptbutton, opakes Panel), `controls_open_plan`,
+`esc_resumes`. Ein Render aller fünf Zustände mit Outfit wurde angesehen.
+Live offen: Popup nicht im Video (ffprobe/Sichtprüfung der Segmentgrenze),
+Verzögerung beim Öffnen, Esc setzt fort.
+
 Risiken: V2/V3 berühren mit Windows geteilte Shelf-Dateien (alte Signaturen
 behalten wie bei E1). V7 muss auf anderen Compositors auf die Bereichsauswahl
 zurückfallen. V8: ein alter Worker ignoriert das neue Feld und würde still den
@@ -115,4 +186,5 @@ Nutzer-Entscheidung 26.09.: K1 und K2 zusammen, danach V1 und V2.
 | K1 | umgesetzt, live offen |
 | K2 | umgesetzt |
 | V1 | umgesetzt, live offen |
-| V2 | umgesetzt, live offen |
+| V2 | umgesetzt, live offen; Tastenhinweise in V9 neu gezeichnet |
+| V9 | umgesetzt, live offen |
