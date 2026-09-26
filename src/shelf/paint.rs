@@ -343,29 +343,8 @@ pub fn draw_recording_popup(
     elapsed: &str,
     font: &FontVec,
 ) {
-    draw_recording_popup_with(
-        canvas,
-        w,
-        h,
-        state,
-        enabled,
-        false,
-        PopupHints::default(),
-        elapsed,
-        font,
-    );
+    draw_recording_popup_with(canvas, w, h, state, enabled, false, elapsed, font);
 }
-
-/// Linux popup extras; the frozen Windows shell draws without them.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct PopupHints {
-    /// Discard waits for a second press; its button asks for it.
-    pub discard_armed: bool,
-    /// Show each button's key under its label.
-    pub keys: bool,
-}
-
-const HINT_RGB: (u8, u8, u8) = (150, 150, 160);
 
 /// `recovery`: saving failed; the title says so and Resume is dimmed.
 #[allow(clippy::too_many_arguments)]
@@ -376,7 +355,6 @@ pub fn draw_recording_popup_with(
     state: crate::record::session::PublicRecordingState,
     enabled: bool,
     recovery: bool,
-    hints: PopupHints,
     elapsed: &str,
     font: &FontVec,
 ) {
@@ -428,7 +406,7 @@ pub fn draw_recording_popup_with(
     } else {
         0.45
     };
-    for ((x, y, bw, bh), label, key, destructive, inert) in [
+    for ((x, y, bw, bh), label, destructive, inert) in [
         (
             pause_resume_rect(),
             if state == PublicRecordingState::Paused {
@@ -436,23 +414,12 @@ pub fn draw_recording_popup_with(
             } else {
                 "PAUSE"
             },
-            "SPACE",
             false,
             recovery,
         ),
-        (save_shelf_rect(), "SHELF SAVE", "ENTER", false, false),
-        (save_disk_rect(), "DISK SAVE", "D", false, false),
-        (
-            discard_rect(),
-            if hints.discard_armed {
-                "CONFIRM"
-            } else {
-                "DISCARD"
-            },
-            "DEL",
-            true,
-            false,
-        ),
+        (save_shelf_rect(), "SHELF SAVE", false, false),
+        (save_disk_rect(), "DISK SAVE", false, false),
+        (discard_rect(), "DISCARD", true, false),
     ] {
         let alpha = if inert { 0.45 } else { button_alpha };
         fill_round_rect(canvas, w, h, x, y, bw, bh, 10.0, IND_BTN_BG, alpha);
@@ -463,30 +430,217 @@ pub fn draw_recording_popup_with(
         };
         let text_px = 14.0;
         let scaled = font.as_scaled(PxScale::from(text_px));
-        let lift = if hints.keys { 7.0 } else { 0.0 };
         draw_font_text(
             canvas,
             w,
             h,
             font,
             x + (bw - text_width(font, label, text_px)) / 2.0,
-            y + bh / 2.0 + (scaled.ascent() + scaled.descent()) / 2.0 - lift,
+            y + bh / 2.0 + (scaled.ascent() + scaled.descent()) / 2.0,
             label,
             text_px,
             color,
         );
-        if hints.keys {
-            let key_px = 10.0;
+    }
+}
+
+/// Linux recording controls; the frozen Windows shell keeps `draw_recording_popup`.
+pub mod controls {
+    #![cfg_attr(windows, allow(dead_code))]
+    use super::*;
+    use crate::shelf::recording::PopupButton;
+
+    // Linux recording controls, on the mt-ui-style scales: panel padding 16,
+    // 30 px buttons with a 12 px inset, 8 px gaps, type at 15/13/11 px.
+    const CTL_PANEL: (u8, u8, u8) = (0x12, 0x12, 0x12);
+    const CTL_RAISE: (u8, u8, u8) = (0x22, 0x22, 0x22);
+    const CTL_FG: (u8, u8, u8) = (0xEC, 0xEC, 0xEC);
+    const CTL_SUB: (u8, u8, u8) = (0x96, 0x96, 0x96);
+    const CTL_KEY: (u8, u8, u8) = (0x6A, 0x6A, 0x6A);
+    const CTL_KEY_ON_PRIMARY: (u8, u8, u8) = (0x6E, 0x6E, 0x6E);
+    const CTL_PAD: f32 = 16.0;
+    const CTL_HEAD_H: f32 = 18.0;
+    const CTL_ROW_GAP: f32 = 12.0;
+    const CTL_H: f32 = 30.0;
+    const CTL_INSET: f32 = 12.0;
+    const CTL_GAP: f32 = 8.0;
+    const CTL_KEY_GAP: f32 = 6.0;
+    const CTL_TITLE_PX: f32 = 15.0;
+    const CTL_LABEL_PX: f32 = 13.0;
+    const CTL_KEY_PX: f32 = 11.0;
+
+    /// Every label a button can show, and its key.
+    const CONTROL_BUTTONS: [(PopupButton, &[&str], &str); 4] = [
+        (PopupButton::PauseResume, &["Pause", "Resume"], "Space"),
+        (PopupButton::SaveShelf, &["Save to shelf"], "Enter"),
+        (PopupButton::SaveDisk, &["Save to disk"], "D"),
+        (PopupButton::Discard, &["Discard", "Confirm"], "Del"),
+    ];
+
+    /// Size and button rectangles of the Linux recording controls.
+    #[derive(Clone, Debug, PartialEq)]
+    pub struct ControlsLayout {
+        pub width: u32,
+        pub height: u32,
+        pub buttons: [(PopupButton, (f32, f32, f32, f32)); 4],
+    }
+
+    impl ControlsLayout {
+        pub fn hit(&self, x: f64, y: f64) -> Option<PopupButton> {
+            self.buttons.iter().find_map(|(button, (bx, by, bw, bh))| {
+                (x >= *bx as f64 && x < (bx + bw) as f64 && y >= *by as f64 && y < (by + bh) as f64)
+                    .then_some(*button)
+            })
+        }
+    }
+
+    /// Each button is as wide as its widest label, so a state change never moves
+    /// it; the panel is as wide as the row.
+    pub fn controls_layout(font: &FontVec) -> ControlsLayout {
+        let y = CTL_PAD + CTL_HEAD_H + CTL_ROW_GAP;
+        let mut x = CTL_PAD;
+        let buttons = CONTROL_BUTTONS.map(|(button, labels, key)| {
+            let label = labels
+                .iter()
+                .map(|label| text_width(font, label, CTL_LABEL_PX))
+                .fold(0.0, f32::max);
+            let width =
+                (CTL_INSET * 2.0 + label + CTL_KEY_GAP + text_width(font, key, CTL_KEY_PX)).ceil();
+            let rect = (x, y, width, CTL_H);
+            x += width + CTL_GAP;
+            (button, rect)
+        });
+        ControlsLayout {
+            width: (x - CTL_GAP + CTL_PAD) as u32,
+            height: (y + CTL_H + CTL_PAD) as u32,
+            buttons,
+        }
+    }
+
+    /// Baseline that centres the cap height in a box.
+    fn cap_baseline(font: &FontVec, px: f32, top: f32, height: f32) -> f32 {
+        let cap = font
+            .outline_glyph(font.glyph_id('H').with_scale(px))
+            .map(|glyph| glyph.px_bounds().height())
+            .unwrap_or(px * 0.7);
+        top + (height + cap) / 2.0
+    }
+
+    /// The Linux recording controls. `recovery`: a save failed, Resume is inert.
+    /// `discard_armed`: Discard waits for its confirming second press.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_recording_controls(
+        canvas: &mut [u8],
+        layout: &ControlsLayout,
+        state: crate::record::session::PublicRecordingState,
+        enabled: bool,
+        recovery: bool,
+        discard_armed: bool,
+        elapsed: &str,
+        fonts: (&FontVec, &FontVec),
+    ) {
+        use crate::record::session::PublicRecordingState;
+
+        let (body, strong) = fonts;
+        let (w, h) = (layout.width, layout.height);
+        clear(canvas);
+        fill_round_rect(
+            canvas, w, h, 0.0, 0.0, w as f32, h as f32, 14.0, CTL_PANEL, 1.0,
+        );
+        let ellipsis = if strong.glyph_id('…').0 == 0 {
+            "..."
+        } else {
+            "…"
+        };
+        let saving = format!("Saving{ellipsis}");
+        let (title, dot) = match state {
+            PublicRecordingState::Recording => ("Recording", REC_RGB),
+            PublicRecordingState::Paused if recovery => ("Save failed", CTL_SUB),
+            PublicRecordingState::Paused => ("Paused", CTL_SUB),
+            PublicRecordingState::Finalizing => (saving.as_str(), CTL_SUB),
+            PublicRecordingState::Idle => ("Idle", CTL_SUB),
+        };
+        fill_circle(
+            canvas,
+            w,
+            h,
+            CTL_PAD + 4.0,
+            CTL_PAD + CTL_HEAD_H / 2.0,
+            4.0,
+            dot,
+            1.0,
+        );
+        let head = cap_baseline(strong, CTL_TITLE_PX, CTL_PAD, CTL_HEAD_H);
+        draw_font_text(
+            canvas,
+            w,
+            h,
+            strong,
+            CTL_PAD + 16.0,
+            head,
+            title,
+            CTL_TITLE_PX,
+            CTL_FG,
+        );
+        draw_font_text(
+            canvas,
+            w,
+            h,
+            body,
+            w as f32 - CTL_PAD - text_width(body, elapsed, CTL_TITLE_PX),
+            cap_baseline(body, CTL_TITLE_PX, CTL_PAD, CTL_HEAD_H),
+            elapsed,
+            CTL_TITLE_PX,
+            CTL_SUB,
+        );
+
+        let live = enabled
+            && !matches!(
+                state,
+                PublicRecordingState::Idle | PublicRecordingState::Finalizing
+            );
+        for (button, (x, y, bw, bh)) in &layout.buttons {
+            let label = match button {
+                PopupButton::PauseResume if state == PublicRecordingState::Paused => "Resume",
+                PopupButton::PauseResume => "Pause",
+                PopupButton::SaveShelf => "Save to shelf",
+                PopupButton::SaveDisk => "Save to disk",
+                PopupButton::Discard if discard_armed => "Confirm",
+                PopupButton::Discard => "Discard",
+            };
+            let key = CONTROL_BUTTONS
+                .iter()
+                .find(|(candidate, _, _)| candidate == button)
+                .map_or("", |(_, _, key)| key);
+            let active = live && !(recovery && *button == PopupButton::PauseResume);
+            let primary = active && *button == PopupButton::SaveShelf;
+            let (fill, text, hint) = match (active, primary) {
+                (_, true) => (CTL_FG, CTL_PANEL, CTL_KEY_ON_PRIMARY),
+                (true, false) => (CTL_RAISE, CTL_FG, CTL_KEY),
+                (false, _) => (CTL_RAISE, CTL_KEY, CTL_KEY),
+            };
+            fill_round_rect(canvas, w, h, *x, *y, *bw, *bh, 9.0, fill, 1.0);
             draw_font_text(
                 canvas,
                 w,
                 h,
-                font,
-                x + (bw - text_width(font, key, key_px)) / 2.0,
-                y + bh / 2.0 + 15.0,
+                body,
+                x + CTL_INSET,
+                cap_baseline(body, CTL_LABEL_PX, *y, *bh),
+                label,
+                CTL_LABEL_PX,
+                text,
+            );
+            draw_font_text(
+                canvas,
+                w,
+                h,
+                body,
+                x + bw - CTL_INSET - text_width(body, key, CTL_KEY_PX),
+                cap_baseline(body, CTL_KEY_PX, *y, *bh),
                 key,
-                key_px,
-                HINT_RGB,
+                CTL_KEY_PX,
+                hint,
             );
         }
     }
@@ -1059,46 +1213,79 @@ mod tests {
     }
 
     #[test]
-    fn popup_hints_and_armed_discard_change_the_buttons() {
-        use crate::record::session::PublicRecordingState;
-        use crate::shelf::recording::{POPUP_H, POPUP_W, discard_rect};
-
+    fn controls_layout_keeps_one_padding_and_one_row() {
+        use crate::shelf::recording::PopupButton;
         let font = crate::shelf::font::fallback_popup_font();
-        let draw = |hints: PopupHints| {
-            let mut buf = vec![0u8; (POPUP_W * POPUP_H * 4) as usize];
-            draw_recording_popup_with(
+        let layout = controls::controls_layout(&font);
+        let rects: Vec<_> = layout.buttons.iter().map(|(_, rect)| *rect).collect();
+        let (first, last) = (rects[0], rects[3]);
+        assert_eq!(first.0, 16.0, "left padding");
+        assert_eq!(last.0 + last.2, layout.width as f32 - 16.0, "right padding");
+        assert_eq!(
+            first.1 + first.3,
+            layout.height as f32 - 16.0,
+            "bottom padding"
+        );
+        for pair in rects.windows(2) {
+            assert_eq!(pair[1].0 - (pair[0].0 + pair[0].2), 8.0, "gap");
+        }
+        assert!(rects.iter().all(|r| r.1 == first.1 && r.3 == 30.0));
+        for (button, (x, y, w, h)) in &layout.buttons {
+            let centre = ((x + w / 2.0) as f64, (y + h / 2.0) as f64);
+            assert_eq!(layout.hit(centre.0, centre.1), Some(*button));
+        }
+        assert_eq!(layout.hit(8.0, 8.0), None);
+        assert_eq!(layout.buttons[1].0, PopupButton::SaveShelf);
+    }
+
+    #[test]
+    fn controls_paint_states_primary_and_confirm() {
+        use crate::record::session::PublicRecordingState;
+        let font = crate::shelf::font::fallback_popup_font();
+        let layout = controls::controls_layout(&font);
+        let draw = |state, enabled, armed| {
+            let mut buf = vec![0u8; (layout.width * layout.height * 4) as usize];
+            controls::draw_recording_controls(
                 &mut buf,
-                POPUP_W,
-                POPUP_H,
-                PublicRecordingState::Recording,
-                true,
+                &layout,
+                state,
+                enabled,
                 false,
-                hints,
+                armed,
                 "01:23",
-                &font,
+                (&font, &font),
             );
             buf
         };
-        let (x, y, w, h) = discard_rect();
-        let cell = |buf: &[u8]| {
+        // Left of the label, at mid height: clear of the corners and the text.
+        let pixel = |buf: &[u8], (x, y, _, h): (f32, f32, f32, f32)| {
+            let at = ((((y + h / 2.0) as u32) * layout.width + x as u32 + 4) * 4) as usize;
+            buf[at..at + 4].to_vec()
+        };
+        let cell = |buf: &[u8], (x, y, w, h): (f32, f32, f32, f32)| {
             (y as u32..(y + h) as u32)
                 .flat_map(|py| {
-                    let start = ((py * POPUP_W + x as u32) * 4) as usize;
-                    buf[start..start + (w as usize) * 4].to_vec()
+                    let start = ((py * layout.width + x as u32) * 4) as usize;
+                    buf[start..start + w as usize * 4].to_vec()
                 })
                 .collect::<Vec<_>>()
         };
-        let plain = draw(PopupHints::default());
-        let armed = draw(PopupHints {
-            discard_armed: true,
-            keys: false,
-        });
-        let keys = draw(PopupHints {
-            discard_armed: false,
-            keys: true,
-        });
-        assert_ne!(cell(&plain), cell(&armed));
-        assert_ne!(cell(&plain), cell(&keys));
+        let paused = draw(PublicRecordingState::Paused, true, false);
+        let shelf = layout.buttons[1].1;
+        let disk = layout.buttons[2].1;
+        let discard = layout.buttons[3].1;
+        // The one primary action is the bright fill; the rest stay a raise.
+        assert!(pixel(&paused, shelf)[0] > 0xE0);
+        assert!(pixel(&paused, disk)[0] < 0x30);
+        assert_ne!(
+            cell(&paused, discard),
+            cell(&draw(PublicRecordingState::Paused, true, true), discard)
+        );
+        // While saving nothing is primary.
+        assert!(pixel(&draw(PublicRecordingState::Finalizing, false, false), shelf)[0] < 0x30);
+        // Panel is opaque everywhere inside its rounded corners.
+        let centre = ((layout.height / 2 * layout.width + 4) * 4 + 3) as usize;
+        assert_eq!(paused[centre], 255);
     }
 
     #[test]

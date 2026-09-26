@@ -1,6 +1,9 @@
 use crate::record::session::PublicRecordingState;
 
+// The frozen Windows shell keeps the fixed popup; Linux sizes it from its layout.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub const POPUP_W: u32 = 408;
+#[cfg_attr(not(windows), allow(dead_code))]
 pub const POPUP_H: u32 = 148;
 
 pub const MARKER_BORDER: u32 = 2;
