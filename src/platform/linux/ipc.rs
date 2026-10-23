@@ -93,13 +93,25 @@ pub(super) fn ensure_daemon() -> io::Result<UnixStream> {
 
     // Keep working on systems without a usable user service manager.
     if !managed {
+        use std::os::unix::process::CommandExt;
         let exe = std::env::current_exe()?;
-        Command::new(exe)
+        let mut daemon = Command::new(exe);
+        daemon
             .arg("daemon")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()?;
+            .stderr(Stdio::null());
+        // Its own session: closing the terminal that ran the first command
+        // must not hang up the daemon and a recording with it.
+        unsafe {
+            daemon.pre_exec(|| {
+                if libc::setsid() < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        daemon.spawn()?;
     }
 
     // Poll for it to come up (~1s).

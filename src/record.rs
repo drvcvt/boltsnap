@@ -16,6 +16,8 @@ pub mod cursor_sidecar;
 #[cfg(target_os = "linux")]
 pub mod finalize;
 #[cfg(target_os = "linux")]
+pub mod recover;
+#[cfg(target_os = "linux")]
 pub mod session;
 
 #[cfg(target_os = "windows")]
