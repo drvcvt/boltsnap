@@ -114,7 +114,9 @@ pub fn finalize_recording(
             Ok(path) => {
                 ready.insert(output, vec![path]);
             }
-            Err(error) => return Err(failure(error, ready)),
+            Err(error) => {
+                return Err(failure(error, keep_recoverable(ready, &tools.segment_dir)));
+            }
         }
     }
 
@@ -125,7 +127,9 @@ pub fn finalize_recording(
                 ready.clear();
                 ready.insert(None, vec![path]);
             }
-            Err(error) => return Err(failure(error, ready)),
+            Err(error) => {
+                return Err(failure(error, keep_recoverable(ready, &tools.segment_dir)));
+            }
         }
         let merged = super::cursor::merge(
             &tracks
@@ -235,6 +239,46 @@ fn failure(
         recoverable_segments,
         completed: Vec::new(),
     }
+}
+
+/// After a failed save the remuxed outputs in the cache are the only copy, but
+/// the next daemon start keeps only `boltsnap-segment-*` there. Renaming them
+/// into that pattern lets recovery save them if the daemon dies first.
+fn keep_recoverable(
+    ready: BTreeMap<Option<String>, Vec<PathBuf>>,
+    cache: &Path,
+) -> BTreeMap<Option<String>, Vec<PathBuf>> {
+    ready
+        .into_iter()
+        .map(|(output, paths)| {
+            let paths = paths
+                .into_iter()
+                .map(|path| {
+                    let work = path.parent() == Some(cache)
+                        && path.file_name().is_some_and(|name| {
+                            let name = name.to_string_lossy();
+                            name.starts_with("boltsnap-final-")
+                                || name.starts_with("boltsnap-combined-")
+                        });
+                    if !work {
+                        return path;
+                    }
+                    let kept = super::session::segment_path(cache, output.as_deref(), "mp4");
+                    match rename_noreplace(&path, &kept) {
+                        Ok(()) => kept,
+                        Err(error) => {
+                            eprintln!(
+                                "boltsnap: could not keep {} for recovery: {error}",
+                                path.display()
+                            );
+                            path
+                        }
+                    }
+                })
+                .collect();
+            (output, paths)
+        })
+        .collect()
 }
 
 fn clips_from(
