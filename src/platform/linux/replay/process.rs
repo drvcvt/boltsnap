@@ -3,6 +3,61 @@ use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
+/// Niceness of work that must yield to the foreground (a game, the desktop).
+pub const BACKGROUND: i32 = 19;
+
+/// Lowest best-effort IO priority for the calling thread. Best-effort rather
+/// than idle, so constant disk load elsewhere delays the work but never
+/// starves it. Async-signal-safe: one syscall.
+pub fn lower_io_priority() {
+    const IOPRIO_WHO_PROCESS: libc::c_long = 1;
+    const BEST_EFFORT_LOWEST: libc::c_long = (2 << 13) | 7;
+    unsafe {
+        libc::syscall(
+            libc::SYS_ioprio_set,
+            IOPRIO_WHO_PROCESS,
+            0,
+            BEST_EFFORT_LOWEST,
+        );
+    }
+}
+
+/// Run the calling thread at background CPU and IO priority.
+#[allow(dead_code)] // The replay worker, which includes this file, uses it.
+pub fn background_thread() {
+    unsafe {
+        libc::setpriority(libc::PRIO_PROCESS, libc::gettid() as libc::id_t, BACKGROUND);
+    }
+    lower_io_priority();
+}
+
+/// Let `command` start at background CPU and IO priority.
+#[allow(dead_code)] // Only the daemon uses it, not the replay worker.
+pub fn in_background(command: &mut Command) -> &mut Command {
+    unsafe {
+        command.pre_exec(|| {
+            libc::nice(BACKGROUND);
+            lower_io_priority();
+            Ok(())
+        });
+    }
+    command
+}
+
+/// Under memory pressure the kernel should take a disposable helper, whose
+/// buffer is easy to restart, before the game. Raising the score needs no
+/// privilege. Async-signal-safe: open, write, close.
+fn prefer_for_oom() {
+    unsafe {
+        let fd = libc::open(c"/proc/self/oom_score_adj".as_ptr(), libc::O_WRONLY);
+        if fd >= 0 {
+            libc::write(fd, b"500".as_ptr().cast(), 3);
+            libc::close(fd);
+        }
+    }
+}
+
+/// `priority`: niceness; background work also gets the lowest IO priority.
 pub fn spawn(command: &mut Command, priority: Option<i32>) -> io::Result<Child> {
     let parent = std::process::id();
     unsafe {
@@ -15,7 +70,11 @@ pub fn spawn(command: &mut Command, priority: Option<i32>) -> io::Result<Child> 
             }
             if let Some(priority) = priority {
                 libc::nice(priority);
+                if priority >= BACKGROUND {
+                    lower_io_priority();
+                }
             }
+            prefer_for_oom();
             Ok(())
         });
     }
@@ -41,16 +100,24 @@ pub fn terminate(child: &mut Child) {
     let _ = child.wait();
 }
 
+/// Probes are never in a hurry next to a game.
 pub fn output(command: &mut Command, timeout: Duration) -> Result<Output, String> {
-    output_bounded(command.stdin(Stdio::null()), timeout, 64 * 1024)
+    output_bounded(
+        command.stdin(Stdio::null()),
+        timeout,
+        64 * 1024,
+        Some(BACKGROUND),
+    )
 }
 
+/// `priority` as for `spawn`.
 pub fn output_bounded(
     command: &mut Command,
     timeout: Duration,
     limit: usize,
+    priority: Option<i32>,
 ) -> Result<Output, String> {
-    output_with_interval(command, timeout, limit, Duration::from_millis(20))
+    output_with_interval(command, timeout, limit, Duration::from_millis(20), priority)
 }
 
 /// Short startup helpers should not inherit the media probe's 20 ms polling floor.
@@ -60,6 +127,7 @@ pub fn output_setup(command: &mut Command) -> Result<Output, String> {
         Duration::from_millis(500),
         64 * 1024,
         Duration::from_millis(1),
+        None,
     )
 }
 
@@ -71,10 +139,14 @@ fn output_with_interval(
     timeout: Duration,
     limit: usize,
     interval: Duration,
+    priority: Option<i32>,
 ) -> Result<Output, String> {
     use std::os::fd::{AsRawFd, OwnedFd};
-    let mut child = spawn(command.stdout(Stdio::piped()).stderr(Stdio::piped()), None)
-        .map_err(|e| format!("start media capability probe: {e}"))?;
+    let mut child = spawn(
+        command.stdout(Stdio::piped()).stderr(Stdio::piped()),
+        priority,
+    )
+    .map_err(|e| format!("start media capability probe: {e}"))?;
     let deadline = Instant::now() + timeout;
     let mut pipes = [
         child.stdout.take().map(OwnedFd::from),
@@ -206,6 +278,7 @@ mod tests {
             ]),
             Duration::from_secs(5),
             300_000,
+            None,
         )
         .unwrap();
         assert_eq!((big.stdout.len(), big.stderr.len()), (200_000, 200_000));
@@ -214,6 +287,7 @@ mod tests {
             Command::new("sh").args(["-c", "head -c 5000 /dev/zero; sleep 5"]),
             Duration::from_secs(5),
             4096,
+            None,
         )
         .unwrap_err();
         assert!(error.contains("exceeds its limit"));

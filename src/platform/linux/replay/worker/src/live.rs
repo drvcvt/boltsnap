@@ -57,18 +57,24 @@ fn capture(state: &Mutex<State>, duration: i64, budget: usize) -> Result<(), Str
     }
 }
 
+/// The video stopped arriving, or the input failed.
+fn input_lost(state: &State) -> bool {
+    state.error.is_some() || state.updated.elapsed() > Duration::from_secs(3)
+}
+
+/// What the buffer holds stays saveable after its input failed or stalled,
+/// which is when the last seconds matter most; the clip then ends where
+/// capture stopped. Only a buffer that never filled has nothing to give.
 fn snapshot(state: &State) -> Result<Recording, String> {
-    if let Some(error) = &state.error {
-        return Err(error.clone());
-    }
-    if state.updated.elapsed() > Duration::from_secs(3) {
-        return Err("replay input is stalled".into());
-    }
-    state
-        .recording
-        .as_ref()
-        .ok_or("replay is warming up")?
+    let Some(recording) = state.recording.as_ref() else {
+        return Err(state
+            .error
+            .clone()
+            .unwrap_or_else(|| "replay is warming up".into()));
+    };
+    recording
         .snapshot()
+        .map_err(|error| state.error.clone().unwrap_or(error))
 }
 
 fn response(stream: &mut UnixStream, result: Result<Value, String>) {
@@ -166,6 +172,10 @@ pub fn run(
                 Ok(
                     json!({"ready": state_guard.error.is_none() && bounds.is_some() && state_guard.updated.elapsed() < Duration::from_secs(3),
                     "duration_us": bounds.map(|(s,e)| e-s).unwrap_or(0), "busy": state_guard.busy,
+                    // Bytes reaching the budget before `seconds` means the
+                    // bitrate, not the duration, bounds the history.
+                    "bytes": state_guard.recording.as_ref().map_or(0, |r| r.ring.bytes()),
+                    "budget_bytes": budget,
                     "selection_active": selection_active,
                     "error": state_guard.error, "encoder": encoder, "seconds": seconds}),
                 )
@@ -256,6 +266,7 @@ pub fn run(
                     Ok((recording, crop))
                 }) {
                     Ok((recording, crop)) => {
+                        let input_lost = input_lost(&state_guard);
                         state_guard.busy = true;
                         state_guard.next_id += 1;
                         let path = directory.join(format!(
@@ -270,6 +281,8 @@ pub fn run(
                         let state = state.clone();
                         let encoder = encoder.clone();
                         std::thread::spawn(move || {
+                            // Writing a clip waits for the game, not the reverse.
+                            crate::process::background_thread();
                             let result = (|| {
                                 let (start, end) = recording.ring.bounds()?;
                                 let bytes = match crop {
@@ -283,7 +296,7 @@ pub fn run(
                                     None => crate::export::remux(&recording, &path, budget as u64)?,
                                 };
                                 Ok(
-                                    json!({"path": path.to_string_lossy(), "path_bytes":path.as_os_str().as_bytes(), "bytes": bytes, "duration_us": end-start}),
+                                    json!({"path": path.to_string_lossy(), "path_bytes":path.as_os_str().as_bytes(), "bytes": bytes, "duration_us": end-start, "input_lost": input_lost}),
                                 )
                             })();
                             drop(recording);

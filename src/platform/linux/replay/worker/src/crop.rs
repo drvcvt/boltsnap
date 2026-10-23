@@ -98,6 +98,8 @@ pub fn preview(recording: &Recording) -> Result<Vec<u8>, String> {
         &mut command,
         Duration::from_secs(10),
         crate::replay::wire::MAX_PREVIEW,
+        // The selector waits for this frame.
+        None,
     )?;
     if !result.status.success() || result.stdout.is_empty() {
         return Err("could not decode replay preview".into());
@@ -130,6 +132,12 @@ pub fn save(
     path: &Path,
     limit: u64,
 ) -> Result<u64, String> {
+    if encoder == crate::replay::crop::NO_ENCODER {
+        return Err(
+            "region clips need a hardware encoder in FFmpeg (h264_nvenc, h264_vaapi or h264_vulkan)"
+                .into(),
+        );
+    }
     let source = source_file(recording, limit)?;
     let partial = path.with_extension("partial.mp4");
     // Reserve the private file; ffmpeg reopens it by path because MP4 needs
@@ -140,6 +148,26 @@ pub fn save(
         .mode(0o600)
         .open(&partial)
         .map_err(|e| format!("create crop output: {e}"))?;
+    // A failed clip must not keep a full disk full; a finished one that only
+    // could not take its name stays.
+    let bytes =
+        encode(recording, source, output, &partial, encoder, crop, limit).inspect_err(|_| {
+            let _ = std::fs::remove_file(&partial);
+        })?;
+    crate::export::publish(&partial, path)
+        .map_err(|e| format!("{e}; finished clip kept at {}", partial.display()))?;
+    Ok(bytes)
+}
+
+fn encode(
+    recording: &Recording,
+    source: File,
+    output: File,
+    partial: &Path,
+    encoder: &str,
+    crop: Crop,
+    limit: u64,
+) -> Result<u64, String> {
     let mut command = Command::new("ffmpeg");
     command.args([
         "-hide_banner",
@@ -184,7 +212,7 @@ pub fn save(
     }
     // `file:` keeps a colon in the path from selecting another protocol.
     let mut target = std::ffi::OsString::from("file:");
-    target.push(&partial);
+    target.push(partial);
     command
         .args(["-c:a", "copy", "-f", "mp4", "-y"])
         .arg(target)
@@ -228,33 +256,21 @@ pub fn save(
     let _ = done.send(());
     let _ = watcher.join();
     if exceeded {
-        return Err(format!(
-            "crop output exceeds its disk budget; partial output: {}",
-            partial.display()
-        ));
+        return Err("crop output exceeds its disk budget".into());
     }
     if !status?.success() {
-        return Err(format!(
-            "crop encoder failed; partial output: {}",
-            partial.display()
-        ));
+        return Err("crop encoder failed".into());
     }
-    output
-        .sync_all()
-        .map_err(|e| format!("sync crop: {e}; partial output: {}", partial.display()))?;
+    output.sync_all().map_err(|e| format!("sync crop: {e}"))?;
     let bytes = output
         .metadata()
         .map_err(|e| format!("crop metadata: {e}"))?
         .len();
     if bytes > limit {
-        return Err(format!(
-            "crop output exceeds its disk budget; partial output: {}",
-            partial.display()
-        ));
+        return Err("crop output exceeds its disk budget".into());
     }
     if bytes == 0 {
-        return Err(format!("empty crop output: {}", partial.display()));
+        return Err("empty crop output".into());
     }
-    crate::export::publish(&partial, path)?;
     Ok(bytes)
 }

@@ -100,7 +100,7 @@ pub fn remux(recording: &Recording, path: &Path, limit: u64) -> Result<u64, Stri
         return Err("output already exists".into());
     }
     let (temporary, writer, handle) = create_partial(path, limit)?;
-    let result: Result<u64, String> = (|| {
+    let written: Result<u64, String> = (|| {
         mux(recording, writer, "mp4")?;
         handle.sync_all().map_err(|e| format!("sync output: {e}"))?;
         let bytes = handle
@@ -110,10 +110,16 @@ pub fn remux(recording: &Recording, path: &Path, limit: u64) -> Result<u64, Stri
         if bytes == 0 {
             return Err("empty output".into());
         }
-        publish(&temporary, path)?;
         Ok(bytes)
     })();
-    result.map_err(|e| format!("{e}; partial output: {}", temporary.display()))
+    // A failed clip must not keep a full disk full; a finished one that only
+    // could not take its name stays.
+    let bytes = written.inspect_err(|_| {
+        let _ = std::fs::remove_file(&temporary);
+    })?;
+    publish(&temporary, path)
+        .map_err(|e| format!("{e}; finished clip kept at {}", temporary.display()))?;
+    Ok(bytes)
 }
 
 /// NUT keeps the capture's `1/fps` time base for the crop encoder; MP4 keeps

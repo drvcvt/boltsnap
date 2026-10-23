@@ -64,6 +64,7 @@ fn extract(path: &Path) -> Result<image::RgbaImage, String> {
             .stdin(Stdio::null()),
         Duration::from_secs(10),
         (CARD_W * CARD_H * 4) as usize,
+        Some(super::super::replay::process::BACKGROUND),
     )?;
     if !result.status.success() {
         return Err("video thumbnail decoding failed".into());
