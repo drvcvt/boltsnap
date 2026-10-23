@@ -95,6 +95,13 @@ captures at a constant bitrate sized to its buffer, picks its codec through
 `gsr --info`, and runs exports at background priority. The plan's section 4
 lists what is still open, including the recording feedback in wave 3.
 
+A follow-up review on 2026-10-23 is recorded in the same plan (section 5:
+R1 to R11 recording, RP1 to RP8 replay; R1 is a P1 silent loss after a failed
+partial save), in the [shelf plan](plans/2026-07-31-shelf-hardening.md#review-2026-10-23-s1-to-s7)
+(S1 to S7, including two Task 5 regressions) and in
+[comfort-and-config](plans/2026-09-25-comfort-and-config.md#4-config-review-2026-10-23)
+(CF1 to CF8). None of them is fixed yet.
+
 ## Partial and deferred work
 
 - Raw image IPC is Integrated but opt-in; its full-path performance did not

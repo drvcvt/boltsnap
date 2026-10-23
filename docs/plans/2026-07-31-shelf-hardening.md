@@ -63,7 +63,7 @@ startup call and the missing teardown keep it alive.
   plays from its first frame instead of losing the configure roundtrip.
 - Last card gone (dismiss animation finished, model empty, no animation, no drag): the surface is
   dropped in `draw()`; the card is already faded out, nothing visible changes.
-- Next card: a new surface, on the then-focused output.
+- Next card: a new surface, on the then-focused output. (Not yet true for cards without an output, see S6 below.)
 
 ### Edge cases (checked in code, 83e1ae6; rechecked on ceab064)
 
@@ -123,3 +123,45 @@ the test split). So the logic goes into a new
   a recording (controls still appear).
 - [ ] With Brawlhalla fullscreen on DP-3: `hyprctl monitors -j` `solitaryBlockedBy` empty,
   `activelyTearing` true.
+
+## Review 2026-10-23 (S1 to S7)
+
+Read-only review of the shelf daemon, IPC and the Task 5 change on 9ef1cc0.
+Nothing reproduced; every finding re-read against the code on 23.10.
+("plausible": code path confirmed, runtime effect not proven). The Task 5
+surface lifecycle itself was checked path by path and holds (every add calls
+`place_on_output` before `draw`, release only inside `draw` on the event loop,
+frame callbacks and stale `configure`/`closed` are safe). S5 and S6 are
+regressions against the Task 5 goal and its behaviour text.
+
+| ID | Prio | Trigger and impact | Evidence | Confidence | Fix and tradeoff |
+| --- | --- | --- | --- | --- | --- |
+| S1 | P2 | Any client on the socket sends `recording_thumb` with any path: the daemon reads it (up to 256 MiB) and **deletes it unconditionally**, no `same_user`, no path check. Can delete a live card's temp PNG or any file the user may delete. Nothing in the tree sends this request since July. | `linux/shelf/mod.rs:759-770`, `linux/shelf/thumbnail.rs:77-95` (`let _ = std::fs::remove_file(path);`) | verified | Remove the decode/delete path; keep the protocol variant only to reject it with an error. A capture client older than July keeps its placeholder. |
+| S2 | P3 | Cards still take clicks and drags during their 240 ms dismiss animation; the temp file is then removed under a running drag or `xdg-open`. | `mod.rs:2300` `hit_test` over `animated_layout()`, `Layout::hit` never filters, `remove_card_now` ignores `drag_card` | verified path | `hit_test` skips ids with a `Disappear` animation. A click on a dismissing card does nothing. |
+| S3 | P3 | Drag a temporary video card while its Save moves the file: the drag still offers the old path. | `mod.rs:2109` (path captured at drag start), `3133-3136` (`promote` updates only the model) | plausible | `begin_drag` refuses while `saves.is_saving(id)`. |
+| S4 | P3 | A replay save, finalize or `add_video` during a drag does not end the drag; on another output `place_on_output` destroys the drag's origin surface, the compositor likely cancels, and the cancel path copies the image to the clipboard unasked. | `add_prepared` clears the drag (`mod.rs:1873-1875`), `add_finalized_cards` (`3280-3327`) does not | verified path, compositor reaction plausible | Same `clear_drag()` in `add_finalized_cards` when a card is added. |
+| S5 | P3 | **Task 5 regression:** a drag whose end event never arrives (the code documents this, `mod.rs:1871-1872`, `2309-2312`) keeps the overlay surface alive after the last card is gone, so tearing and direct scanout stay blocked until the next screenshot. | `surface.rs:22-27` (`drag_source.is_some()` keeps the surface) | plausible | With an empty model and no animation, `clear_drag()` and release anyway; there is no card left to protect. |
+| S6 | P3 | **Task 5 regression:** the release clears `output_name`, so a card without an output (editor `add_video`, legacy `add`, a failed Hyprland focus query) now lands on the **first** `wl_output` instead of the last used one. The behaviour text above promises the focused output. | `surface.rs:32`, `mod.rs:1686` (`requested.or(self.output_name…)`), `resolve_output_name` falls back to `available.first()` (`mod.rs:1006-1015`) | verified | `requested.or(self.focused_output).or(self.output_name)` in `place_on_output`; keep `output_name` across a release. `focused_output` is only as fresh as the last `refresh_focus`. |
+| S7 | P3 | Parallel `add_video` imports each pass the cache capacity check before any copy lands and can exceed the 2 GiB cache together, which then blocks recordings. | `mod.rs:556-562`, `record/finalize.rs:726-741` | plausible | Give video imports their own `Limit::new(1)`. Imports then run one after another. |
+
+Live open (not findings): whether Hyprland releases the shelf `wl_buffer` when
+the layer is destroyed (otherwise each release cycle pins one `SlotPool` slot),
+and what a compositor does with a drag whose origin surface is destroyed (S4).
+
+### Plan
+
+1. S6 and S5 first (regressions of Task 5, both in `surface.rs` plus one line
+   in `place_on_output`; `mod.rs` must not grow). Tests: release keeps the
+   last output; empty model with a stale drag releases.
+2. S1 (delete the legacy path, reject the request; protocol test that the
+   daemon answers an error and the file still exists).
+3. S2, S4, S3 (one guard each, tests on the pure hit/drag decisions).
+4. S7 with the next cache work.
+
+Checks per step: `cargo fmt --check`, `cargo clippy --all-targets`,
+`cargo test`; live after 1: card from the editor lands on the focused monitor,
+`hyprctl layers` empty after the last card.
+
+| ID | Status |
+| --- | --- |
+| S1 to S7 | documented, not implemented |
