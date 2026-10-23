@@ -85,6 +85,16 @@ F1 is a behavior decision, not an approved fix: [`Sources::sample` and
 arrives before the next tracker becomes visible. Seamless monitor handover is
 not guaranteed. The README now states that limitation.
 
+The [recording and replay review of 2026-10-12](plans/2026-10-12-recording-reliability-review.md)
+is the record for its findings. Fixed in code, not yet checked live:
+[`record/recover.rs`](../src/record/recover.rs) saves segments a dead daemon
+left; a closed shelf output no longer ends the daemon;
+[`shelf/watch.rs`](../src/platform/linux/shelf/watch.rs) pauses on a stalled
+gsr segment and keeps room to remux; disk saves remux into `record_dir`; replay
+captures at a constant bitrate sized to its buffer, picks its codec through
+`gsr --info`, and runs exports at background priority. The plan's section 4
+lists what is still open, including the recording feedback in wave 3.
+
 ## Partial and deferred work
 
 - Raw image IPC is Integrated but opt-in; its full-path performance did not

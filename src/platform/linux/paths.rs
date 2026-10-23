@@ -202,17 +202,19 @@ pub fn rec_dir() -> PathBuf {
     cache_dir().join("rec")
 }
 
-/// Delete leftover recording files in `rec_dir`. Called at daemon startup: the
-/// shelf is RAM-only, so any recording file present is an orphan from a previous
-/// run/crash. Recordings are large, so cleaning them matters more than shelf temps.
-/// Returns the number of files removed.
-pub fn clean_orphan_rec_files() -> usize {
+/// Delete leftover recording files in `rec_dir` except `keep`. Called at
+/// daemon startup: the shelf is RAM-only, so any recording file present is an
+/// orphan from a previous run/crash. Recordings are large, so cleaning them
+/// matters more than shelf temps. `keep` holds unsaved recordings that are
+/// recovered instead. Returns the number of files removed.
+pub fn clean_orphan_rec_files(keep: &[PathBuf]) -> usize {
     let mut removed = 0;
     let Ok(entries) = fs::read_dir(rec_dir()) else {
         return 0;
     };
     for entry in entries.flatten() {
         if is_orphan_rec_file(&entry.file_name().to_string_lossy())
+            && !keep.contains(&entry.path())
             && fs::remove_file(entry.path()).is_ok()
         {
             removed += 1;

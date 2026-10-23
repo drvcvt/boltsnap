@@ -359,6 +359,19 @@ opening adds one lossless segment boundary. Esc or Resume hides them and
 continues. The open controls take keys: Space resumes, Enter saves to the
 shelf, D saves to disk, Delete discards (twice).
 
+While recording, the daemon pauses the recording (segments kept, a
+notification and the controls' title say why) when the recorder exits, when a
+GPU Screen Recorder segment stops growing for 6 seconds, or when free space in
+the recording cache falls to what saving still needs: at least 2 GiB, and
+room to remux everything recorded so far when that remux happens on the cache's
+disk. It warns once 2 GiB before that point. A disk save remuxes straight into
+`record_dir`, so a recording only needs room there once. If the daemon dies
+mid-recording (crash, logout, a lost output), the next start saves the
+Matroska segments it left as `boltsnap-<time>-<output>-recovered.mp4` in
+`record_dir` and says so; segments that cannot be joined are moved there
+unchanged. FFmpeg work at save time and thumbnails run at nice 19 with the
+lowest best-effort IO priority.
+
 A single MP4 segment is moved directly and skips FFmpeg at save time.
 GPU Screen Recorder produces Matroska segments, so even an uninterrupted
 recording is remuxed to MP4 with FFmpeg without re-encoding. Matroska keeps
