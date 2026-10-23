@@ -179,6 +179,9 @@ impl Config {
         if let Some(value) = value.get("autostart") {
             settings.autostart = value.as_bool().ok_or("invalid replay autostart")?;
         }
+        if value.get("bitrate_kbps").is_some() {
+            settings.bitrate_kbps = Some(number("bitrate_kbps", 0, 500, 200_000)? as u32);
+        }
         Ok(settings)
     }
 
@@ -512,6 +515,7 @@ mod tests {
             "[replay]\nduration_seconds = 0",
             "[replay]\nduration_seconds = 601",
             "[replay]\nmemory_mib = 0",
+            "[replay]\nbitrate_kbps = 100",
             "[replay]\nautostart = 'yes'",
             "replay = 1",
         ] {

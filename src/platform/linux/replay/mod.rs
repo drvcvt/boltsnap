@@ -107,6 +107,9 @@ pub fn cli(args: &[String]) -> crate::DynResult<()> {
     }
     let response =
         call(&json!({"version":1,"command":command})).inspect_err(|error| notify_error(error))?;
+    if response["input_lost"] == true {
+        notify_error("capture had stopped; the clip ends where it stopped");
+    }
     println!("{response}");
     Ok(())
 }
@@ -318,6 +321,10 @@ fn capture_log() -> Stdio {
         .unwrap_or_else(|_| Stdio::null())
 }
 
+/// Above `/proc/sys/fs/pipe-max-size` (1 MiB by default) the call fails and
+/// the pipe keeps its size.
+const CAPTURE_PIPE_BYTES: libc::c_int = 1024 * 1024;
+
 fn companion_path(name: &str) -> PathBuf {
     let adjacent = std::env::current_exe()
         .ok()
@@ -387,6 +394,7 @@ fn smooth_cursor(
 }
 
 fn start_capture(settings: Settings, cancel: &AtomicBool) -> Result<Session, String> {
+    let video_kbps = settings.video_kbps().to_string();
     let info = super::hypr::json("monitors").ok_or("could not query replay monitor")?;
     let monitors = crate::record::parse_hyprland_monitors(&info)?;
     let output = settings.output.or_else(|| {
@@ -418,26 +426,35 @@ fn start_capture(settings: Settings, cancel: &AtomicBool) -> Result<Session, Str
     let encoders = capabilities["video_encoders"]
         .as_array()
         .ok_or("invalid encoder capabilities")?;
-    let candidates = if settings.encoder == "auto" {
-        vec!["h264_nvenc", "h264_vaapi", "h264_vulkan"]
-    } else {
-        vec![settings.encoder.as_str()]
-    };
-    let mut selected = None;
+    // gsr ships its own FFmpeg, so it is asked what it can capture with. The
+    // system FFmpeg only encodes region clips; probing it for the capture once
+    // sent replay to Vulkan when FFmpeg had been built without NVENC.
+    let gsr = super::gsr::info()?;
+    let capture = super::gsr::choose(&settings.encoder, &gsr)?;
+    if capture.cpu {
+        return Err("replay needs a hardware encoder; set replay encoder to one".into());
+    }
+    let capture_codec = capture.name.as_str();
+    let mut candidates = vec![capture.encoder.as_str()];
+    if settings.encoder == "auto" {
+        candidates.extend(["h264_nvenc", "h264_vaapi", "h264_vulkan"]);
+    }
+    candidates.dedup();
+    let mut encoder = None;
     let mut errors = Vec::new();
-    for encoder in candidates {
+    for candidate in candidates {
         if cancel.load(Ordering::Relaxed) {
             return Err("replay start cancelled".into());
         }
-        if !encoders.iter().any(|e| e == encoder) {
+        if !encoders.iter().any(|e| e == candidate) {
             continue;
         }
         let probe = process::output(
-            Command::new(&worker).args(["check-encoder", encoder]),
+            Command::new(&worker).args(["check-encoder", candidate]),
             Duration::from_secs(10),
         )?;
         if probe.status.success() {
-            selected = Some(encoder.to_owned());
+            encoder = Some(candidate.to_owned());
             break;
         }
         errors.push(
@@ -447,23 +464,14 @@ fn start_capture(settings: Settings, cancel: &AtomicBool) -> Result<Session, Str
                 .collect::<String>(),
         );
     }
-    let encoder = selected.ok_or_else(|| {
-        format!(
-            "no usable requested hardware encoder: {}",
+    // Replay itself works without one; only region clips report the gap.
+    let encoder = encoder.unwrap_or_else(|| {
+        eprintln!(
+            "boltsnap replay: no FFmpeg hardware encoder for region clips: {}",
             errors.join("; ")
-        )
-    })?;
-    let capture_codec = match encoder.as_str() {
-        "h264_nvenc" | "h264_vaapi" => "h264",
-        "hevc_nvenc" | "hevc_vaapi" => "hevc",
-        "av1_nvenc" | "av1_vaapi" => "av1",
-        "h264_vulkan" | "hevc_vulkan" | "av1_vulkan" => &encoder,
-        other => {
-            return Err(format!(
-                "{other} is installed, but has no compatible GPU Screen Recorder adapter"
-            ));
-        }
-    };
+        );
+        boltsnap::replay::crop::NO_ENCODER.into()
+    });
     let directory = crate::paths::rec_dir();
     std::fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
     crate::record::finalize::check_recording_cache_limit(&directory)?;
@@ -479,10 +487,13 @@ fn start_capture(settings: Settings, cancel: &AtomicBool) -> Result<Session, Str
             "cfr",
             "-k",
             capture_codec,
-            // The frozen selector is decoded from this stream too. Keep text
-            // legible; the cheaper medium preset visibly degrades the preview.
+            // A constant bitrate sized to the buffer keeps RAM and history
+            // predictable; constant quality grows with motion and silently
+            // shortens the clip once the byte budget evicts instead.
+            "-bm",
+            "cbr",
             "-q",
-            "very_high",
+            &video_kbps,
             "-tune",
             "performance",
             "-keyint",
@@ -517,6 +528,12 @@ fn start_capture(settings: Settings, cancel: &AtomicBool) -> Result<Session, Str
     // gsr holds its own copy of the feed now.
     let cursor = smooth.map(|(tracker, _feeds)| tracker);
     let input = capture.stdout.take().ok_or("capture pipe missing")?;
+    // 64 KiB holds a few ms of video; a keyframe alone is larger. Room for
+    // ~100 ms keeps a worker held up by a busy CPU from stalling gsr's encoder.
+    unsafe {
+        use std::os::fd::AsRawFd;
+        libc::fcntl(input.as_raw_fd(), libc::F_SETPIPE_SZ, CAPTURE_PIPE_BYTES);
+    }
     let name = format!(
         "worker-{}-{}",
         std::process::id(),

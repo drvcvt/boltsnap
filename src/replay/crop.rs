@@ -1,3 +1,7 @@
+/// Worker encoder name when FFmpeg has no usable hardware encoder: replay
+/// runs, region clips report why they cannot.
+pub const NO_ENCODER: &str = "none";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Crop {
     pub x: u32,
