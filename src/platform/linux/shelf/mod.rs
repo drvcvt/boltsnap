@@ -2116,13 +2116,7 @@ impl Daemon {
     /// Reset all in-flight drag state in one place (kept in sync between the
     /// `cancelled` and `dnd_finished` paths), then repaint the shelf once.
     fn clear_drag(&mut self) {
-        self.drag_source = None;
-        self.drag_card = None;
-        self.icon_surface = None;
-        self.drag_icon_buffer = None;
-        self.drag_icon_pool = None;
-        self.drop_ok = false;
-        self.press = None;
+        self.forget_drag();
         // draw() is suppressed while a drag is active; now that it's cleared,
         // repaint once to restore a clean shelf frame.
         if let Some(qh) = self.qh.clone() {
