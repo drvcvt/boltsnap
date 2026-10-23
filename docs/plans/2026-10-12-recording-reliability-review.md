@@ -663,18 +663,109 @@ gsr/ffprobe-Ausgaben.
 
 ### Umsetzungsplan Nachreview (Recording)
 
-1. **R1** zuerst (P1, stiller Verlust). `finalize.rs` (`failure` benennt
-   rettbare Cache-Dateien um), `recover.rs` (nimmt `.mp4` des Musters an).
-   Test: Combined mit `.mkv`-Eingaben und scheiterndem Compose, danach
-   `recover::find` findet die remuxten Dateien.
-2. **R2** (Startreihenfolge, PDEATHSIG, `.part`). Test: Argumente enthalten
-   `-f mp4` und `.part`; Cleanup löscht nur eigene Muster.
-3. **R3**, **R8** (Kontingent), danach **R4**, **R5**.
-4. R6, R7, R9, R10, R11 mit Welle 3.
+Reihenfolge (vom Nutzer am 23.10. bestätigt): R1, dann die Shelf-Regressionen
+S6/S5 und S1, dann RP2/RP3, danach das Settings-UI. R1 ist unten bis auf
+Funktionsebene geplant; R2 bis R11 sind skizziert und werden vor ihrer
+Umsetzung genauso ausgeplant.
+
+#### R1 im Detail
+
+**Verhalten danach:** Scheitert ein Save, nachdem ein Teil schon remuxt ist,
+liegen alle Dateien, die der Save im Cache erzeugt hat, unter dem
+Segment-Muster `boltsnap-segment-<pid>-<id>-<label>.mp4`. Solange der Daemon
+läuft, ändert sich für den Nutzer nichts (Save erneut oder Discard). Stirbt
+der Daemon vorher, rettet der nächste Start sie wie jede andere Waise nach
+`record_dir` (A1) und meldet das.
+
+**Fehlerpfade, die rettbare Arbeitsdateien im Cache zurücklassen** (alle in
+`finalize_recording`, `record/finalize.rs`):
+
+| Stelle | Ziel | Was in `ready` steht |
+| --- | --- | --- |
+| `:117` `finalize_group` eines späteren Outputs scheitert | Shelf (beide Modi) oder Disk+Combined (`remux_dir` = Cache, `:101-104`) | fertige `boltsnap-final-*.mp4` der früheren Outputs im Cache, Original-Segmente der übrigen |
+| `:128` `compose_outputs` scheitert | Combined, Shelf oder Disk | `boltsnap-final-*.mp4` aller Outputs im Cache |
+
+Nicht betroffen: Disk+Separate (`remux_dir` ist `record_dir`, die Datei liegt
+schon dort; das unschöne Arbeitsnamen-Problem ist R10), `move_to_disk_with`
+(Quellen liegen in `record_dir`), der Einzel-MP4-Schnellweg (`:274-276`, die
+Datei hat schon das Segment-Muster).
+
+**Änderungen:**
+
+1. `record/session.rs`: `segment_path` (`:576`) wird `pub(super)`. Es nutzt
+   denselben Zähler `SEGMENT_ID`, also kollidiert eine umbenannte Datei nie mit
+   einem Segment derselben Session.
+2. `record/finalize.rs`: neue Funktion
+   `keep_recoverable(ready, cache) -> BTreeMap<Option<String>, Vec<PathBuf>>`.
+   Für jeden Pfad, der direkt in `cache` liegt und mit `boltsnap-final-` oder
+   `boltsnap-combined-` beginnt: `fs::rename` auf
+   `session::segment_path(cache, output, "mp4")`. Klappt der Rename nicht,
+   bleibt der alte Pfad drin und `eprintln!` nennt den Grund (nicht schlechter
+   als heute). Alles andere bleibt unverändert.
+3. Die beiden Stellen `:117` und `:128` geben
+   `failure(error, keep_recoverable(ready, &tools.segment_dir))` zurück.
+   `session.completed` (`shelf/mod.rs:3117`) bekommt damit die neuen Pfade,
+   Save erneut und Discard arbeiten auf ihnen weiter.
+4. `record/recover.rs`: keine Änderung nötig, `segment_name` (`:22-30`) nimmt
+   `.mp4` schon an. Das Label einer Area-Aufnahme ist `area` (Default in
+   `segment_path`).
+5. README (Abschnitt Recording, Satz zu „If the daemon dies mid-recording“):
+   „or after a save that failed“ ergänzen.
+
+**Randfälle:**
+
+- Save erneut nach dem Fehler: `finalize_group` nimmt für eine einzelne MP4
+  den Schnellweg und gibt dieselbe Datei zurück. Ziel Disk: `move_to_disk`
+  verschiebt sie unter ihren endgültigen Namen. Ziel Shelf: die Karte zeigt auf
+  eine Datei mit Segment-Namen. Die Folge: stirbt der Daemon später, rettet A1
+  auch diese Shelf-Karte nach `record_dir`, statt sie wie andere Shelf-Videos
+  zu verwerfen. Das ist mehr Datenerhalt als heute und wird so dokumentiert.
+- Discard: `finish_discard` löscht Pfade im Cache (`shelf/mod.rs:3265`), die
+  umbenannten Dateien eingeschlossen.
+- Combined scheitert am Compose: gerettet werden die einzelnen Outputs, nicht
+  das komponierte Bild. Das Nachkomponieren bleibt Sache eines erneuten Saves
+  im laufenden Daemon.
+- Ein späterer Start derselben Session ist nach einem gescheiterten Save
+  gesperrt (`RESUME_BLOCKED`, `session.rs:220`, `315`; ein neuer Start wird
+  abgelehnt, solange die Session existiert, `shelf/mod.rs:2396`), also kommen keine neuen
+  Segmente mit gleichem Label dazu, die die Rettung fälschlich anhängen würde.
+- Die Cursor-Spuren der Originale gehen bei einem gescheiterten Save heute
+  schon verloren (nur ein erfolgreicher Save schreibt `X.cursor.json`). Das
+  ändert R1 nicht, R11 behandelt es.
+
+**Tests** (`record/finalize/tests.rs`, mit den vorhandenen Fake-ffmpeg-Helfern
+und einem neuen, der beim zweiten Aufruf scheitert, gesteuert über eine
+Zählerdatei):
+
+1. `keep_recoverable` benennt `boltsnap-final-*` und `boltsnap-combined-*` im
+   Cache um, lässt Original-Segmente und Dateien außerhalb des Caches stehen,
+   und `recover::find(cache)` findet die umbenannten unter dem richtigen Label.
+2. Separate, Ziel Shelf, zwei Outputs mit `.mkv`-Segmenten, das zweite Remux
+   scheitert: `recoverable_segments` enthält für Output 1 eine
+   `boltsnap-segment-*.mp4`, für Output 2 die Original-`.mkv`; `recover::find`
+   liefert zwei Gruppen.
+3. Combined mit `.mkv`-Eingaben, Compose scheitert: beide remuxten Dateien
+   sind im Segment-Muster und werden gefunden. Damit deckt der Test den Fall ab,
+   den `failed_combined_encode_removes_partial_output_and_keeps_inputs` mit
+   `.mp4`-Eingaben übersieht.
+
+**Abnahme:** die drei Tests grün plus die bestehenden, `cargo fmt --check`,
+`cargo clippy --all-targets`, `cargo test`. Ein Live-Test ist nicht geplant:
+ein echter Compose-Fehler lässt sich nicht gezielt auslösen, ohne die Platte
+zu füllen oder ffmpeg zu ersetzen, und beides kommt auf dieser Maschine nicht
+infrage (siehe Memory „no heavy local benchmarks“). Die Fake-ffmpeg-Tests sind
+der Beleg.
+
+#### R2 bis R11 (Skizze, wird vor der Umsetzung ausgeplant)
+
+- **R2:** Startreihenfolge (`save_in_background` erst nach Eventloop und
+  Listener), PDEATHSIG in `run_ffmpeg_in`, `.part`-Ausgabe; Test: Argumente
+  enthalten `-f mp4` und `.part`, Cleanup löscht nur eigene Muster.
+- **R3, R8:** Kontingent ohne fremde Waisen, NotFound überspringen.
+- **R4, R5:** Kill mit Frist und Reaper; EINVAL/EOPNOTSUPP-Fallback.
+- R6, R7, R9, R10, R11 mit Welle 3.
 
 Je Schritt `cargo fmt --check`, `cargo clippy --all-targets`, `cargo test`.
-Live offen, mit Zustimmung: R1 per künstlich gescheitertem Compose (falscher
-Codec in der Config), danach Daemon-Neustart und Prüfung von `record_dir`.
 
 | ID | Stand |
 | --- | --- |
@@ -707,15 +798,86 @@ ohne Overflow, kein Panic bei seltsamer gsr/ffmpeg-Ausgabe.
 ### Umsetzungsplan Nachreview (Replay)
 
 1. **RP2** und **RP3** zusammen (beide in `platform/linux/replay/mod.rs`,
-   zusammen verlieren sie heute Puffer und Session bei einem Hotplug). Tests
-   über die reine Auswahlfunktion (explizit strikt, geerbt mit Fallback) und
-   den Tauschpfad des Watchdogs mit einem Fake-`start`.
+   zusammen verlieren sie heute Puffer und Session bei einem Hotplug).
+   Details unten.
 2. **RP1** (Ratenkappe im Crop, Argumente als Test), **RP4** (Validierung in
    `config.rs` mit Test), **RP5** (Gate in `preview_target`).
 3. RP6, RP7, RP8 mit Welle 3; `docs/replay.md` Timescale-Satz korrigieren.
 
-Live offen, mit Zustimmung: RP2/RP3 durch Abstecken des Recording-Zielmonitors
-bei laufendem Replay; RP1 mit einem großen Region-Clip aus einem Spiel.
+#### RP2 und RP3 im Detail
+
+**Verhalten danach:**
+
+- Monitorwahl beim Start (manuell, Autostart, Watchdog): ein explizites
+  `[replay] output` bleibt strikt; fehlt der Monitor, scheitert der Start mit
+  „configured replay monitor DP-1 is unavailable“. Kommt das Ziel nur aus
+  `record_default_target = "output:DP-1"` und der Monitor fehlt, nimmt Replay
+  den fokussierten und meldet einmal „DP-1 is disconnected; replay uses DP-3“,
+  wie es Aufnahmen schon tun (`record.rs:117-128`).
+- Watchdog-Neustart: die alte Session bleibt Besitzer des Rings, bis die neue
+  läuft. `replay save` und der Selector-Clip (nach RP5) bedienen sich bis dahin
+  am gehaltenen Ring. Erst ein erfolgreicher Start tauscht. Scheitert er, bleibt
+  die alte Session (ohne Capture) und damit der speicherbare Puffer; der
+  Watchdog versucht es mit wachsendem Abstand erneut (15 s, 30 s, 60 s, dann
+  alle 5 min) und meldet den Fehler einmal pro Fehlerserie statt bei jedem
+  Versuch (heute kommt alle 15 s eine Notification).
+
+**Änderungen** (`platform/linux/replay/mod.rs`):
+
+1. Reine Funktion
+   `replay_monitor(explicit: Option<&str>, inherited: Option<&str>, monitors: &[Monitor]) -> Result<(Monitor, Option<String>), String>`
+   ersetzt den Block `:400-412`. `start_capture` gibt die Warnung im `Session`
+   mit zurück (neues Feld `notice: Option<String>`); der Aufrufer meldet sie.
+2. `Session::stop_capture(&mut self)`: beendet nur `capture` und den
+   Cursor-Tracker, der Worker mit dem Ring bleibt. `Drop` beendet danach wie
+   heute beide; `process::terminate` ist auf einem schon beendeten Kind
+   harmlos (`process.rs:85-87`: `try_wait` ist nicht `Ok(None)`, also sofort
+   zurück), ein zweiter Aufruf in `Drop` schadet nicht.
+3. Watchdog (`:249-312`): statt `guard.take()` und `drop(dead)` ruft er
+   `stop_capture` auf der Session im Mutex auf, lässt sie dort, setzt
+   `starting` und startet. Unter dem Lock danach: `cancel_start` gesetzt →
+   neue Session verwerfen (wie heute); `Ok` → tauschen, die alte fällt und
+   beendet ihren Worker; `Err` → alte behalten, Backoff erhöhen, einmal
+   melden. Den Tausch kapselt eine reine Funktion
+   `after_restart(old, result, cancelled) -> (keep, notify)`, damit er ohne
+   Prozesse testbar ist.
+4. Stop während eines Neustarts: `stop` nimmt wie heute die Session aus dem
+   Mutex (jetzt die alte) und setzt `cancel_start`; der laufende Start wird
+   danach verworfen. Kein neuer Pfad.
+
+**Randfälle:**
+
+- Speicher: während des Neustarts hält der alte Worker sein Live-Drittel, der
+  neue füllt seins. Zusammen zwei Drittel von `memory_mib`, also innerhalb des
+  Gesamtbudgets (live + frozen + memfd = 3/3); mit gehaltener Auswahl wird es
+  knapp. Deshalb startet der Watchdog nie, solange `holds_buffer` gilt (heute
+  schon so, `:236-238`).
+- GPU: die alte Capture ist vor dem neuen gsr beendet, es laufen nie zwei
+  Encoder-Sessions gleichzeitig.
+- Neustart scheitert dauerhaft (Reserve unter 2 GiB, `:477-478`): Puffer bleibt
+  speicherbar, eine Meldung, Versuche alle 5 min. Der Tray zeigt Replay als an,
+  weil eine Session gehalten wird; der Status sagt `ready: false`. Das ist
+  ehrlich, solange die Meldung den Grund nennt.
+- Monitor kommt zurück: der nächste Versuch nimmt wieder das gewünschte Ziel.
+
+**Tests:**
+
+1. `replay_monitor`: explizit vorhanden, explizit fehlt (Fehler), geerbt
+   vorhanden, geerbt fehlt (fokussierter plus Warnung), nichts gesetzt
+   (fokussierter, keine Warnung), kein fokussierter Monitor (Fehler).
+2. `after_restart`: `Ok` tauscht, `Err` behält die alte und meldet nur beim
+   ersten Fehler einer Serie, `cancelled` verwirft beide Ergebnisse.
+3. Backoff-Folge 15, 30, 60, 300, 300 s und Reset nach Erfolg.
+
+**Abnahme:** die Tests grün, `cargo fmt --check`, `cargo clippy --all-targets`,
+`cargo test`. Live mit Zustimmung: Replay läuft, Recording-Ziel ist der zweite
+Monitor, der wird in Hyprland abgeschaltet (Lua-Config: der genaue
+`hl.monitor`-Aufruf wird vorher an der API geprüft, `hyprctl keyword` greift
+dort nicht); erwartet: eine Meldung, Replay
+läuft auf dem fokussierten weiter, `boltsnap replay save` liefert vorher wie
+nachher einen Clip.
+
+Live offen, mit Zustimmung: RP1 mit einem großen Region-Clip aus einem Spiel.
 
 | ID | Stand |
 | --- | --- |
