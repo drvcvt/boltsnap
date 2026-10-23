@@ -9,30 +9,59 @@
 
 use super::{AnimKind, Daemon};
 
-/// Whether the shelf needs its surface: a card to show, an animation still
-/// running (the last dismiss), or a drag that uses the surface as its origin.
-pub(super) fn shelf_surface_needed(cards: usize, animations: usize, dragging: bool) -> bool {
-    cards > 0 || animations > 0 || dragging
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum Release {
+    /// A card or a running animation (the last dismiss) still draws on it.
+    Keep,
+    Drop,
+    /// A drag whose end event never arrived still uses the surface as its
+    /// origin. Its card and file are gone, so nothing is left to protect.
+    DropAndEndDrag,
+}
+
+pub(super) fn release_plan(cards: usize, animations: usize, dragging: bool) -> Release {
+    if cards > 0 || animations > 0 {
+        Release::Keep
+    } else if dragging {
+        Release::DropAndEndDrag
+    } else {
+        Release::Drop
+    }
 }
 
 impl Daemon {
     /// Drops the shelf surface when nothing needs it. True when the shelf has
     /// no surface afterwards, so there is nothing to draw.
     pub(super) fn release_empty_surface(&mut self) -> bool {
-        if shelf_surface_needed(
+        match release_plan(
             self.model.len(),
             self.anims.len(),
             self.drag_source.is_some(),
         ) {
-            return false;
+            Release::Keep => return false,
+            Release::Drop => {}
+            // Not clear_drag(): its redraw would land back here.
+            Release::DropAndEndDrag => self.forget_drag(),
         }
         // Dropping the LayerSurface destroys the layer, which unmaps it. The
-        // next card creates a new one on the then-focused output.
+        // next card creates a new one on its requested output, else on this
+        // one: `output_name` stays for that.
         self.layer = None;
-        self.output_name = None;
         self.shelf_configured = false;
         self.frame_requested = None;
         true
+    }
+
+    /// Ends the drag state without redrawing. A late `cancelled` or
+    /// `dnd_finished` for the dropped source then finds nothing to act on.
+    pub(super) fn forget_drag(&mut self) {
+        self.drag_source = None;
+        self.drag_card = None;
+        self.icon_surface = None;
+        self.drag_icon_buffer = None;
+        self.drag_icon_pool = None;
+        self.drop_ok = false;
+        self.press = None;
     }
 
     /// A configure arrived: buffers may be attached from now on. A fresh
@@ -52,19 +81,24 @@ impl Daemon {
 
 #[cfg(test)]
 mod tests {
-    use super::shelf_surface_needed;
+    use super::{Release, release_plan};
 
     #[test]
-    fn an_empty_idle_shelf_needs_no_surface() {
-        assert!(!shelf_surface_needed(0, 0, false));
+    fn an_empty_idle_shelf_drops_its_surface() {
+        assert_eq!(release_plan(0, 0, false), Release::Drop);
     }
 
     #[test]
-    fn a_card_an_animation_or_a_drag_keeps_the_surface() {
-        assert!(shelf_surface_needed(1, 0, false));
+    fn a_card_or_an_animation_keeps_the_surface() {
+        assert_eq!(release_plan(1, 0, false), Release::Keep);
+        assert_eq!(release_plan(1, 0, true), Release::Keep);
         // The last card's dismiss animation still draws on it.
-        assert!(shelf_surface_needed(0, 1, false));
-        // A drag uses the shelf surface as its origin until it ends.
-        assert!(shelf_surface_needed(0, 0, true));
+        assert_eq!(release_plan(0, 1, false), Release::Keep);
+        assert_eq!(release_plan(0, 1, true), Release::Keep);
+    }
+
+    #[test]
+    fn a_stale_drag_does_not_keep_an_empty_shelf() {
+        assert_eq!(release_plan(0, 0, true), Release::DropAndEndDrag);
     }
 }

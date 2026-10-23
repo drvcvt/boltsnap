@@ -61,15 +61,16 @@ startup call and the missing teardown keep it alive.
   first frame waits for `configure` as today after an output change.
 - The appear animation (150 ms) is re-based to the first `configure` of a fresh surface, so it
   plays from its first frame instead of losing the configure roundtrip.
-- Last card gone (dismiss animation finished, model empty, no animation, no drag): the surface is
-  dropped in `draw()`; the card is already faded out, nothing visible changes.
-- Next card: a new surface, on the then-focused output. (Not yet true for cards without an output, see S6 below.)
+- Last card gone (dismiss animation finished, model empty, no animation): the surface is
+  dropped in `draw()`; the card is already faded out, nothing visible changes. A drag still
+  set then never got its end event and is forgotten with it (S5).
+- Next card: a new surface, on its requested output, else on the last one (S6).
 
 ### Edge cases (checked in code, 83e1ae6; rechecked on ceab064)
 
 | Case | Today | After |
 |---|---|---|
-| Drag of a card in progress | `start_drag` needs the shelf `wl_surface` as origin (`self.layer`, `mod.rs:2056`) | drop only when `drag_source` is none; a dragged card is still in the model |
+| Drag of a card in progress | `start_drag` needs the shelf `wl_surface` as origin (`self.layer`, `mod.rs:2056`) | a dragged card is still in the model, so the surface stays; with the model empty the drag is stale and ends with the surface (S5) |
 | Card being saved | `remove_card_now` refuses while saving, card stays in the model | model not empty -> surface stays |
 | Dismiss of the last card | removed in `tick_animations` after 240 ms, then `relayout` + `draw` | teardown happens in that `draw` |
 | Frame callbacks | requested only while animations run; `frame()` matches the shelf surface | teardown requires no running animation, so no callback is lost |
@@ -234,4 +235,7 @@ card is gone.
 
 | ID | Status |
 | --- | --- |
-| S1 to S7 | documented, not implemented |
+| S6 | implemented 23.10.: `release_empty_surface` keeps `output_name`; `closed()` still clears it. Deviation: no `shelf_target` helper, it would only wrap `Option::or`; the first-output fallback is already tested in `focus_tests.rs:72-76`. |
+| S5 | implemented 23.10.: `release_plan` in `surface.rs`, `forget_drag` resets the drag state without redrawing and `clear_drag` uses it. Deviation: `release_plan` replaces `shelf_surface_needed`, whose "a drag keeps the surface" case would now be wrong. |
+| S6, S5 checks | `cargo fmt --check`, `cargo clippy --all-targets`, `cargo test`; live check with the user open |
+| S1 to S4, S7 | documented, not implemented |
