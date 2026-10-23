@@ -150,17 +150,87 @@ and what a compositor does with a drag whose origin surface is destroyed (S4).
 
 ### Plan
 
-1. S6 and S5 first (regressions of Task 5, both in `surface.rs` plus one line
-   in `place_on_output`; `mod.rs` must not grow). Tests: release keeps the
-   last output; empty model with a stale drag releases.
-2. S1 (delete the legacy path, reject the request; protocol test that the
-   daemon answers an error and the file still exists).
-3. S2, S4, S3 (one guard each, tests on the pure hit/drag decisions).
-4. S7 with the next cache work.
+Order confirmed by the user on 2026-10-23: after R1 of the recording review,
+S6 and S5, then S1, then the replay fixes RP2/RP3. S2, S3, S4 and S7 are
+sketched and get the same detail before they are built.
+
+#### S6 in detail
+
+**Behaviour after:** a card that names no output lands where the shelf was
+last shown, exactly as before 9ef1cc0. Finished recordings already resolve
+the focused monitor themselves (`card_output(&clips, focused_monitor_name)`,
+`mod.rs:1067-1076`); screenshots always name their output. Only the editor's
+`add_video` and a legacy `add` arrive without one.
+
+**Change:** `release_empty_surface` (`surface.rs`) no longer clears
+`output_name`. `place_on_output` (`mod.rs:1685-1711`) already prefers
+`requested`, then `self.output_name`; with the layer gone it builds a new one
+on that output. `closed()` (`mod.rs:3572-3593`) still clears `output_name`,
+because that output is gone. The Task 5 behaviour line is corrected to "on
+the requested output, else the last one". The alternative from the review
+(`requested.or(self.focused_output)`) is not taken: `focused_output` comes
+from an async Hyprland query that may be stale, and the last output matches
+what the shelf did for months.
+
+**Test** (`linux/shelf/tests.rs` has no Wayland; the decision is pure):
+extract `fn shelf_target(requested, last) -> Option<&str>` and test that
+`None` keeps the last output, a requested one wins, and both `None` fall back
+to the first output via `resolve_output_name`.
+
+#### S5 in detail
+
+**Behaviour after:** once no card and no animation is left, the surface goes
+even if a drag never got its end event. A real drag cannot outlive its card's
+file anyway: removing the last card already deleted it.
+
+**Change** (`surface.rs` only):
+`shelf_surface_needed(cards, animations, dragging)` keeps its signature, but
+`release_empty_surface` checks `cards == 0 && animations == 0` first and, if a
+drag is still set, resets the drag state directly (`drag_source`, `drag_card`,
+`icon_surface`, `drag_icon_buffer`, `drag_icon_pool`, `drop_ok`, `press`)
+before dropping the layer. It must not call `clear_drag()`, because that calls
+`draw()`, which calls `release_empty_surface()` again. A late `cancelled` or
+`dnd_finished` for the dropped source is harmless: `cancelled` only acts on
+`drag_card` (`mod.rs:3934-3955`), which is now `None`, and `dnd_finished` calls
+`clear_drag()` on already cleared state.
+
+**Tests:** `shelf_surface_needed` keeps its cases; a new pure helper
+`fn release_plan(cards, animations, dragging) -> Release { Keep, Drop, DropAndEndDrag }`
+covers the stale-drag case.
+
+#### S1 in detail
+
+**Behaviour after:** `recording_thumb` gets an error reply ("recording_thumb
+is no longer supported") and touches no file. Nothing in the tree has sent it
+since ac475c9 (2026-07-17; today only the `ipc.rs:586` test builds it); the request stays in the protocol
+only so an old client gets a clear answer instead of "unknown command".
+
+**Changes:**
+
+1. Reader thread (`mod.rs:759-770`): drop the special `RecordingThumb` branch;
+   the request goes the normal way as `ClientRequest`.
+2. `handle_client_request` (`mod.rs:1855`, today `{}`): answer
+   `Response::error(…)` through `write_response`.
+3. `linux/shelf/thumbnail.rs`: delete `load_legacy` (`:74-95`), its only caller
+   is gone. `mod.rs` shrinks.
+4. `protocol.rs` and the roundtrip test in `ipc.rs:585` stay. Windows
+   (`windows/shelf.rs:553`, frozen) already ignores it without touching files.
+
+**Test:** none new for the removal itself; `cargo test` covers the protocol
+roundtrip. The reply is checked by reading: one match arm.
+
+#### S2, S3, S4, S7 (sketch)
+
+- S2: `hit_test` skips ids with a `Disappear` animation.
+- S4: `clear_drag()` at the top of `add_finalized_cards` when a card is added.
+- S3: `begin_drag` refuses while `saves.is_saving(id)`.
+- S7: video imports get their own `Limit::new(1)`.
 
 Checks per step: `cargo fmt --check`, `cargo clippy --all-targets`,
-`cargo test`; live after 1: card from the editor lands on the focused monitor,
-`hyprctl layers` empty after the last card.
+`cargo test`, `wc -l` of `mod.rs` not higher than before. Live after S6/S5,
+with the user: a video handed over from the editor lands on the monitor the
+shelf was last on; `hyprctl layers` shows no `boltsnap` layer after the last
+card is gone.
 
 | ID | Status |
 | --- | --- |
