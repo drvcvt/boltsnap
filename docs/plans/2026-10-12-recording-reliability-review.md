@@ -630,3 +630,93 @@ Live-Test braucht Zustimmung und einen Daemon-Neustart.
 
 Review-Checks davor: Lesen von Code und Doku; `/proc` des laufenden Daemons;
 `gpu-screen-recorder --version`/`--help` und Manpage.
+
+## 5. Nachreview 2026-10-23
+
+Read-only-Reviews (Recording, Replay) gegen den Stand 9ef1cc0, mit Fokus auf
+den Code von Welle 1 und 2. Nichts reproduziert. Jeder Befund am 23.10.
+selbst im Code gegengelesen; „verifiziert“ heißt kompletter Pfad bestätigt,
+„plausibel“ heißt Codepfad bestätigt, Laufzeitwirkung nicht bewiesen.
+
+### R. Recording
+
+| ID | Prio | Auslöser und Folge | Beleg | Sicherheit | Fix und Tradeoff |
+| --- | --- | --- | --- | --- | --- |
+| R1 | P1 | gsr-Aufnahme, Save scheitert, nachdem mindestens ein Output schon remuxt ist (Combined: Compose scheitert, z. B. Platz oder NVENC; Separate mit Ziel Shelf: Output 2 scheitert). Die Segmente sind dann gelöscht, die einzige Kopie heißt `boltsnap-final-*`/`boltsnap-combined-*` im Cache. Der nächste Daemon-Start (Update, Logout, Neustart) **löscht sie still**, weil die A1-Rettung nur `boltsnap-segment-*` behält. Genau der Verlust, den A1 verhindern sollte. Der Test `failed_combined_encode_removes_partial_output_and_keeps_inputs` nutzt `.mp4`-Eingaben ohne Remux und sieht das nicht. | `record/finalize.rs:101-104` (`remux_dir` = Cache für Shelf und Combined), `280` (`work_path(dir, "final", …)`), `303-310` (Segmente gelöscht), `115-128` (`failure(error, ready)`), `record/recover.rs:22` (nur `boltsnap-segment-`), `paths.rs:241` (`starts_with("boltsnap-")` löscht den Rest) | verifiziert | Bei gescheitertem Save jede rettbare Datei im Cache per Rename ins Segment-Muster bringen (`segment_path`, frische ID, Session-PID, Label `combined` für ein komponiertes File); A1 rettet sie dann. Rename im selben Ordner, billig. Alternative: Manifest pro Session (robuster, neues Dateiformat). |
+| R2 | P2 | Die Rettung startet vor dem Rest des Daemons, und das ffmpeg des Finalize hat kein PDEATHSIG. Stirbt der Daemon während der Rettung (früher `?` nach dem Start, Absturz beim Start, Neustart des Nutzers), läuft ffmpeg weiter und legt eine fertige Kopie `boltsnap-final-*.mp4` in `record_dir`; die Segmente bleiben, der nächste Start remuxt erneut. Jeder Start eine volle Kopie, parallele Remuxe bestehen `ensure_free_space` gemeinsam. Gleiches gilt für einen unterbrochenen Disk-Save (A3): halbe oder fertige Arbeitsdatei im Nutzerordner, der Plan versprach eine `.part`. | `shelf/mod.rs:1172-1178` (Rettung vor Wayland-Connect und Socket-Bind), `record/finalize.rs:654-666`, `platform/linux/replay/process.rs:36-45` (`in_background`: nur nice und ioprio) | verifiziert (Codepfad) | (1) `save_in_background` erst nach Eventloop und Listener. (2) `PR_SET_PDEATHSIG(SIGKILL)` plus getppid-Prüfung in `run_ffmpeg_in`. (3) ffmpeg schreibt `….mp4.part` mit `-f mp4`, der Start räumt nur eigene `boltsnap-final-*.part` in `record_dir`. Ein fast fertiger Remux wird beim Tod verworfen; die Rettung wiederholt ihn. |
+| R3 | P2 | Waisen zählen ins 2-GiB-Cache-Kontingent: nach einem Absturz mit über 2 GiB Segmenten verweigert jeder neue Start, eine laufende Aufnahme pausiert in 1 s mit „Cache full“; scheitert die Rettung (Ziel voll oder nicht gemountet), bleibt das so. Der Hinweis „save or dismiss shelf recordings“ hilft nicht, die Waise liegt nicht im Shelf. | `record/finalize.rs:726-741` (zählt jede Datei in `rec_dir`), `shelf/mod.rs:547-551`, `shelf/watch.rs:120`, `record/recover.rs:93` | verifiziert | `boltsnap-segment-*` fremder PIDs nicht mitzählen (die eigene Session zählt ohnehin separat). Waisen belegen weiter Platz, die Reserve begrenzt das. |
+| R4 | P2 | A4-Fall selbst: hängt gsr unkillbar (D-State), blockiert `child.kill(); child.wait()` ohne Frist; die Phase bleibt `Pausing`, Save und Discard werden abgelehnt, die Stall-Notification kommt nie. Nur ein Daemon-Neustart hilft (Daten über A1 sicher). | `record/session.rs:840-841`, `shelf/mod.rs:2954-2970`, `3052` | plausibel | Nach SIGKILL etwa 3 s `try_wait`, dann aufgeben: nicht-leeres Segment gilt als behalten, Fehler „recorder could not be killed“, `Child` an einen Reaper-Thread. Ein unkillbarer Prozess kann eine NVENC-Session halten. |
+| R5 | P2 | `rename_noreplace` fällt nur bei ENOSYS zurück; NFS und FUSE (sshfs) liefern EINVAL. Mit `record_dir` dort scheitert jeder Disk-Save; bei der Rettung sind die Segmente vor dem gescheiterten `publish` schon gelöscht, die Notification „kept in the cache“ stimmt dann nicht. | `platform/linux/files.rs:58-63`, `record/recover.rs:69-71`, `111` | plausibel (errno der Dateisysteme nicht getestet) | EINVAL und EOPNOTSUPP wie ENOSYS behandeln (Hardlink-Fallback, dann `create_new` plus Kopie); die Rettung nennt den tatsächlichen Ort. |
+| R6 | P3 | PID-Wiederverwendung (gleiche PID nach Reboot) kann eine noch nicht gerettete Waise überschreiben (gsr `-o` kürzt) oder zwei Sessions zu einer zusammenfügen. | `record/session.rs:317`, `576-584`, `record/recover.rs:45` | plausibel, selten | Startzeit-Token im Namen (SEGMENT_ID aus `timestamp()` seeden). |
+| R7 | P3 | Die Rettung prüft nicht, ob ein nachlaufender gsr das Segment noch schreibt (gsr hängt laut Kommentar manchmal beim Stop). | `record/session.rs:345`, `674-675` | plausibel | Segmente jünger als etwa 10 s überspringen und später einmal neu versuchen. |
+| R8 | P3 | Kontingent-Prüfung scheitert, wenn eine Datei zwischen `read_dir` und `stat` verschwindet (Replay-Export, Rettung): falsche Pause „Cache full“. | `record/finalize.rs:731-733` | verifiziert (Pfad), kleines Fenster | NotFound überspringen. |
+| R9 | P3 | `record_dir` auf einer anderen Platte: deren freier Platz wird während der Aufnahme nie geprüft, der Save scheitert spät (Segmente bleiben). A3 Teil 2 gilt dort nicht. | `shelf/watch.rs:139-147` | verifiziert | Dann auch `record_dir` per statvfs mit `remux_space(recorded)` prüfen. |
+| R10 | P3 | Discard nach gescheitertem In-Place-Disk-Save lässt die remuxte Arbeitsdatei in `record_dir` liegen. | `shelf/mod.rs:3265` (`path.starts_with(&cache)`) | verifiziert | Auch eigene `boltsnap-final-<pid>-*` im `record_dir` der Session löschen. |
+| R11 | P3 | Abweichungen der Rettung vom Plan: `.cursor*`-Spuren der Waisen werden gelöscht (kein `X.cursor.json`); ein abgebrochenes wf-recorder-`.mp4` ohne moov wird als „Recovered“ gemeldet, ist aber unabspielbar; `fps: None` bringt das ms-Ruckeln zurück. | `paths.rs:216-217`, `record/finalize.rs:274-276`, `record/recover.rs:68` | verifiziert | Cursor-Spuren mit behalten, ffprobe-Prüfung vor der Erfolgsmeldung, fps aus den Segmenten lesen. |
+
+Geprüft und in Ordnung (Auszug): Segment-Namen und numerische Sortierung,
+`find` überspringt Symlinks und leere Dateien, Cleanup nach dem flock (G1),
+PDEATHSIG von gsr im richtigen Thread, Stop-Eskalation, `Watch::stalled`,
+`stop_at` nach Planformel, `can_accept` in allen Zwischenphasen,
+Retry-Schleifen terminieren, kein Panic bei seltsamen Namen oder
+gsr/ffprobe-Ausgaben.
+
+### Umsetzungsplan Nachreview (Recording)
+
+1. **R1** zuerst (P1, stiller Verlust). `finalize.rs` (`failure` benennt
+   rettbare Cache-Dateien um), `recover.rs` (nimmt `.mp4` des Musters an).
+   Test: Combined mit `.mkv`-Eingaben und scheiterndem Compose, danach
+   `recover::find` findet die remuxten Dateien.
+2. **R2** (Startreihenfolge, PDEATHSIG, `.part`). Test: Argumente enthalten
+   `-f mp4` und `.part`; Cleanup löscht nur eigene Muster.
+3. **R3**, **R8** (Kontingent), danach **R4**, **R5**.
+4. R6, R7, R9, R10, R11 mit Welle 3.
+
+Je Schritt `cargo fmt --check`, `cargo clippy --all-targets`, `cargo test`.
+Live offen, mit Zustimmung: R1 per künstlich gescheitertem Compose (falscher
+Codec in der Config), danach Daemon-Neustart und Prüfung von `record_dir`.
+
+| ID | Stand |
+| --- | --- |
+| R1 bis R11 | dokumentiert, nicht umgesetzt |
+
+### RP. Replay
+
+Kein P1. Der Code von B1 bis B8 entspricht dem Plantext; Ring, Snapshot und
+Zeitstempel sind solide. Jeder Befund am 23.10. selbst gegengelesen.
+
+| ID | Prio | Auslöser und Folge | Beleg | Sicherheit | Fix und Tradeoff |
+| --- | --- | --- | --- | --- | --- |
+| RP1 | P2 | Region-Clip über fast den ganzen Schirm aus 60 s Spielinhalt bei `memory_mib = 512`: der Crop kodiert mit konstantem QP 18 ohne Ratenkappe, das Ausgabelimit ist das Live-Drittel (etwa 170 MiB, also etwa 24 Mbit/s). ffmpeg wird mittendrin beendet, „crop output exceeds its disk budget“, der Clip ist nach fast der ganzen Kodierzeit weg. | `worker/src/live.rs:289-295`, `worker/src/crop.rs:206-207` (`-qp 18`), `247-250`, `replay/mod.rs:733-736` | plausibel (reale QP-18-Raten nicht gemessen) | Rate aus der Quelle kappen: `maxrate ≈ video_kbps × min(1, Crop-Fläche/Bildfläche) × 1,5` mit VBR/CQ 18 (nvenc `-rc vbr -cq 18 -maxrate -bufsize`, vaapi `QVBR`). Kann Detail bei viel Bewegung weicher machen; mehr als ihre CBR-Rate hat die Quelle ohnehin nicht. |
+| RP2 | P2 | Ohne `[replay] output` übernimmt Replay das Ziel `output:NAME` der Aufnahme-Prefs **ohne Fallback**: ist der Monitor abgesteckt (KVM, Hotplug), scheitern Start, Autostart und jeder Watchdog-Neustart mit „configured replay monitor is unavailable“, obwohl der Nutzer nie einen Replay-Monitor gesetzt hat. Normale Aufnahmen fallen auf den fokussierten zurück. | `platform/linux/replay/mod.rs:400-412`, Vergleich `record.rs:117-128` | verifiziert | Nur ein explizites `[replay] output` ist strikt; das geerbte Ziel fällt wie bei Aufnahmen auf den fokussierten Monitor zurück und meldet das. |
+| RP3 | P3 | Der Watchdog beendet den nach B4 noch speicherbaren Ring, **bevor** er weiß, ob der Neustart klappt; scheitert der (RP2, Reserve unter 2 GiB, voller Cache), bleibt kein Puffer und keine Session. Die Umsetzungsnotiz zu B4 nennt die Abweichung, nicht diese Folge. | `platform/linux/replay/mod.rs:289-309` (`guard.take()`, `drop(dead)`, dann `start`) | verifiziert | Nur die tote Capture beenden, den alten Worker während `start()` behalten, nur bei `Ok` tauschen; bei `Err` alte Session behalten und mit Backoff erneut versuchen. Kurz zwei Live-Drittel im RAM. |
+| RP4 | P3 | Explizites `bitrate_kbps` wird nicht gegen das Budget geprüft (z. B. 64 MiB mit 200000 kbps): der Start meldet bereit, die erste GOP sprengt das Budget, die Capture endet, der Watchdog startet alle 15 bis 20 s still neu, der Tray zeigt „an“. | `config.rs:181-183`, `replay/settings.rs:38-40`, `replay/ring.rs:102-106`, `worker/src/live.rs:49-52`, `platform/linux/replay/mod.rs:302-303` | verifiziert (Rechnung) | Config ablehnen, wenn `(kbps + 128) × 1000/8 × 2 > memory_mib·MiB/3`, mit dem nötigen `memory_mib` in der Meldung (passt zu E2, keine stille Änderung expliziter Werte). |
+| RP5 | P3 | B4-Lücke: nach Input-Verlust kann der Selector nie clippen, obwohl der Worker das Einfrieren des gehaltenen Rings erlaubt; nur `replay save` geht. | `platform/linux/replay/mod.rs:153` (`ready != true`), `worker/src/live.rs:68-78`, `183-189` | verifiziert | Statt `ready` auf `duration_us > 0 && !busy && !selection_active` prüfen und im Selector „capture stopped; clip ends at the failure“ zeigen. |
+| RP6 | P3 | Region-Clip unter Volllast: nice 19 bekommt etwa 1,5 % CPU, die Frist `3 × Dauer + 30 s` beendet ffmpeg, die Meldung „crop encoder failed“ sagt nicht, dass es ein Timeout war. | `worker/src/crop.rs:226-239`, `261-262` | plausibel | Timeout im Watcher merken und „crop export timed out under load“ melden; optional Frist nach Fortschritt statt Wanduhr. |
+| RP7 | P3 | Clip wird als gescheitert gemeldet und trotzdem als unsichtbare Waise im Cache veröffentlicht: 600-s-Crop nahe seiner Frist überschreitet das Daemon-Timeout von 1900 s, oder der Shelf bestätigt `ReplayClipReady` nicht in 5 s. Keine Karte, zählt bis zum nächsten Start ins Kontingent. | `platform/linux/replay/mod.rs:76`, `778-779`, `worker/src/crop.rs:230`, `264` | plausibel, Randfall | Daemon-Timeout aus der Worker-Frist ableiten; bei Timeout oder fehlender Bestätigung Karte nachreichen oder Datei löschen statt sie liegen zu lassen. |
+| RP8 | P3 | Enges Rennen: der Selector beendet sich, während ein Freeze unterwegs ist und die PNG in den Socket-Puffer passt; die Auswahl bleibt bis zu 120 s gehalten, `replay save` und Clip sind so lange blockiert, bis zu ein Drittel RAM extra. | `platform/linux/replay/mod.rs:786-794`, `select_skia/mod.rs:331-333`, `worker/src/live.rs:225-230` | plausibel, selten | Prepare-Thread vor dem Ende des Selectors joinen oder abbrechen. |
+
+Geprüft und in Ordnung (Auszug): Ring-Eviction nach Zeit und Bytes ohne
+GOP-Split, Budget auch bei weiterlaufendem Audio, A/V-Offset aus einem
+Startzeitpunkt, Timescale-Raster nach `write_header` (movenc nimmt bei 60 fps
+15360, nicht 1/fps wie `docs/replay.md` sagt: Doku nachziehen), Remux prüft
+`pb->error`, B5-Teil-Dateien auf jedem Fehlerpfad entfernt, PDEATHSIG am
+richtigen Thread, keine fd-Lecks, B6/B8 senken nur den Export-Thread, CBR-Rechnung
+ohne Overflow, kein Panic bei seltsamer gsr/ffmpeg-Ausgabe.
+
+### Umsetzungsplan Nachreview (Replay)
+
+1. **RP2** und **RP3** zusammen (beide in `platform/linux/replay/mod.rs`,
+   zusammen verlieren sie heute Puffer und Session bei einem Hotplug). Tests
+   über die reine Auswahlfunktion (explizit strikt, geerbt mit Fallback) und
+   den Tauschpfad des Watchdogs mit einem Fake-`start`.
+2. **RP1** (Ratenkappe im Crop, Argumente als Test), **RP4** (Validierung in
+   `config.rs` mit Test), **RP5** (Gate in `preview_target`).
+3. RP6, RP7, RP8 mit Welle 3; `docs/replay.md` Timescale-Satz korrigieren.
+
+Live offen, mit Zustimmung: RP2/RP3 durch Abstecken des Recording-Zielmonitors
+bei laufendem Replay; RP1 mit einem großen Region-Clip aus einem Spiel.
+
+| ID | Stand |
+| --- | --- |
+| RP1 bis RP8 | dokumentiert, nicht umgesetzt |

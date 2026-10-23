@@ -207,3 +207,34 @@ Nutzer-Entscheidung 26.09.: K1 und K2 zusammen, danach V1 und V2.
 | V2 | umgesetzt, live offen; Tastenhinweise in V9 neu gezeichnet |
 | V9 | umgesetzt, live offen |
 | K5 | umgesetzt; `cargo fmt --check` und `cargo build --release` grün, `cargo test` nicht gelaufen (Platte voll, kein Anvil-Worker online); Notification live offen |
+
+## 4. Config-Review (2026-10-23)
+
+Read-only-Review der Config- und Settings-Schicht als Grundlage für ein
+Settings-UI. Nichts reproduziert, alles
+aus dem Code; jeder Befund am 23.10. selbst gegengelesen.
+
+| ID | Prio | Befund | Beleg | Sicherheit |
+| --- | --- | --- | --- | --- |
+| CF1 | P2 | Ein Syntaxfehler in `config.toml` setzt still alles außer den 7 Recording-Prefs auf Default: Aufnahme mit 240 fps und `auto`-Codec statt `record_fps = 120` (das gsr-Hang-Setup), `record_dir`, `shelf_to_disk_after`, `ui_font` zurück. Der Selector bricht nach der Bereichswahl ab, weil `save_recording_prefs` an der kaputten Datei scheitert. Replay-Autostart fällt still aus, der Watchdog macht `Err(_) => continue` ohne Meldung. | `config.rs:232-235` (`Config::default()` bei Parse-Fehler), `shelf/mod.rs:1529` (nur Prefs über `load_valid`), `main.rs:354`, `370`, `replay/mod.rs:279-282`, `799` | verifiziert |
+| CF2 | P2 | Der Writer ersetzt eine verlinkte `config.toml` (stow, home-manager) durch eine normale Datei und setzt den Modus auf 0666&umask zurück; kein `fsync` des Verzeichnisses. Heute nicht betroffen (reguläre 0644-Datei). | `config.rs:362-367` (`File::create(tmp)`, `rename(tmp, path)`) | verifiziert |
+| CF3 | P2 | Falsche Typen und unbekannte Enum-Strings werden still ignoriert und beim nächsten Tray-Schreiben mit dem Default überschrieben; jeder Write schreibt alle 7 Keys, auch nie gesetzte. Unbekannte oder falsch platzierte Keys (unter `[replay]` angehängt) meldet niemand. | `config.rs:193-230`, `270-300`, `325-358` | verifiziert |
+| CF4 | P2 | Mehrere Schreiber ohne Lock, jeder schreibt seinen ganzen Snapshot: die CLI liest vor dem Selector (`main.rs:354`) und schreibt danach (`370`) alle 7 Prefs, über die ganze Auswahl hinweg. Temp-Name nur pro Prozess eindeutig. | `config.rs:362`, `main.rs:354-370`, `shelf/mod.rs:1526` | plausibel (heute überlappen die Flows nicht, mit Editor oder UI schon) |
+| CF5 | P3 | Tray kann „Focused“ als Default-Ziel nicht wählen; ein abgesteckter `output:X` zeigt fälschlich den fokussierten Monitor als gewählt. | `tray.rs:166-173`, `368-374` | verifiziert |
+| CF6 | P3 | Kein Datei-Watcher: Handedits wirken erst bei der nächsten Aktion; `disk_add_to_shelf` wird beim Finalize aus dem Cache gelesen. | `shelf/mod.rs:3287` | verifiziert |
+| CF7 | P3 | Leeres oder relatives `XDG_CONFIG_HOME`/`XDG_CACHE_HOME` ergibt einen vom Arbeitsverzeichnis abhängigen Pfad; die Spezifikation verlangt, sie zu ignorieren. | `paths.rs:92-113` | verifiziert |
+| CF8 | P3 | `BOLTSNAP_SAVE_DIR`/`BOLTSNAP_RECORD_CODEC` und `$VAR`-Expansion gelten in der Daemon-Umgebung, nicht in der Shell; unbekannte Variablen werden leer (`$XDG_VIDEOS_DIR/boltsnap` → `/boltsnap`); `--save-dir` wirkt nur bei `daemon`. README:299-304 und :537 versprechen mehr. | `config.rs:410`, `426`, `447`, `main.rs:216-221`, `265` | verifiziert |
+
+K3 (`--save` ignoriert `save_dir`) bleibt offen wie oben.
+
+**Bestandsaufnahme** (Stand 23.10.): 14 Top-Level-Keys (`save_dir`,
+`record_codec`, `record_profile`, `record_fps`, `record_dir`,
+`record_default_target`, `record_both_mode`, `record_cursor`,
+`record_show_frame`, `record_disk_add_to_shelf`, `record_audio_enabled`,
+`record_audio_source`, `record_shelf_to_disk_after_seconds`, `ui_font`) und 7
+unter `[replay]` (`duration_seconds` 1-600, `memory_mib` 64-4096, `fps` 1-240,
+`encoder`, `output`, `autostart`, `bitrate_kbps` 500-200000). Fest eingebaut und Kandidaten für Settings: `MAX_VISIBLE_CARDS`
+5 (`shelf/mod.rs:330`), `CARD_W/H` 190×132 (`shelf/thumbnail.rs:6-7`),
+Anker unten links mit Rand 24 (`shelf/mod.rs:1695-1700`), `CARD_OPACITY` 0,8
+(`shelf/paint.rs:11`), Notifications immer über `notify-send` ohne Schalter
+(`shelf/mod.rs:529-539`).
