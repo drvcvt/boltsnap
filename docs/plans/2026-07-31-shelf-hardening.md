@@ -237,5 +237,6 @@ card is gone.
 | --- | --- |
 | S6 | implemented 23.10.: `release_empty_surface` keeps `output_name`; `closed()` still clears it. Deviation: no `shelf_target` helper, it would only wrap `Option::or`; the first-output fallback is already tested in `focus_tests.rs:72-76`. |
 | S5 | implemented 23.10.: `release_plan` in `surface.rs`, `forget_drag` resets the drag state without redrawing and `clear_drag` uses it. Deviation: `release_plan` replaces `shelf_surface_needed`, whose "a drag keeps the surface" case would now be wrong. |
-| S6, S5 checks | `cargo fmt --check`, `cargo clippy --all-targets`, `cargo test`; live check with the user open |
-| S1 to S4, S7 | documented, not implemented |
+| S6, S5 checks | `cargo fmt --check`, `cargo clippy --all-targets`, `cargo test`; live check passed with the user on 23.10. (layer gone after the last card, editor video on the last monitor) |
+| S1 | implemented 23.10.: the reader-thread branch and `thumbnail::load_legacy` are gone, `handle_client_request` answers "recording_thumb is no longer supported" and touches no file. Checks: `cargo fmt --check`, `cargo clippy --all-targets`, `cargo test`. |
+| S2 to S4, S7 | documented, not implemented |

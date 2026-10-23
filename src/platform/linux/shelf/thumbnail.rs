@@ -1,4 +1,3 @@
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{SyncSender, sync_channel};
@@ -70,29 +69,6 @@ fn extract(path: &Path) -> Result<image::RgbaImage, String> {
         return Err("video thumbnail decoding failed".into());
     }
     image::RgbaImage::from_raw(CARD_W, CARD_H, result.stdout).ok_or("invalid thumbnail size".into())
-}
-
-// Compatibility for an already-running older capture client. Normal thumbnails
-// use raw RGBA over a pipe and never create an intermediate PNG file.
-pub(super) fn load_legacy(path: &Path) -> Result<image::RgbaImage, String> {
-    let result = (|| {
-        let mut bytes = Vec::new();
-        std::fs::File::open(path)
-            .map_err(|e| e.to_string())?
-            .take(super::MAX_CACHED_IMAGE_BYTES + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|e| e.to_string())?;
-        if bytes.len() as u64 > super::MAX_CACHED_IMAGE_BYTES {
-            return Err("thumbnail PNG is too large".into());
-        }
-        let image = super::decode_shelf_image(&bytes)?;
-        Ok(crate::shelf::thumbnail::make_image_card_thumbnail(
-            &image, CARD_W, CARD_H,
-        ))
-    })();
-    // Preserve the old temporary-thumbnail lifecycle.
-    let _ = std::fs::remove_file(path);
-    result
 }
 
 #[cfg(test)]

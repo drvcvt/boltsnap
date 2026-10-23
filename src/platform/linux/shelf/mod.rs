@@ -756,19 +756,6 @@ fn spawn_client_reader(
                 });
             }
             Ok(request) => {
-                if let crate::ipc::Request::RecordingThumb { id, thumb } = request {
-                    let Some(permit) = images.acquire() else {
-                        reject_busy(stream);
-                        return;
-                    };
-                    let image = thumbnail::load_legacy(&thumb).ok();
-                    let _ = tx.send(DaemonEvent::ThumbnailReady {
-                        id,
-                        image,
-                        _permit: Some(permit),
-                    });
-                    return;
-                }
                 let _ = tx.send(DaemonEvent::ClientRequest {
                     request,
                     stream,
@@ -1852,7 +1839,11 @@ impl Daemon {
                 };
                 self.write_response(stream, response);
             }
-            crate::ipc::Request::RecordingThumb { .. } => {}
+            // Its old handler read and then deleted any path a client named.
+            crate::ipc::Request::RecordingThumb { .. } => self.write_response(
+                stream,
+                crate::ipc::Response::error("recording_thumb is no longer supported"),
+            ),
             crate::ipc::Request::StopRecording => {
                 let response = match self.handle_recording_action(RecordingAction::SaveShelf, &qh) {
                     Ok(()) => crate::ipc::Response::ok(Some(self.recording_snapshot())),
