@@ -769,7 +769,8 @@ Je Schritt `cargo fmt --check`, `cargo clippy --all-targets`, `cargo test`.
 
 | ID | Stand |
 | --- | --- |
-| R1 bis R11 | dokumentiert, nicht umgesetzt |
+| R1 | umgesetzt 23.10.: `keep_recoverable` in `record/finalize.rs`, an beiden Fehlerstellen; `session::segment_path` ist `pub(super)`; README. Abweichungen: Rename über `rename_noreplace` statt `fs::rename` (überschreibt nie); die Tests liegen in `record/finalize/tests/recoverable.rs`, weil `tests.rs` (943 Zeilen) sonst über 1000 gewachsen wäre. Checks: `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test` 25 + 343 grün (3 ignoriert). Kein Live-Test (siehe Abnahme). |
+| R2 bis R11 | dokumentiert, nicht umgesetzt |
 
 ### RP. Replay
 

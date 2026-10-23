@@ -366,11 +366,11 @@ the recording cache falls to what saving still needs: at least 2 GiB, and
 room to remux everything recorded so far when that remux happens on the cache's
 disk. It warns once 2 GiB before that point. A disk save remuxes straight into
 `record_dir`, so a recording only needs room there once. If the daemon dies
-mid-recording (crash, logout, a lost output), the next start saves the
-Matroska segments it left as `boltsnap-<time>-<output>-recovered.mp4` in
-`record_dir` and says so; segments that cannot be joined are moved there
-unchanged. FFmpeg work at save time and thumbnails run at nice 19 with the
-lowest best-effort IO priority.
+mid-recording (crash, logout, a lost output) or before a failed save was
+retried or discarded, the next start saves the segments it left as
+`boltsnap-<time>-<output>-recovered.mp4` in `record_dir` and says so;
+segments that cannot be joined are moved there unchanged. FFmpeg work at save
+time and thumbnails run at nice 19 with the lowest best-effort IO priority.
 
 A single MP4 segment is moved directly and skips FFmpeg at save time.
 GPU Screen Recorder produces Matroska segments, so even an uninterrupted

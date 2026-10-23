@@ -573,7 +573,7 @@ fn spawn_segment_with(
     Ok(active)
 }
 
-fn segment_path(dir: &Path, output: Option<&str>, extension: &str) -> PathBuf {
+pub(super) fn segment_path(dir: &Path, output: Option<&str>, extension: &str) -> PathBuf {
     let label = output
         .unwrap_or("area")
         .replace(|c: char| !c.is_ascii_alphanumeric(), "_");

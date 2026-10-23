@@ -941,3 +941,5 @@ fn real_cross_filesystem_move_dispatches_when_available() {
     let _ = fs::remove_dir_all(source_root);
     let _ = fs::remove_dir_all(destination_root);
 }
+
+mod recoverable;
