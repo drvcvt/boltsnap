@@ -521,7 +521,7 @@ struct CardAnim {
 /// Best-effort desktop notification (no-op if `notify-send` is missing). Spawned
 /// detached so it never blocks the daemon's event loop. Used to surface recording
 /// failures that would otherwise only appear in the journal.
-fn notify(body: &str) {
+pub(crate) fn notify(body: &str) {
     if crate::paths::has_cmd("notify-send") {
         let _ = crate::paths::spawn_reaped(
             std::process::Command::new("notify-send")

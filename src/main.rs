@@ -308,8 +308,24 @@ fn run() -> DynResult<()> {
     }
 }
 
+/// Hotkeys and the tray run `record` without a terminal, so an error on stderr
+/// alone looks like a selection that silently did nothing.
 #[cfg(target_os = "linux")]
 fn record_flow(args: &Args) -> DynResult<()> {
+    start_recording_flow(args).inspect_err(|error| {
+        let error = error.to_string();
+        // A clip from the selector names itself.
+        let message = if error.starts_with("Replay clip:") {
+            error
+        } else {
+            format!("Recording: {error}")
+        };
+        crate::platform::shelf::notify(&message);
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn start_recording_flow(args: &Args) -> DynResult<()> {
     let state = match crate::ipc::call_daemon(crate::ipc::Request::RecordingStatus) {
         Ok(response) => recording_state_from_status(response)?,
         // Compatibility with the Task-4 daemon, which closes unknown requests.
@@ -341,9 +357,10 @@ fn record_flow(args: &Args) -> DynResult<()> {
     if selection.clip {
         let frozen = frozen.ok_or("replay buffer is not ready")?;
         let rect = selection.rect.ok_or("clip selection is missing")?;
+        // `record_flow` reports the error; the prefix tells it apart.
         frozen
             .save(rect, selection.surface_size)
-            .inspect_err(|error| crate::platform::replay::notify_error(error))?;
+            .map_err(|error| format!("Replay clip: {error}"))?;
         return Ok(());
     }
     drop(frozen);

@@ -65,6 +65,24 @@ Aufnahmen über 100 Minuten zeigen 99:59. Einzeiler (Stunden anzeigen).
 `src/shelf/` ist mit der eingefrorenen Windows-Shell geteilt; die Signatur
 bleibt gleich.
 
+### K5 (P2): Fehlgeschlagener Aufnahmestart per Hotkey ist unsichtbar (30.09.)
+
+Auslöser: Root-Platte mit 288 MB frei. `require_recording_reserve`
+(`src/record/finalize.rs`) lehnt den Start unter 2 GiB ab, der Daemon antwortet
+mit einem Fehler, und `boltsnap record` schreibt ihn nur auf stderr. Hotkey
+(Hyprland `exec`) und Tray (`TrayAction::StartRegion`, stderr auf `/dev/null`)
+haben kein Terminal. Für den Nutzer: Auswahl ziehen, nichts passiert, das
+nächste Alt+Print sieht `idle` und öffnet wieder die Auswahl statt der
+Controls. Reproduziert mit `boltsnap record full` → `recording stopped to
+preserve 2 GiB of free disk space (291008512 bytes available)`, Status danach
+`idle`.
+
+Fix: der Linux-`record_flow` (`src/main.rs`) meldet jeden Fehler zusätzlich
+über `platform::shelf::notify` als „Recording: …“, wie `replay` es über
+`notify_error` schon tut. Abbruch der Auswahl bleibt `Ok` und still. Windows
+unverändert (eingefroren). Alternative Vorabprüfung des Platzes vor der
+Auswahl verworfen: doppelte Logik, und andere Startfehler blieben unsichtbar.
+
 ## 2. Vorschläge (nach Nutzen/Aufwand)
 
 | # | Vorschlag | Größe | Dateien | Live-Test |
@@ -188,3 +206,4 @@ Nutzer-Entscheidung 26.09.: K1 und K2 zusammen, danach V1 und V2.
 | V1 | umgesetzt, live offen |
 | V2 | umgesetzt, live offen; Tastenhinweise in V9 neu gezeichnet |
 | V9 | umgesetzt, live offen |
+| K5 | umgesetzt; `cargo fmt --check` und `cargo build --release` grün, `cargo test` nicht gelaufen (Platte voll, kein Anvil-Worker online); Notification live offen |
