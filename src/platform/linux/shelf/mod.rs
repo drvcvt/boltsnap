@@ -1,6 +1,7 @@
 pub(crate) mod font;
 mod limits;
 mod save;
+mod surface;
 mod thumbnail;
 mod watch;
 
@@ -1281,7 +1282,6 @@ pub fn run_daemon(save_dir_cli: Option<std::path::PathBuf>) -> DynResult<()> {
     event_queue.roundtrip(&mut daemon)?;
     // No-animation layer rule must be in place before the surface maps.
     prep_shelf_compositor_rules();
-    daemon.place_on_output(None, &qh);
 
     // Unified event loop: Wayland fd + the unix-socket listener fd.
     use calloop::generic::Generic;
@@ -2302,7 +2302,7 @@ impl Daemon {
     }
 
     fn draw(&mut self, qh: &QueueHandle<Self>) {
-        if !self.shelf_configured {
+        if self.release_empty_surface() || !self.shelf_configured {
             self.shelf_pending_draw = true;
             return;
         }
@@ -3632,8 +3632,7 @@ impl LayerShellHandler for Daemon {
             self.layout.height.max(1)
         };
         let should_draw = self.shelf_pending_draw || self.model.newest_first().next().is_some();
-        self.shelf_configured = true;
-        self.shelf_pending_draw = false;
+        self.mark_shelf_configured();
         if should_draw {
             self.draw(qh);
         }
