@@ -4,7 +4,7 @@ Status: implemented and live-checked by the user (2026-09-24), see section 5.
 Linux only; the Windows backend stays frozen.
 
 Replaces the save-time cursor renderer (Phase 4 of
-[2026-09-23-performance-functionality.md](2026-09-23-performance-functionality.md)).
+[2026-09-23-performance-functionality.md](../quality/2026-09-23-performance-functionality.md)).
 Product decisions are settled (user, 2026-09-24): the cursor is burned in while
 recording, saving only remuxes, no `X.clean.mp4` anymore, the look stays
 (vector arrow at `XCURSOR_SIZE` x scale, MELLOW 60/15.5 and QUICK 600/49,

@@ -49,7 +49,7 @@ doppelten Import aus.
   dann kein zweites `add` mehr, sondern meldet eine fehlende Antwort und den
   Pfad von `last.png`; ein älterer Daemon braucht nach dem Install einen
   Neustart. Plan:
-  [2026-09-24-performance-save-and-screenshot.md](plans/2026-09-24-performance-save-and-screenshot.md), B1.
+  [2026-09-24-performance-save-and-screenshot.md](plans/quality/2026-09-24-performance-save-and-screenshot.md), B1.
 
 ## Selector-UI
 

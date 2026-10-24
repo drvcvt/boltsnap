@@ -23,7 +23,7 @@
 
 ## Execution precondition
 
-The current Boltsnap worktree contains unrelated, already-started output-aware Add/Replace IPC changes in `src/capture.rs`, `src/editor.rs`, `src/ipc.rs`, `src/main.rs`, `src/shelf/mod.rs`, and `src/shelf/model.rs`, plus `docs/plans/2026-07-11-output-replace-ipc.md`. Preserve them. Before implementation, either explicitly checkpoint that work or create a clean implementation worktree containing it as a baseline. Never use `git add -A`; stage named files or recording-only hunks and inspect `git diff --cached` before every commit. Quickshell is a separate repository and therefore gets separate commits.
+The current Boltsnap worktree contains unrelated, already-started output-aware Add/Replace IPC changes in `src/capture.rs`, `src/editor.rs`, `src/ipc.rs`, `src/main.rs`, `src/shelf/mod.rs`, and `src/shelf/model.rs`, plus `docs/plans/shelf/2026-07-11-output-replace-ipc.md`. Preserve them. Before implementation, either explicitly checkpoint that work or create a clean implementation worktree containing it as a baseline. Never use `git add -A`; stage named files or recording-only hunks and inspect `git diff --cached` before every commit. Quickshell is a separate repository and therefore gets separate commits.
 
 ## Public contracts to keep stable
 

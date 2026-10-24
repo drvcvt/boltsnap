@@ -9,7 +9,7 @@ Nur Linux; das Windows-Backend bleibt eingefroren.
 Der User wollte wissen, wo Boltsnap noch schneller werden kann. Eine erste
 leichte Messung (ffprobe 31-53 ms pro Aufruf, `boltsnap full` Capture 34-47 ms)
 und die offenen Punkte aus dem Review vom 23.09.
-(`docs/plans/2026-09-23-performance-functionality.md`, letzter Abschnitt)
+(`docs/plans/quality/2026-09-23-performance-functionality.md`, letzter Abschnitt)
 ergaben vier Themen:
 
 1. ffprobe beim Speichern (A1)
@@ -50,7 +50,7 @@ Screenshot `full` (2x 1920x1080), vom Hotkey bis zur Karte ca. 95-100 ms:
 - **mkv-Segmente direkt als mp4:** Das spart den Remux von ca. 50 ms, aber
   Matroska ist bewusst gewählt. MP4 + AAC verlor beim Start ein Audiopaket, und
   ein gekillter Recorder hinterlässt nur mit Matroska ein brauchbares Segment
-  (`docs/plans/2026-09-23-performance-functionality.md:125`, `:275`).
+  (`docs/plans/quality/2026-09-23-performance-functionality.md:125`, `:275`).
 - **Compositor-Wartezeit beim Capture:** Hyprland liefert die zwei Outputs
   nacheinander, etwa 13 ms auseinander (`presentation_time` im Protokoll-Log).
   Clientseitig ist da nichts zu holen.
@@ -115,7 +115,7 @@ Wer es merkt: ca. 43 ms schnellere Karte nach dem Speichern, bei Separate ca.
 3. `write_cursor_track` (`:160-178`) bekommt `size`; bei `Some` wird
    `factor = w / logical_width` direkt gerechnet, sonst wie bisher
    `probe(clip)`.
-4. Notiz in `docs/plans/2026-09-24-live-cursor-plugin.md` („one ffprobe per
+4. Notiz in `docs/plans/recording/2026-09-24-live-cursor-plugin.md` („one ffprobe per
    segment plus one for the clip size“) nachziehen.
 
 Was brechen kann: eine falsche Breite nur, wenn Segment und Clip verschieden

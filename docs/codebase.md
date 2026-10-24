@@ -19,7 +19,7 @@ Linux is supported. Windows remains experimental, unmaintained and frozen.
 | Platform registration | [`platform/mod.rs`](../src/platform/mod.rs), [`linux/mod.rs`](../src/platform/linux/mod.rs), [`windows/mod.rs`](../src/platform/windows/mod.rs) | Module-level target selection; native dependencies are target-specific in Cargo |
 | Screenshots | [`linux/capture.rs`](../src/platform/linux/capture.rs), [`portal.rs`](../src/platform/linux/portal.rs), [`vendor/libway`](../vendor/README.md) | Integrated: Wayland EXT/WLR CPU capture plus scoped portal fallback; X11 via x11rb. No X11 area selector or shelf |
 | Frozen desktop selector | [`selector/`](../src/selector/mod.rs), [`linux/select_skia/`](../src/platform/linux/select_skia/mod.rs) | Shared geometry/rendering; Linux Wayland input and SHM surfaces. Screenshot regions span outputs; recording/replay regions use one target output |
-| Shelf | [`shelf/`](../src/shelf/mod.rs), [`linux/shelf/`](../src/platform/linux/shelf/mod.rs), [`tray.rs`](../src/platform/linux/tray.rs) | Shared model/layout/paint; Linux eventloop owns cards, controls, thumbnail jobs and recorder/replay lifecycle. RAM-only card state. The shelf layer surface exists only while it shows a card ([`surface.rs`](../src/platform/linux/shelf/surface.rs), [plan](plans/2026-07-31-shelf-hardening.md#task-5-no-shelf-surface-while-the-shelf-is-empty-2026-10-22-implemented-2026-10-23-live-open)) |
+| Shelf | [`shelf/`](../src/shelf/mod.rs), [`linux/shelf/`](../src/platform/linux/shelf/mod.rs), [`tray.rs`](../src/platform/linux/tray.rs) | Shared model/layout/paint; Linux eventloop owns cards, controls, thumbnail jobs and recorder/replay lifecycle. RAM-only card state. The shelf layer surface exists only while it shows a card ([`surface.rs`](../src/platform/linux/shelf/surface.rs), [plan](plans/shelf/2026-07-31-shelf-hardening.md#task-5-no-shelf-surface-while-the-shelf-is-empty-2026-10-22-implemented-2026-10-23-live-open)) |
 | Image transport and clipboard | [`protocol.rs`](../src/protocol.rs), [`linux/ipc.rs`](../src/platform/linux/ipc.rs), [`image_transfer.rs`](../src/platform/linux/image_transfer.rs), [`clipboard.rs`](../src/platform/linux/clipboard.rs) | Integrated: normal PNG plus CLI thumbnail (`add_thumb`); raw RGB memfd path is opt-in via `BOLTSNAP_RAW_TRANSFER=1`. Each screenshot is sent once; a daemon older than `add_thumb` needs a restart |
 | Recording and saves | [`record.rs`](../src/record.rs), [`record/session.rs`](../src/record/session.rs), [`finalize.rs`](../src/record/finalize.rs), [`audio.rs`](../src/record/audio.rs), [`linux/gsr.rs`](../src/platform/linux/gsr.rs), [`files.rs`](../src/platform/linux/files.rs) | Integrated Linux lifecycle, audio, pause/concat/compose, cache and no-replace video publication. Session/audio/finalize/sidecar modules are Linux-gated despite their `src/record/` location |
 | Cursor | [`record/cursor.rs`](../src/record/cursor.rs), [`cursor_motion.rs`](../src/record/cursor_motion.rs), [`cursor_sidecar.rs`](../src/record/cursor_sidecar.rs), [`linux/cursor_track.rs`](../src/platform/linux/cursor_track.rs) | Integrated: EXT pointer feed, portable spring/frame clock and raw sidecars; plugin burns an arrow into video. No cursor-free copy or shape tracking |
@@ -50,7 +50,7 @@ from `Cargo.toml`.
 
 All fifteen defects from the 2026-09-25 reviews are fixed in code, one commit
 each (A1 in `a430ceb`, the rest from `da75eda` to `bf784fc`). The
-[fix plan](plans/2026-09-25-review-fixes.md) is the canonical record: causes,
+[fix plan](plans/quality/2026-09-25-review-fixes.md) is the canonical record: causes,
 decisions, what each fix does, the tests that cover it and the checks that
 remain. The build of `b11e5b2` is installed and running. Live-checked so far:
 a second daemon start exits without touching the running one (G1). The other
@@ -85,7 +85,7 @@ F1 is a behavior decision, not an approved fix: [`Sources::sample` and
 arrives before the next tracker becomes visible. Seamless monitor handover is
 not guaranteed. The README now states that limitation.
 
-The [recording and replay review of 2026-10-12](plans/2026-10-12-recording-reliability-review.md)
+The [recording and replay review of 2026-10-12](plans/quality/2026-10-12-recording-reliability-review.md)
 is the record for its findings. Fixed in code, not yet checked live:
 [`record/recover.rs`](../src/record/recover.rs) saves segments a dead daemon
 left; a closed shelf output no longer ends the daemon;
@@ -97,9 +97,9 @@ lists what is still open, including the recording feedback in wave 3.
 
 A follow-up review on 2026-10-23 is recorded in the same plan (section 5:
 R1 to R11 recording, RP1 to RP8 replay; R1 is a P1 silent loss after a failed
-partial save), in the [shelf plan](plans/2026-07-31-shelf-hardening.md#review-2026-10-23-s1-to-s7)
+partial save), in the [shelf plan](plans/shelf/2026-07-31-shelf-hardening.md#review-2026-10-23-s1-to-s7)
 (S1 to S7, including two Task 5 regressions) and in
-[comfort-and-config](plans/2026-09-25-comfort-and-config.md#4-config-review-2026-10-23)
+[comfort-and-config](plans/settings/2026-09-25-comfort-and-config.md#4-config-review-2026-10-23)
 (CF1 to CF8). Fixed so far: R1, S1, S5, S6, RP2 and RP3 (status tables in
 those plans); the rest is open. The planned settings UI builds on the CF fixes:
 [settings UI plan](plans/settings/2026-10-23-settings-ui.md); the same window
@@ -118,7 +118,7 @@ later gets a library of saved files
 - gsr stdout-before-exit saving is Integrated (`cf243b5`) and was measured once
   live: 145 ms from Save to card for a 14 s 120 FPS recording, previously
   0.33-0.40 s. Direct libway RGB canvas remains planned and unimplemented. See
-  the [performance plan](plans/2026-09-24-performance-save-and-screenshot.md).
+  the [performance plan](plans/quality/2026-09-24-performance-save-and-screenshot.md).
 - Exact frame times for saved recordings are Integrated (`b11e5b2`) and live
   accepted by the user (cursor reported clean, 1684 frames on the 8.333 ms
   grid). Replay clips are MP4 with the capture's exact frame times (`1/fps`
@@ -145,7 +145,7 @@ outputs because `src/record/session.rs` was being edited concurrently. On
 `cf243b5`, `cargo fmt --check` and `cargo test --locked -j 4` passed: **23 library
 + 303 binary tests**, two ignored. A worker debug build also passed. New G2/G3
 Rust repros and the G5 synthetic worker repro then failed as expected; see the
-[recorded evidence](plans/2026-09-25-review-fixes.md#6-vertieftes-review-und-tatsächlich-ausgeführte-checks).
+[recorded evidence](plans/quality/2026-09-25-review-fixes.md#6-vertieftes-review-und-tatsächlich-ausgeführte-checks).
 No product source was changed for those repros in the shared working tree.
 
 The following supplementary checks passed earlier on `a430ceb`, 2026-09-25.
@@ -171,7 +171,7 @@ These local temporary artifacts are not part of the repository.
 No live desktop capture, daemon replacement, installation, Windows tests,
 release build, Nix build or long-running soak was performed in that deep review.
 The ignored `live_smooth_cursor_recording` test was not run. Dated
-[cursor implementation notes](plans/2026-09-24-live-cursor-plugin.md#5-implementation-notes)
+[cursor implementation notes](plans/recording/2026-09-24-live-cursor-plugin.md#5-implementation-notes)
 record user acceptance of area cursor playback and narrower live checks of
 scaled output/replay/Combined capture. They do not establish current blanket
 live acceptance. Monitor transitions, save error recovery, slow-disk Save/Close,

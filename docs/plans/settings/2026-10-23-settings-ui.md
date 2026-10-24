@@ -12,7 +12,7 @@ mit tiny-skia, „wenn es sich gut und schön umsetzen lässt und kaum
 Dependencies mitbringt“. Ergebnis der Prüfung unten: **null neue Crates.**
 
 Grundlage: Config-Review CF1 bis CF8 in
-[comfort-and-config](../2026-09-25-comfort-and-config.md#4-config-review-2026-10-23)
+[comfort-and-config](2026-09-25-comfort-and-config.md#4-config-review-2026-10-23)
 und die Bestandsaufnahme aller Settings dort. Ohne Phase 1 (Schema und ein
 einziger Schreiber) baut das UI auf einer Config, die Fehler still verschluckt
 und parallele Schreiber verliert.
@@ -571,5 +571,7 @@ Vom Nutzer am 24.10. so bestätigt:
 
 | Phase | Stand |
 | --- | --- |
-| 0 bis 5 | geplant, freigegeben 24.10. |
+| 0, `docs/plans/` | umgesetzt 24.10.: 18 Dateien per `git mv` in `recording/` (5), `replay/` (2), `shelf/` (3), `platform/` (2), `quality/` (5), `settings/` (3 mit den beiden neuen); 14 Dateien mit Verweisen umgeschrieben (Skript: Markdown-Links relativ zum neuen Ort, Pfade `docs/plans/<name>` im Text). Link-Check vorher und nachher: kein toter Link; `git grep` nach jedem alten Pfad leer (außer `vendor/libway`, das auf eigene Pläne zeigt). |
+| 0, `src/platform/linux/` | geplant |
+| 1 bis 5 | geplant, freigegeben 24.10. |
 | 6 (Library) | Skizze im Library-Plan |

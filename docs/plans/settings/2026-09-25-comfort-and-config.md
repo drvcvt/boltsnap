@@ -211,7 +211,7 @@ Nutzer-Entscheidung 26.09.: K1 und K2 zusammen, danach V1 und V2.
 ## 4. Config-Review (2026-10-23)
 
 Read-only-Review der Config- und Settings-Schicht als Grundlage für das
-[Settings-UI](settings/2026-10-23-settings-ui.md). Nichts reproduziert, alles
+[Settings-UI](2026-10-23-settings-ui.md). Nichts reproduziert, alles
 aus dem Code; jeder Befund am 23.10. selbst gegengelesen. Die Fixes sind
 Phase 1 und 2 des Settings-Plans, dort steht die Umsetzung.
 

@@ -75,7 +75,7 @@ startup call and the missing teardown keep it alive.
 | Dismiss of the last card | removed in `tick_animations` after 240 ms, then `relayout` + `draw` | teardown happens in that `draw` |
 | Frame callbacks | requested only while animations run; `frame()` matches the shelf surface | teardown requires no running animation, so no callback is lost |
 | Pointer over the surface at teardown | `remove_card_now` already clears `hovered` / `press` for the card | unchanged; `pointer_frame` ignores events when `self.layer` is none |
-| Output unplugged | `closed()` sets `layer = None` (A2 of the [2026-10-12 review](2026-10-12-recording-reliability-review.md)) | unchanged, the same state the teardown produces |
+| Output unplugged | `closed()` sets `layer = None` (A2 of the [2026-10-12 review](../quality/2026-10-12-recording-reliability-review.md)) | unchanged, the same state the teardown produces |
 | Hyprland open/close animation of a new layer | n/a (surface lived forever) | user rule `static-layers` (`~/.config/hypr/hyprlua/rules.lua:193`, `no_anim` for all namespaces); boltsnap's own `hyprctl keyword layerrule` is rejected by the Lua config parser |
 | Clipboard copy | own process (`clipboard.rs`, `Command::new(exe)`) | independent of the surface |
 | Popups, markers, recording controls | own layer surfaces (`is_popup_surface`, `is_marker_surface`) | untouched |

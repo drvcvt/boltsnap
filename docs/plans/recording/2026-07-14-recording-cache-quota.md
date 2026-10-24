@@ -93,6 +93,6 @@ Expected: the complete test suite passes.
 
 - [x] **Step 5: Review without staging user work**
 
-Run: `git diff --check && git diff -- src/record/finalize.rs src/shelf/mod.rs docs/plans/2026-07-14-recording-cache-quota.md`
+Run: `git diff --check && git diff -- src/record/finalize.rs src/shelf/mod.rs docs/plans/recording/2026-07-14-recording-cache-quota.md`
 
 Expected: no whitespace errors; the diff contains only the quota test, quota helper, and two integration hooks in addition to the user's pre-existing edits.

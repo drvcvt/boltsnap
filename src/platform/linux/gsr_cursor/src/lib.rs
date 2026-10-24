@@ -2,7 +2,7 @@
 //! every captured frame (`gpu-screen-recorder -p libboltsnap_gsr_cursor.so`).
 //! The daemon's cursor trackers feed pointer positions through an inherited
 //! pipe; `BOLTSNAP_CURSOR` carries the configuration. See
-//! `docs/plans/2026-09-24-live-cursor-plugin.md`.
+//! `docs/plans/recording/2026-09-24-live-cursor-plugin.md`.
 
 #[allow(dead_code)]
 #[path = "../../../../record/cursor_motion.rs"]

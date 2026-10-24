@@ -6,7 +6,7 @@ Die folgenden Abschnitte bleiben der ursprüngliche Gesamtplan. Implementiert is
 jetzt ein erster Linux-/Hyprland-Pfad mit `start`, `stop`, `status`, `save`, Tray,
 **Clip neben REC** für die markierte Region und Vollbild über **Alt+Shift+Print**.
 Die Auswahl verwendet den letzten Frame eines beim Öffnen eingefrorenen Clips.
-Die Nutzungsdokumentation in [docs/replay.md](../replay.md) beschreibt den
+Die Nutzungsdokumentation in [docs/replay.md](../../replay.md) beschreibt den
 aktuellen Vertrag; weiter unten geplante Befehle sind noch keine verfügbare API.
 
 Bewusste Abweichungen: abstrakte Unix-Sockets mit Same-UID-Prüfung statt
@@ -20,7 +20,7 @@ vollständig abgenommen zu verstehen.
 
 Stand: 20. September 2026. Status: Umsetzung freigegeben, P0 in Arbeit.
 
-Der Maintainer hat die Umsetzung freigegeben. Der isolierte Medienworker und die ersten synthetischen Vorversuche sind implementiert. Ergebnisse und verbleibende P0-Gates stehen in [docs/replay-benchmarks.md](../replay-benchmarks.md). Eine bestandene Gesamt- oder Performance-Abnahme steht noch aus. Bestehende uncommittete Änderungen bleiben erhalten; keine automatischen Commits oder Veröffentlichungen.
+Der Maintainer hat die Umsetzung freigegeben. Der isolierte Medienworker und die ersten synthetischen Vorversuche sind implementiert. Ergebnisse und verbleibende P0-Gates stehen in [docs/replay-benchmarks.md](../../replay-benchmarks.md). Eine bestandene Gesamt- oder Performance-Abnahme steht noch aus. Bestehende uncommittete Änderungen bleiben erhalten; keine automatischen Commits oder Veröffentlichungen.
 
 ## 1. Verbindliches Verhalten
 

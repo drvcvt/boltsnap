@@ -13,7 +13,7 @@ ist die Datei ok, frisst das gerade alles“. Replay soll im Hintergrund kaum
 Leistung kosten und beim Speichern sicher funktionieren.
 
 Uncommittete Arbeit beim Review: K5 aus
-[comfort-and-config](2026-09-25-comfort-and-config.md) (Notify bei
+[comfort-and-config](../settings/2026-09-25-comfort-and-config.md) (Notify bei
 fehlgeschlagenem Aufnahmestart). D6 unten betrifft genau diese Änderung.
 
 ## 0. Kurzfazit

@@ -13,7 +13,7 @@ aus dem vertieften Review und die separat aufgeführte Cursor-Verhaltensfrage.
 Alle 15 Fehler sind inzwischen behoben (Abschnitt 5); F1 ist eine
 Verhaltensentscheidung ohne Code.
 Der versionierbare aktuelle
-[Befundstand](../codebase.md#open-review-findings) fasst die Fixes zusammen. Der historische Review liegt lokal unter
+[Befundstand](../../codebase.md#open-review-findings) fasst die Fixes zusammen. Der historische Review liegt lokal unter
 `docs/reviews/2026-09-25-linux-review.md`; `docs/reviews/` ist absichtlich
 Git-ignoriert und in einem frischen Checkout nicht vorhanden. Die dortigen
 isolierten Repros (`docs/reviews/2026-09-25-repros.patch`) sind Ausgangspunkte für
@@ -663,7 +663,7 @@ vor Umsetzung E1 neu konkretisieren, nicht nebenbei erweitern.
 Spring-Target auf None; neues Enter startet an der neuen Position
 (`src/record/cursor_motion.rs:158`, `src/record/cursor_motion.rs:349`). Der ältere
 Plan nennt Output-Wechsel explizit als Snap-Fall
-(`docs/plans/2026-09-23-performance-functionality.md:210`). Der rote Kontinuitäts-
+(`docs/plans/quality/2026-09-23-performance-functionality.md:210`). Der rote Kontinuitäts-
 Repro allein belegt deshalb keine verletzte freigegebene Anforderung.
 
 **Phase 2:** keine Codeänderung, kein Fix-Commit. Den Repro als dokumentierte
@@ -1078,11 +1078,11 @@ Recorder-/Cursor-Abnahme wurden hier nicht gemessen.
 
 Reproduzierbare Review-Artefakte sind versionierbar neben diesem Plan:
 [Rust-Repros](2026-09-25-deep-review-repros.patch) und
-[synthetischer Freeze-Repro](2026-09-25-replay-freeze-repro.py).
+[synthetischer Freeze-Repro](../replay/2026-09-25-replay-freeze-repro.py).
 Der Patch wird ausschließlich auf einen separaten Checkout von `cf243b5`
 angewendet. Dort `cargo test --locked --bin boltsnap deep_review_ -- --nocapture`
 ausführen. Der Python-Repro benötigt FFmpeg mit libx264 und den separat gebauten
-Worker: `python3 docs/plans/2026-09-25-replay-freeze-repro.py --worker /absoluter/pfad/boltsnap-replay-worker`.
+Worker: `python3 docs/plans/replay/2026-09-25-replay-freeze-repro.py --worker /absoluter/pfad/boltsnap-replay-worker`.
 Beide Aufrufe sollen vor den Fixes fehlschlagen. Sie sind Belegmaterial, noch
 keine in die reguläre Testsuite aufgenommenen Regressionstests.
 
