@@ -74,6 +74,15 @@ pub fn apply(text: &str, changes: &[(&str, Change)]) -> Result<String, String> {
 /// lose each other's change. A symlinked file is written through the link.
 /// Nothing is written when the text would stay the same.
 pub fn write(path: &Path, changes: &[(&str, Change)]) -> io::Result<()> {
+    update(path, |_| changes.to_vec())
+}
+
+/// Like `write`, with the changes worked out from the file's current text
+/// while the lock is held.
+pub fn update<'a>(
+    path: &Path,
+    changes: impl FnOnce(&str) -> Vec<(&'a str, Change)>,
+) -> io::Result<()> {
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         fs::create_dir_all(parent)?;
     }
@@ -96,8 +105,9 @@ pub fn write(path: &Path, changes: &[(&str, Change)]) -> io::Result<()> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => (String::new(), None),
         Err(error) => return Err(error),
     };
-    let updated =
-        apply(&text, changes).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    let changes = changes(&text);
+    let updated = apply(&text, &changes)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     if updated == text {
         return Ok(());
     }

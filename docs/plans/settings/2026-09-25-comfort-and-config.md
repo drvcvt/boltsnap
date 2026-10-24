@@ -226,6 +226,12 @@ Phase 1 und 2 des Settings-Plans, dort steht die Umsetzung.
 | CF7 | P3 | Leeres oder relatives `XDG_CONFIG_HOME`/`XDG_CACHE_HOME` ergibt einen vom Arbeitsverzeichnis abhängigen Pfad; die Spezifikation verlangt, sie zu ignorieren. | `paths.rs:92-113` | verifiziert |
 | CF8 | P3 | `BOLTSNAP_SAVE_DIR`/`BOLTSNAP_RECORD_CODEC` und `$VAR`-Expansion gelten in der Daemon-Umgebung, nicht in der Shell; unbekannte Variablen werden leer (`$XDG_VIDEOS_DIR/boltsnap` → `/boltsnap`); `--save-dir` wirkt nur bei `daemon`. README:299-304 und :537 versprechen mehr. | `config.rs:410`, `426`, `447`, `main.rs:216-221`, `265` | verifiziert |
 
+**Stand 24.10.:** CF2 und CF3 sind behoben, von CF4 der Temp-Name und das
+fehlende Lock (Settings-Plan, Phase 1 Schritt 3, Status dort); der ganze
+Snapshot über die Auswahl hinweg bleibt bis Phase 2 offen. Unbekannte Keys
+meldet `settings::load` jetzt als `Issue`, angezeigt werden sie erst mit
+Phase 2.
+
 K3 (`--save` ignoriert `save_dir`) bleibt offen wie oben.
 
 **Bestandsaufnahme** (Stand 23.10.): 14 Top-Level-Keys (`save_dir`,

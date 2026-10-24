@@ -279,70 +279,51 @@ pub fn save_recording_prefs(prefs: &RecordingPrefs) -> io::Result<()> {
     save_recording_prefs_at(&config_path(), prefs)
 }
 
+/// Writes only the prefs whose value differs from what the file has in effect,
+/// so an invalid value nobody changed stays for the user to see, and keys
+/// that were never set are not added.
 pub fn save_recording_prefs_at(path: &Path, prefs: &RecordingPrefs) -> io::Result<()> {
-    if let Some(parent) = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-    {
-        std::fs::create_dir_all(parent)?;
-    }
+    let wanted = pref_values(prefs);
+    settings::update(path, |text| {
+        // A broken file gets no changes; the writer refuses it as it is.
+        let Loaded::Ok { doc, issues } = settings::load(text) else {
+            return Vec::new();
+        };
+        let current = pref_values(&Config::from_doc(&doc, issues).recording_prefs());
+        wanted
+            .iter()
+            .zip(current)
+            .filter(|((_, wanted), (_, current))| wanted != current)
+            .map(|((key, value), _)| (*key, settings::Change::Set(value.clone())))
+            .collect()
+    })
+}
 
-    let mut document = match std::fs::read_to_string(path) {
-        Ok(text) => text
-            .parse::<toml_edit::Document>()
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => toml_edit::Document::new(),
-        Err(error) => return Err(error),
-    };
-    // Keep each key's place and its trailing comment; only the value changes.
-    let mut set = |key: &str, value: toml_edit::Value| {
-        let mut value = value;
-        if let Some(old) = document.get(key).and_then(|item| item.as_value()) {
-            *value.decor_mut() = old.decor().clone();
-        }
-        document[key] = toml_edit::Item::Value(value);
-    };
+fn pref_values(prefs: &RecordingPrefs) -> [(&'static str, settings::Value); 7] {
+    use settings::Value::{Bool, Text};
     let target = match &prefs.default_target {
         RecordDefaultTarget::Focused => "focused".to_string(),
         RecordDefaultTarget::Output(name) => format!("output:{name}"),
         RecordDefaultTarget::Both => "both".to_string(),
     };
-    set("record_default_target", target.into());
-    set(
-        "record_both_mode",
-        match prefs.both_mode {
-            RecordBothMode::Separate => "separate",
-            RecordBothMode::Combined => "combined",
-        }
-        .into(),
-    );
-    set("record_cursor", prefs.cursor.key().into());
-    set("record_show_frame", prefs.show_frame.into());
-    set("record_disk_add_to_shelf", prefs.disk_add_to_shelf.into());
-    set("record_audio_enabled", prefs.audio_enabled.into());
-    set(
-        "record_audio_source",
-        match prefs.audio_source {
-            RecordAudioSource::SystemAndMic => "system-and-mic",
-            RecordAudioSource::Mic => "mic",
-            RecordAudioSource::System => "system",
-        }
-        .into(),
-    );
-
-    let text = document.to_string();
-    let file_name = path.file_name().unwrap_or_default().to_string_lossy();
-    let temporary = path.with_file_name(format!("{file_name}.tmp-{}", std::process::id()));
-    let result = (|| {
-        let mut file = std::fs::File::create(&temporary)?;
-        io::Write::write_all(&mut file, text.as_bytes())?;
-        file.sync_all()?;
-        std::fs::rename(&temporary, path)
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&temporary);
-    }
-    result
+    let both_mode = match prefs.both_mode {
+        RecordBothMode::Separate => "separate",
+        RecordBothMode::Combined => "combined",
+    };
+    let audio_source = match prefs.audio_source {
+        RecordAudioSource::SystemAndMic => "system-and-mic",
+        RecordAudioSource::Mic => "mic",
+        RecordAudioSource::System => "system",
+    };
+    [
+        ("record_default_target", Text(target)),
+        ("record_both_mode", Text(both_mode.into())),
+        ("record_cursor", Text(prefs.cursor.key().into())),
+        ("record_show_frame", Bool(prefs.show_frame)),
+        ("record_disk_add_to_shelf", Bool(prefs.disk_add_to_shelf)),
+        ("record_audio_enabled", Bool(prefs.audio_enabled)),
+        ("record_audio_source", Text(audio_source.into())),
+    ]
 }
 
 pub fn config_path() -> PathBuf {
@@ -506,6 +487,13 @@ mod tests {
         ))
     }
 
+    /// The file and the lock the writer leaves beside it.
+    fn remove_config(path: &Path) {
+        let _ = std::fs::remove_file(path);
+        let lock = format!("{}.lock", path.file_name().unwrap().to_string_lossy());
+        let _ = std::fs::remove_file(path.with_file_name(lock));
+    }
+
     #[test]
     fn audio_preferences_default_on_and_system_plus_mic() {
         let prefs = Config::default().recording_prefs();
@@ -538,14 +526,15 @@ unrelated = "keep-me"
         )
         .unwrap();
         let saved = std::fs::read_to_string(&path).unwrap();
-        assert!(saved.contains("record_audio_enabled = true"));
+        // Unchanged from the default, so not written (CF3).
+        assert!(!saved.contains("record_audio_enabled"));
         assert!(saved.contains("record_audio_source = \"mic\""));
         assert!(saved.contains("unrelated = \"keep-me\""));
         assert_eq!(
             Config::parse(&saved).recording_prefs().audio_source,
             RecordAudioSource::Mic
         );
-        let _ = std::fs::remove_file(path);
+        remove_config(&path);
     }
 
     #[test]
@@ -634,7 +623,7 @@ unrelated = "keep-me"
         let written = std::fs::read_to_string(&path).unwrap();
         assert!(written.contains("custom = 7"));
         assert_eq!(Config::parse(&written).recording_prefs(), prefs);
-        std::fs::remove_file(path).unwrap();
+        remove_config(&path);
     }
 
     #[test]
@@ -655,7 +644,7 @@ unrelated = "keep-me"
         // New keys stay top-level, not inside [replay].
         assert_eq!(Config::parse(&written).recording_prefs(), prefs);
         assert_eq!(Config::parse_replay_settings(&written).unwrap().seconds, 10);
-        std::fs::remove_file(path).unwrap();
+        remove_config(&path);
     }
 
     #[test]
@@ -677,7 +666,32 @@ unrelated = "keep-me"
         std::fs::write(&path, "custom = = broken").unwrap();
         assert!(save_recording_prefs_at(&path, &RecordingPrefs::default()).is_err());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "custom = = broken");
-        std::fs::remove_file(path).unwrap();
+        remove_config(&path);
+    }
+
+    #[test]
+    fn recording_prefs_write_only_changed_keys_and_keeps_invalid_ones() {
+        let path = temp_config("prefs-changed-only");
+        let original = "record_cursor = \"Quick\" # typo\nrecord_show_frame = \"no\"\n";
+        std::fs::write(&path, original).unwrap();
+        save_recording_prefs_at(&path, &RecordingPrefs::default()).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        let prefs = RecordingPrefs {
+            cursor: RecordCursor::Mellow,
+            ..RecordingPrefs::default()
+        };
+        save_recording_prefs_at(&path, &prefs).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "record_cursor = \"mellow\" # typo\nrecord_show_frame = \"no\"\n"
+        );
+        std::fs::remove_file(&path).unwrap();
+        save_recording_prefs_at(&path, &prefs).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "record_cursor = \"mellow\"\n"
+        );
+        remove_config(&path);
     }
 
     #[test]

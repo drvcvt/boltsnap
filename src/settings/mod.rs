@@ -6,7 +6,7 @@ pub mod schema;
 pub mod write;
 
 pub use load::{Doc, Issue, Loaded, Value, load};
-pub use write::{Change, apply, write};
+pub use write::{Change, apply, update, write};
 
 #[cfg(test)]
 mod tests;
