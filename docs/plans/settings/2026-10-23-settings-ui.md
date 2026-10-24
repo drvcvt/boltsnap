@@ -303,8 +303,11 @@ pub fn write(path: &Path, patch: &Patch) -> io::Result<()>       // Datei
   Kommentar und Position (wie K2 heute); `[replay]`/`[shelf]`-Tabellen bei
   Bedarf anlegen, ans Ende. Ein Wert wird vor dem Schreiben gegen das Schema
   geprüft; ungültig → `Err`, Datei unverändert.
-- `write`: `flock(LOCK_EX)` auf `config.toml.lock` (über `libc`, schon
-  Dependency), Datei frisch lesen, `apply`, Ziel auflösen (`canonicalize`;
+- `write`: exklusiver Lock über `std::fs::File::lock` (stabil seit Rust
+  1.89, hier 1.95) auf `config.toml.lock` neben dem übergebenen Pfad, nicht
+  neben dem Symlink-Ziel, damit kein Lock in einem Dotfiles-Repo landet;
+  `libc::flock` ginge nicht, `libc` hängt nur am Linux-Target und die
+  Lib-Crate ist plattformneutral. Datei frisch lesen, `apply`, Ziel auflösen (`canonicalize`;
   kaputter Symlink → Fehler), Temp-Datei neben dem Ziel
   `.<name>.tmp-<pid>-<zähler>` mit `O_EXCL`, Modus der alten Datei, `fsync`,
   `rename`, `fsync` des Verzeichnisses, Lock lösen.
@@ -339,6 +342,80 @@ ungültige Werte ab; `write` folgt einem Symlink, behält den Modus, zwei
 Threads schreiben verschiedene Keys gleichzeitig und beide Änderungen
 landen; Fassade: `Config::load` liefert für jede bisherige Testdatei dasselbe
 wie vorher (die bestehenden `config.rs`-Tests laufen unverändert).
+
+#### Phase 1 im Detail (Gegenprüfung am Code, 24.10.)
+
+**Heutiges Verhalten je Key** (`config.rs:94-300`, `parse_replay_settings`
+`:136-187`). Es ist nicht einheitlich, und das bleibt in Phase 1 so:
+
+| Keys | ungültiger Wert heute | Phase 1 |
+| --- | --- | --- |
+| `record_profile`, `record_fps` | `record_profile()` gibt `Err`, die Aufnahme startet nicht (`shelf/mod.rs:2392`, `2480`) | **strikt** wie heute: `Issue`, und `Config::record_profile()` gibt weiter denselben `Err`. Ein stiller Fallback auf den Default (240 fps) nähme mit einer anderen Bildrate auf als eingestellt; ein klarer Fehler ist besser. |
+| alle `[replay]`-Keys, `replay` kein Table | `replay_settings()` gibt `Err`, Replay startet nicht | **strikt** wie heute, gleiche Meldungen |
+| `record_default_target`, `record_both_mode`, `record_cursor`, `record_audio_source`, die drei Bools | still Default (`recording_prefs`) | Default **und** `Issue` |
+| `save_dir`, `record_dir`, `record_codec`, `ui_font` (kein String) | still `None`, also Default | `None` **und** `Issue` |
+| `record_shelf_to_disk_after_seconds` (keine Zahl) | still 60 s; `<= 0` heißt aus | gleich, plus `Issue` bei Nicht-Zahl |
+| Syntaxfehler | `parse`: alles Default plus `eprintln`; `load_valid`: `None`; `replay_settings`: `Err("invalid config: …")` | `Loaded::Broken { line, message }`; die Fassaden verhalten sich wie heute (CF1 erst in Schritt 4) |
+| unbekannter Key | ignoriert | ignoriert, plus `Issue` „unknown key“ (nur für die Anzeige, nie strikt) |
+
+Ein strikter Key ist also nur für seinen Verbraucher strikt; `Issue`s sind
+reine Information. Damit ändert Phase 1 bis Schritt 3 kein Verhalten, sie
+macht Fehler nur sichtbar.
+
+**Bausteine und Belege:**
+
+- `toml::de::Error::span()` liefert den Byte-Bereich eines Syntaxfehlers
+  (`toml-0.8.2/src/de.rs:70`), daraus die Zeile. `toml_edit` 0.20.2 hat
+  keine öffentlichen Spans (`despan` ist `pub(crate)`), also findet ein
+  Zeilen-Scan die Zeile eines Keys: aktuelle Tabelle aus `[name]`-Köpfen,
+  Key am Zeilenanfang vor `=`. Gepunktete Keys und Inline-Tabellen gibt die
+  Config nicht her; dort ist die Zeile `None`.
+- `toml_edit::Document` (0.20.2) wie im heutigen Writer
+  (`save_recording_prefs_at`, `config.rs:302-370`), Decor-Übernahme wie dort.
+
+**Typen** (Lib-Crate, `src/settings/`):
+
+- Die Enums (`RecordDefaultTarget` usw.) bleiben in `config.rs`; `Config`
+  bleibt die typisierte Struktur und wandelt geprüfte Rohwerte wie heute um.
+  Die UI braucht später nur die Choice-Listen aus dem Schema. (Ein Umzug in
+  die Lib-Crate war erwogen und ist unnötig.)
+- `schema.rs`: `Key { path, kind, applies, strict }` und `KEYS` mit den 21
+  Keys (14 oben, 7 unter `[replay]`). `Kind`: `Bool`, `Int { min, max }`,
+  `Choice(&[&str])`, `Text { empty_ok }`, `Path`, `Target`
+  (`focused | both | output:<name>`). Die drei Shelf-Keys kommen erst in
+  Phase 3 dazu.
+- `load.rs`: `load(text) -> Loaded`, `Loaded::Ok { doc: Doc, issues }` oder
+  `Broken { line, message }`. `Doc` hält je Key den geprüften Rohwert
+  (`Value::Bool | Int | Text`) oder nichts, kein Default darin; Defaults und
+  die Umwandlung in Enums bleiben in den Fassaden. `Issue { key, line: Option<usize>, message }` mit den heutigen
+  Meldungen für strikte Keys.
+- `write.rs`: `apply(text, patch) -> Result<String, String>` und
+  `write(path, patch) -> io::Result<()>` wie oben beschrieben.
+
+**Schritte** (je ein Commit, `cargo fmt --check`, `cargo clippy --all-targets`,
+`cargo test`):
+
+1. `src/settings/` mit `schema.rs`, `load.rs`, `write.rs` und Tests.
+   `config.rs` parst noch selbst. Kein Verhalten ändert sich.
+2. `Config::parse`, `load`, `load_valid` und `parse_replay_settings` lesen
+   über `settings::load`. Abnahme: alle bestehenden `config.rs`-Tests
+   unverändert grün, dazu ein Test, der für eine Liste kaputter und
+   gültiger Dateien alte und neue Ergebnisse vergleicht (die alte
+   Implementierung bleibt dafür bis zum Ende des Schritts im Test).
+3. `save_recording_prefs` schreibt per Patch nur die Keys, deren Wert sich
+   gegenüber dem wirksamen Wert der Datei ändert; ein ungültiger Wert, den
+   der Aufruf nicht ändert, bleibt stehen (CF3). Behebt CF2 (Symlink, Modus,
+   `fsync` des Ordners) und den festen Temp-Namen (CF4). Die bestehenden
+   Writer-Tests laufen unverändert.
+4. CF1 im Daemon und 5. Selector wie oben.
+
+**Aufrufer** (Stand 24.10., die Zeilen oben vom 23.10. sind verschoben):
+`main.rs:354`, `370`, `425`, `430`; `linux/shelf/mod.rs:266`, `1189`,
+`1516`, `1984`, `1994-1996`, `2386-2392`, `2413`, `2468-2480`, `2502`,
+`2567`, `2893-2894`; `linux/shelf/watch.rs:142`; `record/recover.rs:99`;
+`linux/select_skia/mod.rs:53`; `linux/replay/mod.rs:344`, `457`, `625`,
+`742`; `linux/replay/watchdog.rs:91`; Windows (eingefroren):
+`windows/recording.rs:369-370`, `windows/shelf.rs:109`, `500`, `521`, `623`.
 
 ### Phase 2: der Daemon als einziger Schreiber
 
@@ -573,5 +650,6 @@ Vom Nutzer am 24.10. so bestätigt:
 | --- | --- |
 | 0, `docs/plans/` | umgesetzt 24.10.: 18 Dateien per `git mv` in `recording/` (5), `replay/` (2), `shelf/` (3), `platform/` (2), `quality/` (5), `settings/` (3 mit den beiden neuen); 14 Dateien mit Verweisen umgeschrieben (Skript: Markdown-Links relativ zum neuen Ort, Pfade `docs/plans/<name>` im Text). Link-Check vorher und nachher: kein toter Link; `git grep` nach jedem alten Pfad leer (außer `vendor/libway`, das auf eigene Pläne zeigt). |
 | 0, `src/platform/linux/` | umgesetzt 24.10.: `capture.rs`, `portal.rs`, `image_transfer.rs` per `git mv` nach `capture/` (`mod.rs`, `portal.rs`, `image_transfer.rs`); `linux/mod.rs` exportiert `image_transfer` und `portal` wieder, alle Aufrufer unverändert; `linux/` hat jetzt 10 Dateien. Abweichungen: nur drei Pfade in `image_transfer.rs` mussten sich ändern (statt etwa 12), und zwar auf `crate::platform::{timing, ipc}`, weil `examples/image_transfer_bench.rs` die Datei per `#[path]` einbindet (das Example bekam dafür ein `mod platform` und den neuen Pfad). `docs/codebase.md` zeigt auf die neuen Orte; Zeilenangaben in älteren Plänen bleiben als historischer Stand. Checks: `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test` 25 + 350 grün, Link-Check ohne toten Link. |
-| 1 bis 5 | geplant, freigegeben 24.10. |
+| 1, Schritt 1 | umgesetzt 24.10.: `src/settings/` (`schema.rs` 21 Keys mit `Kind`, `Applies`, `strict`; `load.rs` mit `Doc`, `Issue`, `Loaded`; `write.rs` mit `apply`/`write`; 14 Tests). Noch kein Aufrufer. Die Meldungen strikter Keys sind die alten, ein negativer Replay-Wert heißt jetzt „must be 1..600“ statt „invalid“. Gegenprobe: ohne `File::lock` scheitert der Parallel-Test 3 von 3 Mal. Checks: `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test` 37 + 350 grün. |
+| 1, Schritte 2 bis 5, dann 2 bis 5 | geplant, freigegeben 24.10. |
 | 6 (Library) | Skizze im Library-Plan |
