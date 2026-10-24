@@ -351,7 +351,7 @@ fn start_recording_flow(args: &Args) -> DynResult<()> {
         checked_recording_call(crate::ipc::Request::StartDefaultRecording)?;
         return Ok(());
     }
-    let mut prefs = crate::config::Config::load().recording_prefs();
+    let prefs = crate::config::Config::load().recording_prefs();
     let mut selection = crate::selector::run_select_record(prefs.show_frame, prefs.audio_enabled)?;
     let frozen = selection.frozen.take();
     if selection.clip {
@@ -364,14 +364,21 @@ fn start_recording_flow(args: &Args) -> DynResult<()> {
         return Ok(());
     }
     drop(frozen);
-    if selection.show_frame != prefs.show_frame || selection.audio_enabled != prefs.audio_enabled {
-        prefs.show_frame = selection.show_frame;
-        prefs.audio_enabled = selection.audio_enabled;
-        crate::config::save_recording_prefs(&prefs)?;
-    }
+    let changed = |old: bool, new: bool| (old != new).then_some(new);
+    let saved = crate::config::save_selector_prefs(
+        changed(prefs.show_frame, selection.show_frame),
+        changed(prefs.audio_enabled, selection.audio_enabled),
+    );
     let Some(rect) = selection.rect else {
-        return Ok(()); // cancelled
+        // Cancelled: nothing else saves these, so the error is reported here.
+        return saved
+            .map_err(|error| format!("could not save the selector settings: {error}").into());
     };
+    if let Err(error) = saved {
+        // The recording still starts. The daemon saves the same two values
+        // with it and reports it if that fails too.
+        eprintln!("boltsnap: could not save the selector settings: {error}");
+    }
     require_recorder()?;
     let (ox, oy) = selection
         .output_origin
@@ -383,7 +390,7 @@ fn start_recording_flow(args: &Args) -> DynResult<()> {
         y: geo.y,
         w: geo.w,
         h: geo.h,
-        show_frame: prefs.show_frame,
+        show_frame: selection.show_frame,
         audio_enabled: selection.audio_enabled,
     })?;
     Ok(())

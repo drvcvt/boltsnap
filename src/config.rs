@@ -348,6 +348,33 @@ fn remember(text: &str) -> Read {
     read
 }
 
+/// The two prefs the selector shows, each only when it changed (`Some`). Every
+/// other key stays as the file has it, even one the daemon wrote meanwhile.
+pub fn save_selector_prefs(
+    show_frame: Option<bool>,
+    audio_enabled: Option<bool>,
+) -> io::Result<()> {
+    save_selector_prefs_at(&config_path(), show_frame, audio_enabled)
+}
+
+fn save_selector_prefs_at(
+    path: &Path,
+    show_frame: Option<bool>,
+    audio_enabled: Option<bool>,
+) -> io::Result<()> {
+    let changes: Vec<_> = [
+        ("record_show_frame", show_frame),
+        ("record_audio_enabled", audio_enabled),
+    ]
+    .into_iter()
+    .filter_map(|(key, value)| Some((key, settings::Change::Set(settings::Value::Bool(value?)))))
+    .collect();
+    if changes.is_empty() {
+        return Ok(());
+    }
+    settings::write(path, &changes)
+}
+
 pub fn save_recording_prefs(prefs: &RecordingPrefs) -> io::Result<()> {
     save_recording_prefs_at(&config_path(), prefs)
 }
@@ -801,6 +828,29 @@ unrelated = "keep-me"
             }
         );
         assert!(report.is_some());
+    }
+
+    #[test]
+    fn selector_prefs_write_only_the_keys_that_changed() {
+        let path = temp_config("selector-prefs");
+        let original = "record_show_frame = true\nrecord_cursor = \"Quick\"\n";
+        std::fs::write(&path, original).unwrap();
+        save_selector_prefs_at(&path, Some(false), None).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "record_show_frame = false\nrecord_cursor = \"Quick\"\n"
+        );
+        save_selector_prefs_at(&path, None, Some(false)).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "record_show_frame = false\nrecord_cursor = \"Quick\"\nrecord_audio_enabled = false\n"
+        );
+        // Nothing changed: a broken file is not even read.
+        std::fs::write(&path, "x = = 1").unwrap();
+        save_selector_prefs_at(&path, None, None).unwrap();
+        assert!(save_selector_prefs_at(&path, Some(true), None).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "x = = 1");
+        remove_config(&path);
     }
 
     #[test]
