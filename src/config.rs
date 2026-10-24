@@ -2,6 +2,8 @@ use std::env;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use boltsnap::settings::{self, Loaded, schema};
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RecordDefaultTarget {
     Focused,
@@ -86,15 +88,15 @@ impl Default for RecordingPrefs {
     }
 }
 
-/// Parsed `~/.config/boltsnap/config.toml`. A missing file or an unset key leaves
-/// the field `None`; defaults are applied by the `resolve_*` helpers.
+/// Parsed `~/.config/boltsnap/config.toml`. A missing file, an unset key or an
+/// invalid value leaves the field `None`; defaults are applied by the
+/// `resolve_*` helpers. What was invalid is kept in `issues`.
 #[derive(Default, Debug, PartialEq, Eq)]
 pub struct Config {
     pub save_dir: Option<String>,
     pub record_codec: Option<String>,
     record_profile: Option<String>,
-    /// `Some(None)`: set, but not a whole number.
-    record_fps: Option<Option<i64>>,
+    record_fps: Option<u32>,
     pub record_dir: Option<String>,
     record_default_target: Option<String>,
     record_both_mode: Option<String>,
@@ -107,22 +109,27 @@ pub struct Config {
     /// Font family for boltsnap's own chrome (selector overlay, shelf). Unset
     /// follows the desktop font.
     pub ui_font: Option<String>,
+    issues: Vec<settings::Issue>,
 }
 
 impl Config {
-    /// `record_fps` (1-240) overrides the profile's frame rate.
+    /// `record_fps` (1-240) overrides the profile's frame rate. An invalid
+    /// value of either is an error, never a recording at another rate.
     pub fn record_profile(&self) -> Result<RecordProfile, String> {
+        let issue = |key: &str| self.issues.iter().find(|issue| issue.key == key);
+        if let Some(issue) = issue("record_fps") {
+            return Err(issue.message.clone());
+        }
         if let Some(fps) = self.record_fps {
-            return fps
-                .filter(|fps| (1..=240).contains(fps))
-                .map(|fps| RecordProfile::Fps(fps as u32))
-                .ok_or_else(|| "record_fps must be a whole number from 1 to 240".into());
+            return Ok(RecordProfile::Fps(fps));
         }
-        match self.record_profile.as_deref() {
-            None | Some("quality") => Ok(RecordProfile::Quality),
-            Some("quiet") => Ok(RecordProfile::Quiet),
-            _ => Err("record_profile must be \"quality\" or \"quiet\"".into()),
+        if let Some(issue) = issue("record_profile") {
+            return Err(issue.message.clone());
         }
+        Ok(match self.record_profile.as_deref() {
+            Some("quiet") => RecordProfile::Quiet,
+            _ => RecordProfile::Quality,
+        })
     }
 
     pub fn replay_settings() -> Result<boltsnap::replay::settings::Settings, String> {
@@ -134,105 +141,69 @@ impl Config {
         Self::parse_replay_settings(&text)
     }
 
+    /// Every `[replay]` key is strict: the first invalid one is the error.
     fn parse_replay_settings(text: &str) -> Result<boltsnap::replay::settings::Settings, String> {
-        let value: toml::Value =
-            toml::from_str(text).map_err(|e| format!("invalid config: {e}"))?;
-        let mut settings = boltsnap::replay::settings::Settings::default();
-        let Some(value) = value.get("replay") else {
-            return Ok(settings);
+        let (doc, issues) = match settings::load(text) {
+            Loaded::Ok { doc, issues } => (doc, issues),
+            Loaded::Broken { message, .. } => return Err(format!("invalid config: {message}")),
         };
-        if !value.is_table() {
-            return Err("replay must be a settings table".into());
+        let replay_issue = issues.iter().find(|issue| {
+            issue.key == "replay"
+                || issue.key.starts_with("replay.")
+                    && schema::find(&issue.key).is_some_and(|key| key.strict)
+        });
+        if let Some(issue) = replay_issue {
+            return Err(issue.message.clone());
         }
-        let number = |key, default, min, max| -> Result<u64, String> {
-            let Some(value) = value.get(key) else {
-                return Ok(default);
-            };
-            let n = value
-                .as_integer()
-                .and_then(|n| u64::try_from(n).ok())
-                .ok_or_else(|| format!("invalid replay {key}"))?;
-            if n < min || n > max {
-                return Err(format!("replay {key} must be {min}..{max}"));
-            }
-            Ok(n)
-        };
-        settings.seconds = number("duration_seconds", 60, 1, 600)?;
-        settings.memory_mib = number("memory_mib", 512, 64, 4096)? as usize;
-        settings.fps = number("fps", 60, 1, 240)? as u32;
-        if let Some(value) = value.get("encoder") {
-            settings.encoder = value
-                .as_str()
-                .filter(|s| !s.is_empty())
-                .ok_or("invalid replay encoder")?
-                .into();
-        }
-        if let Some(value) = value.get("output") {
-            settings.output = Some(
-                value
-                    .as_str()
-                    .filter(|s| !s.is_empty())
-                    .ok_or("invalid replay output")?
-                    .into(),
-            );
-        }
-        if let Some(value) = value.get("autostart") {
-            settings.autostart = value.as_bool().ok_or("invalid replay autostart")?;
-        }
-        if value.get("bitrate_kbps").is_some() {
-            settings.bitrate_kbps = Some(number("bitrate_kbps", 0, 500, 200_000)? as u32);
-        }
-        Ok(settings)
+        // The schema checked every range, so the casts cannot truncate.
+        let defaults = boltsnap::replay::settings::Settings::default();
+        Ok(boltsnap::replay::settings::Settings {
+            seconds: doc
+                .int("replay.duration_seconds")
+                .map_or(defaults.seconds, |n| n as u64),
+            memory_mib: doc
+                .int("replay.memory_mib")
+                .map_or(defaults.memory_mib, |n| n as usize),
+            fps: doc.int("replay.fps").map_or(defaults.fps, |n| n as u32),
+            encoder: doc
+                .text("replay.encoder")
+                .map_or(defaults.encoder, String::from),
+            output: doc.text("replay.output").map(String::from),
+            autostart: doc.bool("replay.autostart").unwrap_or(defaults.autostart),
+            bitrate_kbps: doc.int("replay.bitrate_kbps").map(|n| n as u32),
+        })
     }
 
     /// Parse config text. Unknown keys are ignored; a parse error logs and yields
     /// defaults (so a typo never bricks the daemon).
     pub fn parse(text: &str) -> Config {
-        match toml::from_str::<toml::Value>(text) {
-            Ok(v) => Config {
-                save_dir: v.get("save_dir").and_then(|x| x.as_str()).map(String::from),
-                record_codec: v
-                    .get("record_codec")
-                    .and_then(|x| x.as_str())
-                    .map(String::from),
-                record_profile: v
-                    .get("record_profile")
-                    .map(|x| x.as_str().unwrap_or("").to_owned()),
-                record_fps: v.get("record_fps").map(|x| x.as_integer()),
-                record_dir: v
-                    .get("record_dir")
-                    .and_then(|x| x.as_str())
-                    .map(String::from),
-                record_default_target: v
-                    .get("record_default_target")
-                    .and_then(|x| x.as_str())
-                    .map(String::from),
-                record_cursor: v
-                    .get("record_cursor")
-                    .and_then(|x| x.as_str())
-                    .map(String::from),
-                record_both_mode: v
-                    .get("record_both_mode")
-                    .and_then(|x| x.as_str())
-                    .map(String::from),
-                record_show_frame: v.get("record_show_frame").and_then(|x| x.as_bool()),
-                record_disk_add_to_shelf: v
-                    .get("record_disk_add_to_shelf")
-                    .and_then(|x| x.as_bool()),
-                record_audio_enabled: v.get("record_audio_enabled").and_then(|x| x.as_bool()),
-                record_audio_source: v
-                    .get("record_audio_source")
-                    .and_then(|x| x.as_str())
-                    .map(String::from),
-                record_shelf_to_disk_after_seconds: v
-                    .get("record_shelf_to_disk_after_seconds")
-                    .and_then(|x| x.as_integer()),
-                ui_font: v.get("ui_font").and_then(|x| x.as_str()).map(String::from),
-            },
-            Err(e) => {
-                eprintln!("boltsnap: ignoring malformed config: {e}");
+        match settings::load(text) {
+            Loaded::Ok { doc, issues } => Config::from_doc(&doc, issues),
+            Loaded::Broken { message, .. } => {
+                eprintln!("boltsnap: ignoring malformed config: {message}");
                 Config::default()
             }
+        }
+    }
+
+    fn from_doc(doc: &settings::Doc, issues: Vec<settings::Issue>) -> Config {
+        let text = |key| doc.text(key).map(String::from);
+        Config {
+            save_dir: text("save_dir"),
+            record_codec: text("record_codec"),
+            record_profile: text("record_profile"),
+            record_fps: doc.int("record_fps").map(|fps| fps as u32),
+            record_dir: text("record_dir"),
+            record_default_target: text("record_default_target"),
+            record_both_mode: text("record_both_mode"),
+            record_cursor: text("record_cursor"),
+            record_show_frame: doc.bool("record_show_frame"),
+            record_disk_add_to_shelf: doc.bool("record_disk_add_to_shelf"),
+            record_audio_enabled: doc.bool("record_audio_enabled"),
+            record_audio_source: text("record_audio_source"),
+            record_shelf_to_disk_after_seconds: doc.int("record_shelf_to_disk_after_seconds"),
+            ui_font: text("ui_font"),
+            issues,
         }
     }
 
@@ -248,8 +219,10 @@ impl Config {
     /// a half-edited file never replaces known settings with defaults.
     pub fn load_valid() -> Option<Config> {
         let text = std::fs::read_to_string(config_path()).ok()?;
-        toml::from_str::<toml::Value>(&text).ok()?;
-        Some(Config::parse(&text))
+        match settings::load(&text) {
+            Loaded::Ok { doc, issues } => Some(Config::from_doc(&doc, issues)),
+            Loaded::Broken { .. } => None,
+        }
     }
 
     /// Recordings at least this long are saved permanently to `record_dir` even

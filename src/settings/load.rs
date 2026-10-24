@@ -132,6 +132,8 @@ pub fn load(text: &str) -> Loaded {
 pub fn check(key: &Key, value: &Value) -> Result<(), String> {
     let valid = match (key.kind, value) {
         (Kind::Bool, Value::Bool(_)) => true,
+        // A negative count is not a count at all, as the replay parser said.
+        (Kind::Int { min, .. }, Value::Int(n)) if *n < 0 && min >= 0 => false,
         (Kind::Int { min, max }, Value::Int(n)) => {
             if *n < min || *n > max {
                 return Err(key

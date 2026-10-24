@@ -112,6 +112,10 @@ fn strict_keys_keep_the_messages_their_users_always_showed() {
         "replay duration_seconds must be 1..600"
     );
     assert_eq!(first("[replay]\nfps = 'x'"), "invalid replay fps");
+    assert_eq!(
+        first("[replay]\nduration_seconds = -1"),
+        "invalid replay duration_seconds"
+    );
     assert_eq!(first("[replay]\nencoder = ''"), "invalid replay encoder");
     assert_eq!(
         first("[replay]\nautostart = 'yes'"),
