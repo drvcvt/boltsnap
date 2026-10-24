@@ -304,6 +304,10 @@ Override precedence (highest to lowest):
 3. Config file — `~/.config/boltsnap/config.toml`
 4. Built-in default
 
+If an edit leaves the file unparsable while the daemon runs, the daemon keeps
+the last valid settings and says which line is wrong in a notification. A file
+that is already broken when the daemon starts falls back to the defaults.
+
 Clicking a Linux image or video card opens it in the desktop's default app.
 Right-click copies the media. The **Save** button writes it to the
 configured save directory.

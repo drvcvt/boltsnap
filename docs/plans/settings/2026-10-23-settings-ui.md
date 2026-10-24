@@ -409,6 +409,58 @@ macht Fehler nur sichtbar.
    Writer-Tests laufen unverändert.
 4. CF1 im Daemon und 5. Selector wie oben.
 
+**Schritt 4 im Detail** (24.10., Gegenprüfung am Code). Abweichung vom
+Entwurf oben: Den letzten gültigen Stand hält nicht `Daemon::settings`,
+sondern die Fassade selbst. Der Entwurf hätte die Settings an Replay
+(`replay/mod.rs:344`, `457`, `625`, `742`), den Watchdog
+(`watchdog.rs:91`), `watch.rs:142` und `recover.rs:99` durchreichen müssen,
+die alle in eigenen Threads lesen, und `shelf/mod.rs` (über 4000 Zeilen) wäre
+gewachsen. In der Fassade wirkt der Fix für jeden Leser, auch Windows, ohne
+einen Aufrufer anzufassen.
+
+- `config.rs`: ein prozessweiter `Mutex` merkt sich den Text der letzten
+  `config.toml`, die sich parsen ließ, und den zuletzt gemeldeten kaputten
+  Text. Die Logik sitzt in einer kleinen Struktur mit reinen Methoden, der
+  `static` hüllt sie nur ein, damit Tests nicht über globalen Zustand laufen.
+- Verhalten je Datei:
+
+  | Datei | `load()` | `load_valid()` | `replay_settings()` |
+  | --- | --- | --- | --- |
+  | fehlt | Default (wie heute) | `None` (wie heute) | Default (wie heute) |
+  | Lesefehler | Default (wie heute) | `None` (wie heute) | `Err` (wie heute) |
+  | gültig | gelesen, gemerkt | gelesen, gemerkt | gelesen, gemerkt |
+  | kaputt, ein gültiger Stand bekannt | **letzter gültiger Stand** | `None` (der Aufrufer behält seinen Stand) | **letzter gültiger Stand** |
+  | kaputt, keiner bekannt | Default | `None` | `Err("invalid config: …")` (wie heute) |
+
+  Kaputt heißt immer: einmal melden je kaputtem Text, nach einer gültigen
+  Fassung wieder neu. Die Meldung geht an `eprintln` und an einen Hook
+  (`config::on_broken(fn(&str))`), den nur der Linux-Daemon setzt, mit
+  `notify`: „config.toml line N is invalid: <Grund>; keeping the last valid
+  settings“ bzw. „…; using the defaults“. Ohne Hook (CLI, Windows) bleibt
+  es beim `eprintln`.
+- `settings::Loaded::Broken` bekommt `reason`, die erste Zeile von
+  `toml::de::Error::message()` (`toml-0.8.2/src/de.rs:64`), ohne den
+  Quelltext-Ausschnitt der `Display`-Form. `message` bleibt die volle Form,
+  `replay_settings` meldet weiter wörtlich `invalid config: <message>`.
+- Hook setzen: `run_daemon` (`shelf/mod.rs:1189-1190`) vor dem ersten
+  `Config::load()`; die beiden Zeilen werden zu zwei Zeilen, die Datei
+  wächst nicht.
+- Watchdog (`watchdog.rs:91`): ein `Err` von `replay_settings` läuft über
+  denselben Fehlerweg wie ein gescheiterter Neustart (`eprintln`,
+  `Backoff::failed`, eine Notification je Serie) statt still `continue`.
+
+Was Schritt 4 nicht tut: keinen Datei-Watcher (Phase 2, CF6); eine CLI teilt
+den Speicher des Daemons nicht (der Selector ist Schritt 5); einzelne
+ungültige Werte behandeln die Fassaden wie bisher; einen kaputten Stand beim
+Daemon-Start kann nichts retten außer Defaults und der Meldung.
+
+Abnahme: Tests der Merk-Struktur (gültig, kaputt mit und ohne bekannten
+Stand, gleiche Kaputt-Fassung nur einmal gemeldet, nach Reparatur wieder),
+`Broken.reason` im Settings-Test, alle bisherigen Tests grün. Live: Daemon
+neu starten mit gültiger Config, Replay startet wie vorher; der kaputte Weg
+braucht eine Aktion im Daemon (Tray, Aufnahme, Speichern) und wird nur mit
+Freigabe live geprüft, weil er die echte `config.toml` kurz kaputt macht.
+
 **Aufrufer** (Stand 24.10., die Zeilen oben vom 23.10. sind verschoben):
 `main.rs:354`, `370`, `425`, `430`; `linux/shelf/mod.rs:266`, `1189`,
 `1516`, `1984`, `1994-1996`, `2386-2392`, `2413`, `2468-2480`, `2502`,
@@ -653,5 +705,6 @@ Vom Nutzer am 24.10. so bestätigt:
 | 1, Schritt 1 | umgesetzt 24.10.: `src/settings/` (`schema.rs` 21 Keys mit `Kind`, `Applies`, `strict`; `load.rs` mit `Doc`, `Issue`, `Loaded`; `write.rs` mit `apply`/`write`; 14 Tests). Noch kein Aufrufer. Die Meldungen strikter Keys sind die alten; ein negativer Replay-Wert hieß hier noch „must be 1..600“ statt „invalid“, Schritt 2 stellt das zurück. Gegenprobe: ohne `File::lock` scheitert der Parallel-Test 3 von 3 Mal. Checks: `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test` 37 + 350 grün. |
 | 1, Schritt 2 | umgesetzt 24.10.: `Config::parse`, `load_valid` und `parse_replay_settings` lesen über `settings::load`, `Config` hält nur gültige Werte plus die `Issue`s; `record_profile()` holt den Fehler aus den `Issue`s (`record_fps` vor `record_profile`), Replay nimmt das erste strikte `[replay]`-`Issue`. `check` meldet eine negative Zahl für einen Key mit `min >= 0` als „invalid“, wie der alte Replay-Parser. Vergleich alt gegen neu: ein temporärer Test mit der alten Implementierung prüfte 66 gültige und kaputte Dateien (Profil, Prefs, Pfade, `shelf_to_disk_after`, Replay-Ergebnis samt Meldung, Syntaxfehler ja/nein), alle gleich; ohne die Negativ-Regel schlug er bei `duration_seconds = -1` fehl. Der Test ist wie geplant wieder raus, die Negativ-Meldung steht dauerhaft in `settings/tests.rs`. Checks: `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test` 37 + 350 grün. Kein `cargo check` für Windows (kein Target installiert); die öffentliche API von `Config` ist unverändert. |
 | 1, Schritt 3 | umgesetzt 24.10.: `save_recording_prefs_at` schreibt über `settings::update` (neu: Änderungen werden unter dem Lock aus dem frisch gelesenen Text bestimmt) nur die Prefs, deren Wert vom wirksamen Wert der Datei abweicht. Ein ungültiger, unveränderter Wert bleibt samt Kommentar stehen, nie gesetzte Keys kommen nicht dazu (CF3); Symlink, Modus, `fsync` des Ordners (CF2) und eindeutiger Temp-Name (CF4) kommen aus `settings::write`. Abweichung vom Plan: Eine Assertion im bestehenden Test `audio_preferences_parse_and_round_trip` prüfte, dass der unveränderte Default `record_audio_enabled = true` geschrieben wird, also genau das CF3-Verhalten; sie prüft jetzt das Gegenteil. Neuer Test `recording_prefs_write_only_changed_keys_and_keeps_invalid_ones`; Gegenprobe: mit einem Filter, der alles schreibt, schlägt er fehl. Die Tests räumen die `.lock`-Datei mit weg. Neben der echten `config.toml` liegt nach dem ersten Schreiben eine `config.toml.lock`. CF4 selbst (ganzer Snapshot über die Auswahl hinweg) bleibt bis Phase 2 offen. Checks: `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test` 37 + 351 grün. Live nicht geprüft; das folgt mit Schritt 4, der den Daemon anfasst. |
-| 1, Schritte 4 und 5, dann 2 bis 5 | geplant, freigegeben 24.10. |
+| 1, Schritt 4 | umgesetzt 24.10. wie in „Schritt 4 im Detail“: `Remembered` in `config.rs` merkt sich den letzten gültigen Text; `load` und `replay_settings` lesen ihn, solange die Datei kaputt ist, `load_valid` gibt dann weiter `None`. Meldung einmal je kaputtem Text über `eprintln` und den Hook `config::on_broken`, den `run_daemon` mit `notify` setzt (`shelf/mod.rs` bleibt bei 4016 Zeilen). `Loaded::Broken` hat jetzt `reason`. `Config::parse` loggt nicht mehr selbst; das macht die Meldung, einmal statt bei jedem Lesen. Watchdog: ein Ladefehler läuft über `restart_failed` wie ein gescheiterter Neustart. Checks: `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test` 37 + 352 grün. Live: installiert, Daemon neu gestartet, er antwortet, Replay `stopped` wie vorher (kein `autostart`), `daemon.log` ohne Config-Meldung. Der kaputte Weg ist live noch nicht geprüft: Er braucht eine kurz kaputte echte `config.toml` und eine Aktion im Daemon (Tray, Aufnahme, Speichern). |
+| 1, Schritt 5, dann 2 bis 5 | geplant, freigegeben 24.10. |
 | 6 (Library) | Skizze im Library-Plan |

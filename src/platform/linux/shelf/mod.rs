@@ -1186,8 +1186,8 @@ pub fn run_daemon(save_dir_cli: Option<std::path::PathBuf>) -> DynResult<()> {
     let pool = SlotPool::new(256 * 256 * 4, &shm)?;
 
     let cfg = LayoutConfig::default();
-    let config = crate::config::Config::load();
-    let recording_prefs = config.recording_prefs();
+    crate::config::on_broken(notify);
+    let recording_prefs = crate::config::Config::load().recording_prefs();
     let (event_tx, event_rx) = calloop::channel::channel::<DaemonEvent>();
     let prefs_writer = PrefsWriter::spawn(event_tx.clone());
     let thumbnails = thumbnail::Worker::spawn(event_tx.clone());

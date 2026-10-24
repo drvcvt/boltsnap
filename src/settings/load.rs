@@ -62,7 +62,10 @@ pub enum Loaded {
     /// Not valid TOML; nothing in it can be trusted.
     Broken {
         line: Option<usize>,
+        /// The parser's full report, with the offending line quoted.
         message: String,
+        /// Its first line alone, short enough for a notification.
+        reason: String,
     },
 }
 
@@ -73,6 +76,7 @@ pub fn load(text: &str) -> Loaded {
             return Loaded::Broken {
                 line: error.span().map(|span| line_at(text, span.start)),
                 message: error.to_string(),
+                reason: error.message().lines().next().unwrap_or_default().into(),
             };
         }
     };

@@ -90,7 +90,10 @@ pub(super) fn spawn(
             strikes = 0;
             let settings = match crate::config::Config::replay_settings() {
                 Ok(settings) => settings,
-                Err(_) => continue,
+                Err(error) => {
+                    restart_failed(&mut backoff, &error);
+                    continue;
+                }
             };
             let mut guard = owner.lock().unwrap();
             // Only replace the session the strikes were counted against, and
@@ -131,17 +134,22 @@ pub(super) fn spawn(
                 }
                 Err(error) => {
                     drop(guard);
-                    eprintln!("boltsnap replay: restart failed: {error}");
-                    if backoff.failed(Instant::now()) {
-                        notify_error(&format!(
-                            "replay capture stopped and could not restart: {error}; \
-                             the buffer up to the stop can still be saved"
-                        ));
-                    }
+                    restart_failed(&mut backoff, &error);
                 }
             }
         }
     });
+}
+
+/// Logs every failed restart and notifies the first of a series.
+fn restart_failed(backoff: &mut Backoff, error: &str) {
+    eprintln!("boltsnap replay: restart failed: {error}");
+    if backoff.failed(Instant::now()) {
+        notify_error(&format!(
+            "replay capture stopped and could not restart: {error}; \
+             the buffer up to the stop can still be saved"
+        ));
+    }
 }
 
 /// Ends a replaced session once its worker holds nothing any more: an export

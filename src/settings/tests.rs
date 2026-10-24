@@ -152,9 +152,17 @@ fn unknown_keys_are_reported_and_known_ones_still_read() {
 #[test]
 fn a_syntax_error_reports_its_line() {
     match load("record_fps = 60\nrecord_show_frame = \n") {
-        Loaded::Broken { line, message } => {
+        Loaded::Broken {
+            line,
+            message,
+            reason,
+        } => {
             assert_eq!(line, Some(2));
-            assert!(!message.is_empty());
+            assert!(
+                message.starts_with("TOML parse error at line 2"),
+                "{message}"
+            );
+            assert_eq!(reason, "invalid string");
         }
         ok => panic!("{ok:?}"),
     }

@@ -1,6 +1,7 @@
 use std::env;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 use boltsnap::settings::{self, Loaded, schema};
 
@@ -138,7 +139,13 @@ impl Config {
             Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
             Err(error) => return Err(format!("read replay settings: {error}")),
         };
-        Self::parse_replay_settings(&text)
+        match remember(&text) {
+            Read::Broken {
+                fallback: Some(good),
+            } => Self::parse_replay_settings(&good),
+            // With nothing better known, the broken text gives its error.
+            _ => Self::parse_replay_settings(&text),
+        }
     }
 
     /// Every `[replay]` key is strict: the first invalid one is the error.
@@ -174,15 +181,12 @@ impl Config {
         })
     }
 
-    /// Parse config text. Unknown keys are ignored; a parse error logs and yields
-    /// defaults (so a typo never bricks the daemon).
+    /// Parse config text. Unknown keys are ignored; text that does not parse
+    /// yields defaults (so a typo never bricks the daemon).
     pub fn parse(text: &str) -> Config {
         match settings::load(text) {
             Loaded::Ok { doc, issues } => Config::from_doc(&doc, issues),
-            Loaded::Broken { message, .. } => {
-                eprintln!("boltsnap: ignoring malformed config: {message}");
-                Config::default()
-            }
+            Loaded::Broken { .. } => Config::default(),
         }
     }
 
@@ -207,10 +211,16 @@ impl Config {
         }
     }
 
-    /// Load from `config_path()`; a missing file yields defaults.
+    /// Load from `config_path()`; a missing file yields defaults. While the
+    /// file does not parse, the last version that did is read instead.
     pub fn load() -> Config {
         match std::fs::read_to_string(config_path()) {
-            Ok(s) => Config::parse(&s),
+            Ok(text) => match remember(&text) {
+                Read::Valid => Config::parse(&text),
+                Read::Broken { fallback } => {
+                    fallback.map_or_else(Config::default, |good| Config::parse(&good))
+                }
+            },
             Err(_) => Config::default(),
         }
     }
@@ -219,10 +229,7 @@ impl Config {
     /// a half-edited file never replaces known settings with defaults.
     pub fn load_valid() -> Option<Config> {
         let text = std::fs::read_to_string(config_path()).ok()?;
-        match settings::load(&text) {
-            Loaded::Ok { doc, issues } => Some(Config::from_doc(&doc, issues)),
-            Loaded::Broken { .. } => None,
-        }
+        matches!(remember(&text), Read::Valid).then(|| Config::parse(&text))
     }
 
     /// Recordings at least this long are saved permanently to `record_dir` even
@@ -273,6 +280,72 @@ impl Config {
             },
         }
     }
+}
+
+/// The last `config.toml` that parsed, and the last broken one reported, so a
+/// half-edited file never puts every setting back to its default (CF1).
+#[derive(Default)]
+struct Remembered {
+    good: Option<String>,
+    reported: Option<String>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Read {
+    Valid,
+    /// The file does not parse; `fallback` is the last text that did.
+    Broken {
+        fallback: Option<String>,
+    },
+}
+
+impl Remembered {
+    /// Notes the file's `text`, with a report the first time a broken text is
+    /// seen.
+    fn see(&mut self, text: &str) -> (Read, Option<String>) {
+        let Loaded::Broken { line, reason, .. } = settings::load(text) else {
+            self.good = Some(text.into());
+            self.reported = None;
+            return (Read::Valid, None);
+        };
+        let report = (self.reported.as_deref() != Some(text)).then(|| {
+            self.reported = Some(text.into());
+            let place = line.map_or("config.toml".into(), |line| {
+                format!("config.toml line {line}")
+            });
+            let using = if self.good.is_some() {
+                "keeping the last valid settings"
+            } else {
+                "using the defaults"
+            };
+            format!("{place} is invalid: {reason}; {using}")
+        });
+        let fallback = self.good.clone();
+        (Read::Broken { fallback }, report)
+    }
+}
+
+static REMEMBERED: Mutex<Remembered> = Mutex::new(Remembered {
+    good: None,
+    reported: None,
+});
+static ON_BROKEN: OnceLock<fn(&str)> = OnceLock::new();
+
+/// Where a broken `config.toml` is reported besides stderr, such as a
+/// desktop notification. Set once; later calls are ignored.
+pub fn on_broken(report: fn(&str)) {
+    let _ = ON_BROKEN.set(report);
+}
+
+fn remember(text: &str) -> Read {
+    let (read, report) = REMEMBERED.lock().unwrap().see(text);
+    if let Some(report) = report {
+        eprintln!("boltsnap: {report}");
+        if let Some(hook) = ON_BROKEN.get() {
+            hook(&report);
+        }
+    }
+    read
 }
 
 pub fn save_recording_prefs(prefs: &RecordingPrefs) -> io::Result<()> {
@@ -692,6 +765,42 @@ unrelated = "keep-me"
             "record_cursor = \"mellow\"\n"
         );
         remove_config(&path);
+    }
+
+    #[test]
+    fn a_broken_file_falls_back_to_the_last_valid_text_and_is_reported_once() {
+        let mut remembered = Remembered::default();
+        let (read, report) = remembered.see("record_fps = \n");
+        assert_eq!(read, Read::Broken { fallback: None });
+        assert_eq!(
+            report.as_deref(),
+            Some("config.toml line 1 is invalid: invalid string; using the defaults")
+        );
+        assert_eq!(remembered.see("record_fps = 120\n"), (Read::Valid, None));
+        let (read, report) = remembered.see("record_fps = 120\nx = \n");
+        assert_eq!(
+            read,
+            Read::Broken {
+                fallback: Some("record_fps = 120\n".into())
+            }
+        );
+        assert_eq!(
+            report.as_deref(),
+            Some("config.toml line 2 is invalid: invalid string; keeping the last valid settings")
+        );
+        // The same broken text is reported once, another one again.
+        assert_eq!(remembered.see("record_fps = 120\nx = \n").1, None);
+        assert!(remembered.see("record_fps = = 1\n").1.is_some());
+        // Fixed and broken the same way again: reported again.
+        remembered.see("record_fps = 60\n");
+        let (read, report) = remembered.see("record_fps = = 1\n");
+        assert_eq!(
+            read,
+            Read::Broken {
+                fallback: Some("record_fps = 60\n".into())
+            }
+        );
+        assert!(report.is_some());
     }
 
     #[test]
