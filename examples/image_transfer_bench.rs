@@ -4,13 +4,18 @@
 #[cfg(target_os = "linux")]
 pub use boltsnap::protocol;
 #[cfg(target_os = "linux")]
-#[path = "../src/platform/linux/image_transfer.rs"]
+#[path = "../src/platform/linux/capture/image_transfer.rs"]
 mod image_transfer;
 #[path = "../src/shelf/thumbnail.rs"]
 mod thumbnail;
 #[cfg(target_os = "linux")]
 #[path = "../src/platform/linux/timing.rs"]
 mod timing;
+/// `image_transfer` reaches its siblings as `crate::platform::*`.
+#[cfg(target_os = "linux")]
+mod platform {
+    pub(crate) use super::{ipc, timing};
+}
 #[cfg(target_os = "linux")]
 mod ipc {
     pub fn ensure_daemon() -> std::io::Result<std::os::unix::net::UnixStream> {

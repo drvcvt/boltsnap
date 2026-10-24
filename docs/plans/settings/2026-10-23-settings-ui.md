@@ -399,7 +399,7 @@ CF8 (Daemon-Umgebung, `--save-dir`) ist nicht Teil dieses Plans.
 | Zeichnen | tiny-skia, ab_glyph (schon da) | `Cargo.toml` |
 | Schrift | `font::load_ui_font_weights` (500/600) wie die Controls | `linux/shelf/font.rs` |
 | Einfügen in Textfelder | `wl-clipboard-rs` (schon da) | `Cargo.toml` |
-| Ordner-Dialog | xdg-desktop-portal `FileChooser` über `zbus` (schon da) | `linux/portal.rs` nutzt zbus |
+| Ordner-Dialog | xdg-desktop-portal `FileChooser` über `zbus` (schon da) | `linux/capture/portal.rs` nutzt zbus |
 | Scale | `CompositorHandler::scale_factor_changed`, `set_buffer_scale` | `src/compositor.rs:26` |
 | Icons | Lucide-SVGs (ISC) als Assets, eigener kleiner Pfad-Parser (M L H V C S Q T A Z, Bogen zu Kubik) auf tiny-skia `PathBuilder` | statt `resvg`/`usvg` (etwa 10 Crates) |
 
@@ -572,6 +572,6 @@ Vom Nutzer am 24.10. so bestätigt:
 | Phase | Stand |
 | --- | --- |
 | 0, `docs/plans/` | umgesetzt 24.10.: 18 Dateien per `git mv` in `recording/` (5), `replay/` (2), `shelf/` (3), `platform/` (2), `quality/` (5), `settings/` (3 mit den beiden neuen); 14 Dateien mit Verweisen umgeschrieben (Skript: Markdown-Links relativ zum neuen Ort, Pfade `docs/plans/<name>` im Text). Link-Check vorher und nachher: kein toter Link; `git grep` nach jedem alten Pfad leer (außer `vendor/libway`, das auf eigene Pläne zeigt). |
-| 0, `src/platform/linux/` | geplant |
+| 0, `src/platform/linux/` | umgesetzt 24.10.: `capture.rs`, `portal.rs`, `image_transfer.rs` per `git mv` nach `capture/` (`mod.rs`, `portal.rs`, `image_transfer.rs`); `linux/mod.rs` exportiert `image_transfer` und `portal` wieder, alle Aufrufer unverändert; `linux/` hat jetzt 10 Dateien. Abweichungen: nur drei Pfade in `image_transfer.rs` mussten sich ändern (statt etwa 12), und zwar auf `crate::platform::{timing, ipc}`, weil `examples/image_transfer_bench.rs` die Datei per `#[path]` einbindet (das Example bekam dafür ein `mod platform` und den neuen Pfad). `docs/codebase.md` zeigt auf die neuen Orte; Zeilenangaben in älteren Plänen bleiben als historischer Stand. Checks: `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test` 25 + 350 grün, Link-Check ohne toten Link. |
 | 1 bis 5 | geplant, freigegeben 24.10. |
 | 6 (Library) | Skizze im Library-Plan |

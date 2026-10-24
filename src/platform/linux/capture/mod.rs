@@ -1,3 +1,6 @@
+pub(crate) mod image_transfer;
+pub mod portal;
+
 use std::fs;
 use std::path::Path;
 

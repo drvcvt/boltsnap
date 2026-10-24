@@ -47,7 +47,7 @@ impl Metadata {
             source,
             output,
             copy,
-            trace: super::timing::request_id(),
+            trace: crate::platform::timing::request_id(),
         })
     }
     pub fn parse(value: &Value) -> io::Result<Self> {
@@ -294,7 +294,7 @@ pub fn try_add(
     copy: bool,
 ) -> io::Result<bool> {
     let metadata = Metadata::new(image.width(), image.height(), source.into(), output, copy)?;
-    let stream = super::ipc::ensure_daemon()?;
+    let stream = crate::platform::ipc::ensure_daemon()?;
     transfer(stream, &metadata, image.as_raw())
 }
 fn transfer(mut stream: UnixStream, metadata: &Metadata, bytes: &[u8]) -> io::Result<bool> {
@@ -322,7 +322,7 @@ fn transfer(mut stream: UnixStream, metadata: &Metadata, bytes: &[u8]) -> io::Re
                 .unwrap_or("invalid pixel READY response"),
         ));
     }
-    let _timing = super::timing::Span::new("pixel_transfer_and_shelf_ack");
+    let _timing = crate::platform::timing::Span::new("pixel_transfer_and_shelf_ack");
     let fd = sealed_pixels(bytes)?;
     send_fd(&stream, &fd).map_err(|e| {
         io::Error::other(format!(
