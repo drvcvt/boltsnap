@@ -88,9 +88,12 @@ one packet. The capture uses one-second closed GOPs without B-frames.
 The capture pipe is enlarged to 1 MiB (about 100 ms of video), so a worker held
 up by a busy CPU does not stall the encoder.
 
-Without `output`, replay uses the recording preference's named display, or the
-focused display at startup. A preference to record both displays still starts
-one focused replay display. Restart replay after changing configuration.
+An `output` that is not connected stops replay from starting. Without
+`output`, replay uses the recording preference's named display, or the focused
+display at startup; when that named display is disconnected it takes the
+focused one and says so, like a recording does. A preference to record both
+displays still starts one focused replay display. Restart replay after changing
+configuration.
 
 The top-level `record_cursor` applies to replay too: `mellow` and `quick` run
 GPU Screen Recorder with `-cursor no` and the smooth-cursor plugin
@@ -129,7 +132,11 @@ with the other orphans.
 
 A buffer whose input failed or stalled stays saveable: `replay save` writes
 what it holds, the clip ends where capture stopped, and a notification says so.
-The watchdog still replaces the session after about 15 seconds.
+The watchdog replaces the session after about 15 seconds. It ends only the
+dead capture and keeps the old buffer until the new session runs; an export
+started on the old buffer meanwhile finishes first. If the restart fails, the
+old buffer stays saveable, one notification names the reason, and the watchdog
+tries again after 30 s, 60 s and then every 5 minutes.
 
 An open selection survives a failed input: the worker reports it as
 `selection_active` until Save, Cancel or its 120-second expiry, and neither the

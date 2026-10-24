@@ -1,6 +1,8 @@
 use std::io::Write;
+mod monitor;
 pub(crate) mod process;
 mod socket;
+mod watchdog;
 
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::net::UnixStream;
@@ -25,6 +27,17 @@ struct Session {
     output: String,
     output_limit: u64,
     parent_thread: Option<std::sync::mpsc::Sender<()>>,
+    /// Why the session captures another monitor than configured; the caller
+    /// reports it once.
+    notice: Option<String>,
+}
+
+impl Session {
+    /// Ends the capture and keeps the worker, whose ring stays saveable.
+    fn stop_capture(&mut self) {
+        process::terminate(&mut self.capture);
+        self.cursor = None;
+    }
 }
 
 impl Drop for Session {
@@ -67,19 +80,22 @@ impl Drop for Service {
     }
 }
 
+/// The longest a clip export may take, region crops included.
+const SAVE_TIMEOUT: Duration = Duration::from_secs(1900);
+
 fn socket_call(name: &str, request: &Value) -> Result<(Value, Vec<u8>), String> {
     let mut stream = UnixStream::connect_addr(&socket::address(name).map_err(|e| e.to_string())?)
         .map_err(|e| format!("replay is not running: {e}"))?;
     socket::configure(&stream).map_err(|e| e.to_string())?;
     wire::write(&mut stream, request).map_err(|e| e.to_string())?;
     let timeout = match request["command"].as_str() {
-        Some("save") => 1900,
-        Some("start") => 120,
-        Some("freeze") => 15,
-        _ => 5,
+        Some("save") => SAVE_TIMEOUT,
+        Some("start") => Duration::from_secs(120),
+        Some("freeze") => Duration::from_secs(15),
+        _ => Duration::from_secs(5),
     };
     stream
-        .set_read_timeout(Some(Duration::from_secs(timeout)))
+        .set_read_timeout(Some(timeout))
         .map_err(|e| e.to_string())?;
     let response = wire::read(&mut stream).map_err(|e| format!("replay response: {e}"))?;
     if response["ok"].as_bool() != Some(true) {
@@ -224,13 +240,6 @@ impl Drop for FrozenSelection {
     }
 }
 
-/// How often the watchdog looks at a running session, and how many consecutive
-/// unready looks it takes to call the capture dead. The recorder can lose its
-/// video stream while its process and its audio stream keep going, and a buffer
-/// in that state can never produce a clip again. Nothing downstream notices, so
-/// the service has to: it replaces the session the way a manual Start would.
-const WATCHDOG_INTERVAL: Duration = Duration::from_secs(5);
-
 /// An export or an open selection still uses the buffer, even after its input
 /// failed. Older workers lack `selection_active`.
 fn holds_buffer(status: &Value) -> bool {
@@ -245,73 +254,6 @@ fn session_in_use(name: &str) -> bool {
     socket_call(name, &json!({"version":1,"command":"status"}))
         .is_ok_and(|(status, _)| in_use(&status))
 }
-const WATCHDOG_STRIKES: u32 = 3;
-
-fn watchdog(
-    owner: Arc<Mutex<Option<Session>>>,
-    stopping: Arc<AtomicBool>,
-    cancel_start: Arc<AtomicBool>,
-    starting: Arc<AtomicBool>,
-) {
-    std::thread::spawn(move || {
-        let mut strikes = 0;
-        while !stopping.load(Ordering::Relaxed) {
-            std::thread::sleep(WATCHDOG_INTERVAL);
-            // Never interrupt a start in flight, and never take the buffer away
-            // from a selection or an export that is still using it.
-            if starting.load(Ordering::Relaxed) {
-                strikes = 0;
-                continue;
-            }
-            let Some(name) = owner.lock().unwrap().as_ref().map(|s| s.name.clone()) else {
-                strikes = 0;
-                continue;
-            };
-            if session_in_use(&name) {
-                strikes = 0;
-                continue;
-            }
-            strikes += 1;
-            if strikes < WATCHDOG_STRIKES {
-                continue;
-            }
-            strikes = 0;
-            let settings = match crate::config::Config::replay_settings() {
-                Ok(settings) => settings,
-                Err(_) => continue,
-            };
-            let mut guard = owner.lock().unwrap();
-            // Only replace the session the strikes were counted against, and
-            // ask once more under the lock: a selection may have opened since.
-            if guard.as_ref().is_none_or(|s| s.name != name) || session_in_use(&name) {
-                continue;
-            }
-            let dead = guard.take();
-            starting.store(true, Ordering::Relaxed);
-            cancel_start.store(false, Ordering::Relaxed);
-            drop(guard);
-            // Terminating the old pair can take a moment; the lock is already
-            // released so status and stop stay answerable meanwhile.
-            drop(dead);
-            let restarted = start(settings, cancel_start.clone());
-            let mut guard = owner.lock().unwrap();
-            starting.store(false, Ordering::Relaxed);
-            if cancel_start.load(Ordering::Relaxed) {
-                continue;
-            }
-            match restarted {
-                Ok(session) => *guard = Some(session),
-                Err(error) => {
-                    drop(guard);
-                    notify_error(&format!(
-                        "replay capture stopped and could not restart: {error}"
-                    ));
-                }
-            }
-        }
-    });
-}
-
 /// Where GPU Screen Recorder's diagnostics go. Inheriting the daemon's stderr
 /// sends them to `/dev/null`, and then a capture that stops mid-session leaves
 /// nothing to look at. One file, truncated per start, so it cannot grow.
@@ -397,19 +339,13 @@ fn start_capture(settings: Settings, cancel: &AtomicBool) -> Result<Session, Str
     let video_kbps = settings.video_kbps().to_string();
     let info = super::hypr::json("monitors").ok_or("could not query replay monitor")?;
     let monitors = crate::record::parse_hyprland_monitors(&info)?;
-    let output = settings.output.or_else(|| {
-        match crate::config::Config::load()
+    let (monitor, notice) = monitor::replay_monitor(
+        settings.output.as_deref(),
+        &crate::config::Config::load()
             .recording_prefs()
-            .default_target
-        {
-            crate::config::RecordDefaultTarget::Output(name) => Some(name),
-            _ => None,
-        }
-    });
-    let monitor = monitors
-        .iter()
-        .find(|m| output.as_ref().map_or(m.focused, |o| &m.name == o))
-        .ok_or("configured replay monitor is unavailable")?;
+            .default_target,
+        &monitors,
+    )?;
     let worker = companion_path("boltsnap-replay-worker");
     let capabilities = process::output(
         Command::new(&worker).arg("capabilities"),
@@ -570,6 +506,7 @@ fn start_capture(settings: Settings, cancel: &AtomicBool) -> Result<Session, Str
         output: monitor.name.clone(),
         output_limit: (settings.memory_mib * 1024 * 1024 / 3) as u64,
         parent_thread: None,
+        notice,
     };
     let deadline = std::time::Instant::now() + Duration::from_secs(60);
     while std::time::Instant::now() < deadline {
@@ -608,7 +545,7 @@ pub(crate) fn serve(sender: calloop::channel::Sender<DaemonEvent>) -> Result<Ser
     let stopping = service.stopping.clone();
     let cancel_start = service.cancel_start.clone();
     let starting = Arc::new(AtomicBool::new(false));
-    watchdog(
+    watchdog::spawn(
         service.session.clone(),
         service.stopping.clone(),
         service.cancel_start.clone(),
@@ -695,7 +632,13 @@ pub(crate) fn serve(sender: calloop::channel::Sender<DaemonEvent>) -> Result<Ser
                         if cancel_start.load(Ordering::Relaxed) {
                             return Err("replay start cancelled".into());
                         }
-                        *guard = Some(result?);
+                        let mut session = result?;
+                        let notice = session.notice.take();
+                        *guard = Some(session);
+                        drop(guard);
+                        if let Some(notice) = notice {
+                            notify_error(&notice);
+                        }
                         return Ok((json!({"ok":true}), Vec::new()));
                     }
                     if command == "stop" {
