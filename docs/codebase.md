@@ -100,7 +100,11 @@ R1 to R11 recording, RP1 to RP8 replay; R1 is a P1 silent loss after a failed
 partial save), in the [shelf plan](plans/2026-07-31-shelf-hardening.md#review-2026-10-23-s1-to-s7)
 (S1 to S7, including two Task 5 regressions) and in
 [comfort-and-config](plans/2026-09-25-comfort-and-config.md#4-config-review-2026-10-23)
-(CF1 to CF8). None of them is fixed yet.
+(CF1 to CF8). Fixed so far: R1, S1, S5, S6, RP2 and RP3 (status tables in
+those plans); the rest is open. The planned settings UI builds on the CF fixes:
+[settings UI plan](plans/settings/2026-10-23-settings-ui.md); the same window
+later gets a library of saved files
+([library plan](plans/settings/2026-10-24-library.md)).
 
 ## Partial and deferred work
 

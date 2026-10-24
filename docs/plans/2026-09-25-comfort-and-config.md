@@ -210,9 +210,10 @@ Nutzer-Entscheidung 26.09.: K1 und K2 zusammen, danach V1 und V2.
 
 ## 4. Config-Review (2026-10-23)
 
-Read-only-Review der Config- und Settings-Schicht als Grundlage für ein
-Settings-UI. Nichts reproduziert, alles
-aus dem Code; jeder Befund am 23.10. selbst gegengelesen.
+Read-only-Review der Config- und Settings-Schicht als Grundlage für das
+[Settings-UI](settings/2026-10-23-settings-ui.md). Nichts reproduziert, alles
+aus dem Code; jeder Befund am 23.10. selbst gegengelesen. Die Fixes sind
+Phase 1 und 2 des Settings-Plans, dort steht die Umsetzung.
 
 | ID | Prio | Befund | Beleg | Sicherheit |
 | --- | --- | --- | --- | --- |
@@ -233,7 +234,9 @@ K3 (`--save` ignoriert `save_dir`) bleibt offen wie oben.
 `record_show_frame`, `record_disk_add_to_shelf`, `record_audio_enabled`,
 `record_audio_source`, `record_shelf_to_disk_after_seconds`, `ui_font`) und 7
 unter `[replay]` (`duration_seconds` 1-600, `memory_mib` 64-4096, `fps` 1-240,
-`encoder`, `output`, `autostart`, `bitrate_kbps` 500-200000). Fest eingebaut und Kandidaten für Settings: `MAX_VISIBLE_CARDS`
+`encoder`, `output`, `autostart`, `bitrate_kbps` 500-200000). Wann jeder Key
+wirkt und wie er im UI erscheint, steht in der Tabelle des Settings-Plans,
+Abschnitt 2. Fest eingebaut und Kandidaten für Settings: `MAX_VISIBLE_CARDS`
 5 (`shelf/mod.rs:330`), `CARD_W/H` 190×132 (`shelf/thumbnail.rs:6-7`),
 Anker unten links mit Rand 24 (`shelf/mod.rs:1695-1700`), `CARD_OPACITY` 0,8
 (`shelf/paint.rs:11`), Notifications immer über `notify-send` ohne Schalter
