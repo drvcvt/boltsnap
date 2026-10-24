@@ -823,52 +823,84 @@ ohne Overflow, kein Panic bei seltsamer gsr/ffmpeg-Ausgabe.
   alle 5 min) und meldet den Fehler einmal pro Fehlerserie statt bei jedem
   Versuch (heute kommt alle 15 s eine Notification).
 
-**Änderungen** (`platform/linux/replay/mod.rs`):
+**Gegenprüfung am Code (24.10.), vor der Umsetzung:**
 
-1. Reine Funktion
-   `replay_monitor(explicit: Option<&str>, inherited: Option<&str>, monitors: &[Monitor]) -> Result<(Monitor, Option<String>), String>`
-   ersetzt den Block `:400-412`. `start_capture` gibt die Warnung im `Session`
-   mit zurück (neues Feld `notice: Option<String>`); der Aufrufer meldet sie.
-2. `Session::stop_capture(&mut self)`: beendet nur `capture` und den
-   Cursor-Tracker, der Worker mit dem Ring bleibt. `Drop` beendet danach wie
-   heute beide; `process::terminate` ist auf einem schon beendeten Kind
-   harmlos (`process.rs:85-87`: `try_wait` ist nicht `Ok(None)`, also sofort
-   zurück), ein zweiter Aufruf in `Drop` schadet nicht.
-3. Watchdog (`:249-312`): statt `guard.take()` und `drop(dead)` ruft er
-   `stop_capture` auf der Session im Mutex auf, lässt sie dort, setzt
-   `starting` und startet. Unter dem Lock danach: `cancel_start` gesetzt →
-   neue Session verwerfen (wie heute); `Ok` → tauschen, die alte fällt und
-   beendet ihren Worker; `Err` → alte behalten, Backoff erhöhen, einmal
-   melden. Den Tausch kapselt eine reine Funktion
-   `after_restart(old, result, cancelled) -> (keep, notify)`, damit er ohne
-   Prozesse testbar ist.
-4. Stop während eines Neustarts: `stop` nimmt wie heute die Session aus dem
-   Mutex (jetzt die alte) und setzt `cancel_start`; der laufende Start wird
-   danach verworfen. Kein neuer Pfad.
+- Der Worker bleibt nach dem Ende seines Inputs am Leben und hält den Ring
+  speicherbar: `capture` setzt nur `state.error`, `snapshot` liefert den Ring
+  trotzdem, `status` meldet dann `ready: false`
+  (`worker/src/live.rs:33-57`, `68-79`, `161-180`). Den alten Worker zu
+  behalten bringt also wirklich einen speicherbaren Puffer.
+- `process::terminate` kehrt bei einem schon beendeten Kind sofort zurück und
+  wartet sonst bis 2 s (`process.rs:84-101`).
+- Den Fallback gibt es schon als reine Funktion: `record::resolve_record_outputs`
+  (`record.rs:100-136`, getestet `record.rs:233-282`) mit der Meldung
+  „configured output DP-1 is disconnected; using focused output“. RP2 nutzt
+  sie statt eigener Logik (Abweichung vom Wortlaut oben).
+- **Lücke im Plan:** bleibt die alte Session während `start()` im Mutex, kann
+  ein `replay save` in dieser Zeit einen Export auf dem alten Worker starten
+  (`live.rs:247` `"save" if !busy`). Ein Tausch, der die alte Session sofort fallen
+  lässt, würde diesen Export mittendrin beenden. Deshalb geht die alte Session
+  nach dem Tausch an `retire`, das sie erst fallen lässt, wenn ihr Worker
+  nichts mehr hält (siehe 4.).
 
-**Randfälle:**
+**Änderungen:**
 
-- Speicher: während des Neustarts hält der alte Worker sein Live-Drittel, der
-  neue füllt seins. Zusammen zwei Drittel von `memory_mib`, also innerhalb des
-  Gesamtbudgets (live + frozen + memfd = 3/3); mit gehaltener Auswahl wird es
-  knapp. Deshalb startet der Watchdog nie, solange `holds_buffer` gilt (heute
-  schon so, `:236-238`).
-- GPU: die alte Capture ist vor dem neuen gsr beendet, es laufen nie zwei
-  Encoder-Sessions gleichzeitig.
-- Neustart scheitert dauerhaft (Reserve unter 2 GiB, `:477-478`): Puffer bleibt
-  speicherbar, eine Meldung, Versuche alle 5 min. Der Tray zeigt Replay als an,
-  weil eine Session gehalten wird; der Status sagt `ready: false`. Das ist
-  ehrlich, solange die Meldung den Grund nennt.
-- Monitor kommt zurück: der nächste Versuch nimmt wieder das gewünschte Ziel.
+1. `platform/linux/replay/monitor.rs` (neu):
+   `replay_monitor(explicit: Option<&str>, inherited: &RecordDefaultTarget, monitors: &[Monitor]) -> Result<(Monitor, Option<String>), String>`.
+   Explizit: strikt, sonst „configured replay monitor DP-1 is unavailable“.
+   Ohne explizites Ziel: `Output(name)` geht durch `resolve_record_outputs`
+   (Fallback plus Meldung), jedes andere Aufnahmeziel (`Focused`, `Both`)
+   nimmt wie heute den fokussierten Monitor. Ersetzt `mod.rs:400-412`.
+2. `Session` bekommt `notice: Option<String>` (die Fallback-Meldung) und
+   `stop_capture(&mut self)`: beendet `capture`, dann den Cursor-Tracker
+   (`cursor = None`), in derselben Reihenfolge wie `Drop`. Der Worker bleibt.
+3. Meldung: der manuelle Start (auch Autostart, der über denselben
+   Socket-Befehl läuft) und der Watchdog nehmen `notice` aus der neuen Session
+   und melden sie über `notify_error`, einmal pro Start.
+4. `platform/linux/replay/watchdog.rs` (neu, `watchdog` zieht aus `mod.rs`
+   um; `mod.rs` schrumpft): statt `guard.take()` und `drop(dead)` ruft der
+   Watchdog unter dem Lock `stop_capture` auf (bis 2 s Lock; in dieser Zeit
+   ist die Session ohnehin nicht `ready`, `preview_target` gäbe nichts) und
+   lässt sie im Mutex. Danach unter dem Lock:
+   - `cancel_start` gesetzt: Stop hat die alte schon genommen, die neue fällt.
+   - `Ok(new)`: `guard.replace(new)`, Lock frei, die alte an `retire`.
+   - `Err`: alte bleibt, `Backoff::failed`, Meldung nur beim ersten Fehler
+     einer Serie, `eprintln!` bei jedem.
+   `retire(old)` läuft in einem eigenen Thread: solange der alte Worker
+   `holds_buffer` meldet, jede Sekunde neu fragen, höchstens so lange wie das
+   Save-Timeout (1900 s, dafür eine Konstante statt der Zahl in
+   `socket_call`); dann fällt die Session und beendet ihren Worker.
+5. Backoff statt `after_restart` (Abweichung: Tausch und Abbruch sind drei
+   Zeilen ohne Entscheidung, testbar ist die Zeitlogik):
+   `Backoff { name, failures, retry_at }` mit `due(name, now)` (setzt sich
+   zurück, sobald die Session einen anderen Namen hat, also nach Erfolg,
+   manuellem Start oder Stop) und `failed(now) -> bool` (true beim ersten
+   Fehler). `retry_delay(n)`: 30 s, 60 s, dann 300 s. Der erste Versuch kommt
+   wie heute nach drei Fehlblicken (15 s); ein Versuch braucht weiter drei
+   Fehlblicke **und** `due`.
+6. Stop während eines Neustarts: unverändert, `stop` nimmt die (alte) Session
+   und setzt `cancel_start`. Ein laufender `retire` beendet seinen Export
+   noch; das ist Absicht, Stop soll keinen begonnenen Clip zerstören.
+
+**Randfälle (zusätzlich zu oben):**
+
+- Manueller Start bei gehaltener alter Session: der Start-Befehl sieht die
+  Capture beendet und ersetzt die Session wie heute (`guard.take()`), außer
+  sie hält eine Auswahl oder einen Export. Er bleibt der Ausweg.
+- Ein `save`, der den Namen der alten Session vor dem Tausch gelesen, den
+  Worker aber noch nicht erreicht hat, kann `retire` verpassen und scheitert
+  dann mit einem Fehler. Kein stiller Verlust; das gleiche Fenster hat der
+  manuelle Start heute.
+- Speicher im schlimmsten Fall: alter Live-Ring plus alter Export plus neuer
+  Live-Ring, je ein Drittel, also das Gesamtbudget.
 
 **Tests:**
 
-1. `replay_monitor`: explizit vorhanden, explizit fehlt (Fehler), geerbt
-   vorhanden, geerbt fehlt (fokussierter plus Warnung), nichts gesetzt
-   (fokussierter, keine Warnung), kein fokussierter Monitor (Fehler).
-2. `after_restart`: `Ok` tauscht, `Err` behält die alte und meldet nur beim
-   ersten Fehler einer Serie, `cancelled` verwirft beide Ergebnisse.
-3. Backoff-Folge 15, 30, 60, 300, 300 s und Reset nach Erfolg.
+1. `replay_monitor`: explizit vorhanden, explizit fehlt (Fehler mit Name),
+   geerbt vorhanden, geerbt fehlt (fokussierter plus Meldung), `Focused` und
+   `Both` (fokussierter, keine Meldung), kein fokussierter Monitor (Fehler).
+2. `Backoff`: Abstände 30, 60, 300, 300 s; `failed` ist nur beim ersten Mal
+   true; `due` vor und nach `retry_at`; ein neuer Name setzt alles zurück.
 
 **Abnahme:** die Tests grün, `cargo fmt --check`, `cargo clippy --all-targets`,
 `cargo test`. Live mit Zustimmung: Replay läuft, Recording-Ziel ist der zweite
@@ -882,4 +914,5 @@ Live offen, mit Zustimmung: RP1 mit einem großen Region-Clip aus einem Spiel.
 
 | ID | Stand |
 | --- | --- |
-| RP1 bis RP8 | dokumentiert, nicht umgesetzt |
+| RP2, RP3 | umgesetzt 24.10. nach dem Plan oben (`replay/monitor.rs`, `replay/watchdog.rs`, `Session::stop_capture`, `notice`, `retire`, `SAVE_TIMEOUT`); `docs/replay.md` nachgezogen. Checks: `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test` 25 + 350 grün (3 ignoriert). Live 24.10. (DP-3, explizites `output`): gsr der Replay-Session per SIGKILL beendet; Status `stalled`, `replay save` auf dem alten Ring lieferte 14,75 s mit `input_lost`; nach etwa 20 s neue Session `running`, alter Worker beendet, ein gsr, ein Worker; `replay save` danach 39,5 s. Nicht live: der Fehlerpfad (Neustart scheitert, Backoff) und der geerbte Fallback, weil die Config des Nutzers ein explizites `output` hat; beide decken die Tests. |
+| RP1, RP4 bis RP8 | dokumentiert, nicht umgesetzt |
