@@ -125,7 +125,8 @@ pub fn load(text: &str) -> Loaded {
                     issues.push(unknown(text, Some(name), inner, path));
                 }
             }
-        } else if schema::find(name).is_none() {
+        } else if schema::find(name).is_none_or(|key| schema::split(key.path).0.is_some()) {
+            // `"replay.fps" = 30` at the top level is not `[replay] fps`.
             issues.push(unknown(text, None, name, name.clone()));
         }
     }

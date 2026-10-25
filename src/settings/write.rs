@@ -34,6 +34,10 @@ pub fn apply(text: &str, changes: &[(&str, Change)]) -> Result<String, String> {
             None => document.as_table_mut(),
             Some(table) => {
                 if !document.contains_key(table) {
+                    // Removing from a table that is not there changes nothing.
+                    if *change == Change::Remove {
+                        continue;
+                    }
                     document[table] = Item::Table(toml_edit::Table::new());
                 }
                 document[table]
@@ -86,8 +90,9 @@ pub fn update<'a>(
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         fs::create_dir_all(parent)?;
     }
-    // Next to the given path, not the link target, so no lock file appears in
-    // a dotfiles checkout.
+    // Next to the given path, not the link target, so a symlinked file keeps
+    // its lock out of the checkout it points into (a symlinked directory
+    // cannot).
     let lock = OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -124,31 +129,32 @@ fn replace(target: &Path, bytes: &[u8], permissions: Option<fs::Permissions>) ->
         std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));
-    let result = (|| {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary)?;
-        if let Some(permissions) = permissions {
-            file.set_permissions(permissions)?;
-        }
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        drop(file);
-        fs::rename(&temporary, target)?;
-        // The rename itself is durable once the directory is synced. Not every
-        // platform can open a directory; the file is in place either way.
-        if let Some(directory) = target.parent()
-            && let Ok(directory) = File::open(directory)
-        {
-            let _ = directory.sync_all();
-        }
-        Ok(())
-    })();
+    // Fails on a name that exists, which then is not ours to clean up.
+    let file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)?;
+    let result = fill(file, permissions, bytes).and_then(|()| fs::rename(&temporary, target));
     if result.is_err() {
         let _ = fs::remove_file(&temporary);
+        return result;
     }
-    result
+    // The rename itself is durable once the directory is synced. Not every
+    // platform can open a directory; the file is in place either way.
+    if let Some(directory) = target.parent()
+        && let Ok(directory) = File::open(directory)
+    {
+        let _ = directory.sync_all();
+    }
+    Ok(())
+}
+
+fn fill(mut file: File, permissions: Option<fs::Permissions>, bytes: &[u8]) -> io::Result<()> {
+    if let Some(permissions) = permissions {
+        file.set_permissions(permissions)?;
+    }
+    file.write_all(bytes)?;
+    file.sync_all()
 }
 
 fn sibling(path: &Path, suffix: &str) -> PathBuf {

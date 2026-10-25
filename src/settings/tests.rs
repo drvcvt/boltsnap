@@ -133,7 +133,8 @@ fn strict_keys_keep_the_messages_their_users_always_showed() {
 
 #[test]
 fn unknown_keys_are_reported_and_known_ones_still_read() {
-    let text = "custom = 7\nrecord_fps = 60\n[replay]\nfsp = 60\n[editor]\nx = 1\n";
+    let text =
+        "custom = 7\nrecord_fps = 60\n\"replay.fps\" = 30\n[replay]\nfsp = 60\n[editor]\nx = 1\n";
     assert_eq!(doc(text).int("record_fps"), Some(60));
     let unknown: Vec<_> = messages(text)
         .into_iter()
@@ -144,7 +145,8 @@ fn unknown_keys_are_reported_and_known_ones_still_read() {
         vec![
             ("custom".into(), Some(1)),
             ("editor".into(), None),
-            ("replay.fsp".into(), Some(4)),
+            ("replay.fsp".into(), Some(5)),
+            ("replay.fps".into(), None),
         ]
     );
 }
@@ -213,6 +215,11 @@ fn apply_adds_missing_keys_and_tables_and_removes_keys() {
     assert_eq!(
         out,
         "record_show_frame = false\n\n[replay]\nautostart = true\n"
+    );
+    // Removing a key of a table that is not there adds no empty table.
+    assert_eq!(
+        apply("record_fps = 60\n", &[("replay.fps", Change::Remove)]).unwrap(),
+        "record_fps = 60\n"
     );
     let inline = apply(
         "replay = { fps = 30 }\n",
