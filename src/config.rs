@@ -341,6 +341,18 @@ fn remember(text: &str) -> Read {
     read
 }
 
+/// The file's valid values and issues as `get_settings` reports them; while
+/// it does not parse, those of the last text that did, and where it broke.
+pub fn settings_state() -> settings::State {
+    let path = config_path();
+    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    let good = match remember(&text) {
+        Read::Valid => None,
+        Read::Broken { fallback } => fallback,
+    };
+    settings::State::read(path, &text, good.as_deref())
+}
+
 /// The two prefs the selector shows, each only when it changed (`Some`). Every
 /// other key stays as the file has it, even one the daemon wrote meanwhile.
 pub fn save_selector_prefs(

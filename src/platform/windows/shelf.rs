@@ -551,6 +551,9 @@ impl ShelfApplication {
                 );
             }
             Request::RecordingThumb { .. } => return Response::ok(None),
+            Request::GetSettings | Request::SetSettings { .. } | Request::SettingsWatch => {
+                return Response::error("settings are not available on Windows");
+            }
         };
         match result {
             Ok(()) => {

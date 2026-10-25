@@ -325,3 +325,83 @@ fn write_keeps_a_symlink_and_the_file_mode() {
     assert!(!dir.join("missing.toml").exists());
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn state_reads_the_file_or_the_last_valid_text_while_it_is_broken() {
+    let path = PathBuf::from("/c/config.toml");
+    let good = "record_fps = 120\nrecord_cursor = \"Quick\"\n";
+    let valid = State::read(path.clone(), good, None);
+    assert_eq!(valid.doc.int("record_fps"), Some(120));
+    assert_eq!(valid.issues.len(), 1);
+    assert_eq!(valid.broken, None);
+
+    let broken = State::read(path.clone(), "record_fps = \n", Some(good));
+    assert_eq!(broken.doc, valid.doc);
+    assert_eq!(broken.issues, valid.issues);
+    assert_eq!(
+        broken.broken,
+        Some(Broken {
+            line: Some(1),
+            reason: "invalid string".into()
+        })
+    );
+
+    let never_valid = State::read(path, "record_fps = \n", None);
+    assert_eq!(never_valid.doc, Doc::default());
+    assert!(never_valid.issues.is_empty());
+    assert!(never_valid.broken.is_some());
+}
+
+#[test]
+fn state_and_patch_round_trip_through_json() {
+    let text = "record_fps = 120\nrecord_show_frame = false\nsave_dir = \"~/s\"\n\
+                record_cursor = 1\n[replay]\nfps = 60\n";
+    let mut state = State::read(PathBuf::from("/c/config.toml"), text, None);
+    let json = state.to_json();
+    assert_eq!(json["values"]["replay.fps"], 60);
+    assert_eq!(json["values"]["record_show_frame"], false);
+    assert_eq!(json["issues"][0]["key"], "record_cursor");
+    assert_eq!(json["broken"], serde_json::Value::Null);
+    assert_eq!(State::from_json(&json).unwrap(), state);
+    state.broken = Some(Broken {
+        line: None,
+        reason: "x".into(),
+    });
+    assert_eq!(State::from_json(&state.to_json()).unwrap(), state);
+
+    let patch = vec![
+        ("record_fps".to_string(), Change::Set(Value::Int(60))),
+        ("record_dir".to_string(), Change::Remove),
+        (
+            "ui_font".to_string(),
+            Change::Set(Value::Text("Outfit".into())),
+        ),
+        (
+            "record_show_frame".to_string(),
+            Change::Set(Value::Bool(true)),
+        ),
+    ];
+    let json = state::patch_to_json(&patch);
+    assert_eq!(
+        json.to_string(),
+        r#"[["record_fps",60],["record_dir",null],["ui_font","Outfit"],["record_show_frame",true]]"#
+    );
+    assert_eq!(state::patch_from_json(&json).unwrap(), patch);
+}
+
+#[test]
+fn a_patch_of_the_wrong_form_is_refused() {
+    for bad in [
+        r#"{"record_fps":60}"#,
+        r#"[["record_fps",60.5]]"#,
+        r#"[["record_fps",[1]]]"#,
+        r#"[["record_fps"]]"#,
+        r#"[[1,2]]"#,
+        r#"[["record_fps",1,2]]"#,
+    ] {
+        let json: serde_json::Value = serde_json::from_str(bad).unwrap();
+        assert!(state::patch_from_json(&json).is_err(), "{bad}");
+    }
+    let empty = serde_json::json!([]);
+    assert_eq!(state::patch_from_json(&empty).unwrap(), vec![]);
+}

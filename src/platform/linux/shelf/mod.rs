@@ -158,6 +158,9 @@ pub struct Daemon {
     settings_writer: settings::Writer,
     /// Writes sent to `settings_writer` that have not finished yet.
     pending_writes: usize,
+    settings_watchers: Vec<UnixStream>,
+    /// The state last sent to `settings_watchers`.
+    last_settings: Option<boltsnap::settings::State>,
     tray: Option<crate::tray::TrayPublisher>,
     /// Whether the replay buffer is capturing, for the tray's on/off entry.
     replay_running: Option<super::replay::Running>,
@@ -218,6 +221,7 @@ pub(crate) enum DaemonEvent {
     FocusResolved(Result<Vec<crate::record::Monitor>, String>),
     Tray(crate::tray::TrayAction),
     SettingsWritten {
+        reply: Option<UnixStream>,
         error: Option<String>,
     },
 }
@@ -1184,6 +1188,8 @@ pub fn run_daemon(save_dir_cli: Option<std::path::PathBuf>) -> DynResult<()> {
         recording_prefs,
         settings_writer,
         pending_writes: 0,
+        settings_watchers: Vec::new(),
+        last_settings: None,
         tray: None,
         replay_running: None,
         thumbnails,
@@ -1649,6 +1655,9 @@ impl Daemon {
                     self.watchers.push(stream);
                 }
             }
+            crate::ipc::Request::GetSettings => self.send_settings(stream),
+            crate::ipc::Request::SetSettings { patch } => self.set_settings(patch, stream),
+            crate::ipc::Request::SettingsWatch => self.watch_settings(stream),
             crate::ipc::Request::ShowRecordingControls => {
                 if !self
                     .recording
@@ -3055,7 +3064,7 @@ impl Daemon {
             }
             DaemonEvent::ReplayStateChanged => self.publish_tray_snapshot(),
             DaemonEvent::Tray(action) => self.handle_tray_action(action),
-            DaemonEvent::SettingsWritten { error } => self.settings_written(error),
+            DaemonEvent::SettingsWritten { reply, error } => self.settings_written(reply, error),
         }
         self.publish_recording_snapshot();
     }

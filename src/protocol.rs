@@ -3,6 +3,8 @@ use std::path::PathBuf;
 
 use serde_json::{Value, json};
 
+use crate::settings::{self, Change, State};
+
 pub const MAX_HEADER_BYTES: usize = 64 * 1024;
 pub const MAX_PAYLOAD_BYTES: usize = 256 * 1024 * 1024;
 
@@ -84,6 +86,15 @@ pub enum Request {
         id: u64,
         thumb: PathBuf,
     },
+    GetSettings,
+    /// Change keys of `config.toml`; `Change::Remove` puts one back to its
+    /// default. One invalid change refuses them all.
+    SetSettings {
+        patch: Vec<(String, Change)>,
+    },
+    /// Like `RecordingWatch`: one JSON line with the settings state now and
+    /// one after every change.
+    SettingsWatch,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -169,6 +180,7 @@ pub struct Response {
     pub error: Option<String>,
     pub snapshot: Option<RecordingSnapshot>,
     pub path: Option<PathBuf>,
+    pub settings: Option<State>,
 }
 
 impl Response {
@@ -178,6 +190,14 @@ impl Response {
             error: None,
             snapshot,
             path: None,
+            settings: None,
+        }
+    }
+
+    pub fn ok_settings(settings: State) -> Self {
+        Self {
+            settings: Some(settings),
+            ..Self::ok(None)
         }
     }
 
@@ -187,6 +207,7 @@ impl Response {
             error: None,
             snapshot: None,
             path: Some(path),
+            settings: None,
         }
     }
 
@@ -196,6 +217,7 @@ impl Response {
             error: Some(error.into()),
             snapshot: None,
             path: None,
+            settings: None,
         }
     }
 
@@ -205,6 +227,7 @@ impl Response {
             "error": self.error,
             "snapshot": self.snapshot.as_ref().map(RecordingSnapshot::as_value),
             "path": self.path.as_ref().map(|path| path.to_string_lossy()),
+            "settings": self.settings.as_ref().map(State::to_json),
         });
         let mut buf = Vec::new();
         write_frame(&mut buf, header.to_string().as_bytes(), &[]).unwrap();
@@ -236,11 +259,16 @@ impl Response {
             Some(Value::String(path)) => Some(PathBuf::from(path)),
             _ => return Err(invalid_data("response path must be a string or null")),
         };
+        let settings = match value.get("settings") {
+            Some(Value::Null) | None => None,
+            Some(settings) => Some(State::from_json(settings).map_err(invalid_data)?),
+        };
         Ok(Self {
             ok,
             error,
             snapshot,
             path,
+            settings,
         })
     }
 }
@@ -464,6 +492,21 @@ impl Request {
                 });
                 write_frame(&mut buf, header.to_string().as_bytes(), &[]).unwrap();
             }
+            Request::GetSettings => {
+                let header = json!({ "cmd": "get_settings" });
+                write_frame(&mut buf, header.to_string().as_bytes(), &[]).unwrap();
+            }
+            Request::SetSettings { patch } => {
+                let header = json!({
+                    "cmd": "set_settings",
+                    "patch": settings::state::patch_to_json(patch),
+                });
+                write_frame(&mut buf, header.to_string().as_bytes(), &[]).unwrap();
+            }
+            Request::SettingsWatch => {
+                let header = json!({ "cmd": "settings_watch" });
+                write_frame(&mut buf, header.to_string().as_bytes(), &[]).unwrap();
+            }
         }
         buf
     }
@@ -609,6 +652,15 @@ impl Request {
                 id: v.get("id").and_then(|n| n.as_u64()).unwrap_or(0),
                 thumb: PathBuf::from(v.get("thumb").and_then(|s| s.as_str()).unwrap_or("")),
             }),
+            Some("get_settings") => Ok(Request::GetSettings),
+            Some("set_settings") => Ok(Request::SetSettings {
+                patch: settings::state::patch_from_json(
+                    v.get("patch")
+                        .ok_or_else(|| invalid_data("set_settings needs a patch"))?,
+                )
+                .map_err(invalid_data)?,
+            }),
+            Some("settings_watch") => Ok(Request::SettingsWatch),
             other => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("unknown cmd: {other:?}"),
@@ -642,6 +694,45 @@ mod tests {
     #[test]
     fn response_roundtrips_without_platform_transport() {
         let response = Response::ok(Some(RecordingSnapshot::idle()));
+        assert_eq!(
+            Response::read(&mut Cursor::new(response.encode())).unwrap(),
+            response
+        );
+    }
+
+    #[test]
+    fn settings_requests_and_responses_roundtrip() {
+        let decode = |request: Request| Request::read(&mut Cursor::new(request.encode())).unwrap();
+        assert!(matches!(decode(Request::GetSettings), Request::GetSettings));
+        assert!(matches!(
+            decode(Request::SettingsWatch),
+            Request::SettingsWatch
+        ));
+        let patch = vec![
+            (
+                "record_fps".to_string(),
+                Change::Set(settings::Value::Int(60)),
+            ),
+            ("record_dir".to_string(), Change::Remove),
+        ];
+        assert!(matches!(
+            decode(Request::SetSettings { patch: patch.clone() }),
+            Request::SetSettings { patch: decoded } if decoded == patch
+        ));
+        let mut bad = Vec::new();
+        write_frame(
+            &mut bad,
+            br#"{"cmd":"set_settings","patch":[["record_fps",1.5]]}"#,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            Request::read(&mut Cursor::new(bad)).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+
+        let state = State::read("/c/config.toml".into(), "record_fps = 120\n", None);
+        let response = Response::ok_settings(state);
         assert_eq!(
             Response::read(&mut Cursor::new(response.encode())).unwrap(),
             response

@@ -15,7 +15,7 @@ pub enum Value {
 /// The valid values in a file, by key path. A key that is missing or invalid
 /// has no entry.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Doc(BTreeMap<&'static str, Value>);
+pub struct Doc(pub(super) BTreeMap<&'static str, Value>);
 
 impl Doc {
     pub fn get(&self, path: &str) -> Option<&Value> {
