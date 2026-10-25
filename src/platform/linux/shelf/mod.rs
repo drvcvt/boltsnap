@@ -224,6 +224,8 @@ pub(crate) enum DaemonEvent {
         reply: Option<UnixStream>,
         error: Option<String>,
     },
+    /// `config.toml` was written by someone, maybe us.
+    ConfigChanged,
 }
 
 pub(crate) struct PreparedAdd {
@@ -1124,6 +1126,12 @@ pub fn run_daemon(save_dir_cli: Option<std::path::PathBuf>) -> DynResult<()> {
     let recording_prefs = crate::config::Config::load().recording_prefs();
     let (event_tx, event_rx) = calloop::channel::channel::<DaemonEvent>();
     let settings_writer = settings::Writer::spawn(event_tx.clone());
+    let changed_tx = event_tx.clone();
+    if let Err(error) = settings::watch_config(crate::config::config_path(), move || {
+        let _ = changed_tx.send(DaemonEvent::ConfigChanged);
+    }) {
+        eprintln!("boltsnap daemon: config edits apply on the next action only: {error}");
+    }
     let thumbnails = thumbnail::Worker::spawn(event_tx.clone());
     let mut daemon = Daemon {
         registry_state: RegistryState::new(&globals),
@@ -3065,6 +3073,10 @@ impl Daemon {
             DaemonEvent::ReplayStateChanged => self.publish_tray_snapshot(),
             DaemonEvent::Tray(action) => self.handle_tray_action(action),
             DaemonEvent::SettingsWritten { reply, error } => self.settings_written(reply, error),
+            DaemonEvent::ConfigChanged => {
+                self.refresh_recording_prefs();
+                self.publish_settings();
+            }
         }
         self.publish_recording_snapshot();
     }
