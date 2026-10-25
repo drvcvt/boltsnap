@@ -90,8 +90,8 @@ pub fn target_path(args: &Args) -> PathBuf {
 }
 
 pub fn cache_dir() -> PathBuf {
-    if let Some(cache) = env::var_os("XDG_CACHE_HOME") {
-        PathBuf::from(cache).join("boltsnap")
+    if let Some(cache) = xdg_base(env::var_os("XDG_CACHE_HOME")) {
+        cache.join("boltsnap")
     } else if let Some(home) = env::var_os("HOME") {
         PathBuf::from(home).join(".cache").join("boltsnap")
     } else {
@@ -106,11 +106,17 @@ pub fn home_dir() -> PathBuf {
 }
 
 pub fn config_dir() -> PathBuf {
-    if let Some(config) = env::var_os("XDG_CONFIG_HOME") {
-        PathBuf::from(config).join("boltsnap")
+    if let Some(config) = xdg_base(env::var_os("XDG_CONFIG_HOME")) {
+        config.join("boltsnap")
     } else {
         home_dir().join(".config").join("boltsnap")
     }
+}
+
+/// An `XDG_*_HOME` value, which the spec says to ignore when it is empty or
+/// relative.
+fn xdg_base(value: Option<std::ffi::OsString>) -> Option<PathBuf> {
+    value.map(PathBuf::from).filter(|path| path.is_absolute())
 }
 
 pub fn default_screenshot_dir() -> PathBuf {
@@ -393,6 +399,17 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         panic!("child {pid} was not reaped");
+    }
+
+    #[test]
+    fn xdg_base_ignores_empty_and_relative_values() {
+        assert_eq!(xdg_base(None), None);
+        assert_eq!(xdg_base(Some("".into())), None);
+        assert_eq!(xdg_base(Some("config".into())), None);
+        assert_eq!(
+            xdg_base(Some("/home/u/.config".into())),
+            Some(PathBuf::from("/home/u/.config"))
+        );
     }
 
     #[test]

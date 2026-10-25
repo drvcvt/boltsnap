@@ -515,6 +515,163 @@ genau eine Notification, die nächste Aufnahme läuft weiter mit
 
 CF8 (Daemon-Umgebung, `--save-dir`) ist nicht Teil dieses Plans.
 
+#### Phase 2 im Detail (Gegenprüfung am Code, 25.10.)
+
+Befund am Code (Stand `2c70573`):
+
+- Der Tray schreibt über `PrefsWriter` (`shelf/mod.rs:251-310`): ein Thread,
+  ein Briefkasten mit nur dem neuesten Wert (`tray::LatestValue`),
+  Generationen und `prefs_completion` für Rollback. Geschrieben wird
+  `save_recording_prefs`, also alle 7 Prefs, deren Wert vom Wert in der Datei
+  abweicht. Ist der Snapshot des Daemons älter als ein Handedit, setzt ein
+  Tray-Klick den Handedit zurück (Rest von CF4).
+- `refresh_recording_prefs` (`mod.rs:1512`) liest über `load_valid` und
+  wartet, bis kein eigener Write mehr unterwegs ist
+  (`settled_prefs_generation`). Aufrufer: Tray-Aktion, `StartRecording` und
+  die drei Aufnahme-Starts (`mod.rs:2385`, `2426`, `2467`).
+- `ui_font` wirkt schon live: das Popup lädt die Schrift neu, wenn die Familie
+  von `popup_font_family` abweicht (`mod.rs:2568`). `save_dir`, `record_dir`
+  und alle `NextRecording`-Keys werden beim Gebrauch gelesen. Der einzige
+  `Live`-Key mit Wirkung ist `record_show_frame` (`apply_show_frame_pref`).
+- Watch-Streams: `recording_watch` schreibt JSON-Zeilen nicht blockierend in
+  `Daemon::watchers`, höchstens 16, `watcher_connected` räumt auf
+  (`mod.rs:331-350`, `1745-1759`, `3343-3356`).
+- `handle_request` der Windows-Shell (`windows/shelf.rs:477-553`) matcht
+  `Request` vollständig; neue Varianten brauchen dort einen Arm.
+- `config.rs` hat 940 Zeilen, davon etwa 420 Tests; `protocol.rs` 710;
+  `shelf/mod.rs` 4016 (darf nicht wachsen).
+- `paths.rs:92-113`: `XDG_CACHE_HOME`/`XDG_CONFIG_HOME` werden ungeprüft
+  übernommen (CF7).
+- Tray `menu_model` (`tray.rs:165-205`): kein Eintrag für `Focused`, ein
+  abgesteckter `output:X` zeigt den fokussierten Monitor als gewählt (CF5).
+
+Abweichungen vom Entwurf oben, mit Grund:
+
+- **Kein `Daemon::settings`, kein `apply_live`.** Den letzten gültigen Stand
+  hält seit Phase 1 die Fassade (`Remembered`). `apply_live` hätte genau
+  einen Fall (`record_show_frame`), den `refresh_recording_prefs` schon
+  abdeckt; Shelf-Keys kommen in Phase 3 dazu, dort wird es nötig.
+- **Watcher als eigener Thread** mit blockierendem `read` auf dem
+  inotify-fd und `poll` für die 150 ms Entprellung, statt calloop-`Generic`
+  plus Timer. Er schickt nur `DaemonEvent::ConfigChanged`, geladen wird auf
+  dem Event-Loop. Weniger Code, kein Timer-Zustand im Daemon.
+- **Eigene Writes nicht erkennen, sondern unschädlich machen:** Ein Reload
+  nach dem eigenen Write liest denselben Stand, ändert nichts und sendet
+  nichts (Vergleich mit dem zuletzt gesendeten Stand). Kein gemerkter Text.
+- **Selector schreibt weiter selbst** (Schritt 5 von Phase 1: nur die
+  geänderten zwei Keys, unter demselben Lock). Der Watcher sieht diesen
+  Write wie jeden anderen. „Einziger Schreiber“ heißt damit: jeder Schreiber
+  schreibt einzelne Keys unter einem Lock, der Daemon sieht jede Änderung.
+  Damit entfällt auch der Fall „CLI ohne Daemon“.
+- **Fehlerantwort ohne `key`:** Das UI schickt eine Zeile pro Patch und weiß,
+  welche es war; die Meldung nennt den Key ohnehin.
+- **Stand enthält nur gesetzte gültige Werte**, keine Defaults; die
+  Defaults kommen mit dem Seitenmodell in Phase 5 ins Schema.
+
+Schritte, je ein Commit:
+
+1. **Aufräumen und CF7.** Die Tests aus `config.rs` ziehen nach
+   `src/config/tests.rs` um (`#[cfg(test)] mod tests;`, nur Verschieben).
+   `paths.rs`: `xdg_base(value) -> Option<PathBuf>` nimmt nur absolute
+   Pfade; `config_dir` und `cache_dir` nutzen es. Test an der reinen
+   Funktion (leer, relativ, absolut), ohne `set_var`.
+2. **Ein geordneter Schreiber, Tray schreibt einzelne Keys (CF4).** Neue
+   Datei `shelf/settings.rs` (shelf hat dann 10 Dateien): `Writer` mit
+   Thread und `mpsc`-Warteschlange (geordnet, nicht verdichtet), jeder Job
+   ist eine Liste `(key, Change)`, geschrieben mit `settings::write`; das
+   Ergebnis kommt als `DaemonEvent::SettingsWritten { error }`. Der Daemon
+   zählt offene Jobs (`pending_writes`) statt Generationen.
+   - `persist_tray_prefs(prefs)`: Änderungen sind
+     `config::pref_changes(&alt, &neu)` (die Keys, deren Wert sich ändert,
+     aus `pref_values`), angezeigt wird sofort, geschrieben wird nur das.
+   - `refresh_recording_prefs`: übersprungen, solange Jobs offen sind; liest
+     über `Config::load()` (letzter gültiger Stand bei kaputter Datei,
+     Defaults bei fehlender, wie beim Start). `load_valid` hat danach keinen
+     Aufrufer mehr und fällt weg.
+   - Abschluss eines Jobs: Fehler ohne Client → Notification „Recording
+     settings could not be saved: …“; sind keine Jobs mehr offen,
+     `refresh_recording_prefs`, das stellt bei einem Fehler den Stand der
+     Datei wieder her (ersetzt `prefs_completion`/Rollback).
+   - `StartRecording` setzt `show_frame`/`audio_enabled` wie bisher über
+     `persist_tray_prefs`, ohne die `persisted_*`-Felder.
+   - Raus aus `mod.rs`: `PrefsWrite`, `PrefsWriter`, `PrefsCompletion`,
+     `prefs_completion`, die vier Generationsfelder,
+     `persisted_recording_prefs`, der `PrefsPersisted`-Arm; in
+     `focus_tests.rs` der Generationstest (der `LatestValue`-Test bleibt mit
+     Zahlen statt `PrefsWrite`). `save_recording_prefs(_at)` braucht nur
+     noch Windows und die Tests: `#[cfg(any(windows, test))]`.
+   - Tests: `pref_changes` liefert genau den geänderten Key; bestehende
+     Prefs-Tests bleiben.
+3. **IPC `get_settings`, `set_settings`, `settings_watch`.**
+   - Lib: `src/settings/state.rs` mit
+     `State { path, doc, issues, broken: Option<Broken { line, reason }> }`,
+     `State::read(path, text, good)` (kaputt: Werte und Befunde aus dem
+     letzten gültigen Text) und JSON hin und zurück:
+     `{"path":…,"values":{"replay.fps":60,…},"issues":[{"key","line","message"}],"broken":null|{"line":2,"reason":"…"}}`.
+     Patch-JSON `[["record_fps",120],["record_dir",null]]` ↔
+     `Vec<(String, Change)>`; nur Form prüfen, Inhalt prüft `apply`.
+     `Doc` bekommt dafür ein `pub(super)`-Feld.
+   - `protocol.rs`: `Request::GetSettings`, `SetSettings { patch }`,
+     `SettingsWatch`; `Response` bekommt `settings: Option<State>` und
+     `Response::ok_settings`.
+   - `config::settings_state()`: Datei lesen, `remember`, `State::read`.
+   - Daemon (`shelf/settings.rs`): `get_settings` antwortet mit
+     `settings_state()`. `set_settings` geht als Job mit dem Client-Stream an
+     den Writer (höchstens 32 offene Jobs, sonst „busy“); danach Antwort mit
+     dem frisch gelesenen Stand oder dem Fehler aus `apply`.
+     `settings_watch` schreibt den Stand als erste Zeile und hängt den Stream
+     an `settings_watchers` (höchstens 16, gleiche Regeln wie
+     `recording_watch`). `publish_settings()` liest den Stand, vergleicht mit
+     dem zuletzt gesendeten und schreibt nur bei Änderung eine Zeile an alle;
+     aufgerufen nach jedem Job.
+   - Windows-Shell: ein Arm für die drei Requests mit
+     „settings are not available on Windows“.
+   - Tests: JSON-Roundtrip von `State` und Patch, `State::read` für kaputt
+     mit und ohne letzten gültigen Text, Protokoll-Roundtrip der drei
+     Requests und einer `Response` mit Stand, Patch mit Kommazahl oder
+     falscher Form wird abgelehnt.
+4. **Watcher (CF6).** In `shelf/settings.rs`:
+   `watch_config(path, changed)` startet einen Thread:
+   `inotify_init1(IN_CLOEXEC)`, Watch auf das Config-Verzeichnis
+   (`IN_CLOSE_WRITE | IN_MOVED_TO | IN_MOVED_FROM | IN_DELETE`), Name muss
+   `config.toml` sein. Ist `config.toml` ein Symlink, zusätzlich ein Watch
+   auf den Ordner des Ziels mit dessen Namen (nach jedem Ereignis neu
+   aufgelöst, so wird ein umgebogener Link auch gesehen). Nach einem
+   passenden Ereignis 150 ms lang weitere Ereignisse schlucken (`poll`),
+   dann `changed()`. Fehlt das Verzeichnis, wird es angelegt. Scheitert
+   inotify, eine Zeile im Log, der Daemon läuft ohne Watcher weiter (die
+   bisherigen Refresh-Punkte bleiben).
+   - Daemon: `DaemonEvent::ConfigChanged` → `refresh_recording_prefs` und
+     `publish_settings`. Eine kaputte Datei meldet `Config::load` dabei einmal
+     über den Hook aus Phase 1.
+   - Tests: Parser der inotify-Ereignisse an einem gebauten Puffer; echter
+     Watcher an einem Temp-Ordner: Schreiben von `config.toml` ruft
+     `changed` innerhalb von 2 s, ein anderer Dateiname und die
+     `.lock`-Datei nicht (300 ms Wartezeit).
+5. **CF5, Tray.** `default_targets(snapshot)`: `Focused display`, die
+   Monitore, ein abgesteckter `output:X` als „X (disconnected)“, `Both
+   displays`; Beschriftung, Auswahl und der Klick nutzen dieselbe Liste.
+   Tests: Fokus gewählt, abgesteckter Monitor gewählt, Klick-Index ergibt
+   das richtige Ziel.
+
+Was Phase 2 nicht macht: kein CLI-Befehl `boltsnap settings get/set` (das
+Fenster in Phase 5 ist der Client), keine Defaults im Stand, keine
+Shelf-Keys, kein `doctor`, keine Pfadprüfung für `save_dir`/`record_dir`
+beim Setzen (kommt mit der Zeile in Phase 5).
+
+Was kaputtgehen kann: ein Tray-Klick während eines offenen Jobs zeigt kurz
+den eigenen Wert und springt nicht zurück (gewollt, Refresh wartet);
+ein Watcher-Thread, der hängen bleibt, blockiert nichts außer sich selbst;
+der Windows-Arm ist nicht kompiliert (kein Target).
+
+Abnahme: je Schritt `cargo fmt --check`, `cargo clippy --all-targets` ohne
+Warnung, `cargo test`. Live nach Schritt 5 (installieren, Daemon neu): mit
+Sicherung der echten `config.toml` `record_show_frame` von Hand umschalten,
+`settings_watch` über den Socket zeigt die neue Zeile und der Tray-Haken
+folgt (über `busctl` das Menü lesen); ein Syntaxfehler gibt genau eine
+Notification, `settings_watch` zeigt `broken` mit Zeile; Datei zurück, alles
+wie vorher.
+
 ## 5. Settings-Fenster und Widgets (Phase 4)
 
 ### Technik, ohne neue Crates
@@ -707,5 +864,7 @@ Vom Nutzer am 24.10. so bestätigt:
 | 1, Schritt 3 | umgesetzt 24.10.: `save_recording_prefs_at` schreibt über `settings::update` (neu: Änderungen werden unter dem Lock aus dem frisch gelesenen Text bestimmt) nur die Prefs, deren Wert vom wirksamen Wert der Datei abweicht. Ein ungültiger, unveränderter Wert bleibt samt Kommentar stehen, nie gesetzte Keys kommen nicht dazu (CF3); Symlink, Modus, `fsync` des Ordners (CF2) und eindeutiger Temp-Name (CF4) kommen aus `settings::write`. Abweichung vom Plan: Eine Assertion im bestehenden Test `audio_preferences_parse_and_round_trip` prüfte, dass der unveränderte Default `record_audio_enabled = true` geschrieben wird, also genau das CF3-Verhalten; sie prüft jetzt das Gegenteil. Neuer Test `recording_prefs_write_only_changed_keys_and_keeps_invalid_ones`; Gegenprobe: mit einem Filter, der alles schreibt, schlägt er fehl. Die Tests räumen die `.lock`-Datei mit weg. Neben der echten `config.toml` liegt nach dem ersten Schreiben eine `config.toml.lock`. CF4 selbst (ganzer Snapshot über die Auswahl hinweg) bleibt bis Phase 2 offen. Checks: `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test` 37 + 351 grün. Live nicht geprüft; das folgt mit Schritt 4, der den Daemon anfasst. |
 | 1, Schritt 4 | umgesetzt 24.10. wie in „Schritt 4 im Detail“: `Remembered` in `config.rs` merkt sich den letzten gültigen Text; `load` und `replay_settings` lesen ihn, solange die Datei kaputt ist, `load_valid` gibt dann weiter `None`. Meldung einmal je kaputtem Text über `eprintln` und den Hook `config::on_broken`, den `run_daemon` mit `notify` setzt (`shelf/mod.rs` bleibt bei 4016 Zeilen). `Loaded::Broken` hat jetzt `reason`. `Config::parse` loggt nicht mehr selbst; das macht die Meldung, einmal statt bei jedem Lesen. Watchdog: ein Ladefehler läuft über `restart_failed` wie ein gescheiterter Neustart. Checks: `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test` 37 + 352 grün. Live: installiert, Daemon neu gestartet, er antwortet, Replay `stopped` wie vorher (kein `autostart`), `daemon.log` ohne Config-Meldung. Der kaputte Weg ist live noch nicht geprüft: Er braucht eine kurz kaputte echte `config.toml` und eine Aktion im Daemon (Tray, Aufnahme, Speichern). |
 | 1, Schritt 5 | umgesetzt 24.10.: Der Linux-Selector (`start_recording_flow`) speichert über `config::save_selector_prefs` nur die der zwei Keys `record_show_frame`/`record_audio_enabled`, die sich in der Auswahl geändert haben, als Patch unter dem Lock; ein Tray-Wert, der während der Auswahl geschrieben wurde, bleibt (der Rest von CF4 für den Selector). Ein Fehler beim Speichern bricht die Aufnahme nicht mehr ab: Startet eine Aufnahme, geht er nach stderr, weil der Daemon dieselben zwei Werte mit `StartRecording` speichert und ein Scheitern selbst meldet (`Recording settings could not be saved`); bei abgebrochener Auswahl speichert sonst niemand, dann meldet `record_flow` ihn als Notification. `StartRecording` nimmt `show_frame` jetzt direkt aus der Auswahl (vorher über die geänderten `prefs`, gleicher Wert). Abweichung vom Plan: Gelesen wird weiter über `Config::load()`, nicht `load_valid`; im frischen CLI-Prozess ergibt beides bei kaputter Datei dieselben Defaults samt Meldung. Windows (`main.rs:425-430`, eingefroren) unverändert, dort ist `save_selector_prefs` ungenutzt. Neuer Test `selector_prefs_write_only_the_keys_that_changed`. Checks: `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test` 37 + 353 grün; installiert. Der Selector ist interaktiv und wurde nicht live bedient. |
-| 2 bis 5 | geplant, freigegeben 24.10. |
+| 2, Schritt 1 | umgesetzt 25.10.: die Tests von `config.rs` liegen in `src/config/tests.rs` (nur verschoben, `config.rs` jetzt 523 Zeilen); `paths::xdg_base` verwirft leere und relative `XDG_CONFIG_HOME`/`XDG_CACHE_HOME` (CF7), Test an der reinen Funktion. Checks: `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test` 37 + 354 grün. |
+| 2, Schritte 2 bis 5 | im Detail geplant 25.10. („Phase 2 im Detail“) |
+| 3 bis 5 | geplant, freigegeben 24.10. |
 | 6 (Library) | Skizze im Library-Plan |
