@@ -134,17 +134,16 @@ impl Config {
     }
 
     pub fn replay_settings() -> Result<boltsnap::replay::settings::Settings, String> {
-        let text = match std::fs::read_to_string(config_path()) {
-            Ok(text) => text,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
-            Err(error) => return Err(format!("read replay settings: {error}")),
-        };
-        match remember(&text) {
-            Read::Broken {
-                fallback: Some(good),
-            } => Self::parse_replay_settings(&good),
+        match noted(&config_path()) {
+            Noted::Unreadable { error, .. } => Err(format!("read replay settings: {error}")),
+            Noted::Text(
+                _,
+                Read::Broken {
+                    fallback: Some(good),
+                },
+            ) => Self::parse_replay_settings(&good),
             // With nothing better known, the broken text gives its error.
-            _ => Self::parse_replay_settings(&text),
+            Noted::Text(text, _) => Self::parse_replay_settings(&text),
         }
     }
 
@@ -212,16 +211,15 @@ impl Config {
     }
 
     /// Load from `config_path()`; a missing file yields defaults. While the
-    /// file does not parse, the last version that did is read instead.
+    /// file does not parse or cannot be read, the last version that parsed
+    /// is read instead.
     pub fn load() -> Config {
-        match std::fs::read_to_string(config_path()) {
-            Ok(text) => match remember(&text) {
-                Read::Valid => Config::parse(&text),
-                Read::Broken { fallback } => {
-                    fallback.map_or_else(Config::default, |good| Config::parse(&good))
-                }
-            },
-            Err(_) => Config::default(),
+        match noted(&config_path()) {
+            Noted::Text(text, Read::Valid) => Config::parse(&text),
+            Noted::Text(_, Read::Broken { fallback })
+            | Noted::Unreadable { good: fallback, .. } => {
+                fallback.map_or_else(Config::default, |good| Config::parse(&good))
+            }
         }
     }
 
@@ -332,27 +330,69 @@ pub fn on_broken(report: fn(&str)) {
     let _ = ON_BROKEN.set(report);
 }
 
-fn remember(text: &str) -> Read {
-    let (read, report) = REMEMBERED.lock().unwrap().see(text);
+#[derive(Debug)]
+enum Noted {
+    /// The file's text, a missing file as empty, and what `see` made of it.
+    Text(String, Read),
+    /// The file is there but cannot be read; `good` is the last text that
+    /// parsed. Nothing is noted, so that text stays.
+    Unreadable {
+        error: io::Error,
+        good: Option<String>,
+    },
+}
+
+/// Reads `path` and notes it while holding the lock, so a thread that read
+/// an older text can never note it after a newer one. Returns the report to
+/// give, if any.
+fn read_noted(path: &Path, remembered: &Mutex<Remembered>) -> (Noted, Option<String>) {
+    let mut remembered = remembered.lock().unwrap();
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
+        Err(error) => {
+            let good = remembered.good.clone();
+            return (Noted::Unreadable { error, good }, None);
+        }
+    };
+    let (read, report) = remembered.see(&text);
+    (Noted::Text(text, read), report)
+}
+
+/// `read_noted` with the process-wide memory, reporting outside the lock.
+fn noted(path: &Path) -> Noted {
+    let (noted, report) = read_noted(path, &REMEMBERED);
     if let Some(report) = report {
         eprintln!("boltsnap: {report}");
         if let Some(hook) = ON_BROKEN.get() {
             hook(&report);
         }
     }
-    read
+    noted
 }
 
 /// The file's valid values and issues as `get_settings` reports them; while
-/// it does not parse, those of the last text that did, and where it broke.
+/// it does not parse or cannot be read, those of the last text that parsed,
+/// and what is wrong.
 pub fn settings_state() -> settings::State {
     let path = config_path();
-    let text = std::fs::read_to_string(&path).unwrap_or_default();
-    let good = match remember(&text) {
-        Read::Valid => None,
-        Read::Broken { fallback } => fallback,
-    };
-    settings::State::read(path, &text, good.as_deref())
+    match noted(&path) {
+        Noted::Text(text, read) => {
+            let good = match read {
+                Read::Valid => None,
+                Read::Broken { fallback } => fallback,
+            };
+            settings::State::read(path, &text, good.as_deref())
+        }
+        Noted::Unreadable { error, good } => {
+            let mut state = settings::State::read(path, good.as_deref().unwrap_or(""), None);
+            state.broken = Some(settings::Broken {
+                line: None,
+                reason: format!("cannot be read: {error}"),
+            });
+            state
+        }
+    }
 }
 
 /// The two prefs the selector shows, each only when it changed (`Some`). Every

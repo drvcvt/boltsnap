@@ -433,3 +433,40 @@ fn pref_changes_name_only_the_changed_keys() {
         vec![("record_cursor", Change::Set(Value::Text("quick".into())))]
     );
 }
+
+#[test]
+fn reading_notes_a_deleted_file_and_keeps_the_last_text_when_unreadable() {
+    use super::{Noted, Read, Remembered, read_noted};
+    let path = temp_config("read-noted");
+    let remembered = std::sync::Mutex::new(Remembered::default());
+    std::fs::write(&path, "record_fps = 60\n").unwrap();
+    assert!(matches!(
+        read_noted(&path, &remembered).0,
+        Noted::Text(_, Read::Valid)
+    ));
+    // Deleted means defaults, so a broken file after it falls back to empty.
+    std::fs::remove_file(&path).unwrap();
+    assert!(
+        matches!(read_noted(&path, &remembered).0, Noted::Text(text, Read::Valid) if text.is_empty())
+    );
+    std::fs::write(&path, "record_fps = \n").unwrap();
+    assert!(matches!(
+        read_noted(&path, &remembered).0,
+        Noted::Text(_, Read::Broken { fallback: Some(good) }) if good.is_empty()
+    ));
+    // A file that cannot be read is not noted: the last valid text stays.
+    std::fs::write(&path, "record_fps = 120\n").unwrap();
+    read_noted(&path, &remembered);
+    std::fs::remove_file(&path).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    assert!(matches!(
+        read_noted(&path, &remembered),
+        (Noted::Unreadable { good: Some(good), .. }, None) if good == "record_fps = 120\n"
+    ));
+    assert_eq!(
+        remembered.lock().unwrap().good.as_deref(),
+        Some("record_fps = 120\n")
+    );
+    std::fs::remove_dir(&path).unwrap();
+    remove_config(&path);
+}

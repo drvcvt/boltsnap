@@ -673,6 +673,65 @@ folgt (über `busctl` das Menü lesen); ein Syntaxfehler gibt genau eine
 Notification, `settings_watch` zeigt `broken` mit Zeile; Datei zurück, alles
 wie vorher.
 
+### Review Phase 1 und 2 (25.10.)
+
+Zwei unabhängige Reviews über `3d600b0^..fdfa08e` (Lib/Fassade/Protokoll und
+Daemon/Tray/Selector), jeder Fund danach am Code nachgeprüft. Kein
+Datenverlust, keine Korruption im Writer.
+
+| ID | Prio | Auslöser → Wirkung | Beleg | Reproduziert |
+| --- | --- | --- | --- | --- |
+| SU1 | P2 | `record_show_frame`/`record_audio_enabled` ändert sich während der Bereichswahl (Tray, Handedit, `set_settings`); `StartRecording` trägt immer beide Werte des Selectors, der Daemon schreibt sie über `persist_tray_prefs` zurück → die Änderung geht auf der Platte verloren. Widerspricht dem Status von Phase 1 Schritt 5 („ein Tray-Wert … bleibt“), das gilt nur bei Abbruch. | `shelf/mod.rs:1710-1717`, `main.rs:367-394` | Code, nicht live (Selector interaktiv) |
+| SU2 | P3 | Config-Verzeichnis wird gelöscht (`rm -r ~/.config/boltsnap`) → inotify schickt `IN_IGNORED`, `add_watches` scheitert still, danach kommt nie wieder ein passendes Ereignis: Handedits und `settings_watch` tot bis zum Neustart, ohne Logzeile. | `shelf/settings.rs:205-253` | ja, Python-Probe des Reviewers (nach `rm` `IN_DELETE` + `IN_IGNORED`, nach Neuanlage nichts) |
+| SU3 | P3 | `config.toml` nicht lesbar (kein UTF-8, Modus 000, Verzeichnis) → `settings_state` liest `""`, `remember("")` gilt als gültig, setzt `good` auf leer: der Fehler ist unsichtbar und der nächste Syntaxfehler fällt auf Defaults statt auf den letzten gültigen Stand (CF1). | `config.rs:350` (`unwrap_or_default`) | Code |
+| SU4 | P3 | Datei wird außerhalb des Locks von `REMEMBERED` gelesen; Watchdog-Thread und Event-Loop können sich über einen Edit hinweg überholen → ein älterer gültiger Text wird zuletzt als `good` gemerkt, oder ein schon reparierter Fehler wird noch einmal gemeldet. | `config.rs:137`, `217`, `350` gegen `336` | Code |
+| SU5 | P3 | Gültige Datei, dann gelöscht, dann kaputt neu angelegt → `Config::load` ruft bei `NotFound` `remember` nicht auf, die Werte der gelöschten Datei kommen als „letzter gültiger Stand“ zurück; ob das passiert, hängt davon ab, ob `settings_state`/`replay_settings` dazwischen lief. | `config.rs:217-225` | Code |
+| SU6 | P3 | `Remove` eines Keys in einer fehlenden Tabelle (`[["replay.fps", null]]` ohne `[replay]`) legt eine leere, nicht implizite `[replay]` an → Datei wird geschrieben (oder angelegt), obwohl sich nichts ändert, und der Watcher feuert. | `write.rs:36-37` | Code (toml_edit 0.20.2 `Table::new` nicht implizit) |
+| SU7 | P3 | `"replay.fps" = 30` auf oberster Ebene: `schema::find` trifft, also kein „unknown setting“, gelesen wird es aber nie → still ignoriert. | `load.rs:128` | Code |
+| SU8 | P3 | Entprellung zählt jedes Ereignis im Ordner und hat keine Obergrenze → bei einem Symlink in einen dauernd beschäftigten Ordner kommt `changed()` erst, wenn der Ordner ruhig ist. | `shelf/settings.rs:221` | Code |
+| SU9 | P4 | `IN_Q_OVERFLOW` (wd −1) passt nie → eine Änderung kann verloren gehen; praktisch kaum erreichbar. | `shelf/settings.rs:215-217` | Code |
+| SU10 | P4 | `create_new` scheitert mit `AlreadyExists` (alte Temp-Datei mit gleicher PID) → der Fehlerpfad löscht eine Datei, die er nicht angelegt hat. | `write.rs:127-150` | Code |
+| SU11 | P4 | Kommentar „kein Lock im Dotfiles-Checkout“ stimmt nur für eine verlinkte Datei, nicht für ein verlinktes Verzeichnis. | `write.rs:89` | Code |
+
+Nicht übernommen: Der Daemon-Reviewer schlug für SU1 ein Protokoll mit
+`Option<bool>` vor. Einfacher und ohne Protokolländerung: Der Daemon schreibt
+bei `StartRecording` gar nichts mehr, der Selector hat die geänderten Keys
+schon geschrieben. Dafür schluckte der Daemon bisher einen Fehler des
+Selectors; der Selector meldet ihn jetzt selbst als Notification. Bleibt
+offen (bewusst): Ein Tray-Write, der beim Start der Auswahl noch in der
+Warteschlange lag, kann einen im Selector geänderten Wert danach
+überschreiben (Fenster von einem fsync).
+
+Fixplan, je ein Commit:
+
+1. **Config lesen (SU3, SU4, SU5)** in `config.rs`: `read_noted(path,
+   remembered)` liest die Datei und ruft `see` unter demselben Lock;
+   `NotFound` liest als `""` (wird gemerkt, setzt also zurück), jeder andere
+   Lesefehler wird nicht gemerkt. `load`: bei Lesefehler der letzte gültige
+   Stand, sonst Defaults; `replay_settings`: Fehler wie bisher
+   `read replay settings: …`; `settings_state`: Werte des letzten gültigen
+   Stands, `broken` mit `line: None` und dem Lesefehler. Tests an
+   `read_noted` mit eigenem `Mutex<Remembered>` und Temp-Datei: gelöscht
+   setzt zurück, ein Verzeichnis als Pfad gibt `Err` und behält `good`.
+2. **Lib (SU6, SU7, SU10, SU11):** `apply` legt für `Remove` keine Tabelle
+   an; oben gilt ein Schema-Key nur ohne Tabellenteil; `replace` räumt nur
+   eine selbst angelegte Temp-Datei weg; Kommentar korrigiert. Tests:
+   `Remove` ohne Tabelle lässt Text gleich, quotierter Punkt-Key wird
+   gemeldet.
+3. **Daemon (SU1):** `StartRecording` schreibt nichts; `start_recording`
+   bekommt `audio_enabled` und nutzt ihn für diese Aufnahme; der Selector
+   meldet einen Speicherfehler bei gestarteter Aufnahme als Notification.
+4. **Watcher (SU2, SU8, SU9):** Ereignisse mit Maske parsen; `IN_IGNORED`
+   entfernt den Watch, fällt der Ordner-Watch weg, versucht der Thread alle
+   1 s neu und ruft danach `changed()`; `IN_Q_OVERFLOW` zählt als Änderung;
+   Entprellung höchstens 1 s nach dem ersten passenden Ereignis. Test: der
+   bestehende Watcher-Test löscht den Ordner, legt ihn neu an, schreibt, und
+   erwartet einen Aufruf; Gegenprobe ohne Neuversuch.
+
+Abnahme: je Commit `cargo fmt --check`, `cargo clippy --all-targets` ohne
+Warnung, `cargo test`; danach installieren, Daemon neu, `get_settings`
+antwortet. SU2 wird nur im Temp-Ordner geprüft, nie an der echten Config.
+
 ## 5. Settings-Fenster und Widgets (Phase 4)
 
 ### Technik, ohne neue Crates
@@ -871,5 +930,6 @@ Vom Nutzer am 24.10. so bestätigt:
 | 2, Schritt 4 | umgesetzt 25.10.: `watch_config` in `shelf/settings.rs` (eigener Thread, `inotify_init1(IN_CLOEXEC)`, Watch auf das Config-Verzeichnis mit `IN_CLOSE_WRITE \| IN_MOVED_TO \| IN_MOVED_FROM \| IN_CREATE \| IN_DELETE`, bei einem Symlink zusätzlich auf den Ordner des Ziels, nach jedem Burst neu aufgelöst; 150 ms Entprellung über `poll`; legt das Verzeichnis an). `IN_CREATE` kam gegenüber dem Detailplan dazu, weil `ln -s` sonst kein Ereignis gibt. Der Daemon startet ihn in `run_daemon`, `DaemonEvent::ConfigChanged` ruft `refresh_recording_prefs` und `publish_settings`; scheitert inotify, eine Logzeile und die alten Refresh-Punkte bleiben. Tests: Ereignis-Parser an einem gebauten Puffer, echter Watcher an einem Temp-Ordner (fremde Datei und `.lock` still, Schreiben und `settings::write` je ein Aufruf, ein Burst ein Aufruf, umgebogener Symlink und Edit am Ziel gesehen). Gegenprobe: ohne Watch auf das Symlink-Ziel schlägt der Test fehl. `shelf/mod.rs` 3895 Zeilen. Checks: `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test` 41 + 356 grün. |
 | 2, Schritt 5 | umgesetzt 25.10.: `tray::default_targets` liefert `Focused display`, die Monitore, einen abgesteckten `output:X` als „X (disconnected)“ und `Both displays`; Beschriftung, Auswahl und Klick nutzen dieselbe Liste (CF5). Abweichung: Der bestehende Test `disconnected_default_marks_the_effective_focused_fallback` prüfte genau das Verhalten, das CF5 als Fehler einstuft; er prüft jetzt den „(disconnected)“-Eintrag. Zwei weitere Assertions verschieben sich um den neuen ersten Eintrag. Neuer Test `default_monitor_menu_offers_focused_and_keeps_an_unplugged_monitor`. Checks: `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test` 41 + 357 grün. |
 | 2, live | geprüft 25.10. nach Install und Daemon-Neustart (keine Aufnahme lief), echte `config.toml` vorher gesichert: Handedit `record_show_frame` false→true→false schaltet den Tray-Haken ohne Aktion (über `busctl` aus `/MenuBar` gelesen), `settings_watch` liefert je eine Zeile; ein angehängter Syntaxfehler gibt `broken` mit Zeile 14 und weiter `record_fps = 120`, nach dem Zurückkopieren `broken: null`; `set_settings` mit `record_fps = 999` und unbekanntem Key abgelehnt, `record_show_frame` true und zurück über `set_settings` wirkt bis in den Tray; Datei am Ende byte-gleich mit der Sicherung. Tray zeigt „Focused display“. Befund dabei: zwei kaputte Saves mit demselben Fehler gaben zwei Meldungen, weil `Remembered` nach Text entdoppelte. Abweichung von Phase 1 Schritt 4: `Remembered` merkt sich jetzt die Meldung (Zeile und Grund), dieselbe Fehlerstelle wird nach weiteren Edits nicht erneut gemeldet; Test erweitert, live erneut geprüft: zwei kaputte Saves, eine Meldung. Nicht live geprüft: eine Aufnahme mit kaputter Datei (Werte kommen aus demselben `Remembered`, `get_settings` zeigte 120). |
+| Review, Fix 1 | umgesetzt 25.10. (SU3, SU4, SU5): `read_noted` liest und merkt unter einem Lock, `NotFound` als `""`, andere Lesefehler als `Noted::Unreadable` ohne Merken; `load` nimmt dann den letzten gültigen Stand, `replay_settings` gibt den Fehler wie bisher, `settings_state` meldet `broken` mit „cannot be read: …“. Test `reading_notes_a_deleted_file_and_keeps_the_last_text_when_unreadable`. Checks: `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test` 41 + 358 grün. |
 | 3 bis 5 | geplant, freigegeben 24.10. |
 | 6 (Library) | Skizze im Library-Plan |
