@@ -9,6 +9,7 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 use boltsnap::settings::{self, Change};
 
@@ -177,9 +178,13 @@ fn state_line(state: &settings::State) -> String {
     format!("{}\n", state.to_json())
 }
 
-/// How long a burst of file events may last before the file is read: an
+/// How long a burst of file events may pause before the file is read: an
 /// editor's save is several events.
-const SETTLE_MS: i32 = 150;
+const SETTLE: Duration = Duration::from_millis(150);
+/// At most this long after the first event, even in a busy directory.
+const SETTLE_LIMIT: Duration = Duration::from_secs(1);
+/// How often to look for the config directory again once it was removed.
+const RETRY_MS: i32 = 1000;
 const WATCH_MASK: u32 = libc::IN_CLOSE_WRITE
     | libc::IN_MOVED_TO
     | libc::IN_MOVED_FROM
@@ -189,7 +194,8 @@ const WATCH_MASK: u32 = libc::IN_CLOSE_WRITE
 /// Calls `changed` once per burst of writes, replacements or removals of
 /// `path`, after the burst settled. Watches the directory, since editors and
 /// our writer replace the file; for a symlinked file also the directory of
-/// its target. Creates the directory if it is missing.
+/// its target. Creates the directory if it is missing, and watches it again
+/// when it is removed and comes back.
 pub(super) fn watch_config(path: PathBuf, changed: impl Fn() + Send + 'static) -> io::Result<()> {
     let fd = unsafe { libc::inotify_init1(libc::IN_CLOEXEC) };
     if fd < 0 {
@@ -199,44 +205,98 @@ pub(super) fn watch_config(path: PathBuf, changed: impl Fn() + Send + 'static) -
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let mut watched = Vec::new();
-    add_watches(&inotify, &path, &mut watched)?;
+    let mut watches = Watches {
+        path,
+        names: Vec::new(),
+        dir: None,
+    };
+    watches.dir = Some(add_watches(&inotify, &watches.path, &mut watches.names)?);
     std::thread::spawn(move || {
         let mut buffer = [0_u8; 4096];
         loop {
-            let read = match inotify.read(&mut buffer) {
-                Ok(read) => read,
-                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-                Err(error) => {
-                    eprintln!("boltsnap daemon: config watcher stopped: {error}");
-                    return;
+            let wait = if watches.dir.is_some() { -1 } else { RETRY_MS };
+            if !readable(&inotify, wait) {
+                if watches.dir.is_none() && watches.refresh(&inotify) {
+                    changed();
                 }
-            };
-            if !events(&buffer[..read])
-                .iter()
-                .any(|event| watched.contains(event))
-            {
                 continue;
             }
-            while readable(&inotify, SETTLE_MS) && inotify.read(&mut buffer).is_ok() {}
-            // The link may point elsewhere now.
-            let _ = add_watches(&inotify, &path, &mut watched);
+            let Some(read) = read_events(&mut inotify, &mut buffer) else {
+                return;
+            };
+            if !watches.note(&buffer[..read]) {
+                continue;
+            }
+            let deadline = Instant::now() + SETTLE_LIMIT;
+            loop {
+                let left = deadline
+                    .saturating_duration_since(Instant::now())
+                    .min(SETTLE);
+                if left.is_zero() || !readable(&inotify, left.as_millis() as i32) {
+                    break;
+                }
+                let Some(read) = read_events(&mut inotify, &mut buffer) else {
+                    return;
+                };
+                watches.note(&buffer[..read]);
+            }
+            // The link may point elsewhere now, or the directory be gone.
+            watches.refresh(&inotify);
             changed();
         }
     });
     Ok(())
 }
 
+struct Watches {
+    path: PathBuf,
+    /// Each watch with the file name that matters in it.
+    names: Vec<(i32, OsString)>,
+    /// The watch on the config directory; without it no event arrives.
+    dir: Option<i32>,
+}
+
+impl Watches {
+    /// Adds what is missing; true when the config directory is watched.
+    fn refresh(&mut self, inotify: &File) -> bool {
+        self.dir = add_watches(inotify, &self.path, &mut self.names).ok();
+        self.dir.is_some()
+    }
+
+    /// Whether the events in `buffer` may have changed the file. A watch the
+    /// kernel dropped, because its directory went away, is forgotten.
+    fn note(&mut self, buffer: &[u8]) -> bool {
+        let mut changed = false;
+        for event in events(buffer) {
+            changed |= event.mask & libc::IN_Q_OVERFLOW != 0
+                || self
+                    .names
+                    .iter()
+                    .any(|(wd, name)| *wd == event.wd && *name == event.name);
+            if event.mask & libc::IN_IGNORED != 0 {
+                self.names.retain(|(wd, _)| *wd != event.wd);
+                if self.dir == Some(event.wd) {
+                    self.dir = None;
+                    changed = true;
+                }
+            }
+        }
+        changed
+    }
+}
+
 /// Watches the directory of `path` and of its symlink target, noting each
-/// watch with the file name that matters in it. Only the first must work.
-fn add_watches(inotify: &File, path: &Path, watched: &mut Vec<(i32, OsString)>) -> io::Result<()> {
+/// watch with the file name that matters in it. Only the first must work;
+/// its watch is returned.
+fn add_watches(inotify: &File, path: &Path, names: &mut Vec<(i32, OsString)>) -> io::Result<i32> {
     let mut files = vec![path.to_path_buf()];
     if std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink())
         && let Ok(target) = std::fs::canonicalize(path)
     {
         files.push(target);
     }
-    for (index, file) in files.iter().enumerate() {
+    let mut dir_watch = None;
+    for file in &files {
         let (Some(dir), Some(name)) = (file.parent(), file.file_name()) else {
             continue;
         };
@@ -248,33 +308,61 @@ fn add_watches(inotify: &File, path: &Path, watched: &mut Vec<(i32, OsString)>) 
         let dir = CString::new(dir.as_os_str().as_bytes())?;
         let wd = unsafe { libc::inotify_add_watch(inotify.as_raw_fd(), dir.as_ptr(), WATCH_MASK) };
         if wd < 0 {
-            if index == 0 {
+            if dir_watch.is_none() {
                 return Err(io::Error::last_os_error());
             }
             continue;
         }
+        dir_watch.get_or_insert(wd);
         let entry = (wd, name.to_os_string());
-        if !watched.contains(&entry) {
-            watched.push(entry);
+        if !names.contains(&entry) {
+            names.push(entry);
         }
     }
-    Ok(())
+    dir_watch
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "config path has no file name"))
 }
 
-/// The watch and file name of each event in a buffer read from inotify.
-fn events(buffer: &[u8]) -> Vec<(i32, OsString)> {
+/// `None` once the watcher has to stop.
+fn read_events(inotify: &mut File, buffer: &mut [u8]) -> Option<usize> {
+    loop {
+        match inotify.read(buffer) {
+            Ok(read) => return Some(read),
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => {
+                eprintln!("boltsnap daemon: config watcher stopped: {error}");
+                return None;
+            }
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct Event {
+    wd: i32,
+    mask: u32,
+    name: OsString,
+}
+
+/// The events in a buffer read from inotify.
+fn events(buffer: &[u8]) -> Vec<Event> {
     const HEADER: usize = std::mem::size_of::<libc::inotify_event>();
     let mut events = Vec::new();
     let mut at = 0;
     while let Some(header) = buffer.get(at..at + HEADER) {
         let wd = i32::from_ne_bytes(header[..4].try_into().unwrap());
+        let mask = u32::from_ne_bytes(header[4..8].try_into().unwrap());
         let len = u32::from_ne_bytes(header[12..16].try_into().unwrap()) as usize;
         let Some(name) = buffer.get(at + HEADER..at + HEADER + len) else {
             break;
         };
         // The name is padded with NULs to keep the next event aligned.
         let name = name.split(|byte| *byte == 0).next().unwrap_or_default();
-        events.push((wd, OsString::from_vec(name.to_vec())));
+        events.push(Event {
+            wd,
+            mask,
+            name: OsString::from_vec(name.to_vec()),
+        });
         at += HEADER + len;
     }
     events
@@ -292,24 +380,42 @@ fn readable(file: &File, timeout_ms: i32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
 
     #[test]
     fn inotify_events_are_split_with_their_names() {
         let mut buffer = Vec::new();
-        for (wd, name) in [(1_i32, &b"config.toml"[..]), (2, b"")] {
+        for (wd, mask, name) in [
+            (1_i32, libc::IN_MOVED_TO, &b"config.toml"[..]),
+            (2, libc::IN_IGNORED, b""),
+        ] {
             let padded = name.len().div_ceil(16) * 16;
             buffer.extend(wd.to_ne_bytes());
-            buffer.extend(libc::IN_MOVED_TO.to_ne_bytes());
+            buffer.extend(mask.to_ne_bytes());
             buffer.extend(0_u32.to_ne_bytes());
             buffer.extend((padded as u32).to_ne_bytes());
             buffer.extend(name);
             buffer.resize(buffer.len() + padded - name.len(), 0);
         }
+        let event = |wd, mask, name: &str| Event {
+            wd,
+            mask,
+            name: name.into(),
+        };
         assert_eq!(
             events(&buffer),
-            vec![(1, "config.toml".into()), (2, "".into())]
+            vec![
+                event(1, libc::IN_MOVED_TO, "config.toml"),
+                event(2, libc::IN_IGNORED, "")
+            ]
         );
+        // A dropped directory watch counts as a change and is forgotten.
+        let mut watches = Watches {
+            path: PathBuf::from("/c/config.toml"),
+            names: vec![(2, "config.toml".into())],
+            dir: Some(2),
+        };
+        assert!(watches.note(&buffer));
+        assert_eq!((watches.names.len(), watches.dir), (0, None));
         // A cut-off event is dropped, not misread.
         assert_eq!(events(&buffer[..20]), vec![]);
     }
@@ -355,6 +461,16 @@ mod tests {
         std::os::unix::fs::symlink(&real, &path).unwrap();
         assert!(rx.recv_timeout(seen).is_ok());
         std::fs::write(&real, "record_fps = 30\n").unwrap();
+        assert!(rx.recv_timeout(seen).is_ok());
+
+        // The directory goes away and comes back: still watched.
+        std::fs::remove_dir_all(&config).unwrap();
+        assert!(rx.recv_timeout(seen).is_ok());
+        std::fs::create_dir(&config).unwrap();
+        std::fs::write(&path, "record_fps = 90\n").unwrap();
+        assert!(rx.recv_timeout(seen).is_ok());
+        while rx.recv_timeout(Duration::from_millis(1500)).is_ok() {}
+        std::fs::write(&path, "record_fps = 91\n").unwrap();
         assert!(rx.recv_timeout(seen).is_ok());
         let _ = std::fs::remove_dir_all(&dir);
     }
