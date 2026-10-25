@@ -293,8 +293,10 @@ fn a_broken_file_falls_back_to_the_last_valid_text_and_is_reported_once() {
         report.as_deref(),
         Some("config.toml line 2 is invalid: invalid string; keeping the last valid settings")
     );
-    // The same broken text is reported once, another one again.
+    // The same error is reported once, even after more edits; another error
+    // is reported again.
     assert_eq!(remembered.see("record_fps = 120\nx = \n").1, None);
+    assert_eq!(remembered.see("record_fps = 120\nx = \ny = \n").1, None);
     assert!(remembered.see("record_fps = = 1\n").1.is_some());
     // Fixed and broken the same way again: reported again.
     remembered.see("record_fps = 60\n");

@@ -304,9 +304,15 @@ Override precedence (highest to lowest):
 3. Config file — `~/.config/boltsnap/config.toml`
 4. Built-in default
 
+The daemon watches the file, so an edit applies as soon as it is saved: the
+tray follows, recording settings apply to the next recording and `[replay]`
+settings after a replay restart. The tray writes only the key it changed;
+comments, other keys and values it did not touch stay as they are.
+
 If an edit leaves the file unparsable while the daemon runs, the daemon keeps
-the last valid settings and says which line is wrong in a notification. A file
-that is already broken when the daemon starts falls back to the defaults.
+the last valid settings and says which line is wrong in a notification, once
+per error. A file that is already broken when the daemon starts falls back to
+the defaults.
 
 Clicking a Linux image or video card opens it in the desktop's default app.
 Right-click copies the media. The **Save** button writes it to the
@@ -336,6 +342,8 @@ On Linux the icon's dot turns red while a recording runs or is being saved and
 amber while it is paused. During a recording the menu starts with Pause or
 Resume, Save to shelf and Save to disk; Discard stays in the recording controls.
 "Clip fullscreen to shelf" is only enabled while the replay buffer runs.
+Default monitor offers Focused display, each monitor and Both displays; a
+configured monitor that is unplugged stays listed as disconnected.
 
 The recording controls offer:
 

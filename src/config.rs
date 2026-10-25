@@ -275,8 +275,9 @@ impl Config {
     }
 }
 
-/// The last `config.toml` that parsed, and the last broken one reported, so a
-/// half-edited file never puts every setting back to its default (CF1).
+/// The last `config.toml` that parsed, and the last report about a broken
+/// one, so a half-edited file never puts every setting back to its default
+/// (CF1) and the same error is not reported on every save.
 #[derive(Default)]
 struct Remembered {
     good: Option<String>,
@@ -293,25 +294,26 @@ enum Read {
 }
 
 impl Remembered {
-    /// Notes the file's `text`, with a report the first time a broken text is
-    /// seen.
+    /// Notes the file's `text`, with a report the first time the file breaks
+    /// in a new way.
     fn see(&mut self, text: &str) -> (Read, Option<String>) {
         let Loaded::Broken { line, reason, .. } = settings::load(text) else {
             self.good = Some(text.into());
             self.reported = None;
             return (Read::Valid, None);
         };
-        let report = (self.reported.as_deref() != Some(text)).then(|| {
-            self.reported = Some(text.into());
-            let place = line.map_or("config.toml".into(), |line| {
-                format!("config.toml line {line}")
-            });
-            let using = if self.good.is_some() {
-                "keeping the last valid settings"
-            } else {
-                "using the defaults"
-            };
-            format!("{place} is invalid: {reason}; {using}")
+        let place = line.map_or("config.toml".into(), |line| {
+            format!("config.toml line {line}")
+        });
+        let using = if self.good.is_some() {
+            "keeping the last valid settings"
+        } else {
+            "using the defaults"
+        };
+        let report = format!("{place} is invalid: {reason}; {using}");
+        let report = (self.reported.as_ref() != Some(&report)).then(|| {
+            self.reported = Some(report.clone());
+            report
         });
         let fallback = self.good.clone();
         (Read::Broken { fallback }, report)

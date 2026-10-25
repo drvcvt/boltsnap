@@ -232,6 +232,12 @@ Snapshot über die Auswahl hinweg bleibt bis Phase 2 offen. Unbekannte Keys
 meldet `settings::load` jetzt als `Issue`, angezeigt werden sie erst mit
 Phase 2.
 
+**Stand 25.10.:** CF4 bis CF7 sind behoben (Settings-Plan, Phase 2): der
+Tray schreibt nur den geänderten Key über einen geordneten Schreiber (CF4),
+das Tray-Menü hat „Focused display“ und zeigt einen abgesteckten Monitor als
+„disconnected“ (CF5), ein inotify-Watcher übernimmt Handedits sofort (CF6),
+leere und relative `XDG_*_HOME` werden ignoriert (CF7). Offen bleibt CF8.
+
 K3 (`--save` ignoriert `save_dir`) bleibt offen wie oben.
 
 **Bestandsaufnahme** (Stand 23.10.): 14 Top-Level-Keys (`save_dir`,
