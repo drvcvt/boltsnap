@@ -415,3 +415,19 @@ fn record_codec_defaults_to_auto() {
     assert_eq!(resolve_record_codec(None, &cfg), "libx264");
     assert_eq!(resolve_record_codec(Some("hevc_nvenc"), &cfg), "hevc_nvenc");
 }
+
+#[test]
+fn pref_changes_name_only_the_changed_keys() {
+    use super::{RecordCursor, RecordingPrefs, pref_changes};
+    use boltsnap::settings::{Change, Value};
+    let old = RecordingPrefs::default();
+    assert!(pref_changes(&old, &old).is_empty());
+    let new = RecordingPrefs {
+        cursor: RecordCursor::Quick,
+        ..old.clone()
+    };
+    assert_eq!(
+        pref_changes(&old, &new),
+        vec![("record_cursor", Change::Set(Value::Text("quick".into())))]
+    );
+}

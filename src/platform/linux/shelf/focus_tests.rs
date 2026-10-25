@@ -214,31 +214,10 @@ fn daemon_rejects_zero_sized_recording_geometry() {
 }
 
 #[test]
-fn preference_completions_never_rollback_a_newer_request() {
-    assert_eq!(prefs_completion(2, 0, 1, false), PrefsCompletion::Persisted);
-    assert_eq!(prefs_completion(2, 1, 1, true), PrefsCompletion::Stale);
-    assert_eq!(prefs_completion(2, 1, 2, true), PrefsCompletion::Rollback);
-    assert_eq!(prefs_completion(2, 2, 1, false), PrefsCompletion::Stale);
-}
-
-#[test]
-fn preference_writer_mailbox_coalesces_to_the_latest_generation() {
+fn latest_value_mailbox_keeps_only_the_newest_value() {
     let latest = crate::tray::LatestValue::new();
-    latest.replace(PrefsWrite {
-        generation: 1,
-        prefs: crate::config::RecordingPrefs::default(),
-    });
-    let newest = crate::config::RecordingPrefs {
-        show_frame: false,
-        ..Default::default()
-    };
-    latest.replace(PrefsWrite {
-        generation: 2,
-        prefs: newest,
-    });
-
-    let write = latest.take().unwrap();
-    assert_eq!(write.generation, 2);
-    assert!(!write.prefs.show_frame);
+    latest.replace(1);
+    latest.replace(2);
+    assert_eq!(latest.take(), Some(2));
     assert!(latest.take().is_none());
 }

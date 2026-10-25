@@ -1,6 +1,7 @@
 pub(crate) mod font;
 mod limits;
 mod save;
+mod settings;
 mod surface;
 mod thumbnail;
 mod watch;
@@ -154,12 +155,9 @@ pub struct Daemon {
     pending_default_recordings: Vec<UnixStream>,
     pending_tray_default_recording: bool,
     recording_prefs: crate::config::RecordingPrefs,
-    persisted_recording_prefs: crate::config::RecordingPrefs,
-    prefs_generation: u64,
-    persisted_prefs_generation: u64,
-    /// Newest write that finished, successfully or not.
-    settled_prefs_generation: u64,
-    prefs_writer: PrefsWriter,
+    settings_writer: settings::Writer,
+    /// Writes sent to `settings_writer` that have not finished yet.
+    pending_writes: usize,
     tray: Option<crate::tray::TrayPublisher>,
     /// Whether the replay buffer is capturing, for the tray's on/off entry.
     replay_running: Option<super::replay::Running>,
@@ -219,9 +217,7 @@ pub(crate) enum DaemonEvent {
     },
     FocusResolved(Result<Vec<crate::record::Monitor>, String>),
     Tray(crate::tray::TrayAction),
-    PrefsPersisted {
-        generation: u64,
-        prefs: crate::config::RecordingPrefs,
+    SettingsWritten {
         error: Option<String>,
     },
 }
@@ -239,72 +235,6 @@ impl Drop for PreparedAdd {
         if !self.path.as_os_str().is_empty() {
             let _ = std::fs::remove_file(&self.path);
         }
-    }
-}
-
-#[derive(Clone)]
-struct PrefsWrite {
-    generation: u64,
-    prefs: crate::config::RecordingPrefs,
-}
-
-struct PrefsWriter {
-    latest: std::sync::Arc<crate::tray::LatestValue<PrefsWrite>>,
-    wake: std::sync::mpsc::SyncSender<()>,
-}
-
-impl PrefsWriter {
-    fn spawn(event_tx: calloop::channel::Sender<DaemonEvent>) -> Self {
-        let latest = std::sync::Arc::new(crate::tray::LatestValue::<PrefsWrite>::new());
-        let worker_latest = std::sync::Arc::clone(&latest);
-        let (wake, wake_rx) = std::sync::mpsc::sync_channel(1);
-        std::thread::spawn(move || {
-            while wake_rx.recv().is_ok() {
-                let Some(write) = worker_latest.take() else {
-                    continue;
-                };
-                let error = crate::config::save_recording_prefs(&write.prefs)
-                    .err()
-                    .map(|error| error.to_string());
-                let _ = event_tx.send(DaemonEvent::PrefsPersisted {
-                    generation: write.generation,
-                    prefs: write.prefs,
-                    error,
-                });
-            }
-        });
-        Self { latest, wake }
-    }
-
-    fn submit(&self, write: PrefsWrite) {
-        self.latest.replace(write);
-        let _ = self.wake.try_send(());
-    }
-}
-
-#[derive(Debug, PartialEq, Eq)]
-enum PrefsCompletion {
-    Persisted,
-    Stale,
-    Rollback,
-}
-
-fn prefs_completion(
-    current_generation: u64,
-    persisted_generation: u64,
-    completed_generation: u64,
-    failed: bool,
-) -> PrefsCompletion {
-    if failed {
-        if completed_generation == current_generation {
-            PrefsCompletion::Rollback
-        } else {
-            PrefsCompletion::Stale
-        }
-    } else if completed_generation > persisted_generation {
-        PrefsCompletion::Persisted
-    } else {
-        PrefsCompletion::Stale
     }
 }
 
@@ -1189,7 +1119,7 @@ pub fn run_daemon(save_dir_cli: Option<std::path::PathBuf>) -> DynResult<()> {
     crate::config::on_broken(notify);
     let recording_prefs = crate::config::Config::load().recording_prefs();
     let (event_tx, event_rx) = calloop::channel::channel::<DaemonEvent>();
-    let prefs_writer = PrefsWriter::spawn(event_tx.clone());
+    let settings_writer = settings::Writer::spawn(event_tx.clone());
     let thumbnails = thumbnail::Worker::spawn(event_tx.clone());
     let mut daemon = Daemon {
         registry_state: RegistryState::new(&globals),
@@ -1251,12 +1181,9 @@ pub fn run_daemon(save_dir_cli: Option<std::path::PathBuf>) -> DynResult<()> {
         pending_controls: Vec::new(),
         pending_default_recordings: Vec::new(),
         pending_tray_default_recording: false,
-        persisted_recording_prefs: recording_prefs.clone(),
         recording_prefs,
-        prefs_generation: 0,
-        persisted_prefs_generation: 0,
-        settled_prefs_generation: 0,
-        prefs_writer,
+        settings_writer,
+        pending_writes: 0,
         tray: None,
         replay_running: None,
         thumbnails,
@@ -1504,42 +1431,6 @@ impl Daemon {
         {
             self.create_marker(&geo, &qh);
         }
-    }
-
-    /// Adopt edits to the config file made since the daemon read it, by hand or
-    /// by the selector process. An own write still in flight is newer than the
-    /// file, so the refresh waits for it.
-    fn refresh_recording_prefs(&mut self) {
-        if self.settled_prefs_generation != self.prefs_generation {
-            return;
-        }
-        let Some(prefs) = crate::config::Config::load_valid().map(|c| c.recording_prefs()) else {
-            return;
-        };
-        if prefs == self.recording_prefs {
-            return;
-        }
-        let show_frame_changed = self.recording_prefs.show_frame != prefs.show_frame;
-        self.recording_prefs = prefs.clone();
-        self.persisted_recording_prefs = prefs;
-        if show_frame_changed {
-            self.apply_show_frame_pref(self.recording_prefs.show_frame);
-        }
-        self.publish_tray_snapshot();
-    }
-
-    fn persist_tray_prefs(&mut self, prefs: crate::config::RecordingPrefs) {
-        let show_frame_changed = self.recording_prefs.show_frame != prefs.show_frame;
-        self.recording_prefs = prefs.clone();
-        self.prefs_generation += 1;
-        if show_frame_changed {
-            self.apply_show_frame_pref(prefs.show_frame);
-        }
-        self.prefs_writer.submit(PrefsWrite {
-            generation: self.prefs_generation,
-            prefs,
-        });
-        self.publish_tray_snapshot();
     }
 
     fn handle_tray_action(&mut self, action: crate::tray::TrayAction) {
@@ -1800,11 +1691,9 @@ impl Daemon {
                 audio_enabled,
             } => {
                 self.refresh_recording_prefs();
-                // The selector already persisted this value in its process. Feed it
-                // through the ordered writer too so an older in-flight tray write
+                // The selector already saved what it changed. Feed the values
+                // through the ordered writer too so a tray write still queued
                 // cannot restore a stale frame preference afterward.
-                self.persisted_recording_prefs.show_frame = show_frame;
-                self.persisted_recording_prefs.audio_enabled = audio_enabled;
                 let mut prefs = self.recording_prefs.clone();
                 prefs.show_frame = show_frame;
                 prefs.audio_enabled = audio_enabled;
@@ -3166,38 +3055,7 @@ impl Daemon {
             }
             DaemonEvent::ReplayStateChanged => self.publish_tray_snapshot(),
             DaemonEvent::Tray(action) => self.handle_tray_action(action),
-            DaemonEvent::PrefsPersisted {
-                generation,
-                prefs,
-                error,
-            } => {
-                self.settled_prefs_generation = self.settled_prefs_generation.max(generation);
-                match prefs_completion(
-                    self.prefs_generation,
-                    self.persisted_prefs_generation,
-                    generation,
-                    error.is_some(),
-                ) {
-                    PrefsCompletion::Persisted => {
-                        self.persisted_prefs_generation = generation;
-                        self.persisted_recording_prefs = prefs;
-                    }
-                    PrefsCompletion::Rollback => {
-                        let show_frame_changed = self.recording_prefs.show_frame
-                            != self.persisted_recording_prefs.show_frame;
-                        self.recording_prefs = self.persisted_recording_prefs.clone();
-                        if show_frame_changed {
-                            self.apply_show_frame_pref(self.recording_prefs.show_frame);
-                        }
-                        notify(&format!(
-                            "Recording settings could not be saved: {}",
-                            error.unwrap_or_else(|| "unknown error".into())
-                        ));
-                        self.publish_tray_snapshot();
-                    }
-                    PrefsCompletion::Stale => {}
-                }
-            }
+            DaemonEvent::SettingsWritten { error } => self.settings_written(error),
         }
         self.publish_recording_snapshot();
     }

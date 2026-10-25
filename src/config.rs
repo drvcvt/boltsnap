@@ -225,13 +225,6 @@ impl Config {
         }
     }
 
-    /// Like `load`, but `None` when the file is missing or does not parse, so
-    /// a half-edited file never replaces known settings with defaults.
-    pub fn load_valid() -> Option<Config> {
-        let text = std::fs::read_to_string(config_path()).ok()?;
-        matches!(remember(&text), Read::Valid).then(|| Config::parse(&text))
-    }
-
     /// Recordings at least this long are saved permanently to `record_dir` even
     /// when saved to the shelf (they still get a shelf card), and stop counting
     /// toward the temporary cache quota once they reach it. Default 60 s; 0
@@ -375,6 +368,8 @@ fn save_selector_prefs_at(
     settings::write(path, &changes)
 }
 
+// The Linux daemon writes single keys through `pref_changes` instead.
+#[cfg(target_os = "windows")]
 pub fn save_recording_prefs(prefs: &RecordingPrefs) -> io::Result<()> {
     save_recording_prefs_at(&config_path(), prefs)
 }
@@ -382,21 +377,28 @@ pub fn save_recording_prefs(prefs: &RecordingPrefs) -> io::Result<()> {
 /// Writes only the prefs whose value differs from what the file has in effect,
 /// so an invalid value nobody changed stays for the user to see, and keys
 /// that were never set are not added.
+#[cfg(any(target_os = "windows", test))]
 pub fn save_recording_prefs_at(path: &Path, prefs: &RecordingPrefs) -> io::Result<()> {
-    let wanted = pref_values(prefs);
     settings::update(path, |text| {
         // A broken file gets no changes; the writer refuses it as it is.
         let Loaded::Ok { doc, issues } = settings::load(text) else {
             return Vec::new();
         };
-        let current = pref_values(&Config::from_doc(&doc, issues).recording_prefs());
-        wanted
-            .iter()
-            .zip(current)
-            .filter(|((_, wanted), (_, current))| wanted != current)
-            .map(|((key, value), _)| (*key, settings::Change::Set(value.clone())))
-            .collect()
+        pref_changes(&Config::from_doc(&doc, issues).recording_prefs(), prefs)
     })
+}
+
+/// The keys whose value differs between `old` and `new`, set to `new`'s.
+pub fn pref_changes(
+    old: &RecordingPrefs,
+    new: &RecordingPrefs,
+) -> Vec<(&'static str, settings::Change)> {
+    pref_values(old)
+        .into_iter()
+        .zip(pref_values(new))
+        .filter(|((_, old), (_, new))| old != new)
+        .map(|(_, (key, value))| (key, settings::Change::Set(value)))
+        .collect()
 }
 
 fn pref_values(prefs: &RecordingPrefs) -> [(&'static str, settings::Value); 7] {
