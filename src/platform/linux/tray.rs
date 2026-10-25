@@ -162,32 +162,44 @@ fn monitor_label(monitor: &Monitor) -> String {
     }
 }
 
-fn menu_model(snapshot: &TraySnapshot) -> TrayMenuModel {
-    let focused_selected = snapshot
-        .monitors
-        .iter()
-        .position(|monitor| monitor.focused)
-        .unwrap_or(0);
-    let default_selected = match &snapshot.prefs.default_target {
-        RecordDefaultTarget::Focused => focused_selected,
-        RecordDefaultTarget::Output(name) => snapshot
+/// The default monitor's choices with their labels, in menu order. A
+/// configured monitor that is unplugged stays listed, so the menu shows what
+/// the file says.
+fn default_targets(snapshot: &TraySnapshot) -> Vec<(String, RecordDefaultTarget)> {
+    let mut targets = vec![("Focused display".to_owned(), RecordDefaultTarget::Focused)];
+    targets.extend(snapshot.monitors.iter().map(|monitor| {
+        (
+            monitor_label(monitor),
+            RecordDefaultTarget::Output(monitor.name.clone()),
+        )
+    }));
+    if let RecordDefaultTarget::Output(name) = &snapshot.prefs.default_target
+        && !snapshot
             .monitors
             .iter()
-            .position(|monitor| monitor.name == *name)
-            .unwrap_or(focused_selected),
-        RecordDefaultTarget::Both => snapshot.monitors.len(),
-    };
+            .any(|monitor| monitor.name == *name)
+    {
+        targets.push((
+            format!("{name} (disconnected)"),
+            snapshot.prefs.default_target.clone(),
+        ));
+    }
+    targets.push(("Both displays".to_owned(), RecordDefaultTarget::Both));
+    targets
+}
+
+fn menu_model(snapshot: &TraySnapshot) -> TrayMenuModel {
+    let targets = default_targets(snapshot);
+    let default_selected = targets
+        .iter()
+        .position(|(_, target)| *target == snapshot.prefs.default_target)
+        .unwrap_or(0);
     TrayMenuModel {
         replay_running: snapshot.replay_running,
         clip_enabled: snapshot.replay_running,
         start_region_enabled: snapshot.state == PublicRecordingState::Idle,
         start_default_enabled: snapshot.state == PublicRecordingState::Idle,
-        default_labels: snapshot
-            .monitors
-            .iter()
-            .map(monitor_label)
-            .chain(std::iter::once("Both displays".into()))
-            .collect(),
+        default_labels: targets.into_iter().map(|(label, _)| label).collect(),
         default_selected,
         both_mode_selected: usize::from(snapshot.prefs.both_mode == RecordBothMode::Combined),
         cursor_selected: CURSOR_MODES
@@ -366,12 +378,11 @@ impl ksni::Tray for BoltsnapTray {
                         selected: model.default_selected,
                         options: default_options,
                         select: Box::new(|tray: &mut Self, index| {
-                            let target = tray
-                                .snapshot
-                                .monitors
-                                .get(index)
-                                .map(|monitor| RecordDefaultTarget::Output(monitor.name.clone()))
-                                .unwrap_or(RecordDefaultTarget::Both);
+                            let Some((_, target)) =
+                                default_targets(&tray.snapshot).into_iter().nth(index)
+                            else {
+                                return;
+                            };
                             tray.snapshot.prefs.default_target = target.clone();
                             tray.send(TrayAction::SetDefaultTarget(target));
                         }),
@@ -544,13 +555,47 @@ mod tests {
         assert!(model.start_default_enabled);
         assert_eq!(
             model.default_labels,
-            vec!["BenQ (DP-3)", "AOC (DP-1)", "Both displays"]
+            vec![
+                "Focused display",
+                "BenQ (DP-3)",
+                "AOC (DP-1)",
+                "Both displays"
+            ]
         );
-        assert_eq!(model.default_selected, 0);
+        assert_eq!(model.default_selected, 1);
         assert_eq!(model.both_mode_selected, 1);
         assert!(!model.show_frame);
         assert!(model.disk_add_to_shelf);
         assert!(model.settings_enabled);
+    }
+
+    #[test]
+    fn default_monitor_menu_offers_focused_and_keeps_an_unplugged_monitor() {
+        let mut snapshot = snapshot(PublicRecordingState::Idle);
+        snapshot.prefs.default_target = RecordDefaultTarget::Focused;
+        assert_eq!(menu_model(&snapshot).default_selected, 0);
+        snapshot.prefs.default_target = RecordDefaultTarget::Both;
+        assert_eq!(menu_model(&snapshot).default_selected, 3);
+
+        snapshot.prefs.default_target = RecordDefaultTarget::Output("HDMI-A-1".into());
+        let model = menu_model(&snapshot);
+        assert_eq!(model.default_labels[3], "HDMI-A-1 (disconnected)");
+        assert_eq!(model.default_selected, 3);
+        // A click picks the target at the same index the label has.
+        let targets: Vec<_> = default_targets(&snapshot)
+            .into_iter()
+            .map(|(_, target)| target)
+            .collect();
+        assert_eq!(
+            targets,
+            vec![
+                RecordDefaultTarget::Focused,
+                RecordDefaultTarget::Output("DP-3".into()),
+                RecordDefaultTarget::Output("DP-1".into()),
+                RecordDefaultTarget::Output("HDMI-A-1".into()),
+                RecordDefaultTarget::Both,
+            ]
+        );
     }
 
     #[test]
@@ -586,7 +631,7 @@ mod tests {
         let model = menu_model(&snapshot(PublicRecordingState::Recording));
         assert!(!model.start_region_enabled);
         assert!(!model.start_default_enabled);
-        assert_eq!(model.default_selected, 0);
+        assert_eq!(model.default_selected, 1);
         assert_eq!(model.both_mode_selected, 1);
         assert!(!model.show_frame);
         assert!(model.disk_add_to_shelf);
@@ -594,12 +639,16 @@ mod tests {
     }
 
     #[test]
-    fn disconnected_default_marks_the_effective_focused_fallback() {
+    fn disconnected_default_stays_selected_instead_of_the_focused_monitor() {
         let mut snapshot = snapshot(PublicRecordingState::Idle);
         snapshot.prefs.default_target = RecordDefaultTarget::Output("DP-GONE".into());
         snapshot.monitors[0].focused = false;
         snapshot.monitors[1].focused = true;
-        assert_eq!(menu_model(&snapshot).default_selected, 1);
+        let model = menu_model(&snapshot);
+        assert_eq!(
+            model.default_labels[model.default_selected],
+            "DP-GONE (disconnected)"
+        );
     }
 
     #[test]
