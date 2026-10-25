@@ -1707,15 +1707,10 @@ impl Daemon {
                 show_frame,
                 audio_enabled,
             } => {
-                self.refresh_recording_prefs();
-                // The selector already saved what it changed. Feed the values
-                // through the ordered writer too so a tray write still queued
-                // cannot restore a stale frame preference afterward.
-                let mut prefs = self.recording_prefs.clone();
-                prefs.show_frame = show_frame;
-                prefs.audio_enabled = audio_enabled;
-                self.persist_tray_prefs(prefs);
-                let response = match self.start_recording(x, y, w, h, show_frame, &qh) {
+                // The selector saved what it changed; the values are this
+                // recording's only, so a change made during the selection stays.
+                let geo = crate::record::Geometry { x, y, w, h };
+                let response = match self.start_recording(geo, show_frame, audio_enabled, &qh) {
                     Ok(()) => crate::ipc::Response::ok(Some(self.recording_snapshot())),
                     Err(error) => crate::ipc::Response::error(error),
                 };
@@ -2277,23 +2272,24 @@ impl Daemon {
 
     fn start_recording(
         &mut self,
-        x: i32,
-        y: i32,
-        w: u32,
-        h: u32,
+        geo: crate::record::Geometry,
         show_frame: bool,
+        audio_enabled: bool,
         qh: &QueueHandle<Self>,
     ) -> Result<(), String> {
         if self.recording.is_some() {
             return Err("a recording is already in progress".into());
         }
-        validate_recording_dimensions(w, h)?;
+        validate_recording_dimensions(geo.w, geo.h)?;
         self.refresh_recording_prefs();
+        let prefs = crate::config::RecordingPrefs {
+            audio_enabled,
+            ..self.recording_prefs.clone()
+        };
         let config = crate::config::Config::load();
         let tools = RecorderTools::default();
         let codec = tools.session_codec(&crate::config::resolve_record_codec(None, &config))?;
         prepare_recording_cache()?;
-        let geo = crate::record::Geometry { x, y, w, h };
         let scope = CaptureScope::Area(geo);
         let profile = config.record_profile()?;
         let monitors = self.cached_monitors();
@@ -2301,8 +2297,7 @@ impl Daemon {
             .cloned()
             .into_iter()
             .collect();
-        let (active, audio) =
-            spawn_initial_segment(&scope, &codec, profile, &tools, &self.recording_prefs, None)?;
+        let (active, audio) = spawn_initial_segment(&scope, &codec, profile, &tools, &prefs, None)?;
         self.recording = Some(RecordingSession::new(
             scope,
             monitors,

@@ -375,9 +375,10 @@ fn start_recording_flow(args: &Args) -> DynResult<()> {
             .map_err(|error| format!("could not save the selector settings: {error}").into());
     };
     if let Err(error) = saved {
-        // The recording still starts. The daemon saves the same two values
-        // with it and reports it if that fails too.
-        eprintln!("boltsnap: could not save the selector settings: {error}");
+        // The recording still starts, with the values chosen here.
+        let message = format!("Recording settings could not be saved: {error}");
+        eprintln!("boltsnap: {message}");
+        crate::platform::shelf::notify(&message);
     }
     require_recorder()?;
     let (ox, oy) = selection
