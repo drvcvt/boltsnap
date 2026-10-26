@@ -28,7 +28,7 @@ Gut und bleibt: eine primäre Aktion (REC mit ruhender Fläche und der einzigen
 Farbe), gleiche Breite der Controls über alle Zustände, Fallback auf 2×2 und
 eine Spalte bei kleinen Flächen, Leiste über, sonst unter, sonst in der Auswahl.
 
-## 2. Richtung (Entscheidung offen, Empfehlung)
+## 2. Richtung (entschieden 27.10.: das Designsystem der App)
 
 Die Leiste ahmt bisher die Module der Desktop-Leiste nach (Kommentare in
 `render.rs:946-976`, Schrift aus `ui_font` in 500/600). Seitdem hat Boltsnap
@@ -36,7 +36,11 @@ ein eigenes Designsystem (`src/ui/theme.rs`: Farben, Abstände, `CTL_H`,
 Radien, `TextStyle` mit Versalhöhen auf ganzen Pixeln, Lucide-Icons, drei
 Federn), das der Nutzer im Settings-Fenster abgenommen hat.
 
-**Empfehlung:** Selector-Chrome (Leiste, Größen-Badge, Rahmen, Griffe) nutzt
+Nutzer, 27.10.: „das tut es gerade eher nicht es hat so einen eigenen look“,
+die Leiste wirkt also schon jetzt nicht wie die Desktop-Leiste. Damit gilt die
+Empfehlung:
+
+**Entscheidung:** Selector-Chrome (Leiste, Größen-Badge, Rahmen, Griffe) nutzt
 dieses System. Grund: Shelf-Vorschau, Settings und Selector sind ein Produkt;
 zwei Skalen nebeneinander sind B3. Alternative: Desktop-Leisten-Look behalten
 und nur B1/B4–B8 darin beheben.
@@ -72,7 +76,8 @@ und nur B1/B4–B8 darin beheben.
   `draw_rec_pill`, `draw_record_audio_button`, `draw_badge` für Windows): das
   Backend ist eingefroren. Linux bekommt einen eigenen Stil.
 
-**Vorschläge, nur mit Okay des Nutzers (neue Funktion):**
+**Vorschläge, nur mit Okay des Nutzers (neue Funktion; am 27.10. gefragt, nicht
+beantwortet, die Antwort „Maße“ meinte die Shelf-Vorschau, also nicht gebaut):**
 - V-a: Maße der Auswahl („1450 × 942“, `Key`, `SUB`, Breite für „0000 × 0000“
   reserviert) rechts in der Leiste, ohne Control.
 - V-b: der Hinweis bei nicht verfügbarem Clip (oben) bietet „Start replay“ als
@@ -141,5 +146,5 @@ oberen Rand (Leiste unten) und bildschirmfüllend (Leiste innen).
 | Schritt | Stand | Checks |
 | --- | --- | --- |
 | Befund, Plan | geschrieben 27.10. | Offscreen-Render von vier Zuständen |
-| Richtung | offen, Empfehlung Abschnitt 2 | |
+| Richtung | entschieden 27.10., Abschnitt 2 | |
 | S0–S3 | nicht begonnen | |
