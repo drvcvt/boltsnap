@@ -1,10 +1,10 @@
 use std::time::Instant;
 
-use super::{Look, Outcome, Value, Widget, icon_box, surface};
+use super::{Look, Outcome, Value, Widget, icon_box, light, surface};
 use crate::ui::icons::Icon;
-use crate::ui::motion::Tween;
+use crate::ui::motion::Spring;
 use crate::ui::text::Fonts;
-use crate::ui::theme::{self, GAP_M, ICON, KNOB_SLIDE, RADIUS, TextStyle};
+use crate::ui::theme::{self, GAP_M, GAP_S, ICON, RADIUS, SNAP, TextStyle};
 use crate::ui::{Canvas, Key, Mods, Rect};
 
 /// Gap between the control's edge and the chosen part's surface; the
@@ -52,16 +52,19 @@ pub struct Segment {
     parts: Vec<Part>,
     chosen: usize,
     /// The chosen surface's position, in parts.
-    slide: Tween,
+    slide: Spring,
+    /// Each part's text, 0 dim to 1 bright, under the pointer.
+    lit: Vec<Spring>,
 }
 
 impl Segment {
     pub fn new(parts: Vec<Part>, chosen: usize, now: Instant) -> Self {
         let chosen = chosen.min(parts.len().saturating_sub(1));
         Self {
+            lit: vec![Spring::settled(0.0, now); parts.len()],
             parts,
             chosen,
-            slide: Tween::settled(chosen as f32, now),
+            slide: Spring::settled(chosen as f32, now),
         }
     }
 
@@ -79,28 +82,63 @@ impl Segment {
             return Outcome::HANDLED;
         }
         self.chosen = index;
-        self.slide.retarget(index as f32, KNOB_SLIDE, now);
+        self.slide.retarget(index as f32, SNAP, now);
         Outcome::CHANGED
     }
 
-    fn part_rect(&self, rect: Rect, index: usize) -> Rect {
-        let w = rect.w / self.parts.len() as f32;
-        Rect::new(rect.x + index as f32 * w, rect.y, w, rect.h)
+    /// Equal parts when the widest fits that way; otherwise each part gets
+    /// its content plus an equal share of what is left, so a long label
+    /// takes room from short ones before anything is cut.
+    fn part_rects(&self, fonts: &Fonts, rect: Rect) -> Vec<Rect> {
+        let n = self.parts.len() as f32;
+        let contents: Vec<f32> = self.parts.iter().map(|p| p.content_width(fonts)).collect();
+        let widest = contents.iter().copied().fold(0.0, f32::max);
+        let spare = (rect.w - contents.iter().sum::<f32>()) / n;
+        let widths: Vec<f32> = if rect.w / n >= widest + 2.0 * GAP_M || spare < 0.0 {
+            vec![rect.w / n; self.parts.len()]
+        } else {
+            contents.iter().map(|content| content + spare).collect()
+        };
+        let mut x = rect.x;
+        widths
+            .into_iter()
+            .map(|w| {
+                let cell = Rect::new(x, rect.y, w, rect.h);
+                x += w;
+                cell
+            })
+            .collect()
     }
 }
 
 impl Widget for Segment {
-    fn width(&self, fonts: &Fonts) -> f32 {
-        self.part_width(fonts) * self.parts.len() as f32
+    /// Equal parts if they fit, else each part as wide as its content needs,
+    /// so a row stacks only when even that does not fit.
+    fn width(&self, fonts: &Fonts, room: f32) -> f32 {
+        let equal = self.part_width(fonts) * self.parts.len() as f32;
+        let snug: f32 = self
+            .parts
+            .iter()
+            .map(|part| (part.content_width(fonts) + 2.0 * GAP_M).ceil())
+            .sum();
+        if equal <= room { equal } else { snug }
+    }
+
+    fn stretches(&self) -> bool {
+        true
     }
 
     fn draw(&self, canvas: &mut Canvas, fonts: &Fonts, rect: Rect, look: Look, now: Instant) {
         surface(canvas, rect, &look);
-        let part_w = rect.w / self.parts.len() as f32;
+        let cells = self.part_rects(fonts, rect);
+        // Between two parts the surface takes both position and width.
+        let at = self.slide.value(now).clamp(0.0, (cells.len() - 1) as f32);
+        let (from, to) = (cells[at.floor() as usize], cells[at.ceil() as usize]);
+        let t = at.fract();
         let chosen = Rect::new(
-            rect.x + self.slide.value(now) * part_w,
+            from.x + (to.x - from.x) * t,
             rect.y,
-            part_w,
+            from.w + (to.w - from.w) * t,
             rect.h,
         )
         .inset(INSET);
@@ -111,15 +149,21 @@ impl Widget for Segment {
         };
         canvas.fill(chosen, RADIUS - INSET, chosen_fill, 1.0);
         for (index, part) in self.parts.iter().enumerate() {
-            let cell = self.part_rect(rect, index);
+            let cell = cells[index];
             let color = if !look.enabled {
                 theme::DIM
-            } else if index == self.chosen || look.over(cell) {
+            } else if index == self.chosen {
                 theme::TEXT
             } else {
-                theme::SUB
+                theme::mix(theme::SUB, theme::TEXT, self.lit[index].value(now))
             };
-            let content = part.content_width(fonts);
+            // A label that still does not fit is cut, never drawn past its part.
+            let room = cell.w - 2.0 * GAP_S;
+            let label = part
+                .label
+                .as_deref()
+                .map(|label| fonts.ellipsize(TextStyle::Label, label, room));
+            let content = part.content_width(fonts).min(room);
             let mut x = cell.x + (cell.w - content) / 2.0;
             if let Some(icon) = part.icon {
                 // The baseline puts the capitals' middle on the cell's middle,
@@ -127,7 +171,7 @@ impl Widget for Segment {
                 icon.draw(canvas, icon_box(cell, x, ICON), color, 1.0);
                 x += ICON + theme::GAP_S;
             }
-            if let Some(label) = &part.label {
+            if let Some(label) = &label {
                 let baseline = fonts.baseline(TextStyle::Label, cell.y, cell.h);
                 fonts.draw(canvas, TextStyle::Label, label, (x, baseline), color, 1.0);
             }
@@ -138,9 +182,26 @@ impl Widget for Segment {
         Value::Choice(self.chosen)
     }
 
-    fn press(&mut self, rect: Rect, (x, _): (f32, f32), _: u8, _: &Fonts, now: Instant) -> Outcome {
-        let index = ((x - rect.x) / (rect.w / self.parts.len() as f32)) as usize;
-        self.choose(index.min(self.parts.len() - 1), now)
+    fn labels(&self) -> Vec<&str> {
+        self.parts
+            .iter()
+            .filter_map(|part| part.label.as_deref())
+            .collect()
+    }
+
+    fn press(
+        &mut self,
+        rect: Rect,
+        (x, y): (f32, f32),
+        _: u8,
+        fonts: &Fonts,
+        now: Instant,
+    ) -> Outcome {
+        let cells = self.part_rects(fonts, rect);
+        match cells.iter().position(|cell| cell.contains(x, y)) {
+            Some(index) => self.choose(index, now),
+            None => Outcome::HANDLED,
+        }
     }
 
     fn key(&mut self, key: Key, _: Mods, _: &Fonts, now: Instant) -> Outcome {
@@ -152,7 +213,16 @@ impl Widget for Segment {
         }
     }
 
+    fn hover(&mut self, rect: Rect, at: Option<(f32, f32)>, fonts: &Fonts, now: Instant) {
+        let cells = self.part_rects(fonts, rect);
+        light(
+            &mut self.lit,
+            |index| at.is_some_and(|(x, y)| cells[index].contains(x, y)),
+            now,
+        );
+    }
+
     fn animating(&self, now: Instant) -> bool {
-        !self.slide.done(now)
+        !self.slide.done(now) || self.lit.iter().any(|lit| !lit.done(now))
     }
 }

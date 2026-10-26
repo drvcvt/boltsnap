@@ -30,7 +30,7 @@ use wayland_client::{
 
 /// Logical size before the compositor picks one, and the smallest it may.
 pub(super) const OPEN_SIZE: (u32, u32) = (760, 520);
-const MIN_SIZE: (u32, u32) = (560, 400);
+const MIN_SIZE: (u32, u32) = (360, 320);
 
 pub(super) struct Win {
     pub(super) registry: RegistryState,

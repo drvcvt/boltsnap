@@ -2,7 +2,7 @@
 
 use std::borrow::Cow;
 
-use ab_glyph::{Font, FontVec, PxScale, ScaleFont, point};
+use ab_glyph::{Font, FontVec, GlyphId, PxScale, ScaleFont, point};
 
 use super::theme::TextStyle;
 use super::{Canvas, Rect, Rgb};
@@ -10,6 +10,30 @@ use super::{Canvas, Rect, Rgb};
 /// The DejaVu subset the selector and the recording controls fall back to
 /// (printable ASCII and ×).
 const FALLBACK: &[u8] = include_bytes!("../../assets/fonts/dejavu-badge.ttf");
+
+/// `c`'s glyph; a no-break space the face lacks is drawn as a space.
+fn glyph(face: &FontVec, c: char) -> GlyphId {
+    match face.glyph_id(c) {
+        GlyphId(0) if c == '\u{a0}' => face.glyph_id(' '),
+        id => id,
+    }
+}
+
+/// Advance of every glyph in `text`, kerned against the one before, with
+/// the byte index each starts at.
+fn advances<'a>(
+    face: &'a FontVec,
+    scaled: &'a impl ScaleFont<&'a FontVec>,
+    text: &'a str,
+) -> impl Iterator<Item = (usize, GlyphId, f32)> + 'a {
+    let mut previous: Option<GlyphId> = None;
+    text.char_indices().map(move |(index, c)| {
+        let id = glyph(face, c);
+        let kern = previous.map_or(0.0, |previous| scaled.kern(previous, id));
+        previous = Some(id);
+        (index, id, kern)
+    })
+}
 
 /// The UI face at the two weights the scale uses.
 pub struct Fonts {
@@ -40,8 +64,8 @@ impl Fonts {
     pub fn width(&self, style: TextStyle, text: &str) -> f32 {
         let face = self.face(style);
         let scaled = face.as_scaled(PxScale::from(style.px()));
-        text.chars()
-            .map(|c| scaled.h_advance(face.glyph_id(c)))
+        advances(face, &scaled, text)
+            .map(|(_, id, kern)| kern + scaled.h_advance(id))
             .sum()
     }
 
@@ -65,11 +89,7 @@ impl Fonts {
         if self.width(style, text) <= max {
             return Cow::Borrowed(text);
         }
-        let dots = if self.face(style).glyph_id('…').0 != 0 {
-            "…"
-        } else {
-            "..."
-        };
+        let dots = self.dots(style);
         let room = max - self.width(style, dots);
         let mut cut = String::new();
         for c in text.chars() {
@@ -83,15 +103,62 @@ impl Fonts {
         Cow::Owned(cut.trim_end().to_owned() + dots)
     }
 
+    /// `text` cut to `max` wide in the middle, for paths: the start and the
+    /// end stay readable.
+    pub fn ellipsize_middle<'a>(&self, style: TextStyle, text: &'a str, max: f32) -> Cow<'a, str> {
+        if self.width(style, text) <= max {
+            return Cow::Borrowed(text);
+        }
+        let dots = self.dots(style);
+        let chars: Vec<char> = text.chars().collect();
+        let (mut head, mut tail) = (0, 0);
+        let fits = |head: usize, tail: usize| {
+            let cut: String = chars[..head].iter().collect::<String>()
+                + dots
+                + &chars[chars.len() - tail..].iter().collect::<String>();
+            self.width(style, &cut) <= max
+        };
+        // Grow both ends in turn, the end first: a path's last part names it.
+        loop {
+            let grown = if tail <= head && head + tail < chars.len() && fits(head, tail + 1) {
+                tail += 1;
+                true
+            } else if head + tail < chars.len() && fits(head + 1, tail) {
+                head += 1;
+                true
+            } else if head + tail < chars.len() && fits(head, tail + 1) {
+                tail += 1;
+                true
+            } else {
+                false
+            };
+            if !grown {
+                break;
+            }
+        }
+        let start: String = chars[..head].iter().collect();
+        let end: String = chars[chars.len() - tail..].iter().collect();
+        Cow::Owned(start + dots + &end)
+    }
+
+    fn dots(&self, style: TextStyle) -> &'static str {
+        if self.face(style).glyph_id('…').0 != 0 {
+            "…"
+        } else {
+            "..."
+        }
+    }
+
     /// The x of every caret position in `text`, as (byte index, x).
     pub fn carets(&self, style: TextStyle, text: &str) -> Vec<(usize, f32)> {
         let face = self.face(style);
         let scaled = face.as_scaled(PxScale::from(style.px()));
         let mut x = 0.0;
         let mut carets = Vec::with_capacity(text.len() + 1);
-        for (index, c) in text.char_indices() {
+        for (index, id, kern) in advances(face, &scaled, text) {
+            x += kern;
             carets.push((index, x));
-            x += scaled.h_advance(face.glyph_id(c));
+            x += scaled.h_advance(id);
         }
         carets.push((text.len(), x));
         carets
@@ -134,8 +201,8 @@ impl Fonts {
         let data = canvas.pixmap.data_mut();
         let mut caret = x * canvas.scale;
         let baseline = baseline * canvas.scale;
-        for c in text.chars() {
-            let id = face.glyph_id(c);
+        for (_, id, kern) in advances(face, &scaled, text) {
+            caret += kern;
             let glyph = id.with_scale_and_position(scale, point(caret, baseline));
             caret += scaled.h_advance(id);
             let Some(outlined) = face.outline_glyph(glyph) else {

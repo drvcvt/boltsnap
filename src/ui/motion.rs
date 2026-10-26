@@ -1,104 +1,143 @@
-//! Rest-to-rest motion, evaluated from absolute time.
+//! Springs, evaluated from absolute time (`/ui` motion: every visible state
+//! change is a spring; finite curves are for fixed-length choreography only).
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-use super::theme::{SCROLL_GLIDE, WHEEL_STEP};
+use super::theme::{GLIDE, WHEEL_STEP};
 
-/// Minimum-jerk position, 0 to 1, for `u` in 0 to 1.
-pub fn min_jerk(u: f32) -> f32 {
-    let u = u.clamp(0.0, 1.0);
-    u * u * u * (10.0 - 15.0 * u + 6.0 * u * u)
+/// A spring by its perceptual duration: at `duration` about 98.6 % of the
+/// way is covered. Critically damped (bounce 0), so it never overshoots.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Token {
+    pub duration: f32,
 }
 
-/// A value moving to `to`. A retarget starts from where the value is, with
-/// the speed it has, so it never jumps or stops dead.
+impl Token {
+    fn omega(self) -> f32 {
+        std::f32::consts::TAU / self.duration
+    }
+}
+
+/// A value moving to `target`. A retarget starts from where the value is,
+/// with the speed it has, so it never jumps or stops dead.
 #[derive(Clone, Copy, Debug)]
-pub struct Tween {
-    from: f32,
-    to: f32,
-    /// Initial speed in units per whole duration.
-    speed: f32,
+pub struct Spring {
+    target: f32,
+    /// Offset from `target` and speed (units per second) at `start`.
+    y0: f32,
+    v0: f32,
     start: Instant,
-    duration: Duration,
+    omega: f32,
+    /// Seconds after `start` at which the value is committed to `target`.
+    end: f32,
+    /// Distance from the target that counts as there, in units.
+    precision: f32,
 }
 
-impl Tween {
+/// Refresh rate the end test assumes for "moves less than `precision` in a
+/// frame"; a faster display only makes the remaining step smaller.
+const SLOWEST_FRAME_HZ: f32 = 60.0;
+
+impl Spring {
     pub fn settled(value: f32, now: Instant) -> Self {
         Self {
-            from: value,
-            to: value,
-            speed: 0.0,
+            target: value,
+            y0: 0.0,
+            v0: 0.0,
             start: now,
-            duration: Duration::ZERO,
+            omega: 1.0,
+            end: 0.0,
+            precision: 0.001,
         }
     }
 
-    fn progress(&self, now: Instant) -> f32 {
-        if self.duration.is_zero() {
-            return 1.0;
-        }
-        (now.saturating_duration_since(self.start).as_secs_f32() / self.duration.as_secs_f32())
-            .min(1.0)
+    /// The same spring, counting as settled within `precision` units
+    /// (pixels want 0.05, fractions the default 0.001).
+    pub fn with_precision(mut self, precision: f32) -> Self {
+        self.precision = precision;
+        self
     }
 
-    /// Quintic with the start speed, zero acceleration at both ends and zero
-    /// speed at the end; without a start speed it is minimum-jerk.
+    fn elapsed(&self, now: Instant) -> f32 {
+        now.saturating_duration_since(self.start).as_secs_f32()
+    }
+
+    /// Offset and speed `t` seconds after `start`.
+    fn at(&self, t: f32) -> (f32, f32) {
+        let b = self.v0 + self.omega * self.y0;
+        let e = (-self.omega * t).exp();
+        ((self.y0 + b * t) * e, (self.v0 - self.omega * b * t) * e)
+    }
+
     pub fn value(&self, now: Instant) -> f32 {
-        let u = self.progress(now);
-        let carry = u - 6.0 * u.powi(3) + 8.0 * u.powi(4) - 3.0 * u.powi(5);
-        self.from + (self.to - self.from) * min_jerk(u) + self.speed * carry
+        let t = self.elapsed(now);
+        if t >= self.end {
+            return self.target;
+        }
+        self.target + self.at(t).0
     }
 
     /// Units per second.
     pub fn velocity(&self, now: Instant) -> f32 {
-        let u = self.progress(now);
-        if u >= 1.0 {
-            return 0.0;
-        }
-        let ease = 30.0 * u * u - 60.0 * u.powi(3) + 30.0 * u.powi(4);
-        let carry = 1.0 - 18.0 * u * u + 32.0 * u.powi(3) - 15.0 * u.powi(4);
-        ((self.to - self.from) * ease + self.speed * carry) / self.duration.as_secs_f32()
+        let t = self.elapsed(now);
+        if t >= self.end { 0.0 } else { self.at(t).1 }
     }
 
     pub fn target(&self) -> f32 {
-        self.to
+        self.target
     }
 
     pub fn done(&self, now: Instant) -> bool {
-        self.progress(now) >= 1.0
+        self.elapsed(now) >= self.end
     }
 
-    pub fn retarget(&mut self, to: f32, duration: Duration, now: Instant) {
-        if to == self.to {
+    pub fn retarget(&mut self, to: f32, token: Token, now: Instant) {
+        if to == self.target {
             return;
         }
-        let (from, velocity) = (self.value(now), self.velocity(now));
-        *self = Self {
-            from,
-            to,
-            speed: velocity * duration.as_secs_f32(),
-            start: now,
-            duration,
+        let (value, velocity) = (self.value(now), self.velocity(now));
+        self.target = to;
+        self.y0 = value - to;
+        self.v0 = velocity;
+        self.start = now;
+        self.omega = token.omega();
+        self.end = self.settle_time(token);
+    }
+
+    /// First time at which the spring is within `precision` and moves less
+    /// than that per frame; from then on it is exactly at the target.
+    fn settle_time(&self, token: Token) -> f32 {
+        let step = token.duration / 200.0;
+        let near = |t: f32| {
+            let (y, v) = self.at(t);
+            y.abs() <= self.precision && v.abs() / SLOWEST_FRAME_HZ <= self.precision
         };
+        // A critically damped spring crosses the target at most once, so the
+        // last time it is not near is found by walking back from far out.
+        let mut t = 10.0 * token.duration;
+        while t > 0.0 && near(t - step) {
+            t -= step;
+        }
+        t
     }
 
     /// Jump without motion.
     pub fn set(&mut self, value: f32, now: Instant) {
-        *self = Self::settled(value, now);
+        *self = Self::settled(value, now).with_precision(self.precision);
     }
 }
 
 /// Vertical scroll of a page: wheel notches glide, a touchpad follows exactly.
 #[derive(Clone, Copy, Debug)]
 pub struct Scroll {
-    offset: Tween,
+    offset: Spring,
     max: f32,
 }
 
 impl Scroll {
     pub fn new(now: Instant) -> Self {
         Self {
-            offset: Tween::settled(0.0, now),
+            offset: Spring::settled(0.0, now).with_precision(0.05),
             max: 0.0,
         }
     }
@@ -107,16 +146,20 @@ impl Scroll {
         self.offset.value(now).clamp(0.0, self.max)
     }
 
+    pub fn max(&self) -> f32 {
+        self.max
+    }
+
     pub fn moving(&self, now: Instant) -> bool {
         !self.offset.done(now)
     }
 
-    /// Content taller than the viewport by `max`.
+    /// Content taller than the viewport by `max`. A resize follows at once
+    /// (on the no-animation list): the offset is clamped, not glided.
     pub fn set_max(&mut self, max: f32, now: Instant) {
         self.max = max.max(0.0);
         if self.offset.target() > self.max {
-            self.offset.set(self.offset(now), now);
-            self.offset.retarget(self.max, SCROLL_GLIDE, now);
+            self.offset.set(self.offset(now).min(self.max), now);
         }
     }
 
@@ -124,7 +167,7 @@ impl Scroll {
     pub fn wheel(&mut self, notches: i32, pixels: f32, now: Instant) {
         if notches != 0 {
             let to = (self.offset.target() + notches as f32 * WHEEL_STEP).clamp(0.0, self.max);
-            self.offset.retarget(to, SCROLL_GLIDE, now);
+            self.offset.retarget(to, GLIDE, now);
         } else {
             let to = (self.offset(now) + pixels).clamp(0.0, self.max);
             self.offset.set(to, now);
@@ -142,7 +185,6 @@ impl Scroll {
         } else {
             return;
         };
-        self.offset
-            .retarget(to.clamp(0.0, self.max), SCROLL_GLIDE, now);
+        self.offset.retarget(to.clamp(0.0, self.max), GLIDE, now);
     }
 }

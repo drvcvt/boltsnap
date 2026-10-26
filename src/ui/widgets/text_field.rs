@@ -7,6 +7,9 @@ use crate::ui::{Canvas, Effect, Key, Mods, Rect};
 
 /// Caret and selection height, centred on the line.
 const CARET_H: f32 = 16.0;
+/// The field follows the row's room between these.
+const MIN_W: f32 = 160.0;
+const MAX_W: f32 = 360.0;
 
 /// One line of text. Edits stay local until `Enter` or losing focus commits
 /// them; only a commit that differs counts as a change.
@@ -16,17 +19,15 @@ pub struct TextField {
     /// Byte indices; the selection runs between them.
     caret: usize,
     anchor: usize,
-    width: f32,
 }
 
 impl TextField {
-    pub fn new(text: &str, width: f32) -> Self {
+    pub fn new(text: &str) -> Self {
         Self {
             text: text.to_owned(),
             committed: text.to_owned(),
             caret: text.len(),
             anchor: text.len(),
-            width,
         }
     }
 
@@ -148,19 +149,24 @@ impl TextField {
 }
 
 impl Widget for TextField {
-    fn width(&self, _: &Fonts) -> f32 {
-        self.width
+    fn width(&self, _: &Fonts, room: f32) -> f32 {
+        room.clamp(MIN_W, MAX_W)
+    }
+
+    fn stretches(&self) -> bool {
+        true
     }
 
     fn draw(&self, canvas: &mut Canvas, fonts: &Fonts, rect: Rect, look: Look, _: Instant) {
-        surface(canvas, rect, &look);
+        // A press places the caret; the surface does not flash for it.
+        surface(canvas, rect, &Look { press: 0.0, ..look });
         let inner = Self::inner(rect);
         let shift = self.shift(fonts, inner.w);
         let x_of =
             |index: usize| inner.x + fonts.width(TextStyle::Label, &self.text[..index]) - shift;
         let line = Rect::new(inner.x, rect.y + (rect.h - CARET_H) / 2.0, inner.w, CARET_H);
         let range = self.selection();
-        if look.focus && !range.is_empty() {
+        if look.focused && !range.is_empty() {
             let (left, right) = (
                 x_of(range.start).max(inner.x),
                 x_of(range.end).min(inner.right()),
@@ -173,6 +179,19 @@ impl Widget for TextField {
             );
         }
         let baseline = fonts.baseline(TextStyle::Label, rect.y, rect.h);
+        if !look.focused {
+            // At rest a long path shows its start and its end.
+            let text = fonts.ellipsize_middle(TextStyle::Label, &self.text, inner.w);
+            fonts.draw(
+                canvas,
+                TextStyle::Label,
+                &text,
+                (inner.x, baseline),
+                look.text(),
+                1.0,
+            );
+            return;
+        }
         fonts.draw_clipped(
             canvas,
             TextStyle::Label,
@@ -182,7 +201,7 @@ impl Widget for TextField {
             1.0,
             inner,
         );
-        if look.focus {
+        if look.focused {
             // One device pixel wide, on a whole pixel.
             let x = (x_of(self.caret) * canvas.scale).round() / canvas.scale;
             canvas.fill(

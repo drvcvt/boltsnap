@@ -1,28 +1,30 @@
-//! The Boltsnap window's content: navigation on the left, one page of rows
-//! on the right. Knows nothing about the windowing system; the platform feeds
-//! it [`Input`] and shows what [`App::draw`] paints.
+//! The Boltsnap window's content: navigation on the left, one page of
+//! grouped rows on the right. Knows nothing about the windowing system; the
+//! platform feeds it [`Input`] and shows what [`App::draw`] paints.
 
 mod draw;
+mod fades;
 pub mod gallery;
+mod layout;
+pub mod measure;
+pub mod pages;
 
+#[cfg(test)]
+mod gates;
 #[cfg(test)]
 mod tests;
 
 use std::time::Instant;
 
+pub use fades::Channel;
+pub use layout::{Layout, RowParts};
+
 use crate::ui::icons::Icon;
-use crate::ui::motion::{Scroll, Tween};
+use crate::ui::motion::{Scroll, Spring};
 use crate::ui::text::Fonts;
-use crate::ui::theme::{
-    CTL_H, EDGE, GAP_M, GAP_S, GAP_XS, GROUP_GAP, HOVER_FADE, ICON, NAV_SLIDE, NAV_W, ROW_H, Rgb,
-    TextStyle,
-};
+use crate::ui::theme::{GAP_S, GLIDE, PAGE_RISE, Rgb, SNAP};
 use crate::ui::widgets::{self, Outcome, Widget};
 use crate::ui::{Effect, Input, Key, Mods, Rect};
-
-/// Hint line under a row's name.
-const LABEL_LINE: f32 = 16.0;
-const HINT_LINE: f32 = 14.0;
 
 pub struct Row {
     pub icon: Icon,
@@ -32,6 +34,8 @@ pub struct Row {
     pub enabled: bool,
 }
 
+/// A page is a list of blocks. Rows that follow each other share one group
+/// surface; a heading names the group below it.
 pub enum Block {
     Heading(String),
     Row(Row),
@@ -40,21 +44,6 @@ pub enum Block {
         text: String,
         color: Rgb,
     },
-    /// A line of text in one style, with a note on the right.
-    Specimen {
-        style: TextStyle,
-        text: String,
-        note: String,
-    },
-}
-
-impl Block {
-    fn height(&self) -> f32 {
-        match self {
-            Block::Heading(_) | Block::Specimen { .. } => CTL_H,
-            Block::Row(_) | Block::Banner { .. } => ROW_H,
-        }
-    }
 }
 
 pub struct Page {
@@ -72,29 +61,24 @@ pub enum Target {
     Control(usize),
 }
 
-/// Where a row's parts go.
-#[derive(Clone, Copy, Debug)]
-pub struct RowParts {
-    pub icon: Rect,
-    pub label: Rect,
-    pub hint: Option<Rect>,
-    pub control: Rect,
-}
-
 pub struct App {
     pub fonts: Fonts,
     pages: Vec<Page>,
     current: usize,
     /// The navigation selection's position, in entries.
-    nav: Tween,
+    nav: Spring,
+    /// 0 to 1 while the current page comes in.
+    page_in: Spring,
     size: (f32, f32),
     scroll: Scroll,
     focus: Option<Target>,
     pointer: Option<(f32, f32)>,
     /// The control that keeps the pointer from press to release.
-    capture: Option<usize>,
+    capture: Option<Target>,
     hover: Option<Target>,
-    fades: Vec<(Target, Tween)>,
+    fades: fades::Fades,
+    /// Spatial motion off: a page comes in without rising.
+    pub reduced_motion: bool,
 }
 
 impl App {
@@ -103,14 +87,16 @@ impl App {
             fonts,
             pages,
             current: 0,
-            nav: Tween::settled(0.0, now),
+            nav: Spring::settled(0.0, now),
+            page_in: Spring::settled(1.0, now),
             size,
             scroll: Scroll::new(now),
             focus: None,
             pointer: None,
             capture: None,
             hover: None,
-            fades: Vec::new(),
+            fades: fades::Fades::default(),
+            reduced_motion: false,
         };
         app.resize(size, now);
         app
@@ -128,15 +114,25 @@ impl App {
         &self.pages[self.current]
     }
 
+    pub fn pages(&self) -> &[Page] {
+        &self.pages
+    }
+
+    pub fn size(&self) -> (f32, f32) {
+        self.size
+    }
+
     /// The value of the control in `block` on the current page.
     pub fn value(&self, block: usize) -> Option<widgets::Value> {
         Some(self.row(block)?.control.value())
     }
 
+    /// A resize relayouts at once; it is on the no-animation list because it
+    /// follows the compositor.
     pub fn resize(&mut self, size: (f32, f32), now: Instant) {
         self.size = size;
-        let content = self.content_height();
-        self.scroll.set_max(content - size.1, now);
+        let height = self.layout_at(0.0, 0.0).height;
+        self.scroll.set_max(height - size.1, now);
     }
 
     /// The page by its navigation name, case-insensitive.
@@ -149,7 +145,6 @@ impl App {
             return false;
         };
         self.show(index, now);
-        self.nav.set(index as f32, now);
         true
     }
 
@@ -158,84 +153,29 @@ impl App {
             return;
         }
         self.blur(now);
+        self.unhover(now);
+        self.fades.forget_controls();
         self.current = index;
-        self.nav.retarget(index as f32, NAV_SLIDE, now);
+        self.nav.retarget(index as f32, SNAP, now);
+        self.page_in.set(0.0, now);
+        self.page_in.retarget(1.0, GLIDE, now);
         self.scroll = Scroll::new(now);
         self.capture = None;
         self.resize(self.size, now);
     }
 
-    pub fn nav_rect(index: usize) -> Rect {
-        Rect::new(
-            GAP_S,
-            GAP_S + index as f32 * (CTL_H + GAP_XS),
-            NAV_W - 2.0 * GAP_S,
-            CTL_H,
-        )
-    }
-
-    fn content_height(&self) -> f32 {
-        self.block_tops(0.0).last().map_or(0.0, |&(top, h)| top + h) + EDGE
-    }
-
-    /// Each block's (top, height) in page coordinates, `scroll` subtracted.
-    fn block_tops(&self, scroll: f32) -> Vec<(f32, f32)> {
-        let mut y = EDGE - scroll;
-        self.page()
-            .blocks
-            .iter()
-            .enumerate()
-            .map(|(index, block)| {
-                match block {
-                    Block::Heading(_) if index > 0 => y += GROUP_GAP,
-                    Block::Banner { .. } if index > 0 => y += GAP_S,
-                    _ => {}
-                }
-                let top = y;
-                y += block.height();
-                if matches!(block, Block::Banner { .. }) {
-                    y += GAP_S;
-                }
-                (top, block.height())
-            })
-            .collect()
-    }
-
-    /// Each block's rect in the window this frame.
-    pub fn block_rects(&self, now: Instant) -> Vec<Rect> {
-        let x = NAV_W + EDGE;
-        let w = self.size.0 - NAV_W - 2.0 * EDGE;
-        self.block_tops(self.scroll.offset(now))
-            .into_iter()
-            .map(|(top, h)| Rect::new(x, top, w, h))
-            .collect()
-    }
-
-    pub fn row_parts(&self, rect: Rect, row: &Row) -> RowParts {
-        let control_w = row.control.width(&self.fonts);
-        let control = Rect::new(
-            rect.right() - control_w,
-            rect.y + (rect.h - CTL_H) / 2.0,
-            control_w,
-            CTL_H,
-        );
-        let text_x = rect.x + ICON + GAP_S;
-        let text_w = (control.x - GAP_M - text_x).max(0.0);
-        let (label, hint) = if row.hint.is_some() {
-            let top = rect.y + (rect.h - LABEL_LINE - HINT_LINE) / 2.0;
-            (
-                Rect::new(text_x, top, text_w, LABEL_LINE),
-                Some(Rect::new(text_x, top + LABEL_LINE, text_w, HINT_LINE)),
-            )
+    /// How far below its place the page is while it comes in.
+    fn rise(&self, now: Instant) -> f32 {
+        if self.reduced_motion {
+            0.0
         } else {
-            (Rect::new(text_x, rect.y, text_w, rect.h), None)
-        };
-        RowParts {
-            icon: widgets::icon_box(label, rect.x, ICON),
-            label,
-            hint,
-            control,
+            PAGE_RISE * (1.0 - self.page_in.value(now))
         }
+    }
+
+    /// 0 to 1 while the current page fades in.
+    pub fn page_alpha(&self, now: Instant) -> f32 {
+        self.page_in.value(now).clamp(0.0, 1.0)
     }
 
     fn row(&self, block: usize) -> Option<&Row> {
@@ -257,33 +197,10 @@ impl App {
         Some(self.row_parts(rect, self.row(block)?).control)
     }
 
-    fn bounds(&self) -> Rect {
-        Rect::new(0.0, 0.0, self.size.0, self.size.1).inset(GAP_S)
-    }
-
-    /// The open list, if a control has one: (block, list rect).
-    fn open_overlay(&self, now: Instant) -> Option<(usize, Rect)> {
-        let rects = self.block_rects(now);
-        self.page()
-            .blocks
-            .iter()
-            .enumerate()
-            .find_map(|(index, block)| match block {
-                Block::Row(row) if row.control.overlay_open() => {
-                    let anchor = self.row_parts(rects[index], row).control;
-                    let list = row
-                        .control
-                        .overlay(anchor, self.bounds(), &self.fonts, now)?;
-                    Some((index, list))
-                }
-                _ => None,
-            })
-    }
-
     fn target_at(&self, (x, y): (f32, f32), now: Instant) -> Option<Target> {
-        if x < NAV_W {
+        if x < self.nav_w() {
             return (0..self.pages.len())
-                .find(|&index| Self::nav_rect(index).contains(x, y))
+                .find(|&index| self.nav_slot(index).contains(x, y))
                 .map(Target::Nav);
         }
         let rects = self.block_rects(now);
@@ -301,39 +218,48 @@ impl App {
             })
     }
 
+    /// The pointer is on `target` now; parts inside a control follow it.
     fn set_hover(&mut self, target: Option<Target>, now: Instant) {
-        if target == self.hover {
-            return;
-        }
-        for (to, which) in [(0.0, self.hover), (1.0, target)] {
-            let Some(which) = which else {
-                continue;
-            };
-            match self.fades.iter_mut().find(|(t, _)| *t == which) {
-                Some((_, fade)) => fade.retarget(to, HOVER_FADE, now),
-                None => {
-                    let mut fade = Tween::settled(0.0, now);
-                    fade.retarget(to, HOVER_FADE, now);
-                    self.fades.push((which, fade));
-                }
+        if target != self.hover {
+            if let Some(old) = self.hover {
+                self.fades.to(old, Channel::Hover, 0.0, now);
             }
+            if let Some(new) = target {
+                self.fades.to(new, Channel::Hover, 1.0, now);
+            }
+            self.part_hover(self.hover, None, now);
+            self.hover = target;
         }
-        self.hover = target;
-        self.fades
-            .retain(|(t, fade)| Some(*t) == target || !(fade.done(now) && fade.target() == 0.0));
+        self.part_hover(target, self.pointer, now);
     }
 
-    fn hover_of(&self, target: Target, now: Instant) -> f32 {
-        self.fades
-            .iter()
-            .find(|(t, _)| *t == target)
-            .map_or(0.0, |(_, fade)| fade.value(now).clamp(0.0, 1.0))
+    fn part_hover(&mut self, target: Option<Target>, at: Option<(f32, f32)>, now: Instant) {
+        let Some(Target::Control(block)) = target else {
+            return;
+        };
+        if let Some(rect) = self.control_rect(block, now)
+            && let Some(Block::Row(row)) = self.pages[self.current].blocks.get_mut(block)
+        {
+            row.control.hover(rect, at, &self.fonts, now);
+        }
+    }
+
+    fn unhover(&mut self, now: Instant) {
+        self.set_hover(None, now);
+    }
+
+    /// 0 to 1 for how much `target` shows `channel` this frame.
+    pub fn fade(&self, target: Target, channel: Channel, now: Instant) -> f32 {
+        self.fades.value(target, channel, now)
     }
 
     /// Leave the focused control, committing what it holds.
     fn blur(&mut self, now: Instant) -> Outcome {
-        let Some(Target::Control(block)) = self.focus.take() else {
-            self.focus = None;
+        let Some(old) = self.focus.take() else {
+            return Outcome::IGNORED;
+        };
+        self.fades.to(old, Channel::Focus, 0.0, now);
+        let Target::Control(block) = old else {
             return Outcome::IGNORED;
         };
         let Some(control) = self.control(block) else {
@@ -349,6 +275,9 @@ impl App {
         }
         let outcome = self.blur(now);
         self.focus = target;
+        if let Some(target) = target {
+            self.fades.to(target, Channel::Focus, 1.0, now);
+        }
         outcome
     }
 
@@ -380,48 +309,41 @@ impl App {
         };
         let outcome = self.set_focus(Some(order[next]), now);
         if let Target::Control(block) = order[next] {
-            let (top, h) = self.block_tops(0.0)[block];
+            let rect = self.layout_at(0.0, 0.0).blocks[block];
             self.scroll
-                .reveal(top - GAP_S, top + h + GAP_S, self.size.1, now);
+                .reveal(rect.y - GAP_S, rect.bottom() + GAP_S, self.size.1, now);
         }
         outcome
     }
 
     pub fn handle(&mut self, input: Input, now: Instant) -> Vec<Effect> {
         let outcome = match input {
-            Input::Move { x, y } => {
-                self.pointer = Some((x, y));
-                if let Some(block) = self.capture
-                    && let Some(rect) = self.control_rect(block, now)
-                {
-                    let fonts = &self.fonts;
-                    let control = match self.pages[self.current].blocks.get_mut(block) {
-                        Some(Block::Row(row)) => row.control.as_mut(),
-                        _ => return Vec::new(),
-                    };
-                    control.drag(rect, (x, y), fonts);
-                }
-                let target = self.target_at((x, y), now);
-                self.set_hover(target, now);
-                Outcome::HANDLED
-            }
+            Input::Move { x, y } => self.moved((x, y), now),
             Input::Leave => {
                 self.pointer = None;
-                self.set_hover(None, now);
+                self.unhover(now);
                 Outcome::HANDLED
             }
             Input::Press { x, y, clicks } => self.press((x, y), clicks, now),
             Input::Release => {
-                if let Some(block) = self.capture.take()
-                    && let Some(control) = self.control(block)
-                {
-                    control.release();
+                if let Some(target) = self.capture.take() {
+                    self.fades.to(target, Channel::Press, 0.0, now);
+                    if let Target::Control(block) = target
+                        && let Some(control) = self.control(block)
+                    {
+                        control.release(now);
+                    }
                 }
                 Outcome::HANDLED
             }
             Input::Wheel { notches, pixels } => {
                 if self.open_overlay(now).is_none() {
                     self.scroll.wheel(notches, pixels, now);
+                    // The page moves under a still pointer.
+                    if let Some(at) = self.pointer {
+                        let target = self.target_at(at, now);
+                        self.set_hover(target, now);
+                    }
                 }
                 Outcome::HANDLED
             }
@@ -434,6 +356,26 @@ impl App {
             },
         };
         outcome.effect.into_iter().collect()
+    }
+
+    fn moved(&mut self, at: (f32, f32), now: Instant) -> Outcome {
+        self.pointer = Some(at);
+        if let Some(Target::Control(block)) = self.capture
+            && let Some(rect) = self.control_rect(block, now)
+        {
+            let fonts = &self.fonts;
+            if let Some(Block::Row(row)) = self.pages[self.current].blocks.get_mut(block) {
+                row.control.drag(rect, at, fonts);
+            }
+        }
+        if let Some((block, list)) = self.open_overlay(now)
+            && let Some(control) = self.control(block)
+        {
+            control.overlay_hover(list, at, now);
+        }
+        let target = self.target_at(at, now);
+        self.set_hover(target, now);
+        Outcome::HANDLED
     }
 
     fn press(&mut self, at: (f32, f32), clicks: u8, now: Instant) -> Outcome {
@@ -451,10 +393,15 @@ impl App {
             }
             return outcome;
         }
-        match self.target_at(at, now) {
+        let target = self.target_at(at, now);
+        if let Some(target) = target {
+            self.capture = Some(target);
+            self.fades.to(target, Channel::Press, 1.0, now);
+        }
+        match target {
             Some(Target::Nav(index)) => {
                 self.show(index, now);
-                self.focus = None;
+                self.set_focus(None, now);
                 Outcome::HANDLED
             }
             Some(Target::Control(block)) => {
@@ -464,11 +411,7 @@ impl App {
                 let Some(Block::Row(row)) = self.pages[self.current].blocks.get_mut(block) else {
                     return Outcome::IGNORED;
                 };
-                let outcome = row.control.press(rect, at, clicks, fonts, now);
-                if outcome.handled {
-                    self.capture = Some(block);
-                }
-                outcome
+                row.control.press(rect, at, clicks, fonts, now)
             }
             None => self.set_focus(None, now),
         }
@@ -496,19 +439,21 @@ impl App {
                     _ => Outcome::IGNORED,
                 }
             }
-            Some(Target::Nav(_)) => match key {
-                Key::Up if self.current > 0 => {
-                    self.show(self.current - 1, now);
-                    self.focus = Some(Target::Nav(self.current));
-                    Outcome::HANDLED
+            Some(Target::Nav(_)) => {
+                let to = match key {
+                    Key::Up => self.current.checked_sub(1),
+                    Key::Down => Some(self.current + 1).filter(|&to| to < self.pages.len()),
+                    _ => None,
+                };
+                match to {
+                    Some(to) => {
+                        self.show(to, now);
+                        self.set_focus(Some(Target::Nav(to)), now);
+                        Outcome::HANDLED
+                    }
+                    None => Outcome::IGNORED,
                 }
-                Key::Down => {
-                    self.show(self.current + 1, now);
-                    self.focus = Some(Target::Nav(self.current));
-                    Outcome::HANDLED
-                }
-                _ => Outcome::IGNORED,
-            },
+            }
             None => Outcome::IGNORED,
         };
         if !outcome.handled && key == Key::Escape {
@@ -519,8 +464,9 @@ impl App {
 
     pub fn animating(&self, now: Instant) -> bool {
         !self.nav.done(now)
+            || !self.page_in.done(now)
             || self.scroll.moving(now)
-            || self.fades.iter().any(|(_, fade)| !fade.done(now))
+            || self.fades.moving(now)
             || self.page().blocks.iter().any(|block| match block {
                 Block::Row(row) => row.control.animating(now),
                 _ => false,

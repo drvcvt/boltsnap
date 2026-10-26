@@ -1,7 +1,8 @@
 use std::time::Instant;
 
-use super::{Look, Outcome, Value, Widget, icon_box, surface};
+use super::{Look, Outcome, Value, Widget, icon_box, light, surface};
 use crate::ui::icons::Icon;
+use crate::ui::motion::Spring;
 use crate::ui::text::Fonts;
 use crate::ui::theme::{self, CTL_H, GAP_S, ICON, RADIUS, TextStyle};
 use crate::ui::{Canvas, Key, Mods, Rect};
@@ -15,14 +16,20 @@ pub struct Stepper {
     value: i64,
     min: i64,
     max: i64,
+    /// `−` and `+`: under the pointer, and held down.
+    lit: [Spring; 2],
+    down: [Spring; 2],
 }
 
 impl Stepper {
-    pub fn new(value: i64, min: i64, max: i64) -> Self {
+    pub fn new(value: i64, min: i64, max: i64, now: Instant) -> Self {
+        let off = Spring::settled(0.0, now);
         Self {
             value: value.clamp(min, max),
             min,
             max,
+            lit: [off; 2],
+            down: [off; 2],
         }
     }
 
@@ -51,20 +58,31 @@ impl Stepper {
 }
 
 impl Widget for Stepper {
-    fn width(&self, fonts: &Fonts) -> f32 {
+    fn width(&self, fonts: &Fonts, _: f32) -> f32 {
         2.0 * CTL_H + self.value_width(fonts)
     }
 
-    fn draw(&self, canvas: &mut Canvas, fonts: &Fonts, rect: Rect, look: Look, _: Instant) {
-        surface(canvas, rect, &look);
+    fn draw(&self, canvas: &mut Canvas, fonts: &Fonts, rect: Rect, look: Look, now: Instant) {
+        // The buttons light on their own; the whole surface only for focus.
+        surface(
+            canvas,
+            rect,
+            &Look {
+                hover: 0.0,
+                press: 0.0,
+                ..look
+            },
+        );
         let (minus, plus) = Self::buttons(rect);
-        for (button, icon, live) in [
-            (minus, Icon::Minus, self.value > self.min),
-            (plus, Icon::Plus, self.value < self.max),
+        for (index, button, icon, live) in [
+            (0, minus, Icon::Minus, self.value > self.min),
+            (1, plus, Icon::Plus, self.value < self.max),
         ] {
             let live = live && look.enabled;
-            if live && look.over(button) {
-                canvas.fill(button.inset(INSET), RADIUS - INSET, theme::SELECTED, 1.0);
+            let lit = self.lit[index].value(now);
+            if live && lit > 0.0 {
+                let fill = theme::mix(theme::HOVER, theme::SELECTED, self.down[index].value(now));
+                canvas.fill(button.inset(INSET), RADIUS - INSET, fill, lit);
             }
             let color = if live { theme::TEXT } else { theme::DIM };
             let x = button.x + (button.w - ICON) / 2.0;
@@ -87,15 +105,34 @@ impl Widget for Stepper {
         Value::Int(self.value)
     }
 
-    fn press(&mut self, rect: Rect, (x, y): (f32, f32), _: u8, _: &Fonts, _: Instant) -> Outcome {
+    fn press(&mut self, rect: Rect, (x, y): (f32, f32), _: u8, _: &Fonts, now: Instant) -> Outcome {
         let (minus, plus) = Self::buttons(rect);
-        if minus.contains(x, y) {
-            self.set(self.value - 1)
+        let (index, by) = if minus.contains(x, y) {
+            (0, -1)
         } else if plus.contains(x, y) {
-            self.set(self.value + 1)
+            (1, 1)
         } else {
-            Outcome::HANDLED
-        }
+            return Outcome::HANDLED;
+        };
+        light(&mut self.down, |i| i == index, now);
+        self.set(self.value + by)
+    }
+
+    fn release(&mut self, now: Instant) {
+        light(&mut self.down, |_| false, now);
+    }
+
+    fn hover(&mut self, rect: Rect, at: Option<(f32, f32)>, _: &Fonts, now: Instant) {
+        let (minus, plus) = Self::buttons(rect);
+        let over = [minus, plus].map(|button| at.is_some_and(|(x, y)| button.contains(x, y)));
+        light(&mut self.lit, |index| over[index], now);
+    }
+
+    fn animating(&self, now: Instant) -> bool {
+        self.lit
+            .iter()
+            .chain(&self.down)
+            .any(|spring| !spring.done(now))
     }
 
     fn key(&mut self, key: Key, _: Mods, _: &Fonts, _: Instant) -> Outcome {

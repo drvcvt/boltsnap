@@ -1,0 +1,63 @@
+//! The pages' values from the config, as `Config::load()` has them in
+//! effect (Phase 5 asks the daemon instead).
+
+use std::path::Path;
+
+use boltsnap::app::pages::{AudioSource, Corner, Cursor, Prefs};
+
+use crate::config::{
+    Config, RecordAudioSource, RecordBothMode, RecordCursor, resolve_record_dir, resolve_save_dir,
+};
+use crate::shelf::layout;
+
+/// `path` with the home folder written as `~`, as people type it.
+fn tilde(path: &Path) -> String {
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    match home
+        .as_deref()
+        .and_then(|home| path.strip_prefix(home).ok())
+    {
+        Some(rest) if rest.as_os_str().is_empty() => "~".into(),
+        Some(rest) => format!("~/{}", rest.display()),
+        None => path.display().to_string(),
+    }
+}
+
+pub fn load() -> Prefs {
+    let cfg = Config::load();
+    let shelf = cfg.shelf_prefs();
+    let recording = cfg.recording_prefs();
+    let replay = Config::replay_settings().unwrap_or_default();
+    Prefs {
+        card_width: shelf.card.w,
+        visible_cards: shelf.visible as u32,
+        corner: match shelf.corner {
+            layout::Corner::TopLeft => Corner::TopLeft,
+            layout::Corner::TopRight => Corner::TopRight,
+            layout::Corner::BottomLeft => Corner::BottomLeft,
+            layout::Corner::BottomRight => Corner::BottomRight,
+        },
+        save_dir: tilde(&resolve_save_dir(None, &cfg)),
+        both_combined: recording.both_mode == RecordBothMode::Combined,
+        fps: cfg.record_profile().unwrap_or_default().fps(),
+        cursor: match recording.cursor {
+            RecordCursor::System => Cursor::System,
+            RecordCursor::Mellow => Cursor::Mellow,
+            RecordCursor::Quick => Cursor::Quick,
+        },
+        show_frame: recording.show_frame,
+        audio: recording.audio_enabled,
+        audio_source: match recording.audio_source {
+            RecordAudioSource::SystemAndMic => AudioSource::SystemAndMic,
+            RecordAudioSource::Mic => AudioSource::Mic,
+            RecordAudioSource::System => AudioSource::System,
+        },
+        record_dir: tilde(&resolve_record_dir(&cfg)),
+        disk_to_shelf: recording.disk_add_to_shelf,
+        shelf_to_disk_after: cfg.shelf_to_disk_after().map(|after| after.as_secs()),
+        replay_autostart: replay.autostart,
+        replay_seconds: replay.seconds,
+        replay_memory_mib: replay.memory_mib,
+        replay_fps: replay.fps,
+    }
+}

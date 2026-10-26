@@ -46,6 +46,16 @@ Was es **nicht** macht:
 - Wege: Tray-Einträge **Open Boltsnap…** (Library) und **Settings…** (ganz
   unten, über Quit, falls vorhanden), `boltsnap open` und `boltsnap settings`.
   Der Tray startet denselben Befehl als eigenen Prozess.
+- Launcher (Wunsch des Nutzers, 26.10.): ein sichtbarer Eintrag
+  `boltsnap.desktop` mit `Name=Boltsnap`, `Exec=boltsnap settings` (ab Phase 6
+  `boltsnap open`), `Icon=boltsnap`, `StartupWMClass=boltsnap` (gleich der
+  App-ID, damit Launcher und Docks das Fenster dem Eintrag zuordnen),
+  `Categories=Graphics;Utility;`. Das Logo als `hicolor`-Icon in 64, 128 und
+  256 px; 128 und 256 kommen unverändert aus `assets/windows/boltsnap.ico`
+  (enthält 16 bis 256 px), 64 ist `assets/icons/boltsnap-app-64.png`.
+  Installiert über `.deb`-Assets und `postInstall` im Flake; für
+  `cargo install` stehen die zwei `install`-Befehle im README. Das Binary
+  schreibt keine Dateien nach `~/.local/share` von selbst.
 - Eigener Prozess mit eigenem Wayland-Fenster (`xdg_toplevel`, App-ID
   `boltsnap`), ein Fenster für Library und Settings. Ein Absturz im Settings-UI trifft weder den Daemon
   noch eine laufende Aufnahme.
@@ -1256,6 +1266,145 @@ nicht, Tastatur erreicht alles, Scroll gleitet.
 | `src/` bekommt zwei neue Ordner | `src/` hat 6, danach 8; jede neue Datei unter 500 Zeilen |
 | Tastatur-Wiederholung mit calloop-Version | dieselbe calloop 0.13 wie SCTK (`Cargo.toml`-Kommentar), Build zeigt es |
 
+### Phase 4b: Überarbeitung nach `/ui` (26.10., Meldung des Nutzers)
+
+#### Befund
+
+Der Nutzer, nach dem ersten Öffnen: wirkt „sehr low quality“, zeigt einen
+Fehler, „nicht wie ein richtiges Settings-UI“, „nicht alles beim Resizen
+responded“. Live-Screenshot bei 946×1032 (gekachelt) und Code gegengelesen:
+
+| # | Befund | Beleg |
+| --- | --- | --- |
+| B1 | Der „Fehler“ ist das erfundene Demo-Banner der Galerie („config.toml has an error on line 3“), rot. Verstößt gegen „keine erfundenen Demo-Daten“. | `app/gallery.rs:64-68` |
+| B2 | Die Seite ist eine Testgalerie: lose Zeilen ohne Fläche, eine ganze Gruppe „Disabled“ als Duplikat, Werte ohne Bezug zur echten Config. Struktur nur über Abstand trägt bei 700 px breiten Zeilen nicht, Label und Control stehen 500 px auseinander. | Screenshot, `app/mod.rs:205-212` |
+| B3 | Inhalt läuft über die ganze Breite, ohne Höchstbreite; bei 1900 px Fenster noch weiter auseinander. | `block_rects`: `w = size.0 - NAV_W - 2·EDGE` |
+| B4 | Controls haben feste Breiten (Textfeld 240, Slider 160), die Navigation ist immer 184 breit, nichts stapelt: unter etwa 600 px wird das Label zur Ellipse, bei sehr schmalen Kacheln (Hyprland hält `min_size` gekachelt nicht ein) schneidet es ab. | `TextField::new(_, 240.0)`, `Slider` `TRACK_W`, `NAV_W` |
+| B5 | Motion ist Minimum-Jerk mit festen Dauern; `/ui` verlangt seit 25.10. Federn mit drei Tokens. Druck- und Fokuswechsel sind hart (kein Press-Zustand, Fokusfläche schaltet um), der Seitenwechsel tauscht den Inhalt hart. | `ui/motion.rs`, `widgets/mod.rs` `Look` |
+| B6 | Kein Scroll-Hinweis: lange Seiten zeigen nicht, dass es weitergeht. | `app/draw.rs` |
+| B7 | Die Gates aus `/ui` (Überlauf, Versalien-Zentrierung, Padding, Kontrast, Motion-Liste, Copy) gibt es nicht als Messung. | `app/tests.rs` |
+
+#### Richtung (ersetzt „Gestaltung“ oben, wo es abweicht)
+
+Dieselbe Familie wie die Recording-Controls, aber mit Flächen als Struktur:
+Gruppen liegen auf einer eigenen Fläche, wie in den Systemeinstellungen
+der großen Desktops, ohne Rahmen, Linien oder Schatten. Abweichung vom
+Abschnitt „Aufbau“ („Gruppen nur über Abstand“), Grund: B2.
+
+- **Flächen:** Inhalt `#121212` (`WINDOW`), Navigation `#171717`
+  (`SIDEBAR`, ganze Höhe), Gruppe `#1C1C1C` (`PANEL`), Control auf der
+  Gruppe `#262626` (`RAISE`), Hover `#2E2E2E`, gewählt/gedrückt `#3A3A3A`.
+  Text `#ECECEC`, Neben-Text `#9A9A9A`, gedimmt `#6A6A6A` (nur deaktiviert).
+  Akzent invertiert wie bisher (Schalter an, Slider-Füllung). Fehler
+  `#E5484D` nur für echte Fehler.
+- **Schrift:** `title` 18/600 (Seitentitel, neu sichtbar), `label` 13/500,
+  `heading` 13/600, `hint` 12/500, `key` 11/500.
+- **Abstände:** 4, 8, 12, 16, 24. Seitenrand 24, Titel zu erster Gruppe 16,
+  Gruppenkopf zu Fläche 8, zwischen Gruppen 24.
+- **Maße:** Controls 30 hoch, Radius 9; Gruppe Radius 12 (Padding 12 ≥
+  Radius 9, also kleinere Stufe innen); Zeile 46 (30 + 2×8), Gruppe innen
+  4 oben/unten und 12 links/rechts, damit Inhalt an allen vier Seiten 12
+  vom Rand der Fläche sitzt. Inhaltsspalte höchstens 680 breit, mittig im
+  Bereich rechts der Navigation. Navigation 200 breit, Einträge 30 hoch,
+  Rand 8.
+- **Responsiv**, in der Reihenfolge aus `/ui`: (1) Spalte schmaler bis
+  zum Fensterrand; Textfeld und Slider wachsen und schrumpfen mit der
+  Zeile (Textfeld 160 bis 360, Slider-Spur 120 bis 240). (2) Passt Label
+  (mindestens 120) plus Control nicht in die Zeile, stapelt die Zeile:
+  Label oben, Control darunter über die volle Zeilenbreite (Schalter und
+  Icon-Buttons bleiben rechts neben dem Label). (3) Unter 600 px
+  Fensterbreite zeigt die Navigation nur Icons (46 breit, Icon 16 frei
+  stehend). Mindestgröße des Fensters 360×320.
+- **Scroll-Hinweis:** dünner Daumen (4 breit, Radius 2) am rechten Rand
+  des Inhalts, nur wenn die Seite länger ist als das Fenster.
+
+#### Motion
+
+Drei Spring-Tokens, kritisch gedämpft (`bounce 0`), analytisch aus
+absoluter Zeit, Retarget übernimmt Wert und Geschwindigkeit
+(`/ui` motion.md §4, §5):
+
+| Token | Dauer | Wofür |
+| --- | --- | --- |
+| `QUICK` | 150 ms | Hover, Druck, Fokus, Liste ein/aus, Text heller |
+| `SNAP` | 200 ms | Schalterknopf, Auswahl im Segment, Auswahl in der Navigation, Markierung in der offenen Liste |
+| `GLIDE` | 300 ms | Mausrad-Scroll, Scroll zum fokussierten Control, Seitenwechsel (Inhalt blendet ein und steigt 6 px) |
+
+Vorschlag für „Ohne Animation“ (entscheidet der Nutzer; bis dahin so
+gebaut): Tippen, Caret und Textauswahl im Textfeld; die Zahl in Slider und
+Stepper (der Knopf gleitet, die Zahl wechselt); Neu-Layout beim Resize
+(folgt dem Compositor direkt). Alles andere animiert. Reduced Motion: der
+Desktop meldet hier keine Einstellung; `App::reduced_motion` lässt den
+6-px-Weg beim Seitenwechsel weg, die Blende bleibt (Test).
+
+#### Inhalt
+
+Die Galerie fliegt aus dem Fenster. `boltsnap settings` zeigt die Seiten
+und Zeilen aus der Tabelle oben mit den echten Werten aus
+`Config::load()` (über ein reines `app::pages::Prefs` in der Lib, damit
+Phase 5 nur die Quelle tauscht):
+
+- Shelf: Card size, Cards shown, Position.
+- Screenshots: Save folder.
+- Recording: Both displays, Frame rate, Cursor, Show frame; Audio, Audio
+  source; Video folder, Disk save also to shelf, Shelf to disk after.
+- Replay: Start with daemon, Length, Memory, Frame rate.
+
+Was eine Liste vom System braucht (Display, Codec, Font, Replay Display,
+Bitrate) und der Ordner-Dialog kommen mit Phase 5. Bis Phase 5 schreibt
+das Fenster nichts; oben steht deshalb ein ruhiges Info-Banner „Preview:
+changes here are not saved yet“ (Neben-Text-Farbe, kein Rot). Die Galerie
+bleibt als Stress-Fixture für Tests und `--render --fixture` (lange
+Labels, langer Pfad, deaktivierte Varianten).
+
+#### Gates (als Tests, Zahlen in den Bericht)
+
+1. **Überlauf:** jede Seite plus Fixture bei 360, 480, 760 und 1400 px
+   Breite: jedes Teil einer Zeile liegt in seiner Gruppe (12 Rand),
+   Label und Control überlappen nicht, die offene Liste liegt im Fenster.
+2. **Versalien:** Pixelmessung im Render (Scale 2): Abstand Versalien-Oberkante
+   zu Control-Oberkante gegen Grundlinie zu Unterkante, `|off| ≤ 0,5`
+   logische px, je Control-Art mit Text. Einmal mit dem echten UI-Font
+   (Outfit) über einen `#[ignore]`-Test im Bin-Crate.
+3. **Padding und Achsen:** Gruppen-Innenabstand an allen vier Seiten 12
+   (±0,5); Label-Mitte gleich Control-Mitte in einzeiligen Zeilen; Icon
+   ≤ Textgröße.
+4. **Kontrast:** alle genutzten Text/Fläche-Paare ≥ 4,5:1 (deaktiviert
+   ausgenommen).
+5. **Motion:** Feder-Tests (exaktes Ende, Retarget stetig in Wert und
+   Geschwindigkeit, gleiche Bahn bei 60/120/144 Hz, Deckkraft in [0, 1]),
+   Liste der Zustandswechsel oben.
+6. **Texte:** Test über alle Strings der Seiten: keine Ausrufezeichen,
+   keine Gedankenstriche, Satzanfang groß, Rest klein (Ausnahmen: Einheiten,
+   „FPS“-freie Zahlen), Denylist aus `/ui`.
+7. **Screenshot:** `--render` bei 360, 760 und 1400 Breite angesehen.
+
+#### Code
+
+- `ui/motion.rs`: `Spring` ersetzt `Tween` (gleiche Methoden, `retarget`
+  nimmt ein Token), `Scroll` auf `GLIDE`.
+- `ui/theme.rs`: Farben, Maße, Tokens wie oben; `Duration`-Konstanten
+  entfallen.
+- `ui/widgets/`: `Look` bekommt `press` und `focus` als Wert (0 bis 1),
+  `focused` bleibt Bool für die Logik; `Widget::width(fonts, room)`;
+  Textfeld und Slider flexibel; Dropdown-Markierung gleitet.
+- `app/layout.rs` (neu): Spalte, Gruppen-Flächen, Zeilen samt Stapeln,
+  kompakte Navigation; `app/mod.rs` gibt das ab und bleibt unter 500.
+- `app/pages.rs` (neu): `Prefs` und die echten Seiten. `app/gallery.rs`
+  wird zur Fixture.
+- `app/draw.rs`: Navigation-Fläche, Gruppen, Titel, Scroll-Daumen,
+  Seitenblende.
+- `app/gates.rs` (neu, `cfg(test)`): Gates 1 bis 6.
+- `linux/app/`: `Prefs` aus `Config`, `--render … [--size WxH]
+  [--fixture]`, Mindestgröße 360×320.
+
+#### Was Phase 4b nicht macht
+
+- Kein Schreiben, kein IPC, keine System-Listen, kein Ordner-Dialog,
+  kein Tray- oder Launcher-Eintrag (Phase 5).
+- Kein Hell-Theme, kein Fractional Scaling, keine Tooltips.
+
+
 ## 6. Reihenfolge
 
 Jede Phase ist ein eigener Commit (oder wenige), baut, testet und lässt den
@@ -1300,7 +1449,8 @@ kollidieren sie nicht mit Phase 1.
    Datei bedienbar und live testbar.
 4. **UI-Grundlage:** Aktivierungs-Probe, Fenster, Theme, Text, Icons,
    Widgets, Offscreen-Render; eine Testseite.
-5. **Settings-Seiten, Tray-Einträge, `boltsnap settings`**, README
+5. **Settings-Seiten, Tray-Einträge, `boltsnap settings`, Launcher-Eintrag
+   mit Logo** (Abschnitt 2, Öffnen), README
    (Support-Matrix, Konfiguration), `docs/codebase.md`. Die Library-Seiten
    sind bis Phase 6 nicht in der Navigation.
 6. **Library** nach dem [Library-Plan](2026-10-24-library.md): `boltsnap open`,
@@ -1387,5 +1537,6 @@ Vom Nutzer am 24.10. so bestätigt:
 | 4, Schritt 2 | umgesetzt 26.10.: `src/ui/` (Lib) mit `mod.rs` (`Rect`, `Canvas` mit Scale, abgerundete Flächen), `theme.rs` (Farben, Schriftskala Title/Label/Heading/Hint/Key, Abstände, Maße, Dauern), `text.rs` (`Fonts`, Breite, Versalhöhe aus dem `H`-Umriss, Baseline auf Versalien-Mitte, Ellipse, Caret-Positionen, Zeichnen premultipliziert), `icons.rs` (Sprite-Parser für die sieben Elemente, Pfadbefehle samt kompakter Zahlen und Bögen nach F.6.5, Zeichnen auf ganze Pixel mit Strich 1,5), `motion.rs` (Minimum-Jerk, `Tween` mit Retarget samt Geschwindigkeit, `Scroll`); `assets/icons/ui/lucide.svg` mit 20 Symbolen plus `LICENSE`. Abweichungen: Sprite statt Einzeldateien (siehe Code-Liste); der eingebettete Font hat kein „…“, `ellipsize` nimmt dann drei Punkte. Tests: 10 (`ui::tests`). Checks: `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test --lib ui::` grün. |
 | 4, Schritt 3 | umgesetzt 26.10.: `src/ui/widgets/` (Trait `Widget` mit `Look`, `Outcome`, `Value`; Schalter, Segment, Dropdown mit eigener Liste im Fenster, Slider, Stepper, Textfeld, Icon-Button, Banner), `Input`/`Key`/`Mods`/`Effect` und `Clicks` (Doppelklick aus Wayland-Zeiten) in `ui/mod.rs`, Text mit Clip; `src/app/` mit `App` (Navigation mit gleitender Auswahl, Blöcke Heading/Row/Banner/Specimen, Hover-Fades, Fokus und Tab-Reihenfolge, Zeiger-Capture beim Ziehen, Overlay zuerst bei Klicks, Scroll mit Reveal), `draw.rs`, `gallery.rs` (Seiten Widgets und Text, je Widget eine deaktivierte Variante); `linux/app/mod.rs` mit `boltsnap settings --render PAGE OUT.png [--scale N]`, Windows meldet „settings are not available on Windows“ (inline in `windows/mod.rs`, der Ordner hat schon 12 Dateien). Abweichungen 6 bis 8 oben. Offscreen-Render beider Seiten bei Scale 1 und 2 angesehen: Rand und Achsen gleich, Icons auf Versalien-Mitte, Ellipse mit „…“ im echten Font. Tests: 14 (`app::tests`: Geometrie, Tab-Reihenfolge, je Widget Maus und Tastatur, Doppelklick, Hover-Fade und Verlassen, Seitenwechsel und Schließen, Scroll bis zum Ende, Zeichnen bei Scale 1 und 2). Checks: `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test` 65 + 367 grün, `git diff --check`. |
 | 4, Schritt 4 | umgesetzt 26.10.: `linux/app/window.rs` (SCTK-Fenster App-ID `boltsnap`, Server-Deko angefordert, Minimum 560×400, `SlotPool`, ganzzahliger Buffer-Scale aus `scale_factor_changed`, jede Zeichnung fordert einen Frame-Callback an und die nächste wartet darauf, Copy über einen Thread mit `wl-clipboard-rs` im Vordergrund, Paste über einen Thread zurück per calloop-Kanal), `input.rs` (Zeiger mit `ThemedPointer` und `Clicks`, Rad mit `discrete`/`absolute`, Tastatur mit Wiederholung, `key_input`), `single.rs` (Lock `boltsnap-app.lock` über `ipc::lock_file`, Socket `boltsnap-app.sock`, Zeile `raise <page>`; Abweichung: Namen mit Präfix `boltsnap-app.`, weil sie direkt in `XDG_RUNTIME_DIR` liegen), `boltsnap settings [PAGE]`. Live mit dem Debug-Build: Fenster erscheint und zeichnet die Galerie; zweiter Aufruf `boltsnap settings text` endet nach 8 ms, aktiv wird `boltsnap`, weiter genau ein Fenster und derselbe Prozess, Seite Text, Layout folgt der gekachelten Breite 946 px; Schließen per `hl.dsp.window.close` beendet den Prozess (xdg `close`), Fokus danach zurück auf das vorherige Fenster. Screenshots per `boltsnap full --no-copy -o` (Zwischenablage unberührt). Tests: `key_input` (Tab mit Shift, Space, Ctrl+Buchstabe trotz Steuerzeichen, Umlaut als Text, Modifier allein), `read_raise`. Checks: `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test` 65 + 369 grün. Offen durch den Nutzer: Hover flackert nicht, Tastatur erreicht alles, Scroll gleitet. |
+| 4b | umgesetzt 26.10. nach „Phase 4b: Überarbeitung nach `/ui`“ (Abschnitt 5). Federn (`Spring`, analytisch, kritisch gedämpft, Retarget mit Geschwindigkeit, Ende über Schwellen) ersetzen `Tween`; Tokens `QUICK` 150, `SNAP` 200, `GLIDE` 300 ms. Hover, Druck und Fokus je Ziel über `app/fades.rs`; Segment-Teile und Stepper-Knöpfe leuchten mit eigener Feder, die Dropdown-Markierung gleitet, eine neue Seite blendet ein und steigt 6 px. `app/layout.rs`: Spalte (höchstens 680, mittig), Gruppenflächen, Zeilen 46, Stapeln, schmale Navigation unter 600 px; Mindestgröße 360×320. `app/pages.rs` mit den echten Werten (`linux/app/prefs.rs` aus `Config::load()`), Banner „Preview: changes here are not saved yet“; Galerie als Stress-Fixture. Text mit Kerning, geschütztes Leerzeichen, Pfade ohne Fokus in der Mitte gekürzt. Sprite um 13 Lucide-Symbole erweitert (`history` heißt im Sprite `rotate-ccw-clock`), `layout-grid` und `type` entfallen. Abweichungen: Segment-Teile werden bei Platzmangel nach Inhalt breit statt gleich breit (sonst stapelt „System and mic“ schon bei 760 px mit dem eingebetteten Font); Zeilennamen nach README-Bedeutung („Show saved videos on the shelf“, „Keep long shelf saves“, „Corner“, „Start with Boltsnap“); `--measure` als CLI für die Messung mit dem echten Font statt eines `#[ignore]`-Tests. Gates (gemessen): Überlauf 399 Teile in ihrer Gruppe bei 360/480/760/1400 px, jede offene Liste im Fenster; Versalien-Abstand oben gegen unten 0,00 px je Control-Art mit eingebettetem Font und mit Outfit (`--measure`), Gegenprobe erkennt 1 px Versatz als 2,0; Gruppen-Innenabstand 12 an allen vier Seiten (Abweichung 0,00), gemeinsame Mittellinie Abweichung 0,00; Kontrast 12 Paare, niedrigstes 4,83:1 (`SUB` auf `HOVER`); Copy 66 Strings ohne Treffer; Screenshots bei 360, 760 und 1400 angesehen. Checks: `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test` 75 + 369 grün, `git diff --check`. Live (Debug-Build, gekachelt 946×1032): Fenster zeichnet die Recording-Seite, Hover hellt Segment-Teil und Dropdown auf (Fläche 38 → 46), Verlassen nimmt ihn zurück; Fokus und Cursor danach zurückgestellt. Nicht live prüfbar: Bewegung innerhalb einer Fläche (Hyprlands `cursor.move` meldet dem Client nur das Betreten), Klicks, Resize per Maus. Offen: „Ohne Animation“-Liste durch den Nutzer bestätigen; Augenschein durch den Nutzer. |
 | 5 | geplant, freigegeben 24.10. |
 | 6 (Library) | Skizze im Library-Plan |

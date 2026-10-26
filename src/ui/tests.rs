@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use tiny_skia::PathBuilder;
 
 use super::icons::{self, Icon};
-use super::motion::{Scroll, Tween, min_jerk};
+use super::motion::{Scroll, Spring};
 use super::text::Fonts;
 use super::theme::{self, TextStyle};
 use super::{Canvas, Rect};
@@ -152,49 +152,102 @@ fn ellipsize_fits_and_marks_the_cut() {
 }
 
 #[test]
-fn minimum_jerk_runs_from_rest_to_rest() {
-    assert_eq!(min_jerk(0.0), 0.0);
-    assert!((min_jerk(0.5) - 0.5).abs() < 1e-6);
-    assert_eq!(min_jerk(1.0), 1.0);
+fn ellipsize_middle_keeps_both_ends_of_a_path() {
+    let fonts = Fonts::fallback();
+    let style = TextStyle::Label;
+    let path = "/home/someone/Videos/boltsnap/recordings/2026/final";
+    let cut = fonts.ellipsize_middle(style, path, 160.0);
+    assert!(fonts.width(style, &cut) <= 160.0);
+    let (head, tail) = cut.split_once("...").expect("cut in the middle");
+    assert!(path.starts_with(head) && path.ends_with(tail));
+    assert!(!head.is_empty() && tail.ends_with("final"));
+}
+
+const T: Duration = Duration::from_millis(200);
+
+fn token() -> super::motion::Token {
+    super::motion::Token { duration: 0.2 }
+}
+
+#[test]
+fn a_spring_starts_at_rest_covers_its_perceptual_duration_and_ends_exactly() {
     let now = Instant::now();
-    let mut tween = Tween::settled(0.0, now);
-    tween.retarget(100.0, Duration::from_millis(200), now);
-    assert_eq!(tween.value(now), 0.0);
-    assert_eq!(tween.velocity(now), 0.0);
-    assert!((tween.value(now + Duration::from_millis(100)) - 50.0).abs() < 0.01);
-    assert_eq!(tween.value(now + Duration::from_millis(250)), 100.0);
-    assert!(tween.done(now + Duration::from_millis(200)));
+    let mut spring = Spring::settled(0.0, now);
+    spring.retarget(100.0, token(), now);
+    assert_eq!(spring.value(now), 0.0);
+    assert_eq!(spring.velocity(now), 0.0);
+    // At its duration a critically damped spring is about 98.6 % there.
+    let at = spring.value(now + T);
+    assert!((98.0..100.0).contains(&at), "{at}");
+    // Never past the target.
+    for ms in 0..1000 {
+        assert!(spring.value(now + Duration::from_millis(ms)) <= 100.0);
+    }
+    let end = now + Duration::from_secs(1);
+    assert!(spring.done(end));
+    assert_eq!(spring.value(end), 100.0);
+    assert_eq!(spring.velocity(end), 0.0);
 }
 
 #[test]
 fn a_retarget_keeps_position_and_speed() {
     let now = Instant::now();
-    let mut tween = Tween::settled(0.0, now);
-    tween.retarget(100.0, Duration::from_millis(200), now);
-    let at = now + Duration::from_millis(80);
-    let (position, speed) = (tween.value(at), tween.velocity(at));
-    tween.retarget(-40.0, Duration::from_millis(200), at);
-    assert!((tween.value(at) - position).abs() < 0.001);
-    assert!((tween.velocity(at) - speed).abs() < 0.01 * speed.abs());
-    assert_eq!(tween.value(at + Duration::from_millis(200)), -40.0);
+    let mut spring = Spring::settled(0.0, now);
+    spring.retarget(100.0, token(), now);
+    let at = now + Duration::from_millis(60);
+    let (position, speed) = (spring.value(at), spring.velocity(at));
+    assert!(speed > 0.0);
+    spring.retarget(-40.0, token(), at);
+    assert!((spring.value(at) - position).abs() < 1e-3);
+    assert!((spring.velocity(at) - speed).abs() < 1e-3 * speed.abs());
+    assert_eq!(spring.value(at + Duration::from_secs(1)), -40.0);
+}
+
+#[test]
+fn a_spring_lies_on_one_path_whatever_the_frame_rate() {
+    let now = Instant::now();
+    let retarget_at = now + Duration::from_millis(50);
+    let mut runs = Vec::new();
+    for hz in [60.0, 120.0, 144.0] {
+        let mut spring = Spring::settled(0.0, now);
+        spring.retarget(1.0, token(), now);
+        let mut frame = 0.0;
+        // Sample like a display at `hz`, retarget at the same instant.
+        loop {
+            let t = now + Duration::from_secs_f64(frame / hz);
+            if t >= retarget_at {
+                break;
+            }
+            let _ = spring.value(t);
+            frame += 1.0;
+        }
+        spring.retarget(0.25, token(), retarget_at);
+        runs.push([80, 120, 200, 400].map(|ms| spring.value(now + Duration::from_millis(ms))));
+    }
+    assert!(runs.windows(2).all(|pair| pair[0] == pair[1]), "{runs:?}");
 }
 
 #[test]
 fn wheel_notches_glide_and_a_touchpad_follows_exactly() {
     let now = Instant::now();
+    let settled = Duration::from_secs(1);
     let mut scroll = Scroll::new(now);
     scroll.set_max(100.0, now);
     scroll.wheel(1, 0.0, now);
     assert_eq!(scroll.offset(now), 0.0);
     assert!(scroll.moving(now));
-    let later = now + theme::SCROLL_GLIDE;
+    let later = now + settled;
     assert_eq!(scroll.offset(later), theme::WHEEL_STEP);
     // A second notch mid-glide aims one notch further, clamped to the end.
     let mid = now + Duration::from_millis(60);
     scroll.wheel(2, 0.0, mid);
-    assert_eq!(scroll.offset(mid + theme::SCROLL_GLIDE), 100.0);
-    scroll.wheel(0, -30.0, later + theme::SCROLL_GLIDE);
-    assert_eq!(scroll.offset(later + theme::SCROLL_GLIDE), 70.0);
-    scroll.reveal(10.0, 40.0, 50.0, later + theme::SCROLL_GLIDE);
-    assert_eq!(scroll.offset(later + theme::SCROLL_GLIDE * 3), 10.0);
+    assert_eq!(scroll.offset(mid + settled), 100.0);
+    scroll.wheel(0, -30.0, later + settled);
+    assert_eq!(scroll.offset(later + settled), 70.0);
+    scroll.reveal(10.0, 40.0, 50.0, later + settled);
+    assert_eq!(scroll.offset(later + settled * 2), 10.0);
+    // A resize that shortens the page clamps at once.
+    scroll.set_max(5.0, later + settled * 2);
+    assert_eq!(scroll.offset(later + settled * 2), 5.0);
+    assert!(!scroll.moving(later + settled * 2));
 }

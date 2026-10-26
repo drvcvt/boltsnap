@@ -2,9 +2,9 @@ use std::time::Instant;
 
 use super::{Look, Outcome, Value, Widget, icon_box, surface};
 use crate::ui::icons::Icon;
-use crate::ui::motion::Tween;
+use crate::ui::motion::Spring;
 use crate::ui::text::Fonts;
-use crate::ui::theme::{self, CTL_H, GAP_M, GAP_S, GAP_XS, ICON, LIST_FADE, RADIUS, TextStyle};
+use crate::ui::theme::{self, CTL_H, GAP_M, GAP_S, GAP_XS, ICON, QUICK, RADIUS, SNAP, TextStyle};
 use crate::ui::{Canvas, Key, Mods, Rect};
 
 /// One choice out of a short list. The list is drawn in the window, below
@@ -15,9 +15,10 @@ pub struct Dropdown {
     /// Takes input; a closing list still fades but no longer does.
     open: bool,
     /// 0 closed, 1 open.
-    fade: Tween,
-    /// The entry the keyboard points at.
+    fade: Spring,
+    /// The marked entry, by keyboard or pointer; its surface glides there.
     highlight: usize,
+    mark: Spring,
 }
 
 impl Dropdown {
@@ -27,20 +28,22 @@ impl Dropdown {
             highlight: 0,
             items,
             open: false,
-            fade: Tween::settled(0.0, now),
+            fade: Spring::settled(0.0, now),
+            mark: Spring::settled(0.0, now),
         }
     }
 
     fn show(&mut self, now: Instant) -> Outcome {
         self.open = true;
         self.highlight = self.chosen;
-        self.fade.retarget(1.0, LIST_FADE, now);
+        self.mark.set(self.chosen as f32, now);
+        self.fade.retarget(1.0, QUICK, now);
         Outcome::HANDLED
     }
 
     fn hide(&mut self, now: Instant) {
         self.open = false;
-        self.fade.retarget(0.0, LIST_FADE, now);
+        self.fade.retarget(0.0, QUICK, now);
     }
 
     fn choose(&mut self, index: usize, now: Instant) -> Outcome {
@@ -59,13 +62,23 @@ impl Dropdown {
         )
     }
 
+    fn mark_at(&mut self, index: usize, now: Instant) -> Outcome {
+        self.highlight = index;
+        self.mark.retarget(index as f32, SNAP, now);
+        Outcome::HANDLED
+    }
+
     fn entry_at(&self, list: Rect, (x, y): (f32, f32)) -> Option<usize> {
         (0..self.items.len()).find(|&index| Self::entry(list, index).contains(x, y))
     }
 }
 
 impl Widget for Dropdown {
-    fn width(&self, fonts: &Fonts) -> f32 {
+    fn stretches(&self) -> bool {
+        true
+    }
+
+    fn width(&self, fonts: &Fonts, _: f32) -> f32 {
         let widest = self
             .items
             .iter()
@@ -99,6 +112,10 @@ impl Widget for Dropdown {
         Value::Choice(self.chosen)
     }
 
+    fn labels(&self) -> Vec<&str> {
+        self.items.iter().map(String::as_str).collect()
+    }
+
     fn press(&mut self, _: Rect, _: (f32, f32), _: u8, _: &Fonts, now: Instant) -> Outcome {
         if self.open {
             self.hide(now);
@@ -116,22 +133,10 @@ impl Widget for Dropdown {
             };
         }
         match key {
-            Key::Up => {
-                self.highlight = self.highlight.saturating_sub(1);
-                Outcome::HANDLED
-            }
-            Key::Down => {
-                self.highlight = (self.highlight + 1).min(self.items.len() - 1);
-                Outcome::HANDLED
-            }
-            Key::Home => {
-                self.highlight = 0;
-                Outcome::HANDLED
-            }
-            Key::End => {
-                self.highlight = self.items.len() - 1;
-                Outcome::HANDLED
-            }
+            Key::Up => self.mark_at(self.highlight.saturating_sub(1), now),
+            Key::Down => self.mark_at((self.highlight + 1).min(self.items.len() - 1), now),
+            Key::Home => self.mark_at(0, now),
+            Key::End => self.mark_at(self.items.len() - 1, now),
             Key::Enter | Key::Space => self.choose(self.highlight, now),
             Key::Escape => {
                 self.hide(now);
@@ -142,7 +147,7 @@ impl Widget for Dropdown {
     }
 
     fn animating(&self, now: Instant) -> bool {
-        !self.fade.done(now)
+        !self.fade.done(now) || !self.mark.done(now)
     }
 
     fn overlay(&self, anchor: Rect, bounds: Rect, _: &Fonts, now: Instant) -> Option<Rect> {
@@ -164,28 +169,16 @@ impl Widget for Dropdown {
         self.open
     }
 
-    fn draw_overlay(
-        &self,
-        canvas: &mut Canvas,
-        fonts: &Fonts,
-        list: Rect,
-        pointer: Option<(f32, f32)>,
-        now: Instant,
-    ) {
+    fn draw_overlay(&self, canvas: &mut Canvas, fonts: &Fonts, list: Rect, now: Instant) {
         let alpha = self.fade.value(now).clamp(0.0, 1.0);
         canvas.fill(list, RADIUS, theme::HOVER, alpha);
-        let lit = if self.open {
-            pointer
-                .and_then(|at| self.entry_at(list, at))
-                .or(Some(self.highlight))
-        } else {
-            None
+        let mark = Rect {
+            y: Self::entry(list, 0).y + self.mark.value(now) * CTL_H,
+            ..Self::entry(list, 0)
         };
+        canvas.fill(mark, RADIUS - GAP_XS, theme::SELECTED, alpha);
         for (index, item) in self.items.iter().enumerate() {
             let entry = Self::entry(list, index);
-            if lit == Some(index) {
-                canvas.fill(entry, RADIUS - GAP_XS, theme::SELECTED, alpha);
-            }
             let check_x = entry.right() - GAP_M - ICON;
             fonts.draw_in(
                 canvas,
@@ -203,6 +196,15 @@ impl Widget for Dropdown {
             if index == self.chosen {
                 Icon::Check.draw(canvas, icon_box(entry, check_x, ICON), theme::TEXT, alpha);
             }
+        }
+    }
+
+    fn overlay_hover(&mut self, list: Rect, at: (f32, f32), now: Instant) {
+        if self.open
+            && let Some(index) = self.entry_at(list, at)
+            && index != self.highlight
+        {
+            self.mark_at(index, now);
         }
     }
 

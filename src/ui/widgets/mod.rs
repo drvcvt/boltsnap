@@ -19,30 +19,32 @@ pub use stepper::Stepper;
 pub use switch::Switch;
 pub use text_field::TextField;
 
+use super::motion::Spring;
 use super::text::Fonts;
 use super::theme::{self, Rgb};
 use super::{Canvas, Effect, Key, Mods, Rect};
 
-/// How a control should look this frame.
+/// How a control should look this frame. The page fades every value with a
+/// spring; `focused` is the plain state for logic such as the caret.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Look {
-    /// 0 to 1, faded in and out by the page.
+    /// 0 to 1 each.
     pub hover: f32,
-    pub focus: bool,
+    pub press: f32,
+    pub focus: f32,
+    pub focused: bool,
     pub enabled: bool,
-    /// The pointer, when it is over the control, for parts that light up on
-    /// their own.
-    pub pointer: Option<(f32, f32)>,
 }
 
 impl Look {
-    /// The control's surface: one step lighter on hover and focus.
+    /// The control's surface: one step lighter on hover and focus, one more
+    /// while pressed.
     pub fn surface(&self) -> Rgb {
         if !self.enabled {
             return theme::RAISE;
         }
-        let lift = if self.focus { 1.0 } else { self.hover };
-        theme::mix(theme::RAISE, theme::HOVER, lift)
+        let lifted = theme::mix(theme::RAISE, theme::HOVER, self.hover.max(self.focus));
+        theme::mix(lifted, theme::SELECTED, self.press)
     }
 
     pub fn text(&self) -> Rgb {
@@ -51,10 +53,6 @@ impl Look {
         } else {
             theme::DIM
         }
-    }
-
-    pub fn over(&self, rect: Rect) -> bool {
-        self.enabled && self.pointer.is_some_and(|(x, y)| rect.contains(x, y))
     }
 }
 
@@ -104,12 +102,24 @@ pub enum Value {
 }
 
 pub trait Widget {
-    /// Width the control wants; its height is always `theme::CTL_H`.
-    fn width(&self, fonts: &Fonts) -> f32;
+    /// Width the control wants when `room` is free beside the row's name;
+    /// more than `room` makes the row stack. Its height is always
+    /// `theme::CTL_H`.
+    fn width(&self, fonts: &Fonts, room: f32) -> f32;
+
+    /// In a stacked row, the control takes the row's whole width.
+    fn stretches(&self) -> bool {
+        false
+    }
 
     fn draw(&self, canvas: &mut Canvas, fonts: &Fonts, rect: Rect, look: Look, now: Instant);
 
     fn value(&self) -> Value;
+
+    /// The words the control shows, for the copy check.
+    fn labels(&self) -> Vec<&str> {
+        Vec::new()
+    }
 
     /// A press inside `rect`. A control that returns `handled` keeps the
     /// pointer until the release.
@@ -129,7 +139,11 @@ pub trait Widget {
         Outcome::IGNORED
     }
 
-    fn release(&mut self) {}
+    fn release(&mut self, _now: Instant) {}
+
+    /// The pointer is at `at` over the control, or left it (`None`); for
+    /// parts that light up on their own.
+    fn hover(&mut self, _rect: Rect, _at: Option<(f32, f32)>, _fonts: &Fonts, _now: Instant) {}
 
     fn key(&mut self, _key: Key, _mods: Mods, _fonts: &Fonts, _now: Instant) -> Outcome {
         Outcome::IGNORED
@@ -159,15 +173,10 @@ pub trait Widget {
         false
     }
 
-    fn draw_overlay(
-        &self,
-        _canvas: &mut Canvas,
-        _fonts: &Fonts,
-        _list: Rect,
-        _pointer: Option<(f32, f32)>,
-        _now: Instant,
-    ) {
-    }
+    fn draw_overlay(&self, _canvas: &mut Canvas, _fonts: &Fonts, _list: Rect, _now: Instant) {}
+
+    /// The pointer moved while the overlay is open.
+    fn overlay_hover(&mut self, _list: Rect, _at: (f32, f32), _now: Instant) {}
 
     /// A press while the overlay is open; `list` is where it is drawn.
     fn overlay_press(&mut self, _list: Rect, _at: (f32, f32), _now: Instant) -> Outcome {
@@ -175,6 +184,13 @@ pub trait Widget {
     }
 
     fn close_overlay(&mut self, _now: Instant) {}
+}
+
+/// Fades toward 1 where `on`, 0 elsewhere; one spring per part.
+pub(crate) fn light(springs: &mut [Spring], on: impl Fn(usize) -> bool, now: Instant) {
+    for (index, spring) in springs.iter_mut().enumerate() {
+        spring.retarget(f32::from(u8::from(on(index))), theme::QUICK, now);
+    }
 }
 
 /// The control's rounded surface.

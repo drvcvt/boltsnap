@@ -3,7 +3,7 @@ use std::time::Instant;
 use super::{Look, Outcome, Value, Widget, icon_box, surface};
 use crate::ui::icons::Icon;
 use crate::ui::text::Fonts;
-use crate::ui::theme::{self, CTL_H, GAP_M, GAP_S, ICON, ICON_ALONE, RADIUS, TextStyle};
+use crate::ui::theme::{self, CTL_H, GAP_M, GAP_S, ICON, ICON_ALONE, PANEL_RADIUS, TextStyle};
 use crate::ui::{Canvas, Key, Mods, Rect};
 
 /// A square button with one icon. Its value counts the presses, so the page
@@ -25,7 +25,7 @@ impl IconButton {
 }
 
 impl Widget for IconButton {
-    fn width(&self, _: &Fonts) -> f32 {
+    fn width(&self, _: &Fonts, _: f32) -> f32 {
         CTL_H
     }
 
@@ -52,8 +52,8 @@ impl Widget for IconButton {
     }
 }
 
-/// A notice across the page: icon and one line of text on a surface, padded
-/// the same on all sides.
+/// A notice across the page: icon and one line of text on a group's
+/// surface, padded the same on all sides.
 pub fn draw_banner(
     canvas: &mut Canvas,
     fonts: &Fonts,
@@ -62,7 +62,7 @@ pub fn draw_banner(
     text: &str,
     color: theme::Rgb,
 ) {
-    canvas.fill(rect, RADIUS, theme::RAISE, 1.0);
+    canvas.fill(rect, PANEL_RADIUS, theme::PANEL, 1.0);
     let line = rect.inset(GAP_M);
     icon.draw(canvas, icon_box(line, line.x, ICON), color, 1.0);
     let x = line.x + ICON + GAP_S;

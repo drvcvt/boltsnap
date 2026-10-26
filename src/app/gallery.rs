@@ -1,14 +1,21 @@
-//! Test pages for Phase 4: every control in every state, and the type
-//! scale. Values stay in the window; nothing is saved.
+//! A stress fixture, not a page anyone sees: every control enabled and
+//! disabled, with the longest strings `/ui` asks for (a 200 character path,
+//! a compound word over 60 characters, a long list entry). Tests run the
+//! gates over it; `boltsnap settings --render PAGE OUT --fixture` draws it.
 
 use std::time::Instant;
 
 use super::{Block, Page, Row};
 use crate::ui::icons::Icon;
-use crate::ui::theme::{self, TextStyle};
+use crate::ui::theme;
 use crate::ui::widgets::{
     Dropdown, IconButton, Part, Segment, Slider, Stepper, Switch, TextField, Widget,
 };
+
+pub const LONG_PATH: &str = "/home/someone/Videos/boltsnap/recordings/2026/october/\
+     a-folder-name-that-keeps-going-because-people-name-folders-like-this/\
+     and-then-one-more-level-for-good-measure/final";
+pub const COMPOUND: &str = "Bildschirmaufnahmeeinstellungsänderungsbenachrichtigungsfenster";
 
 fn row(icon: Icon, label: &str, hint: Option<&str>, control: Box<dyn Widget>) -> Block {
     Block::Row(Row {
@@ -20,62 +27,54 @@ fn row(icon: Icon, label: &str, hint: Option<&str>, control: Box<dyn Widget>) ->
     })
 }
 
-fn disabled(block: Block) -> Block {
-    match block {
-        Block::Row(row) => Block::Row(Row {
-            enabled: false,
-            ..row
-        }),
-        other => other,
-    }
-}
-
-fn frame_rates(now: Instant) -> Box<Dropdown> {
-    let items = ["30 fps", "60 fps", "120 fps", "144 fps", "240 fps"];
-    Box::new(Dropdown::new(
-        items.iter().map(|item| item.to_string()).collect(),
-        2,
-        now,
-    ))
-}
-
-fn corners(now: Instant) -> Box<Segment> {
-    Box::new(Segment::new(
-        vec![
-            Part::icon(Icon::ArrowUpLeft),
-            Part::icon(Icon::ArrowUpRight),
-            Part::icon(Icon::ArrowDownLeft),
-            Part::icon(Icon::ArrowDownRight),
-        ],
-        2,
-        now,
-    ))
-}
-
-fn widgets_page(now: Instant) -> Page {
-    let both = || {
-        Box::new(Segment::new(
-            vec![Part::text("Separate"), Part::text("Combined")],
+fn controls(now: Instant) -> Vec<Block> {
+    let list = || {
+        Box::new(Dropdown::new(
+            vec![
+                "Focused display".into(),
+                "DP-1 (disconnected)".into(),
+                "Both displays, side by side".into(),
+            ],
             0,
             now,
         ))
     };
-    let blocks = vec![
-        Block::Banner {
-            icon: Icon::TriangleAlert,
-            text: "config.toml has an error on line 3; showing the last good values".into(),
-            color: theme::ERROR,
-        },
-        Block::Heading("Toggles".into()),
+    vec![
         row(
             Icon::Volume2,
             "Audio",
             Some("Applies to the next recording"),
             Box::new(Switch::new(true, now)),
         ),
-        row(Icon::Monitor, "Both displays", None, both()),
-        row(Icon::LayoutGrid, "Position", None, corners(now)),
-        Block::Heading("Values".into()),
+        row(
+            Icon::Mic,
+            "Source",
+            None,
+            Box::new(Segment::new(
+                vec![
+                    Part::text("System and mic"),
+                    Part::text("Mic"),
+                    Part::text("System"),
+                ],
+                0,
+                now,
+            )),
+        ),
+        row(
+            Icon::Scan,
+            "Corner",
+            None,
+            Box::new(Segment::new(
+                vec![
+                    Part::icon(Icon::ArrowUpLeft),
+                    Part::icon(Icon::ArrowUpRight),
+                    Part::icon(Icon::ArrowDownLeft),
+                    Part::icon(Icon::ArrowDownRight),
+                ],
+                2,
+                now,
+            )),
+        ),
         row(
             Icon::Scaling,
             "Card size",
@@ -83,24 +82,17 @@ fn widgets_page(now: Instant) -> Page {
             Box::new(Slider::new(190, (140, 380, 10), "px")),
         ),
         row(
-            Icon::Layers,
+            Icon::GalleryVerticalEnd,
             "Cards shown",
             None,
-            Box::new(Stepper::new(5, 1, 8)),
+            Box::new(Stepper::new(5, 1, 8, now)),
         ),
-        row(Icon::Gauge, "Frame rate", None, frame_rates(now)),
-        Block::Heading("Text".into()),
+        row(Icon::Monitor, "Display", None, list()),
         row(
             Icon::Folder,
-            "Save folder",
-            Some("Will be created"),
-            Box::new(TextField::new("~/Pictures/boltsnap", 240.0)),
-        ),
-        row(
-            Icon::FolderOpen,
-            "Choose folder",
-            None,
-            Box::new(IconButton::new(Icon::FolderOpen)),
+            COMPOUND,
+            Some(LONG_PATH),
+            Box::new(TextField::new(LONG_PATH)),
         ),
         row(
             Icon::RotateCcw,
@@ -108,80 +100,44 @@ fn widgets_page(now: Instant) -> Page {
             None,
             Box::new(IconButton::new(Icon::RotateCcw)),
         ),
-        Block::Heading("Disabled".into()),
-        disabled(row(
-            Icon::Volume2,
-            "Audio",
-            Some("Daemon not running"),
-            Box::new(Switch::new(true, now)),
-        )),
-        disabled(row(Icon::Monitor, "Both displays", None, both())),
-        disabled(row(
-            Icon::Scaling,
-            "Card size",
-            None,
-            Box::new(Slider::new(300, (140, 380, 10), "px")),
-        )),
-        disabled(row(
-            Icon::Layers,
-            "Cards shown",
-            None,
-            Box::new(Stepper::new(1, 1, 8)),
-        )),
-        disabled(row(Icon::Gauge, "Frame rate", None, frame_rates(now))),
-        disabled(row(
-            Icon::Folder,
-            "Save folder",
-            None,
-            Box::new(TextField::new("~/Pictures/boltsnap", 240.0)),
-        )),
-        disabled(row(
-            Icon::RotateCcw,
-            "Reset to default",
-            None,
-            Box::new(IconButton::new(Icon::RotateCcw)),
-        )),
-    ];
-    Page {
-        name: "Widgets".into(),
-        icon: Icon::LayoutGrid,
-        blocks,
-    }
+    ]
 }
 
-fn text_page() -> Page {
-    let specimen = |style, note: &str| Block::Specimen {
-        style,
-        text: "Shelf cards and recordings 0123456789".into(),
-        note: note.into(),
-    };
-    Page {
-        name: "Text".into(),
-        icon: Icon::Type,
-        blocks: vec![
-            Block::Heading("Type scale".into()),
-            specimen(TextStyle::Title, "Title 15/600"),
-            specimen(TextStyle::Label, "Label 13/500"),
-            specimen(TextStyle::Heading, "Heading 13/600"),
-            specimen(TextStyle::Hint, "Hint 12/500"),
-            specimen(TextStyle::Key, "Key 11/500"),
-            Block::Heading("Cut to fit".into()),
-            Block::Specimen {
-                style: TextStyle::Label,
-                text: "/home/someone/Videos/boltsnap/recordings/2026/october/a folder name long \
-                       enough that it has to end in an ellipsis before the note"
-                    .into(),
-                note: "Label".into(),
-            },
-            Block::Banner {
-                icon: Icon::Info,
-                text: "Values on these pages stay in this window".into(),
-                color: theme::SUB,
-            },
-        ],
-    }
+fn disabled(blocks: Vec<Block>) -> Vec<Block> {
+    blocks
+        .into_iter()
+        .map(|block| match block {
+            Block::Row(row) => Block::Row(Row {
+                enabled: false,
+                ..row
+            }),
+            other => other,
+        })
+        .collect()
 }
 
 pub fn pages(now: Instant) -> Vec<Page> {
-    vec![widgets_page(now), text_page()]
+    let mut first = vec![
+        Block::Banner {
+            icon: Icon::TriangleAlert,
+            text: format!("config.toml cannot be read: {LONG_PATH}"),
+            color: theme::ERROR,
+        },
+        Block::Heading(COMPOUND.into()),
+    ];
+    first.extend(controls(now));
+    let mut second = vec![Block::Heading("Disabled".into())];
+    second.extend(disabled(controls(now)));
+    vec![
+        Page {
+            name: "Controls".into(),
+            icon: Icon::Layers,
+            blocks: first,
+        },
+        Page {
+            name: COMPOUND.into(),
+            icon: Icon::Power,
+            blocks: second,
+        },
+    ]
 }

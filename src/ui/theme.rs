@@ -1,32 +1,40 @@
 //! The window's look, in one place: the recording controls' family (dark,
-//! opaque, `shelf/paint/controls.rs`). Nothing outside this file names a
-//! colour, a text size or a spacing value.
+//! opaque, `shelf/paint/controls.rs`), with groups on their own surface.
+//! Nothing outside this file names a colour, a text size, a spacing value or
+//! a spring. Values: settings plan, Phase 4b.
 
-use std::time::Duration;
+use super::motion::Token;
 
 pub type Rgb = (u8, u8, u8);
 
+/// The page behind the groups.
 pub const WINDOW: Rgb = (0x12, 0x12, 0x12);
-/// Controls and the navigation's selection.
-pub const RAISE: Rgb = (0x22, 0x22, 0x22);
+/// The navigation column, full height.
+pub const SIDEBAR: Rgb = (0x17, 0x17, 0x17);
+/// A group of rows.
+pub const PANEL: Rgb = (0x1C, 0x1C, 0x1C);
+/// Controls, and the navigation's selection.
+pub const RAISE: Rgb = (0x26, 0x26, 0x26);
 /// One step above `RAISE`: hover and keyboard focus.
-pub const HOVER: Rgb = (0x2A, 0x2A, 0x2A);
+pub const HOVER: Rgb = (0x2E, 0x2E, 0x2E);
+/// The chosen part of a segment, a pressed control and an open list's
+/// marked entry: a step above `HOVER`, so the choice still reads under the
+/// pointer.
+pub const SELECTED: Rgb = (0x3A, 0x3A, 0x3A);
 pub const TEXT: Rgb = (0xEC, 0xEC, 0xEC);
-pub const SUB: Rgb = (0x96, 0x96, 0x96);
+pub const SUB: Rgb = (0x9A, 0x9A, 0x9A);
+/// Disabled text only.
 pub const DIM: Rgb = (0x6A, 0x6A, 0x6A);
 pub const ERROR: Rgb = (0xE5, 0x48, 0x4D);
-/// The chosen part of a segment and an open list's hovered entry: a step
-/// above `HOVER`, so the choice still reads while the pointer is on it.
-pub const SELECTED: Rgb = (0x38, 0x38, 0x38);
-/// The one emphasis: a switch that is on and a slider's value, inverted like
-/// the controls' primary button.
+/// The one emphasis: a switch that is on and a slider's filled part,
+/// inverted like the controls' primary button.
 pub const ACCENT: Rgb = TEXT;
 pub const ON_ACCENT: Rgb = WINDOW;
 
 /// The type scale. Hierarchy within a step comes from weight and colour.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TextStyle {
-    /// Page title, 15/600.
+    /// Page title, 18/600.
     Title,
     /// Row names and control text, 13/500.
     Label,
@@ -41,7 +49,7 @@ pub enum TextStyle {
 impl TextStyle {
     pub const fn px(self) -> f32 {
         match self {
-            TextStyle::Title => 15.0,
+            TextStyle::Title => 18.0,
             TextStyle::Label | TextStyle::Heading => 13.0,
             TextStyle::Hint => 12.0,
             TextStyle::Key => 11.0,
@@ -65,29 +73,48 @@ pub fn mix(a: Rgb, b: Rgb, t: f32) -> Rgb {
 pub const GAP_XS: f32 = 4.0;
 pub const GAP_S: f32 = 8.0;
 pub const GAP_M: f32 = 12.0;
-/// The window edge and the page's padding.
-pub const EDGE: f32 = 16.0;
-/// Between groups of rows.
-pub const GROUP_GAP: f32 = 24.0;
+pub const GAP_L: f32 = 16.0;
+/// The page's edge and the space between groups.
+pub const GAP_XL: f32 = 24.0;
 
 /// Every control is this tall (≈ 2× the label size).
 pub const CTL_H: f32 = 30.0;
+/// Controls and navigation entries.
 pub const RADIUS: f32 = 9.0;
-/// A row: one control plus 7 above and below.
-pub const ROW_H: f32 = 44.0;
+/// A group's surface. Its content sits `GAP_M` in, more than `RADIUS`, so
+/// the controls inside take the smaller step instead of a concentric one.
+pub const PANEL_RADIUS: f32 = 12.0;
+/// A row: one control plus `GAP_S` above and below. A group adds `GAP_XS`
+/// above its first and below its last row, so its content sits `GAP_M`
+/// from every edge.
+pub const ROW_H: f32 = CTL_H + 2.0 * GAP_S;
 /// Icon box next to `Label` text: never larger than the text, so the
 /// navigation uses it too.
 pub const ICON: f32 = 13.0;
-/// A standalone icon, alone on an icon-only button.
+/// A standalone icon: on an icon-only button and in the narrow navigation.
 pub const ICON_ALONE: f32 = 16.0;
-pub const NAV_W: f32 = 184.0;
+pub const NAV_W: f32 = 200.0;
+/// The navigation with icons only: one square entry plus its edge.
+pub const NAV_NARROW_W: f32 = CTL_H + 2.0 * GAP_S;
+/// Below this window width the navigation shows icons only.
+pub const NAV_NARROW_BELOW: f32 = 600.0;
+/// The widest the column of groups gets.
+pub const CONTENT_MAX: f32 = 680.0;
+/// Room a row's name keeps before the row stacks its control below.
+pub const LABEL_MIN: f32 = 120.0;
+/// The scroll thumb.
+pub const THUMB_W: f32 = 4.0;
 /// Icon stroke in logical pixels at any icon size.
 pub const STROKE: f32 = 1.5;
 
-pub const HOVER_FADE: Duration = Duration::from_millis(90);
-pub const KNOB_SLIDE: Duration = Duration::from_millis(140);
-pub const NAV_SLIDE: Duration = Duration::from_millis(180);
-pub const LIST_FADE: Duration = Duration::from_millis(90);
-pub const SCROLL_GLIDE: Duration = Duration::from_millis(160);
+/// Hover, press, focus, a list opening, text getting brighter.
+pub const QUICK: Token = Token { duration: 0.15 };
+/// A switch's knob, a segment's choice, the navigation's selection, the
+/// marked entry of an open list.
+pub const SNAP: Token = Token { duration: 0.20 };
+/// Wheel scroll, scrolling to the focused control, a page coming in.
+pub const GLIDE: Token = Token { duration: 0.30 };
+/// How far a new page rises while it fades in.
+pub const PAGE_RISE: f32 = 6.0;
 /// One mouse-wheel notch.
 pub const WHEEL_STEP: f32 = 48.0;

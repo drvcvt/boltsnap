@@ -2,13 +2,14 @@
 //! window, so a crash here never touches the daemon or a recording.
 
 mod input;
+mod prefs;
 mod single;
 mod window;
 
 use std::path::Path;
 use std::time::Instant;
 
-use boltsnap::app::{App, gallery};
+use boltsnap::app::{App, Page, gallery, pages};
 use boltsnap::ui::text::Fonts;
 use boltsnap::ui::{Canvas, Input};
 use calloop::generic::Generic;
@@ -22,27 +23,72 @@ use wayland_client::{Connection, globals::registry_queue_init};
 
 use crate::DynResult;
 use window::{OPEN_SIZE as SIZE, Parts, Win};
-const USAGE: &str =
-    "usage: boltsnap settings [PAGE]\n       boltsnap settings --render PAGE OUT.png [--scale N]";
+const USAGE: &str = "usage: boltsnap settings [PAGE]\n       \
+     boltsnap settings --render PAGE OUT.png [--scale N] [--size WxH] [--fixture]\n       \
+     boltsnap settings --measure";
+
+/// How `--render` draws.
+struct Render {
+    scale: u32,
+    size: (u32, u32),
+    fixture: bool,
+}
+
+fn render_options(mut rest: &[String]) -> DynResult<Render> {
+    let mut render = Render {
+        scale: 1,
+        size: SIZE,
+        fixture: false,
+    };
+    while let Some((flag, more)) = rest.split_first() {
+        rest = more;
+        match flag.as_str() {
+            "--fixture" => render.fixture = true,
+            "--scale" | "--size" => {
+                let (value, more) = rest.split_first().ok_or(USAGE)?;
+                rest = more;
+                if flag == "--scale" {
+                    render.scale = value
+                        .parse()
+                        .ok()
+                        .filter(|scale| (1..=4).contains(scale))
+                        .ok_or("--scale takes 1 to 4")?;
+                } else {
+                    render.size = value
+                        .split_once('x')
+                        .and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)))
+                        .filter(|&(w, h): &(u32, u32)| {
+                            (200..=4000).contains(&w) && (200..=4000).contains(&h)
+                        })
+                        .ok_or("--size takes WxH, 200 to 4000 each")?;
+                }
+            }
+            _ => return Err(USAGE.into()),
+        }
+    }
+    Ok(render)
+}
 
 pub fn cli(args: &[String]) -> DynResult<()> {
     match args {
         [flag, page, out, rest @ ..] if flag == "--render" => {
-            let scale = match rest {
-                [] => 1,
-                [flag, scale] if flag == "--scale" => scale
-                    .parse()
-                    .ok()
-                    .filter(|scale| (1..=4).contains(scale))
-                    .ok_or("--scale takes 1 to 4")?,
-                _ => return Err(USAGE.into()),
-            };
-            render(page, Path::new(out), scale)
+            render(page, Path::new(out), render_options(rest)?)
+        }
+        [flag] if flag == "--measure" => {
+            // The capitals gate with the real UI font (settings plan, 4b).
+            for (what, offset) in boltsnap::app::measure::cap_offsets(fonts()) {
+                println!("{what:<12} {offset:+.2} px");
+            }
+            Ok(())
         }
         [] => run(None),
         [page] if !page.starts_with('-') => run(Some(page)),
         _ => Err(USAGE.into()),
     }
+}
+
+fn settings_pages(now: Instant) -> Vec<Page> {
+    pages::pages(&prefs::load(), now)
 }
 
 /// The UI face the selector and the recording controls use.
@@ -54,15 +100,22 @@ fn fonts() -> Fonts {
 }
 
 /// Draw `page` without a window, as the window would show it at first.
-pub fn render(page: &str, out: &Path, scale: u32) -> DynResult<()> {
+fn render(page: &str, out: &Path, render: Render) -> DynResult<()> {
     let now = Instant::now();
-    let size = (SIZE.0 as f32, SIZE.1 as f32);
-    let mut app = App::new(fonts(), gallery::pages(now), size, now);
+    let (w, h) = render.size;
+    let pages = if render.fixture {
+        gallery::pages(now)
+    } else {
+        settings_pages(now)
+    };
+    let mut app = App::new(fonts(), pages, (w as f32, h as f32), now);
     if !app.show_named(page, now) {
         return Err(format!("no page named '{page}'").into());
     }
-    let mut canvas = Canvas::new(SIZE.0, SIZE.1, scale).ok_or("empty canvas")?;
-    app.draw(&mut canvas, now);
+    // The page has come in; nothing is moving.
+    let settled = now + std::time::Duration::from_secs(2);
+    let mut canvas = Canvas::new(w, h, render.scale).ok_or("empty canvas")?;
+    app.draw(&mut canvas, settled);
     canvas
         .pixmap
         .save_png(out)
@@ -74,7 +127,7 @@ pub fn render(page: &str, out: &Path, scale: u32) -> DynResult<()> {
 fn run(page: Option<&str>) -> DynResult<()> {
     let now = Instant::now();
     let size = (SIZE.0 as f32, SIZE.1 as f32);
-    let mut app = App::new(fonts(), gallery::pages(now), size, now);
+    let mut app = App::new(fonts(), settings_pages(now), size, now);
     if let Some(page) = page
         && !app.show_named(page, now)
     {

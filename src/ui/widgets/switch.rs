@@ -1,9 +1,9 @@
 use std::time::Instant;
 
 use super::{Look, Outcome, Value, Widget};
-use crate::ui::motion::Tween;
+use crate::ui::motion::Spring;
 use crate::ui::text::Fonts;
-use crate::ui::theme::{self, KNOB_SLIDE};
+use crate::ui::theme::{self, SNAP};
 use crate::ui::{Canvas, Key, Mods, Rect};
 
 const TRACK_W: f32 = 36.0;
@@ -16,14 +16,14 @@ const KNOB_INSET: f32 = 3.0;
 pub struct Switch {
     on: bool,
     /// 0 is off, 1 is on.
-    knob: Tween,
+    knob: Spring,
 }
 
 impl Switch {
     pub fn new(on: bool, now: Instant) -> Self {
         Self {
             on,
-            knob: Tween::settled(f32::from(u8::from(on)), now),
+            knob: Spring::settled(f32::from(u8::from(on)), now),
         }
     }
 
@@ -34,14 +34,13 @@ impl Switch {
 
     fn toggle(&mut self, now: Instant) -> Outcome {
         self.on = !self.on;
-        self.knob
-            .retarget(f32::from(u8::from(self.on)), KNOB_SLIDE, now);
+        self.knob.retarget(f32::from(u8::from(self.on)), SNAP, now);
         Outcome::CHANGED
     }
 }
 
 impl Widget for Switch {
-    fn width(&self, _: &Fonts) -> f32 {
+    fn width(&self, _: &Fonts, _: f32) -> f32 {
         TRACK_W
     }
 
