@@ -89,6 +89,24 @@ impl Default for RecordingPrefs {
     }
 }
 
+/// `[shelf]`: how big the cards are, how many show, and where.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ShelfPrefs {
+    pub card: crate::shelf::thumbnail::CardSize,
+    pub visible: usize,
+    pub corner: crate::shelf::layout::Corner,
+}
+
+impl Default for ShelfPrefs {
+    fn default() -> Self {
+        Self {
+            card: crate::shelf::thumbnail::CardSize::DEFAULT,
+            visible: 5,
+            corner: crate::shelf::layout::Corner::default(),
+        }
+    }
+}
+
 /// Parsed `~/.config/boltsnap/config.toml`. A missing file, an unset key or an
 /// invalid value leaves the field `None`; defaults are applied by the
 /// `resolve_*` helpers. What was invalid is kept in `issues`.
@@ -110,6 +128,9 @@ pub struct Config {
     /// Font family for boltsnap's own chrome (selector overlay, shelf). Unset
     /// follows the desktop font.
     pub ui_font: Option<String>,
+    shelf_card_width: Option<i64>,
+    shelf_visible_cards: Option<i64>,
+    shelf_corner: Option<String>,
     issues: Vec<settings::Issue>,
 }
 
@@ -206,6 +227,9 @@ impl Config {
             record_audio_source: text("record_audio_source"),
             record_shelf_to_disk_after_seconds: doc.int("record_shelf_to_disk_after_seconds"),
             ui_font: text("ui_font"),
+            shelf_card_width: doc.int("shelf.card_width"),
+            shelf_visible_cards: doc.int("shelf.visible_cards"),
+            shelf_corner: text("shelf.corner"),
             issues,
         }
     }
@@ -232,6 +256,24 @@ impl Config {
             None => Some(std::time::Duration::from_secs(60)),
             Some(seconds) if seconds > 0 => Some(std::time::Duration::from_secs(seconds as u64)),
             Some(_) => None,
+        }
+    }
+
+    pub fn shelf_prefs(&self) -> ShelfPrefs {
+        let defaults = ShelfPrefs::default();
+        ShelfPrefs {
+            card: self
+                .shelf_card_width
+                .and_then(crate::shelf::thumbnail::CardSize::from_width)
+                .unwrap_or(defaults.card),
+            visible: self
+                .shelf_visible_cards
+                .map_or(defaults.visible, |visible| visible as usize),
+            corner: self
+                .shelf_corner
+                .as_deref()
+                .and_then(crate::shelf::layout::Corner::parse)
+                .unwrap_or(defaults.corner),
         }
     }
 

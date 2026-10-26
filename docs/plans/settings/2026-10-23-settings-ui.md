@@ -239,6 +239,213 @@ Fenster. Fokus ist sichtbar über eine hellere Fläche, kein Glow-Ring.
 - Worker-Skip: Job mit alter Größe wird übersprungen (Kanal-Test ohne
   ffmpeg, Bildquelle als kleine PNG im Temp-Verzeichnis).
 
+### Phase 3 im Detail (Gegenprüfung am Code, 26.10.)
+
+Stand der Fundstellen (Zeilen von heute, `shelf/mod.rs` hat 3890 Zeilen):
+
+- Konstanten `CARD_W`/`CARD_H` (`src/shelf/thumbnail.rs:6-7`) nutzen:
+  CLI-Vorrendern `main.rs:585-590`; `prepare_add` `shelf/mod.rs:708-740`
+  (Client-Thumb nur bei exakt `CARD_W×CARD_H`, sonst PNG dekodieren);
+  `prepare_pixels_with` `mod.rs:778-827`; Video-Worker
+  `linux/shelf/thumbnail.rs:40,65,71`; Aufnahme-Platzhalter `mod.rs:3148-3161`;
+  `debug_render` `src/shelf/mod.rs:15`; Windows `windows/shelf.rs:434,455`.
+- `prepare_add` und `prepare_pixels` laufen **im Client-Thread**
+  (`mod.rs:640`, `667`), nicht im Eventloop; das Ergebnis kommt als
+  `DaemonEvent::AddPrepared` an und wird in `add_prepared` (`mod.rs:1767`)
+  übernommen. Die aktuelle Größe muss also auch außerhalb des Eventloops
+  lesbar sein.
+- `MAX_VISIBLE_CARDS` (`mod.rs:266`) steckt in den freien Funktionen
+  `visible_cards` (`:291`), `overflow_card_opacity` (`:357`),
+  `animated_item_limit` (`:375`), `animated_card_layout` (`:379-436`) und in
+  `card_anim` (`:2050`).
+- Ecke: `place_on_output` (`mod.rs:1577`) setzt fest
+  `Anchor::BOTTOM | Anchor::LEFT` und `set_margin(0, 0, 24, 24)`; es baut nur
+  neu, wenn der Monitor wechselt (`:1580`).
+- Layout und Painter: `ThumbRect` hat `u32`-Koordinaten, `blit_thumb_card_anim`
+  nimmt `u32` (`paint.rs:37-45`), Windows nutzt beide mit (`windows/shelf.rs:326`).
+- Video-Worker: ein Thread, `sync_channel(MAX_CACHED_CARDS)`, `try_send`
+  verwirft bei voller Queue (`thumbnail.rs:9-35`). `ThumbnailReady` ersetzt das
+  Bild ohne Größenprüfung (`mod.rs:2862`).
+- `refresh_recording_prefs` (`shelf/settings.rs:61`) liest `Config::load()` und
+  läuft bei `ConfigChanged`, nach jedem `SettingsWritten` und an vier
+  Aktionspunkten (`mod.rs:1452`, `2284`, `2327`, `2368`, `3072`).
+- `src/shelf/paint.rs` hat 1197 Zeilen und darf nicht wachsen; Phase 3 fasst
+  ihn nicht an.
+
+#### Abweichungen vom Plan oben (begründet)
+
+1. **Kein `grow_down`, kein Spiegeln.** Gespiegelte Koordinaten bräuchten für
+   die Karte, die bei vollem Shelf oben hinausscrollt, negative `y`; `ThumbRect`
+   und der Painter sind `u32` und mit Windows geteilt (eingefroren, kein Target
+   zum Prüfen). Stattdessen steht die neueste Karte in jeder Ecke oben im
+   Stapel, so wie heute. Unten verankert ändert sich nichts. Oben verankert
+   wächst der Layer nach unten, die älteren Karten müssen dabei eine Stufe
+   nach unten gleiten: `animated_card_layout` nutzt die vorhandene
+   Scroll-Bewegung dann auch bei nicht vollem Shelf (heute nur ab Karte 6).
+   Die überzählige Karte verlässt den Viewport unten, wie heute; alle
+   Koordinaten bleiben ≥ 0. `Layout::compute` bleibt unverändert, Windows auch.
+   Lesart für den Nutzer: überall neueste oben.
+2. **Ecke wechselt per Neuaufbau,** wie im Plan, aber ein laufender Drag wird
+   vorher mit `clear_drag()` beendet (wie `add_prepared` es schon tut), weil das
+   Zerstören der Ursprungs-Surface den Drag sonst ohne Endereignis abreißt.
+3. **Re-Render-Jobs als Liste statt Queue-Einträge.** Mit `try_send` in die
+   20er-Queue würden beim Ziehen des Sliders (alle 100 ms 20 Jobs) die Jobs
+   der *letzten* Größe verworfen und Karten blieben weich. Stattdessen hält
+   der Worker eine geteilte Liste `Mutex<Vec<(id, Source)>>`; der Daemon
+   ergänzt sie (gleiche `id` wird ersetzt) und weckt den Worker mit einem
+   `try_send(Job::Rerender)`. Der Worker arbeitet nach **jeder** Nachricht die
+   Liste ab, darum reicht ein verlorenes Wecken: dann liegt schon eine andere
+   Nachricht in der Queue. Größe liest der Worker beim Rendern, nicht beim
+   Einreihen; veraltete Jobs gibt es dadurch nicht, nur veraltete Ergebnisse,
+   und die verwirft der Daemon an der Größe.
+4. **Kein `AtomicU64` im Worker, ein `AtomicU32` für alle:**
+   `cards::CARD_WIDTH` (Breite, Höhe folgt) ist die eine Quelle für
+   Client-Threads, Worker und Daemon. Nur `apply_shelf_prefs` schreibt ihn.
+5. **Kein `accept_thumbnail`:** die Prüfung ist
+   `image.dimensions() == card_size().dims()` an zwei Stellen
+   (`ThumbnailReady`, `add_prepared`); getestet wird sie über `CardSize`.
+6. **Shelf-Werte laufen über denselben Refresh wie die Recording-Prefs**
+   (eine `Config::load()`), damit sie auch ohne Watcher bei der nächsten Aktion
+   ankommen. `refresh_recording_prefs` heißt danach `refresh_prefs`.
+
+#### Verhalten
+
+- Keys, alle `Applies::Live`, nicht strikt (ungültig: Default plus Befund wie
+  jeder andere Key), Tabelle `[shelf]`:
+  - `card_width`: ganze Zahl 140 bis 380, Default 190. Höhe
+    `round(w × 132 / 190)`: 140 → 97, 190 → 132, 300 → 208, 380 → 264.
+  - `visible_cards`: 1 bis 8, Default 5.
+  - `corner`: `bottom-left` (Default), `bottom-right`, `top-left`, `top-right`.
+    Rand 24 px zu beiden Bildschirmkanten der Ecke, wie heute.
+- Größe ändert sich (Datei, `set_settings`, Watcher):
+  1. `CARD_WIDTH` setzen, jede Karte im Eventloop aus ihrem jetzigen Bild auf
+     die neue Größe skalieren (Triangle), `relayout`, `draw`. Ein laufender
+     Drag blockiert das Zeichnen schon heute; `clear_drag` zeichnet danach.
+  2. Alle Karten (`id`, `Source::Image(png_path)` oder
+     `Source::Video(png_path)`) in die Re-Render-Liste, Worker wecken.
+  3. Worker: Bild-Karte `fs::read` → `decode_shelf_image` (gleiche Grenzen
+     wie beim Hinzufügen) → `make_image_card_thumbnail`; Video wie heute per
+     ffmpeg, Filter mit der gelesenen Größe. Ergebnis als `ThumbnailReady`.
+  4. Daemon übernimmt nur bei exakt aktueller Größe und nur, wenn die Karte
+     noch existiert. Fehler (Datei weg, Dekodieren scheitert): Karte behält das
+     skalierte Bild, kein Toast.
+- Neue Karten nach dem Wechsel:
+  - CLI liest `Config::load().shelf_prefs().card` und rendert in der Größe
+    vor. Kaputte Datei: letzter gültiger Stand gibt es im CLI-Prozess nicht,
+    also Default 190 plus die übliche `eprintln`-Meldung; der Daemon dekodiert
+    dann selbst (bestehender Fallback).
+  - `prepare_add` und `prepare_pixels` bekommen die Größe als Parameter, der
+    Client-Thread liest `card_size()`.
+  - Kommt ein `AddPrepared` mit alter Größe an (Wechsel während der
+    Vorbereitung): Stufe-1-Skalierung und ein Re-Render-Eintrag für die Karte.
+  - Aufnahme-Platzhalter: `RgbaImage::from_pixel` in aktueller Größe (der
+    Umweg über `make_card_thumbnail` entfällt, gleiches Ergebnis).
+- `visible_cards` ändert sich: `relayout`, `draw`. Karten jenseits der Zahl
+  bleiben im Modell (Cache 20), wie Karte 6 heute.
+- Ecke ändert sich: Shelf leer: nur merken, der nächste Aufbau nimmt sie.
+  Sonst `clear_drag()` falls aktiv, Layer verwerfen, `place_on_output` baut
+  ihn mit neuem Anker auf dem gleichen Monitor neu, wartet auf `configure`,
+  zeichnet.
+- Unverändert: Drag-Icon behält die Größe beim Drag-Start, Windows nutzt
+  weiter 190×132, 5 Karten, unten links.
+
+#### Umsetzung in Schritten (je ein Commit)
+
+1. **Keys und reine Typen.**
+   - `settings/schema.rs`: `TABLES = ["replay", "shelf"]`, drei Keys.
+   - `shelf/thumbnail.rs`: `CardSize { w, h }`, `DEFAULT`,
+     `from_width(i64) -> Option<CardSize>` (Bereich, Höhe gerundet),
+     `rescale(&RgbaImage, CardSize) -> RgbaImage`;
+     `CARD_W`/`CARD_H` bleiben als `CardSize::DEFAULT.w/h`.
+   - `shelf/layout.rs`: `Corner` mit `parse`, `is_top`, `is_right`, `DEFAULT`.
+   - `config.rs`: Felder für die drei Keys, `ShelfPrefs { card, visible,
+     corner }`, `Config::shelf_prefs()`.
+   - Tests: Grenzen und Höhen von `from_width`, `rescale` liefert exakt die
+     Zielgröße auch für 1×1 und beim Vergrößern, `Corner::parse`, Config mit
+     gültigen, ungültigen und fehlenden `[shelf]`-Keys (ungültig: Default plus
+     `Issue`), `"shelf.card_width" = 300` auf oberster Ebene bleibt unbekannt.
+   - Noch kein Aufrufer im Daemon.
+2. **`linux/shelf/cards.rs` anlegen, nur verschieben:** `prepare_add`,
+   `write_temp_png`, `prepare_pixels`, `prepare_pixels_with`,
+   `decode_shelf_image`, `shelf_png_decoder` (`mod.rs:706-852`) und
+   `visible_cards`, `overflow_card_opacity`, `animated_item_limit`,
+   `animated_card_layout` (`mod.rs:291-436` ohne die Cache-/Drag-Helfer
+   dazwischen). `mod.rs` holt sie per `use cards::…`, `tests.rs` bleibt
+   unverändert. Abnahme: `cargo test` gleich viele Tests grün, `mod.rs` etwa
+   230 Zeilen kürzer. Danach 11 Dateien in `linux/shelf/`.
+3. **`visible_cards` und Ecke live.**
+   - `Daemon::shelf_prefs`, beim Start aus `Config::load()`.
+   - Die vier Funktionen nehmen `visible: usize`, `animated_card_layout`
+     zusätzlich `top: bool` (Scroll auch bei nicht vollem Shelf); `card_anim`
+     und `animated_layout` reichen `self.shelf_prefs` durch.
+   - `cards.rs`: `anchor(Corner) -> (Anchor, [i32; 4])`, `place_on_output`
+     nutzt es; `apply_shelf_prefs(new)` mit den Fällen oben.
+   - `refresh_recording_prefs` → `refresh_prefs`, wendet beides an.
+   - Tests: `animated_card_layout` mit `visible` 1 und 8 (Viewport-Höhe,
+     keine Überlappung, alle `y` ≥ 0); oben verankert bei Fortschritt 0 liegt
+     Karte 1 auf dem alten Platz von Karte 0, bei 1 auf ihrem neuen;
+     `overflow_card_opacity` und `animated_item_limit` mit `visible` 1;
+     `anchor` für alle vier Ecken.
+4. **Kartengröße live.**
+   - `cards.rs`: `CARD_WIDTH: AtomicU32`, `card_size()`, `rescale_cards`.
+   - `prepare_add(…, size)`, `prepare_pixels*(…, size)`; Client-Threads
+     übergeben `card_size()`.
+   - `thumbnail.rs`: `Job::Video(id, path) | Job::Rerender`,
+     `Source::Image | Source::Video`, geteilte Liste, `extract(path, size)`,
+     `render(source, size)`; `submit` bleibt für neue Videos, neu
+     `rerender(cards)`.
+   - Daemon: Größenprüfung in `ThumbnailReady` und `add_prepared`,
+     Platzhalter in `add_finalized_cards`.
+   - `main.rs`: CLI rendert mit `Config::load().shelf_prefs().card`.
+   - Tests: `prepare_add` nimmt einen Client-Thumb nur in der übergebenen
+     Größe; Worker mit Bildquelle (kleine PNG im Temp-Ordner, ohne ffmpeg):
+     `rerender` liefert die gelesene Größe, eine Liste mit doppelter `id`
+     rendert einmal, fehlende Datei gibt `None`; der bestehende ignorierte
+     ffmpeg-Test prüft eine Nicht-Default-Größe.
+5. **Doku und live.** README (Konfiguration `[shelf]`), `docs/codebase.md`
+   (`cards.rs`), Status hier. Install, Daemon-Neustart (keine Aufnahme läuft),
+   echte `config.toml` vorher sichern.
+
+#### Abnahme Phase 3
+
+- Je Schritt `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung,
+  `cargo test` grün, `git diff --check`.
+- `shelf/mod.rs` nach Schritt 4 kürzer als 3890 Zeilen.
+- Live (Schritt 5), über `set_settings` mit dem Scratch-Helfer:
+  - Drei Karten (Screenshot, kurzes Testvideo per `add_video` aus einer
+    ffmpeg-`lavfi`-Datei im Temp-Ordner, ein gespeicherter Screenshot,
+    danach per `safe-rm` wieder weg). `shelf.card_width = 300`:
+    `hyprctl layers` zeigt Breite 344 (300 + 2 × 22), ein Screenshot des
+    Layers per `grim` zeigt die Karten scharf.
+  - `shelf.visible_cards = 2` mit drei Karten: Layer-Höhe für zwei Karten.
+  - `shelf.corner = "top-right"`: `hyprctl layers` zeigt den Layer oben
+    rechts, ein neuer Screenshot gleitet oben ein, die alten rutschen nach
+    unten (Augenschein durch den Nutzer, Bewegung ist per Screenshot nicht
+    prüfbar).
+  - Datei am Ende byte-gleich mit der Sicherung, `daemon.log` ohne neue
+    Fehler.
+
+#### Was Phase 3 nicht macht
+
+- Keine UI, keine Tray-Einträge für die drei Keys (Phase 5).
+- Keine Animation des Größenwechsels: die Karten springen in einem Frame auf
+  die neue Größe (Stufe 1); Phase 5 drosselt den Slider.
+- Windows bleibt bei 190×132, 5 Karten, unten links; keine Änderung an
+  `windows/`, `Layout::compute`, `ThumbRect` oder `paint.rs`.
+- Kein Re-Render für das Drag-Icon eines laufenden Drags.
+- Keine Prüfung, ob die Ecke mit Waybar o. Ä. kollidiert; die exklusive Zone
+  bleibt `-1` wie heute.
+
+#### Was kaputtgehen kann
+
+| Risiko | Gegenmaßnahme |
+| --- | --- |
+| Stufe 1 ruckelt bei 20 großen Karten | Zeit im Schritt-4-Test messen (Release, 20 Karten 190 → 380); über 8 ms: Stufe 1 nur für sichtbare Karten, Rest per Re-Render |
+| Neuaufbau des Layers mitten in einer Animation | `anims` laufen nach Zeit weiter, `shelf_configured` wartet auf `configure`; live geprüft |
+| Hyprland mappt den Layer oben anders (Waybar-Zone) | exklusive Zone wie heute; live per `hyprctl layers` |
+| Re-Render dekodiert 20 große PNGs hintereinander | ein Thread, nacheinander, gleiche Grenzen wie beim Hinzufügen; nur nach einem Größenwechsel |
+| Tests teilen den statischen `CARD_WIDTH` | reine Funktionen bekommen die Größe als Parameter, kein Test schreibt den Static |
+
 ## 4. Config-Fundament (Phase 1 und 2)
 
 Behebt CF1 bis CF4 und CF6 aus der Config-Review; ohne das wäre das UI ein
@@ -934,5 +1141,7 @@ Vom Nutzer am 24.10. so bestätigt:
 | Review, Fix 2 | umgesetzt 25.10. (SU6, SU7, SU10, SU11): `apply` legt für `Remove` keine fehlende Tabelle an; auf oberster Ebene zählt ein Schema-Key nur ohne Tabellenteil, `"replay.fps" = 30` ist „unknown setting“; `replace` öffnet die Temp-Datei vor dem Aufräum-Pfad und löscht nur eine selbst angelegte (`fill` ausgelagert); Lock-Kommentar korrigiert. Tests erweitert (`apply_adds_missing_keys_and_tables_and_removes_keys`, `unknown_keys_are_reported_and_known_ones_still_read`). Checks: `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test` 41 + 358 grün. |
 | Review, Fix 3 | umgesetzt 25.10. (SU1): `StartRecording` schreibt nichts mehr; `start_recording` nimmt `Geometry`, `show_frame` und `audio_enabled` und nutzt die Werte nur für diese Aufnahme (`RecordingPrefs { audio_enabled, ..}` für das erste Segment). Ein im Selector gescheitertes Speichern meldet jetzt der Selector selbst als Notification „Recording settings could not be saved: …“ und die Aufnahme startet; damit stimmt der Satz im Status von Phase 1 Schritt 5 („ein Tray-Wert … bleibt“) auch für eine gestartete Aufnahme. Kein neuer Test (Daemon-Pfad braucht Wayland), Pfad am Code geprüft. Checks: `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test` 41 + 358 grün. |
 | Review, Fix 4 | umgesetzt 25.10. (SU2, SU8, SU9): `events` liefert Maske mit, `Watches::note` zählt `IN_Q_OVERFLOW` als Änderung und vergisst einen Watch bei `IN_IGNORED`; fällt der Ordner-Watch weg, wartet der Thread mit `poll` 1 s und versucht neu, nach Erfolg `changed()`; Entprellung 150 ms Pause, höchstens 1 s nach dem ersten Ereignis; `add_watches` gibt den Ordner-Watch zurück. Tests: Parser mit Maske, `note` bei `IN_IGNORED`, echter Watcher: Ordner gelöscht (ein Aufruf), neu angelegt und beschrieben (Aufruf), danach weiterer Edit (Aufruf). Gegenprobe: ohne Neuversuch schlägt der Test fehl. `shelf/settings.rs` 477 Zeilen. Checks: `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test` 41 + 358 grün. |
-| 3 bis 5 | geplant, freigegeben 24.10. |
+| 3 | Detailplan 26.10. („Phase 3 im Detail“ in Abschnitt 3), sechs begründete Abweichungen vom Plan oben |
+| 3, Schritt 1 | umgesetzt 26.10.: `[shelf]` in `TABLES`, Keys `shelf.card_width` (140 bis 380), `shelf.visible_cards` (1 bis 8), `shelf.corner` (vier Ecken), alle `Live`; `CardSize` (`DEFAULT`, `from_width`, `dims`) und `rescale` in `shelf/thumbnail.rs`, `Corner` in `shelf/layout.rs`, `ShelfPrefs` und `Config::shelf_prefs`. Tests: Höhen 97/132/208/264 und Grenzen, `rescale` von 1×1 und 190×132, `Corner::parse`, `[shelf]` gültig, ungültig (Default plus drei `Issue`s), auf oberster Ebene unbekannt. Abweichung: `cargo clippy` meldet bis Schritt 3 und 4 Dead-Code für die noch ungenutzten Typen, sonst keine Warnung. Checks: `cargo fmt --check`, `cargo test` 41 + 362 grün. |
+| 4 und 5 | geplant, freigegeben 24.10. |
 | 6 (Library) | Skizze im Library-Plan |

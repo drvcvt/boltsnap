@@ -1,10 +1,44 @@
 use image::imageops::FilterType;
 use image::{RgbaImage, imageops};
 
-/// Fixed shelf card size in pixels. Every card is exactly this size so the shelf
-/// reads as a uniform column. Tweak these to resize the cards.
-pub const CARD_W: u32 = 190;
-pub const CARD_H: u32 = 132;
+/// Default shelf card size in pixels. Every card is exactly the current size
+/// so the shelf reads as a uniform column.
+pub const CARD_W: u32 = CardSize::DEFAULT.w;
+pub const CARD_H: u32 = CardSize::DEFAULT.h;
+
+/// `[shelf] card_width`; the height follows at the default aspect ratio.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CardSize {
+    pub w: u32,
+    pub h: u32,
+}
+
+impl CardSize {
+    pub const DEFAULT: CardSize = CardSize { w: 190, h: 132 };
+    pub const MIN_WIDTH: u32 = 140;
+    pub const MAX_WIDTH: u32 = 380;
+
+    pub fn from_width(width: i64) -> Option<CardSize> {
+        let w = u32::try_from(width)
+            .ok()
+            .filter(|w| (Self::MIN_WIDTH..=Self::MAX_WIDTH).contains(w))?;
+        let h = (w * Self::DEFAULT.h + Self::DEFAULT.w / 2) / Self::DEFAULT.w;
+        Some(CardSize { w, h })
+    }
+
+    pub fn dims(self) -> (u32, u32) {
+        (self.w, self.h)
+    }
+}
+
+/// A card thumbnail at another card size, from the small image alone. Softer
+/// than rendering from the source when it grows; the shelf re-renders after.
+pub fn rescale(card: &RgbaImage, size: CardSize) -> RgbaImage {
+    if card.dimensions() == size.dims() {
+        return card.clone();
+    }
+    imageops::resize(card, size.w, size.h, FilterType::Triangle)
+}
 
 /// Center-crop `src` to the card aspect ratio, then resize only that crop to
 /// exactly (card_w, card_h). Cropping before resizing avoids scaling huge full
@@ -64,6 +98,32 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn card_size_keeps_the_aspect_ratio_within_its_range() {
+        let size = |width| CardSize::from_width(width).map(CardSize::dims);
+        assert_eq!(size(140), Some((140, 97)));
+        assert_eq!(size(190), Some((190, 132)));
+        assert_eq!(size(300), Some((300, 208)));
+        assert_eq!(size(380), Some((380, 264)));
+        assert_eq!(size(139), None);
+        assert_eq!(size(381), None);
+        assert_eq!(size(-190), None);
+        assert_eq!(size(i64::MAX), None);
+        assert_eq!(CardSize::from_width(190), Some(CardSize::DEFAULT));
+    }
+
+    #[test]
+    fn rescale_gives_exactly_the_new_size() {
+        let big = CardSize::from_width(380).unwrap();
+        for card in [RgbaImage::new(1, 1), RgbaImage::new(190, 132)] {
+            assert_eq!(rescale(&card, big).dimensions(), big.dims());
+            assert_eq!(
+                rescale(&card, CardSize::from_width(140).unwrap()).dimensions(),
+                (140, 97)
+            );
+        }
+    }
 
     #[test]
     fn landscape_becomes_exact_card_size() {

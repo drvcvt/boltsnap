@@ -19,6 +19,36 @@ impl Default for LayoutConfig {
     }
 }
 
+/// `[shelf] corner`: the screen corner the shelf sits in.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Corner {
+    #[default]
+    BottomLeft,
+    BottomRight,
+    TopLeft,
+    TopRight,
+}
+
+impl Corner {
+    pub fn parse(value: &str) -> Option<Corner> {
+        Some(match value {
+            "bottom-left" => Corner::BottomLeft,
+            "bottom-right" => Corner::BottomRight,
+            "top-left" => Corner::TopLeft,
+            "top-right" => Corner::TopRight,
+            _ => return None,
+        })
+    }
+
+    pub fn is_top(self) -> bool {
+        matches!(self, Corner::TopLeft | Corner::TopRight)
+    }
+
+    pub fn is_right(self) -> bool {
+        matches!(self, Corner::BottomRight | Corner::TopRight)
+    }
+}
+
 pub struct ThumbRect {
     pub id: u64,
     pub x: u32,
@@ -113,6 +143,16 @@ mod tests {
 
     fn cfg() -> LayoutConfig {
         LayoutConfig::default()
+    }
+
+    #[test]
+    fn corners_parse_from_the_config_names() {
+        assert_eq!(Corner::parse("bottom-left"), Some(Corner::BottomLeft));
+        assert_eq!(Corner::parse("top-right"), Some(Corner::TopRight));
+        assert_eq!(Corner::parse("top"), None);
+        assert!(Corner::TopLeft.is_top() && !Corner::TopLeft.is_right());
+        assert!(!Corner::BottomRight.is_top() && Corner::BottomRight.is_right());
+        assert_eq!(Corner::default(), Corner::BottomLeft);
     }
 
     #[test]

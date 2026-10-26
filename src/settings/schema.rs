@@ -44,7 +44,7 @@ pub struct Key {
 }
 
 /// Tables that hold keys; any other table is unknown.
-pub const TABLES: &[&str] = &["replay"];
+pub const TABLES: &[&str] = &["replay", "shelf"];
 
 const fn key(path: &'static str, kind: Kind, applies: Applies) -> Key {
     Key {
@@ -123,6 +123,13 @@ pub const KEYS: &[Key] = &[
         NextRecording,
     ),
     key("ui_font", Text { empty_ok: true }, Live),
+    key("shelf.card_width", Int { min: 140, max: 380 }, Live),
+    key("shelf.visible_cards", Int { min: 1, max: 8 }, Live),
+    key(
+        "shelf.corner",
+        Choice(&["bottom-left", "bottom-right", "top-left", "top-right"]),
+        Live,
+    ),
     strict(
         "replay.duration_seconds",
         Int { min: 1, max: 600 },

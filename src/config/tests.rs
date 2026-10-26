@@ -470,3 +470,37 @@ fn reading_notes_a_deleted_file_and_keeps_the_last_text_when_unreadable() {
     std::fs::remove_dir(&path).unwrap();
     remove_config(&path);
 }
+
+#[test]
+fn shelf_prefs_read_the_shelf_table_and_fall_back_per_key() {
+    use crate::shelf::layout::Corner;
+    use crate::shelf::thumbnail::CardSize;
+    assert_eq!(
+        Config::parse("").shelf_prefs(),
+        super::ShelfPrefs::default()
+    );
+    let set =
+        Config::parse("[shelf]\ncard_width = 300\nvisible_cards = 8\ncorner = \"top-right\"\n");
+    let prefs = set.shelf_prefs();
+    assert_eq!(prefs.card, CardSize::from_width(300).unwrap());
+    assert_eq!((prefs.visible, prefs.corner), (8, Corner::TopRight));
+    assert!(set.issues.is_empty());
+
+    let invalid =
+        Config::parse("[shelf]\ncard_width = 400\nvisible_cards = 0\ncorner = \"left\"\n");
+    assert_eq!(invalid.shelf_prefs(), super::ShelfPrefs::default());
+    let keys: Vec<_> = invalid
+        .issues
+        .iter()
+        .map(|issue| issue.key.as_str())
+        .collect();
+    assert_eq!(
+        keys,
+        ["shelf.card_width", "shelf.visible_cards", "shelf.corner"]
+    );
+
+    // Only `[shelf]` holds them.
+    let top = Config::parse("\"shelf.card_width\" = 300\ncard_width = 300\n");
+    assert_eq!(top.shelf_prefs(), super::ShelfPrefs::default());
+    assert_eq!(top.issues.len(), 2);
+}
