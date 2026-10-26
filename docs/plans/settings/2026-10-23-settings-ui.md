@@ -2398,6 +2398,148 @@ reine Funktion; Gates (Überlauf, Abstände, Kontrast der neuen Texte).
 Macht nicht: Live-Bild des Bildschirms (das zeigte das Settings-Fenster
 selbst), Videos als Karten, Schatten.
 
+#### V1 und V4 im Detail (Gegenprüfung am Code, 26.10.)
+
+Befund am Code und an den Daten:
+- Der Speicherordner hier (`~/Bilder/boltsnap`, `paths.rs:139`) hat 3 PNG,
+  alle Bereichsaufnahmen (415 × 154 fast schwarz, 254 × 158, 588 × 375),
+  dazu MP4 und `.cursor.json`. Ein Bild „über die ganze Anordnung“ gibt es
+  hier nicht; hochgezogen auf 656 px wirkt eine Bereichsaufnahme verwaschen.
+- Der echte Shelf stapelt die neueste Karte oben (`visible_cards` ist
+  `newest_first`, `cards.rs:125`; `Layout::compute` von oben,
+  `shelf/layout.rs:76`), also in unteren Ecken am weitesten von der Ecke.
+- `OutputInfo::make`/`model` (sctk 0.19.2 `output.rs:324`, `:327`).
+- tiny-skia 0.11.4: `Pattern::new(pixmap, SpreadMode, FilterQuality, opacity,
+  transform)` (`shaders/pattern.rs:81`); die Pattern-Transformation wird mit
+  der des Pfads verkettet (`painter.rs:308`), sie bildet Bildpixel auf
+  logische Koordinaten ab; `Pixmap::from_vec` will vormultipliziertes RGBA
+  (`pixmap.rs:62`). Dekodieren mit Grenzen wie der Shelf
+  (`ImageReader::with_format`, `Limits::max_alloc`, Header-Maße vor dem
+  Dekodieren, `linux/shelf/cards.rs:363`); Zuschnitt plus Verkleinern mit
+  `shelf::thumbnail::make_image_card_thumbnail`.
+- `--render` hat keine Monitore (kein Wayland); die Prüf-Renders der Displays
+  laufen über einen Wegwerf-Test im Binary mit der echten Schrift.
+
+Abweichungen vom Plan oben (begründet):
+- Bildschirm-Inhalt (V1) und Hintergrund (V4) nur aus dem neuesten PNG, das
+  ein ganzer Bildschirm ist (mindestens 1280 × 720); für V1 muss sein
+  Seitenverhältnis dem der Anordnung entsprechen (± 2 %). Bereichsaufnahmen
+  werden nur Karten. Hier also: Flächen statt Bild auf den Monitoren und ein
+  dunkler Bildschirm hinter den Karten, die Karten zeigen die drei Bilder.
+- Karten tragen die Bilder von der Ecke aus, das neueste vorn an der Ecke,
+  auch unten (der Shelf hat es dort oben): so behält jede Karte ihr Bild, wenn
+  „Cards shown“ wechselt (Regel 4h), statt dass alle eins weiterrücken.
+- Hintergrund zu 65 % statt 60 % Richtung `WINDOW`: `TEXT` auf einem weißen
+  Bildschirm braucht ≥ 62,5 % für 4,5:1. Die Maßzahlen stehen deshalb in
+  `TEXT`, die Linien in `SUB`, Hover hellt die Linien auf `TEXT`.
+- Unter den Monitoren steht immer eine Zeile, damit die Seite beim Wechsel
+  nicht springt: „One clip“ auch für einen einzelnen Monitor, „Two clips“
+  (drei: „Three clips“), Focused „The one with focus when you start“, ein
+  abgesteckter Monitor „Not connected, the focused one records“ (das tut
+  `resolve_record_outputs`, `record.rs:123`; die Monitore dann halb an wie
+  bei Focused). Platz für die längste Zeile bei der Breite (bis 2 Zeilen).
+- Dropdown: „BenQ ZOWIE XL LCD (DP-3)“ (Name wie in der Vorschau, Anschluss
+  dahinter, damit zwei gleiche Modelle unterscheidbar bleiben). Tray bleibt.
+
+V1 Verhalten und Maße (von oben, `GAP_M` rundum):
+- Anordnung maßstäblich, höchstens 160 px hoch (vorher 200; darunter kommen
+  jetzt Fuß, Namen und Zeile). Jeder Monitor: Gehäuse `RAISE`, Radius 5
+  (`RADIUS − GAP_XS`), 4 px Fuge zum Nachbarn (`GAP_XS`), Bildschirm 3 px
+  eingerückt, Radius 2 (konzentrisch), aus `WINDOW`, an: Bildausschnitt oder
+  `SELECTED`, mit der Feder je Monitor gemischt (`QUICK`). Das Bild ist ein
+  Pattern über das ganze Rechteck der Anordnung, jeder Bildschirm-Pfad zeigt
+  so von selbst seinen Teil. Combined: eine Fläche über alle Bildschirme samt
+  Fugen (Brücke, `QUICK`).
+- Fuß 8 px: Hals 5 px hoch, 8 % der Gehäusebreite (mind. 4), Standfläche 3 px,
+  28 % (mind. 12), Radius 1,5, `RAISE`; nur unter Monitoren, unter denen kein
+  anderer steht.
+- `GAP_S`, dann je Monitor zwei Zeilen unter seiner Mitte, auf seine Breite
+  gekürzt: Name (`Hint`, 15 px Zeile, `SUB` → `TEXT` mit der Feder), Anschluss
+  (`Key`, 14 px Zeile, `SUB`; fehlt, wenn er gleich dem Namen ist). Monitore,
+  die sich waagrecht überlappen (übereinander): die Namen teilen die Breite
+  gleich auf, sortiert nach Lage, damit nichts übereinanderliegt.
+- `GAP_S`, die Zeile (`Label`, `TEXT`, links), Wechsel blenden über Kreuz
+  (`QUICK`, eine Feder je Text).
+- Herstellercodes als reine Funktion `pages::monitor_name(make, model,
+  connector)`: Code → Name aus der Liste oben, `Unknown`/leer fällt weg, ein
+  Modell, das schon mit dem Namen beginnt, bekommt ihn nicht doppelt, ohne
+  beides der Anschluss.
+
+V4 Verhalten und Maße:
+- Hintergrund: das Bildschirm-PNG füllend auf 16:9 (breiter: der linke Teil,
+  also der erste Monitor einer Aufnahme über alle; höher: die Mitte), darüber
+  `WINDOW` zu 65 %. Ohne Bild `WINDOW` wie bisher.
+- Karte i zeigt Bild i (füllend auf das Kartenformat 190 : 132, das der
+  Lader schon zuschneidet), Radius maßstäblich, `shown` als Deckkraft; ohne
+  Bild `SELECTED` wie bisher. Bilder kommen an: blenden ein (`QUICK`).
+- Maßlinien an Karte 0 (an der Ecke): Höhe senkrecht `GAP_S` neben der
+  Innenkante (rechts bei linken Ecken), Breite waagrecht mittig im Rand
+  zwischen Karte und Bildschirmkante; 1 px Linie, 5 px Endstriche, auf ganzen
+  Pixeln. Beide Zahlen („190 px“, „132 px“ aus dem Slider, Höhe nach
+  `CardSize::from_width`) in einer Spalte `GAP_XS` hinter der Höhenlinie,
+  Versalien mittig auf Kartenmitte bzw. Breitenlinie (`Key`, `TEXT`).
+  Nur wenn der Rand mindestens 10 px hat (Bildschirm ≥ 418 px breit), sonst
+  blenden Linien und Zahlen aus (`QUICK`, keine harte Schwelle beim Resize).
+- Ziehen: ein 8 px breiter Streifen über der Innenkante von Karte 0 ist ein
+  eigenes Ziel (`Target::Preview(block)`); Hover und Drücken hellen die Linien
+  auf (`QUICK`). Ziehen setzt „Card size“ über `Widget::adopt` auf
+  Startbreite + Weg / Maßstab (rechte Ecken: gespiegelt), der Slider rastet
+  auf 10 und klemmt 140 bis 380; geschrieben wie beim Slider (Drossel 100 ms
+  über `capture`, der letzte Wert beim Loslassen). Solange gezogen wird,
+  übernimmt die Zeile keinen Wert vom Daemon (wie eine gezogene Zeile). Die
+  Karten folgen mit `SNAP`. Tastatur bleibt der Slider; kein Tab-Halt.
+
+Lader `linux/app/shots.rs`:
+- Ein Thread beim Öffnen (`spawn`, Kanal an das Fenster wie `poll_replay`),
+  liest `resolve_save_dir`: nur Dateien mit Endung `.png` (Groß/klein egal),
+  nach Änderungszeit, neueste zuerst; höchstens 16 Dateien angefasst. Für
+  jede die Header-Maße; Grenzen wie der Shelf (256 MiB, 64 MP); nicht
+  lesbar oder zu groß: übersprungen. Erstes Bildschirm-PNG → Bildschirm
+  (in 1600 × 900 eingepasst), die anderen → Karten (zugeschnitten auf
+  384 × 267), bis 8 Karten da sind. Ergebnis: `Shots { screen, cards }` aus
+  `ui::Picture` (vormultipliziert, Stufen halber Größe bis ≥ 64 px, damit
+  das Verkleinern beim Zeichnen höchstens halbiert und nichts flimmert).
+- `--render` lädt dieselben Bilder sofort (ohne Thread), damit der Render
+  zeigt, was das Fenster zeigt.
+- Geteilter Code bekommt keine Pfade: `Shots`/`Picture` sind nur Pixel; die
+  Regeln „ganzer Bildschirm“, Einpassen und der Zuschnitt sind reine
+  Funktionen in `app/preview/shots.rs`.
+
+Randfälle: kein Speicherordner oder keine PNG (nur MP4): `Shots` leer, alles
+wie bisher, kein Fehler. Unlesbares PNG: übersprungen. Riesiges Bild: Grenze
+oder einmal verkleinert. Ein Monitor: eine Zeile „One clip“, der Fuß darunter.
+Drei Monitore: drei Monitore, Namen gekürzt. Abgesteckter Ausgang: halb an
+und die Zeile. Ordner wechselt bei offenem Fenster: die Bilder bleiben die
+beim Öffnen geladenen.
+
+Code (in Reihenfolge, V1 ein Commit, V4 ein Commit):
+1. V1: `pages::monitor_name` (+ Test), `linux/app/window.rs::displays` nutzt
+   ihn, `rows::display_entries` hängt den Anschluss an; `preview/displays.rs`
+   (Maße, Fuß, Namen, Zeile, Bild falls da), `Preview::height` bekommt die
+   Schriften (`layout.rs`), `ui/picture.rs` (Pattern in einen runden Pfad),
+   `preview/shots.rs` (reine Regeln), `linux/app/shots.rs` (Lader) und sein
+   Kanal in `linux/app/mod.rs`, `App::set_shots`. Tests: Codes, Teile je
+   Monitor im Block, Zeile je Ziel, Kreuzblende, Gate (alles in `GAP_M`).
+2. V4: `preview/shelf.rs` (Hintergrund, Kartenbilder), `preview/dims.rs`
+   (Maßlinien, Kante, Ziehen), `Target::Preview` in `app/mod.rs`
+   (`target_at`, `press`, `moved`), `writes.rs::update` hält die gezogene
+   Zeile. Tests: Zuschnitt 16:9 und Kartenformat, Maßzahlen folgen dem
+   Slider, Ziehen in 10er Schritten schreibt gedrosselt, Hover hellt auf,
+   Sichtbarkeit nach Randbreite; Gate (Maßzahlen im Bildschirm, Kontrast
+   `TEXT` auf dem dunkelsten zulässigen Hintergrund).
+
+Abnahme: `cargo fmt --check`, `cargo clippy --all-targets` ohne neue
+Warnung, `cargo test` grün, `git diff --check`; Renders (dunkel) der Seiten
+Recording und Shelf bei 760 und 360 px Fensterbreite mit der echten Schrift
+und den echten Screenshots, einmal mit einem Bildschirm-PNG zur Probe;
+Zahlen der Gates in den Bericht. Live (nur nach Rückfrage): Ziehen der Kante
+im echten Fenster, Bilder nach dem Öffnen.
+
+Macht nicht (V1, V4): Mauszeiger-Form über der Kante (das Fenster setzt nur
+den Standard-Zeiger), Neuladen der Bilder bei neuem Ordner, Videos und
+Bilder außerhalb des Speicherordners, Ziehen der Höhe, V2 (Ecken-Segment
+und Klick in ein Viertel).
+
 ## 6. Reihenfolge
 
 Jede Phase ist ein eigener Commit (oder wenige), baut, testet und lässt den
