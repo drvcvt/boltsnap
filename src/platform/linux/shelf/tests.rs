@@ -1,3 +1,4 @@
+use super::cards::{decode_shelf_image, prepare_pixels_with};
 use super::*;
 
 #[test]
