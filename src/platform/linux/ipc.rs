@@ -37,7 +37,7 @@ pub fn lock_daemon() -> io::Result<Option<std::fs::File>> {
     lock_file(&socket_path().with_extension("lock"))
 }
 
-fn lock_file(path: &Path) -> io::Result<Option<std::fs::File>> {
+pub(crate) fn lock_file(path: &Path) -> io::Result<Option<std::fs::File>> {
     use std::os::fd::AsRawFd;
     use std::os::unix::fs::OpenOptionsExt;
     let file = std::fs::OpenOptions::new()
