@@ -2267,6 +2267,55 @@ Ecke wechseln gleitet (halbwegs zwischen den Ecken), Ende exakt; Anzahl +1
 blendet die neue ein, die anderen bleiben stehen; Gates (Überlauf, Abstände)
 mit Vorschau; Render.
 
+#### P2 Displays und P3 Replay-Leiste im Detail (26.10., freigegeben)
+
+Gemeinsam: `app/preview.rs` wird ein Ordner `app/preview/` (`mod.rs` mit
+Block-Art, Höhe und Bildschirm-Rechteck, `shelf.rs`, `displays.rs`,
+`replay.rs`). Jede Vorschau ist eine eigene Fläche (`PANEL`, `GAP_M`
+rundum, Abstand-Gate prüft das), folgt den Controls sofort und blendet bzw.
+gleitet mit den Tokens; Reduced Motion springt; keine Mini-Wege (4h).
+
+P2, Displays (oben auf der Recording-Seite). Belege: Lage und Größe jedes
+Monitors aus `OutputInfo::logical_position`/`logical_size` (sctk
+`output.rs:365`, wie der Shelf in `cached_monitors`), compositor-neutral.
+Verhalten:
+- Die Monitore maßstäblich in ihrer echten Anordnung, zusammen so groß wie
+  die Fläche innen erlaubt (höchstens 200 px hoch), mittig darin; jeder mit
+  2 px Abstand zum Nachbarn und seinem Namen (`Hint`, gekürzt auf seine
+  Breite).
+- Gewählt hell (`SELECTED`, Name `TEXT`), nicht gewählt dunkel (`RAISE`,
+  Name `SUB`). „Focused display“: alle halb (heißt „der beim Start
+  fokussierte“; der Monitor des Settings-Fensters wäre irreführend).
+  „Both displays“: beide hell; mit „Both displays as: Combined“ schließt sich
+  die Lücke zwischen ihnen zu einer Fläche (ein Clip), „Separate“ zeigt die
+  Lücke (zwei Clips).
+- Wechsel blenden (`QUICK`) je Monitor und für die Brücke; nichts wandert.
+- Keine Monitore bekannt (Render ohne Wayland): keine Vorschau.
+- `Prefs::displays` wird zu `Vec<Screen { name, label, x, y, w, h }>`.
+
+P3, Replay-Leiste (oben auf der Replay-Seite). Belege: Status liefert
+`state`, `duration_us` (gemessen 29 050 000 bei 30 s Länge), `seconds`;
+`replay::preview_target` fragt den Steuer-Socket direkt mit 100 ms Timeout
+ab, ohne den Daemon zu starten (`replay/mod.rs`). Verhalten:
+- Eine Zeitleiste über die ganze Breite: rechts „now“, links die Länge
+  („−30 s“, Minuszeichen U+2212), dazwischen Striche in einer runden
+  Schrittweite (5 s, 10 s, 15 s, 30 s, 1 min, 2 min, 5 min), höchstens sechs.
+- Läuft der Puffer: von rechts gefüllt, so weit er gerade hält
+  (`duration_us`), wächst nach einem Start sichtbar mit (Abfrage 1 × je
+  Sekunde über einen eigenen, leisen Status-Aufruf `replay::status_quiet`,
+  der den Daemon nicht startet). Steht er: leer.
+- Passt die Länge nicht in den Speicher (S9), ist der Teil, der nicht
+  gehalten werden kann, dunkler (`WINDOW` statt `RAISE`); der Hinweis unter
+  Memory sagt es in Worten.
+- Neue Länge: Maßstab und Striche gleiten (`GLIDE`, die Feder läuft über die
+  Sekunden), die Füllung gleitet mit.
+- Texte: Striche mit `Key`-Stufe in `SUB`.
+
+Tests: P2 Rechtecke für zwei Monitore nebeneinander (Reihenfolge, Verhältnis,
+mittig), Helligkeit je Ziel, Brücke nur bei Both + Combined, ohne Monitore
+kein Block; P3 Schrittweiten für 15 s, 30 s, 1 min, 10 min, Füllung aus
+`duration_us`, dunkler Teil im Engpass, Länge wechseln gleitet; Gates.
+
 ## 6. Reihenfolge
 
 Jede Phase ist ein eigener Commit (oder wenige), baut, testet und lässt den
