@@ -190,6 +190,35 @@ impl Canvas {
             .fill(tiny_skia::Color::from_rgba8(color.0, color.1, color.2, 255));
     }
 
+    /// Take everything in `rect` towards the opaque `color`, keeping `keep`
+    /// (0 to 1) of what is there: what a layer of `color` at `1 − keep`
+    /// would do, without blending the pixels that are `color` already.
+    pub fn fade(&mut self, rect: Rect, color: Rgb, keep: f32) {
+        let keep = (keep.clamp(0.0, 1.0) * 256.0).round() as u32;
+        if keep >= 256 {
+            return;
+        }
+        let width = self.pixmap.width() as usize;
+        let height = self.pixmap.height() as usize;
+        let device = |v: f32, max: usize| ((v * self.scale).round().max(0.0) as usize).min(max);
+        let (left, right) = (device(rect.x, width), device(rect.right(), width));
+        let (top, bottom) = (device(rect.y, height), device(rect.bottom(), height));
+        let target = [color.0, color.1, color.2, 255];
+        let data = self.pixmap.data_mut();
+        for row in top..bottom {
+            for pixel in
+                data[(row * width + left) * 4..(row * width + right) * 4].chunks_exact_mut(4)
+            {
+                if pixel == target {
+                    continue;
+                }
+                for (channel, to) in pixel.iter_mut().zip(target) {
+                    *channel = ((*channel as u32 * keep + to as u32 * (256 - keep)) >> 8) as u8;
+                }
+            }
+        }
+    }
+
     pub(crate) fn transform(&self) -> Transform {
         Transform::from_scale(self.scale, self.scale)
     }

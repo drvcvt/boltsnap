@@ -45,6 +45,13 @@ pub(super) struct Win {
     size: (u32, u32),
     scale: u32,
     pub(super) app: App,
+    /// Drawn into frame after frame; new only for another size or scale.
+    canvas: Option<Canvas>,
+    /// The frame before, to tell the compositor only what changed. The two
+    /// swap after every frame, so nothing is copied for it.
+    last: Option<Canvas>,
+    /// The compositor takes tiny-skia's byte order as it is.
+    rgba: bool,
     /// A frame callback is in flight; the next draw waits for it.
     frame_pending: bool,
     dirty: bool,
@@ -92,6 +99,7 @@ impl Win {
         paste: calloop::channel::Sender<String>,
     ) -> crate::DynResult<Self> {
         let pool = SlotPool::new((OPEN_SIZE.0 * OPEN_SIZE.1 * 4) as usize, &parts.shm)?;
+        let rgba = parts.shm.formats().contains(&wl_shm::Format::Abgr8888);
         let window = open_window(&parts.compositor, &parts.xdg, qh);
         Ok(Self {
             registry: parts.registry,
@@ -106,6 +114,9 @@ impl Win {
             size: OPEN_SIZE,
             scale: 1,
             app,
+            canvas: None,
+            last: None,
+            rgba,
             frame_pending: false,
             dirty: true,
             pointer: None,
@@ -198,33 +209,73 @@ impl Win {
 
     fn draw(&mut self) {
         let (w, h, scale) = (self.size.0, self.size.1, self.scale);
-        let Some(mut canvas) = Canvas::new(w, h, scale) else {
+        let (bw, bh) = (w * scale, h * scale);
+        let fits = |canvas: &Option<Canvas>| {
+            canvas
+                .as_ref()
+                .is_some_and(|c| (c.pixmap.width(), c.pixmap.height()) == (bw, bh))
+        };
+        if !fits(&self.last) {
+            self.last = None;
+        }
+        if !fits(&self.canvas) {
+            self.canvas = Canvas::new(w, h, scale);
+        }
+        let Some(canvas) = self.canvas.as_mut() else {
             return;
         };
         let now = Instant::now();
-        self.app.draw(&mut canvas, now);
-        let (bw, bh) = (w * scale, h * scale);
-        let Ok((buffer, pixels)) = self.pool.create_buffer(
-            bw as i32,
-            bh as i32,
-            bw as i32 * 4,
-            wl_shm::Format::Argb8888,
-        ) else {
-            return;
-        };
-        crate::selector::render::pixmap_to_argb8888(&canvas.pixmap, pixels);
+        self.app.draw(canvas, now);
+        self.dirty = self.app.animating(now);
+        let data = canvas.pixmap.data();
         let surface = self.window.wl_surface();
-        surface.set_buffer_scale(scale as i32);
-        surface.damage_buffer(0, 0, bw as i32, bh as i32);
         // Every draw asks for the next frame: it paces input redraws to the
         // display, and keeps animations going while there are any.
+        let last = self
+            .last
+            .as_ref()
+            .map_or(&[][..], |last| last.pixmap.data());
+        let Some((x, y, dw, dh)) = changed(last, data, bw as usize) else {
+            // Nothing new to show; an animation still running keeps asking.
+            if self.dirty {
+                surface.frame(&self.qh, surface.clone());
+                surface.commit();
+                self.frame_pending = true;
+            }
+            return;
+        };
+        let format = if self.rgba {
+            wl_shm::Format::Abgr8888
+        } else {
+            wl_shm::Format::Argb8888
+        };
+        let Ok((buffer, pixels)) =
+            self.pool
+                .create_buffer(bw as i32, bh as i32, bw as i32 * 4, format)
+        else {
+            return;
+        };
+        if self.rgba {
+            pixels.copy_from_slice(data);
+        } else {
+            crate::selector::render::pixmap_to_argb8888(&canvas.pixmap, pixels);
+        }
+        surface.set_buffer_scale(scale as i32);
+        // Only what changed is uploaded again.
+        surface.damage_buffer(x, y, dw, dh);
         surface.frame(&self.qh, surface.clone());
         if buffer.attach_to(surface).is_err() {
             return;
         }
         self.window.commit();
         self.frame_pending = true;
-        self.dirty = self.app.animating(now);
+        // This frame is the one to compare the next against; the next draws
+        // over the older one.
+        if self.last.is_some() {
+            std::mem::swap(&mut self.canvas, &mut self.last);
+        } else {
+            self.last = self.canvas.take();
+        }
     }
 
     /// Another `boltsnap settings` wants the window: show its page and map a
@@ -239,6 +290,47 @@ impl Win {
         self.frame_pending = false;
         self.dirty = true;
     }
+}
+
+/// The rectangle (x, y, w, h in buffer pixels) around every pixel of `now`
+/// that differs from `last`; all of it when there is no last frame, `None`
+/// when nothing changed.
+fn changed(last: &[u8], now: &[u8], width: usize) -> Option<(i32, i32, i32, i32)> {
+    let stride = width * 4;
+    let height = now.len() / stride.max(1);
+    if last.len() != now.len() {
+        return Some((0, 0, width as i32, height as i32));
+    }
+    let rows = |row: usize| {
+        (
+            &last[row * stride..][..stride],
+            &now[row * stride..][..stride],
+        )
+    };
+    let top = (0..height).find(|&row| rows(row).0 != rows(row).1)?;
+    let bottom = (top..height)
+        .rev()
+        .find(|&row| rows(row).0 != rows(row).1)?;
+    let (mut left, mut right) = (width, 0);
+    for row in top..=bottom {
+        let (a, b) = rows(row);
+        if a == b {
+            continue;
+        }
+        let pixel = |i: usize| a[i * 4..i * 4 + 4] != b[i * 4..i * 4 + 4];
+        if let Some(first) = (0..left.min(width)).find(|&i| pixel(i)) {
+            left = first;
+        }
+        if let Some(last) = (right..width).rev().find(|&i| pixel(i)) {
+            right = last;
+        }
+    }
+    Some((
+        left as i32,
+        top as i32,
+        (right.max(left) - left + 1) as i32,
+        (bottom - top + 1) as i32,
+    ))
 }
 
 impl WindowHandler for Win {
@@ -260,7 +352,9 @@ impl WindowHandler for Win {
         self.app
             .resize((self.size.0 as f32, self.size.1 as f32), Instant::now());
         self.configured = true;
-        // A configure needs an answer with a buffer of the new size now.
+        // A configure needs an answer with a whole buffer now, even when
+        // nothing in it changed.
+        self.last = None;
         self.frame_pending = false;
         self.dirty = true;
         self.redraw();
@@ -354,3 +448,21 @@ delegate_pointer!(Win);
 delegate_xdg_shell!(Win);
 delegate_xdg_window!(Win);
 delegate_registry!(Win);
+
+#[cfg(test)]
+mod tests {
+    use super::changed;
+
+    #[test]
+    fn damage_is_the_rectangle_around_what_changed() {
+        let (w, h) = (8, 6);
+        let last = vec![0u8; w * h * 4];
+        assert_eq!(changed(&[], &last, w), Some((0, 0, 8, 6)), "no last frame");
+        assert_eq!(changed(&last, &last, w), None, "nothing changed");
+        let mut now = last.clone();
+        for (x, y) in [(2, 1), (5, 3)] {
+            now[(y * w + x) * 4 + 1] = 9;
+        }
+        assert_eq!(changed(&last, &now, w), Some((2, 1, 4, 3)));
+    }
+}

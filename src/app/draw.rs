@@ -21,11 +21,10 @@ impl App {
         let alpha = self.page_alpha(now);
         if alpha < 1.0 {
             let x = self.nav_w(now);
-            canvas.fill(
+            canvas.fade(
                 Rect::new(x, 0.0, self.size.0 - x, self.size.1),
-                0.0,
                 theme::WINDOW,
-                1.0 - alpha,
+                alpha,
             );
         }
         self.draw_nav(canvas, now);

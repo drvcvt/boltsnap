@@ -251,3 +251,40 @@ fn wheel_notches_glide_and_a_touchpad_follows_exactly() {
     assert_eq!(scroll.offset(later + settled * 2), 5.0);
     assert!(!scroll.moving(later + settled * 2));
 }
+
+#[test]
+fn fade_mixes_towards_the_colour_and_leaves_that_colour_alone() {
+    let mut canvas = Canvas::new(4, 1, 1).unwrap();
+    canvas.clear(theme::WINDOW);
+    canvas.fill(Rect::new(2.0, 0.0, 2.0, 1.0), 0.0, theme::TEXT, 1.0);
+    canvas.fade(Rect::new(0.0, 0.0, 4.0, 1.0), theme::WINDOW, 1.0);
+    let before = canvas.pixmap.data().to_vec();
+    canvas.fade(Rect::new(0.0, 0.0, 4.0, 1.0), theme::WINDOW, 0.5);
+    let data = canvas.pixmap.data();
+    assert_eq!(data[..8], before[..8], "the window colour stays exact");
+    let mid = |a: u8, b: u8| ((a as u32 * 128 + b as u32 * 128) >> 8) as u8;
+    assert_eq!(data[8], mid(theme::TEXT.0, theme::WINDOW.0));
+    assert_eq!(data[11], 255);
+}
+
+#[test]
+fn cached_glyphs_draw_the_same_pixels_as_the_first_time() {
+    let fonts = Fonts::fallback();
+    let draw = || {
+        let mut canvas = Canvas::new(200, 30, 1).unwrap();
+        canvas.clear(theme::WINDOW);
+        fonts.draw(
+            &mut canvas,
+            TextStyle::Label,
+            "Cards shown 12",
+            (3.3, 20.0),
+            theme::TEXT,
+            1.0,
+        );
+        canvas.pixmap.data().to_vec()
+    };
+    let first = draw();
+    let second = draw();
+    assert!(first.chunks_exact(4).any(|px| px[0] > 0xC0), "text drew");
+    assert_eq!(first, second);
+}

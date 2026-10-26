@@ -1,6 +1,8 @@
 //! Measuring and drawing text in the type scale.
 
 use std::borrow::Cow;
+use std::cell::RefCell;
+use std::collections::HashMap;
 
 use ab_glyph::{Font, FontVec, GlyphId, PxScale, ScaleFont, point};
 
@@ -35,12 +37,30 @@ fn advances<'a>(
     })
 }
 
+/// Glyph origins are placed to a quarter of a device pixel horizontally;
+/// baselines sit on whole pixels.
+const SUBPIXEL: f32 = 4.0;
+
+/// (face, glyph, size bits, quarter-pixel offset).
+type GlyphKey = (bool, u16, u32, u8);
+
+/// A rasterized glyph: its coverage, `w` wide, placed at (`x`, `y`) from
+/// its origin's whole pixel.
+struct Coverage {
+    x: i32,
+    y: i32,
+    w: usize,
+    alpha: Vec<f32>,
+}
+
 /// The UI face at the two weights the scale uses.
 pub struct Fonts {
     medium: FontVec,
     demibold: FontVec,
     /// Capital height per unit of `PxScale`, for each face.
     caps: [f32; 2],
+    /// Every glyph is rasterized once per size and offset, not every frame.
+    glyphs: RefCell<HashMap<GlyphKey, Option<Coverage>>>,
 }
 
 /// How tall `H` is against the scale ab_glyph sizes by (ascent − descent).
@@ -58,6 +78,7 @@ impl Fonts {
             medium,
             demibold,
             caps,
+            glyphs: RefCell::new(HashMap::new()),
         }
     }
 
@@ -224,30 +245,55 @@ impl Fonts {
         // Start and baseline on whole device pixels: a fractional baseline
         // smears every horizontal edge over two rows.
         let mut caret = (x * canvas.scale).round();
-        let baseline = (baseline * canvas.scale).round();
+        let baseline = (baseline * canvas.scale).round() as i32;
+        let mut glyphs = self.glyphs.borrow_mut();
         for (_, id, kern) in advances(face, &scaled, text) {
             caret += kern;
-            let glyph = id.with_scale_and_position(scale, point(caret, baseline));
-            caret += scaled.h_advance(id);
-            let Some(outlined) = face.outline_glyph(glyph) else {
-                continue;
+            let whole = caret.floor();
+            let quarter = ((caret - whole) * SUBPIXEL).round();
+            let (whole, quarter) = if quarter >= SUBPIXEL {
+                (whole + 1.0, 0.0)
+            } else {
+                (whole, quarter)
             };
-            let bounds = outlined.px_bounds();
-            outlined.draw(|gx, gy, coverage| {
-                let px = bounds.min.x as i32 + gx as i32;
-                let py = bounds.min.y as i32 + gy as i32;
-                if px < left || px >= right || py < top || py >= bottom {
-                    return;
-                }
-                let a = (coverage * alpha).clamp(0.0, 1.0);
-                let i = ((py * width + px) * 4) as usize;
-                // Premultiplied source-over with an opaque colour.
-                let over = |s: u8, d: u8| (s as f32 * a + d as f32 * (1.0 - a)).round() as u8;
-                data[i] = over(color.0, data[i]);
-                data[i + 1] = over(color.1, data[i + 1]);
-                data[i + 2] = over(color.2, data[i + 2]);
-                data[i + 3] = over(255, data[i + 3]);
+            caret += scaled.h_advance(id);
+            let key = (style.strong(), id.0, scale.y.to_bits(), quarter as u8);
+            let coverage = glyphs.entry(key).or_insert_with(|| {
+                let at = point(quarter / SUBPIXEL, 0.0);
+                let outlined = face.outline_glyph(id.with_scale_and_position(scale, at))?;
+                let bounds = outlined.px_bounds();
+                let w = bounds.width() as usize;
+                let mut alpha = vec![0.0; w * bounds.height() as usize];
+                outlined.draw(|gx, gy, c| alpha[gy as usize * w + gx as usize] = c);
+                Some(Coverage {
+                    x: bounds.min.x as i32,
+                    y: bounds.min.y as i32,
+                    w,
+                    alpha,
+                })
             });
+            let Some(coverage) = coverage else { continue };
+            let (ox, oy) = (whole as i32 + coverage.x, baseline + coverage.y);
+            for (row, line) in coverage.alpha.chunks_exact(coverage.w.max(1)).enumerate() {
+                let py = oy + row as i32;
+                if py < top || py >= bottom {
+                    continue;
+                }
+                for (col, c) in line.iter().enumerate() {
+                    let px = ox + col as i32;
+                    if *c <= 0.0 || px < left || px >= right {
+                        continue;
+                    }
+                    let a = (c * alpha).clamp(0.0, 1.0);
+                    let i = ((py * width + px) * 4) as usize;
+                    // Premultiplied source-over with an opaque colour.
+                    let over = |s: u8, d: u8| (s as f32 * a + d as f32 * (1.0 - a)).round() as u8;
+                    data[i] = over(color.0, data[i]);
+                    data[i + 1] = over(color.1, data[i + 1]);
+                    data[i + 2] = over(color.2, data[i + 2]);
+                    data[i + 3] = over(255, data[i + 3]);
+                }
+            }
         }
     }
 
