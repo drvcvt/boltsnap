@@ -2,20 +2,60 @@
 //! and where it sits in the stack while cards come and go.
 
 use super::{
-    Layout, LayoutConfig, MAX_CACHED_IMAGE_BYTES, MAX_VISIBLE_CARDS, PreparedAdd, ShelfModel,
-    Thumb, ThumbRect,
+    Anchor, Daemon, Layout, LayoutConfig, MAX_CACHED_IMAGE_BYTES, PreparedAdd, ShelfModel, Thumb,
+    ThumbRect,
 };
+use crate::config::ShelfPrefs;
+use crate::shelf::layout::Corner;
 
-pub(super) fn visible_cards(model: &ShelfModel) -> impl Iterator<Item = &Thumb> {
-    model.newest_first().take(MAX_VISIBLE_CARDS)
+/// Gap between the shelf and both screen edges of its corner.
+const EDGE_MARGIN: i32 = 24;
+
+/// Layer anchor and margins `[top, right, bottom, left]` for `corner`.
+pub(super) fn anchor(corner: Corner) -> (Anchor, [i32; 4]) {
+    let (top, right) = (corner.is_top(), corner.is_right());
+    let margin = |on: bool| if on { EDGE_MARGIN } else { 0 };
+    (
+        (if top { Anchor::TOP } else { Anchor::BOTTOM })
+            | (if right { Anchor::RIGHT } else { Anchor::LEFT }),
+        [margin(top), margin(right), margin(!top), margin(!right)],
+    )
+}
+
+impl Daemon {
+    /// Takes `[shelf]` as it is now. A new corner needs a new layer surface;
+    /// the cards stay.
+    pub(super) fn apply_shelf_prefs(&mut self, prefs: ShelfPrefs) {
+        let old = std::mem::replace(&mut self.shelf_prefs, prefs);
+        if old == prefs {
+            return;
+        }
+        let Some(qh) = self.qh.clone() else {
+            return;
+        };
+        self.relayout();
+        if old.corner != prefs.corner && self.layer.is_some() {
+            // Destroying the drag's origin surface would end it without a
+            // terminal event.
+            self.forget_drag();
+            self.layer = None;
+            self.place_on_output(None, &qh);
+        }
+        self.draw(&qh);
+    }
+}
+
+pub(super) fn visible_cards(model: &ShelfModel, visible: usize) -> impl Iterator<Item = &Thumb> {
+    model.newest_first().take(visible)
 }
 
 pub(super) fn overflow_card_opacity(
     position: usize,
+    visible: usize,
     appear_progress: Option<f32>,
     disappear_progresses: &[f32],
 ) -> Option<f32> {
-    let mut overflow = position.checked_sub(MAX_VISIBLE_CARDS)?;
+    let mut overflow = position.checked_sub(visible)?;
     if overflow == 0
         && let Some(progress) = appear_progress
     {
@@ -27,26 +67,36 @@ pub(super) fn overflow_card_opacity(
         .map(|progress| progress.clamp(0.0, 1.0))
 }
 
-pub(super) fn animated_item_limit(model_len: usize, appearing: bool, disappearing: usize) -> usize {
-    model_len.min(MAX_VISIBLE_CARDS + usize::from(appearing) + disappearing)
+pub(super) fn animated_item_limit(
+    model_len: usize,
+    visible: usize,
+    appearing: bool,
+    disappearing: usize,
+) -> usize {
+    model_len.min(visible + usize::from(appearing) + disappearing)
 }
 
+/// `top`: the shelf hangs from a top corner and grows downward, so the older
+/// cards slide down to make room for a new one even while the shelf is not
+/// full. Hanging from the bottom, it grows upward and they stay put.
 pub(super) fn animated_card_layout(
     items: &[(u64, u32, u32, f32)],
     cfg: &LayoutConfig,
+    visible: usize,
+    top: bool,
     appear_progress: Option<f32>,
 ) -> Layout {
     if items.is_empty() {
         return Layout::compute(&[], cfg);
     }
     let scroll = appear_progress
-        .filter(|_| items.len() > MAX_VISIBLE_CARDS)
+        .filter(|_| top || items.len() > visible)
         .map(|progress| {
             ((items[0].2 + cfg.gap) as f32 * (1.0 - progress.clamp(0.0, 1.0))).round() as u32
         });
     let widest = items
         .iter()
-        .take(MAX_VISIBLE_CARDS)
+        .take(visible)
         .map(|(_, w, ..)| *w)
         .max()
         .unwrap_or(0);
@@ -71,14 +121,14 @@ pub(super) fn animated_card_layout(
         });
         y += height;
     }
-    let height = if items.len() > MAX_VISIBLE_CARDS {
+    let height = if items.len() > visible {
         cfg.pad * 2
             + items
                 .iter()
-                .take(MAX_VISIBLE_CARDS)
+                .take(visible)
                 .map(|(_, _, h, _)| *h)
                 .sum::<u32>()
-            + cfg.gap * (MAX_VISIBLE_CARDS as u32 - 1)
+            + cfg.gap * (visible as u32 - 1)
     } else {
         y + cfg.pad
     };

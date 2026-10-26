@@ -58,11 +58,13 @@ impl Daemon {
     /// Adopt the file as it is now: an edit by hand or by the selector, or
     /// the outcome of our own writes. A write still queued is newer than the
     /// file, so this waits until the last one has finished.
-    pub(super) fn refresh_recording_prefs(&mut self) {
+    pub(super) fn refresh_prefs(&mut self) {
         if self.pending_writes > 0 {
             return;
         }
-        let prefs = crate::config::Config::load().recording_prefs();
+        let config = crate::config::Config::load();
+        self.apply_shelf_prefs(config.shelf_prefs());
+        let prefs = config.recording_prefs();
         if prefs == self.recording_prefs {
             return;
         }
@@ -169,7 +171,7 @@ impl Daemon {
             (None, None) => {}
         }
         // Also undoes a failed tray write, since the file kept the old value.
-        self.refresh_recording_prefs();
+        self.refresh_prefs();
         self.publish_settings();
     }
 }

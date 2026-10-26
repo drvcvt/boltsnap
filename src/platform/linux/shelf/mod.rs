@@ -160,6 +160,7 @@ pub struct Daemon {
     pending_default_recordings: Vec<UnixStream>,
     pending_tray_default_recording: bool,
     recording_prefs: crate::config::RecordingPrefs,
+    shelf_prefs: crate::config::ShelfPrefs,
     settings_writer: settings::Writer,
     /// Writes sent to `settings_writer` that have not finished yet.
     pending_writes: usize,
@@ -268,7 +269,6 @@ fn shelf_commit_allowed(drag_active: bool) -> bool {
     !drag_active
 }
 
-const MAX_VISIBLE_CARDS: usize = 5;
 const MAX_RECORDING_WATCHERS: usize = 16;
 
 /// False once a watch client hung up. Watch clients send nothing after their
@@ -897,7 +897,8 @@ pub fn run_daemon(save_dir_cli: Option<std::path::PathBuf>) -> DynResult<()> {
 
     let cfg = LayoutConfig::default();
     crate::config::on_broken(notify);
-    let recording_prefs = crate::config::Config::load().recording_prefs();
+    let config = crate::config::Config::load();
+    let (recording_prefs, shelf_prefs) = (config.recording_prefs(), config.shelf_prefs());
     let (event_tx, event_rx) = calloop::channel::channel::<DaemonEvent>();
     let settings_writer = settings::Writer::spawn(event_tx.clone());
     let changed_tx = event_tx.clone();
@@ -968,6 +969,7 @@ pub fn run_daemon(save_dir_cli: Option<std::path::PathBuf>) -> DynResult<()> {
         pending_default_recordings: Vec::new(),
         pending_tray_default_recording: false,
         recording_prefs,
+        shelf_prefs,
         settings_writer,
         pending_writes: 0,
         settings_watchers: Vec::new(),
@@ -1223,7 +1225,7 @@ impl Daemon {
 
     fn handle_tray_action(&mut self, action: crate::tray::TrayAction) {
         use crate::tray::TrayAction;
-        self.refresh_recording_prefs();
+        self.refresh_prefs();
 
         match action {
             TrayAction::ReplayToggle | TrayAction::ReplaySave => {
@@ -1362,8 +1364,9 @@ impl Daemon {
             Some("boltsnap"),
             output.as_ref(),
         );
-        layer.set_anchor(Anchor::BOTTOM | Anchor::LEFT);
-        layer.set_margin(0, 0, 24, 24);
+        let (anchor, [top, right, bottom, left]) = cards::anchor(self.shelf_prefs.corner);
+        layer.set_anchor(anchor);
+        layer.set_margin(top, right, bottom, left);
         layer.set_keyboard_interactivity(KeyboardInteractivity::None);
         layer.set_exclusive_zone(-1);
         layer.set_size(self.layout.width.max(1), self.layout.height.max(1));
@@ -1377,7 +1380,7 @@ impl Daemon {
 
     /// Recompute layout from the model and resize the layer surface to match.
     fn relayout(&mut self) {
-        let sizes: Vec<(u64, u32, u32)> = visible_cards(&self.model)
+        let sizes: Vec<(u64, u32, u32)> = visible_cards(&self.model, self.shelf_prefs.visible)
             .map(|t| (t.id, t.thumb.width(), t.thumb.height()))
             .collect();
         self.layout = Layout::compute(&sizes, &self.cfg);
@@ -1821,10 +1824,17 @@ impl Daemon {
         if let Some(position) = self.model.newest_first().position(|card| card.id == id) {
             let appear = self.active_appear_progress();
             let disappearances = self.active_disappear_progresses();
-            if position >= MAX_VISIBLE_CARDS
+            let visible = self.shelf_prefs.visible;
+            if position >= visible
                 && position
-                    < animated_item_limit(self.model.len(), appear.is_some(), disappearances.len())
-                && let Some(opacity) = overflow_card_opacity(position, appear, &disappearances)
+                    < animated_item_limit(
+                        self.model.len(),
+                        visible,
+                        appear.is_some(),
+                        disappearances.len(),
+                    )
+                && let Some(opacity) =
+                    overflow_card_opacity(position, visible, appear, &disappearances)
             {
                 return (1.0, opacity);
             }
@@ -1933,6 +1943,7 @@ impl Daemon {
         let appear_progress = self.active_appear_progress();
         let limit = animated_item_limit(
             self.model.len(),
+            self.shelf_prefs.visible,
             appear_progress.is_some(),
             self.active_disappear_count(),
         );
@@ -1954,7 +1965,13 @@ impl Daemon {
                 (t.id, t.thumb.width(), t.thumb.height(), collapse)
             })
             .collect();
-        animated_card_layout(&items, cfg, appear_progress)
+        animated_card_layout(
+            &items,
+            cfg,
+            self.shelf_prefs.visible,
+            self.shelf_prefs.corner.is_top(),
+            appear_progress,
+        )
     }
 
     fn hit_test(&self, x: f64, y: f64) -> Option<Hit> {
@@ -2055,7 +2072,7 @@ impl Daemon {
             return Err("a recording is already in progress".into());
         }
         validate_recording_dimensions(geo.w, geo.h)?;
-        self.refresh_recording_prefs();
+        self.refresh_prefs();
         let prefs = crate::config::RecordingPrefs {
             audio_enabled,
             ..self.recording_prefs.clone()
@@ -2098,7 +2115,7 @@ impl Daemon {
         &mut self,
         focus_snapshot: &Result<Vec<crate::record::Monitor>, String>,
     ) -> Result<(), String> {
-        self.refresh_recording_prefs();
+        self.refresh_prefs();
         let plan = default_start_plan(
             &self.recording_prefs,
             focus_snapshot,
@@ -2139,7 +2156,7 @@ impl Daemon {
         if self.recording.is_some() {
             return Err("a recording is already in progress".into());
         }
-        self.refresh_recording_prefs();
+        self.refresh_prefs();
         let config = crate::config::Config::load();
         let tools = RecorderTools::default();
         let codec = tools.session_codec(&crate::config::resolve_record_codec(None, &config))?;
@@ -2843,7 +2860,7 @@ impl Daemon {
             DaemonEvent::Tray(action) => self.handle_tray_action(action),
             DaemonEvent::SettingsWritten { reply, error } => self.settings_written(reply, error),
             DaemonEvent::ConfigChanged => {
-                self.refresh_recording_prefs();
+                self.refresh_prefs();
                 self.publish_settings();
             }
         }

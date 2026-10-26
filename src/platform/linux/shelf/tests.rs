@@ -589,8 +589,8 @@ fn add_is_prepared_before_it_reaches_the_ui_event_loop() {
 
 #[test]
 fn two_dismissals_render_two_cached_replacements() {
-    assert_eq!(animated_item_limit(8, false, 2), 7);
-    assert_eq!(animated_item_limit(8, true, 2), 8);
+    assert_eq!(animated_item_limit(8, 5, false, 2), 7);
+    assert_eq!(animated_item_limit(8, 5, true, 2), 8);
 }
 
 #[test]
@@ -612,12 +612,12 @@ fn five_card_viewport_reveals_cached_card_after_removal() {
         })
         .collect();
 
-    let visible: Vec<_> = visible_cards(&model).map(|card| card.id).collect();
+    let visible: Vec<_> = visible_cards(&model, 5).map(|card| card.id).collect();
     assert_eq!(visible, ids[1..].iter().rev().copied().collect::<Vec<_>>());
     assert!(model.get(ids[0]).is_some(), "oldest card stays cached");
 
     model.remove(ids[5]);
-    let visible: Vec<_> = visible_cards(&model).map(|card| card.id).collect();
+    let visible: Vec<_> = visible_cards(&model, 5).map(|card| card.id).collect();
     assert_eq!(visible, ids[..5].iter().rev().copied().collect::<Vec<_>>());
 }
 
@@ -626,14 +626,14 @@ fn overflow_insertion_scrolls_oldest_below_viewport() {
     let cfg = LayoutConfig::default();
     let items: Vec<_> = (1..=6).rev().map(|id| (id, 190, 132, 0.0)).collect();
 
-    let start = animated_card_layout(&items, &cfg, Some(0.0));
+    let start = animated_card_layout(&items, &cfg, 5, false, Some(0.0));
     assert_eq!(start.height, 744);
     assert_eq!(
         start.thumbs.iter().map(|card| card.y).collect::<Vec<_>>(),
         [22, 22, 164, 306, 448, 590]
     );
 
-    let end = animated_card_layout(&items, &cfg, Some(1.0));
+    let end = animated_card_layout(&items, &cfg, 5, false, Some(1.0));
     assert_eq!(end.height, 744);
     assert_eq!(
         end.thumbs.iter().map(|card| card.y).collect::<Vec<_>>(),
@@ -645,7 +645,7 @@ fn overflow_insertion_scrolls_oldest_below_viewport() {
 fn dismissal_pulls_cached_card_back_into_viewport() {
     let cfg = LayoutConfig::default();
     let start: Vec<_> = (1..=6).rev().map(|id| (id, 190, 132, 0.0)).collect();
-    let start = animated_card_layout(&start, &cfg, None);
+    let start = animated_card_layout(&start, &cfg, 5, false, None);
     assert_eq!(start.height, 744);
     assert_eq!(start.thumbs[5].y, 732);
 
@@ -653,7 +653,7 @@ fn dismissal_pulls_cached_card_back_into_viewport() {
         .rev()
         .map(|id| (id, 190, 132, f32::from(id == 5)))
         .collect();
-    let end = animated_card_layout(&end, &cfg, None);
+    let end = animated_card_layout(&end, &cfg, 5, false, None);
     assert_eq!(end.height, 744);
     assert_eq!(end.thumbs[5].y, 590);
 }
@@ -661,18 +661,88 @@ fn dismissal_pulls_cached_card_back_into_viewport() {
 #[test]
 fn each_cached_replacement_uses_its_own_dismiss_progress() {
     let dismissals = [0.8, 0.25];
-    assert_eq!(overflow_card_opacity(5, None, &dismissals), Some(0.8));
-    assert_eq!(overflow_card_opacity(6, None, &dismissals), Some(0.25));
-    assert_eq!(overflow_card_opacity(5, Some(0.4), &dismissals), Some(0.6));
-    assert_eq!(overflow_card_opacity(6, Some(0.4), &dismissals), Some(0.8));
-    assert_eq!(overflow_card_opacity(7, Some(0.4), &dismissals), Some(0.25));
+    assert_eq!(overflow_card_opacity(5, 5, None, &dismissals), Some(0.8));
+    assert_eq!(overflow_card_opacity(6, 5, None, &dismissals), Some(0.25));
+    assert_eq!(
+        overflow_card_opacity(5, 5, Some(0.4), &dismissals),
+        Some(0.6)
+    );
+    assert_eq!(
+        overflow_card_opacity(6, 5, Some(0.4), &dismissals),
+        Some(0.8)
+    );
+    assert_eq!(
+        overflow_card_opacity(7, 5, Some(0.4), &dismissals),
+        Some(0.25)
+    );
+}
+
+#[test]
+fn the_viewport_holds_the_configured_number_of_cards() {
+    let cfg = LayoutConfig::default();
+    let items: Vec<_> = (1..=9).rev().map(|id| (id, 380, 264, 0.0)).collect();
+    for visible in [1, 8] {
+        let layout = animated_card_layout(&items, &cfg, visible, false, None);
+        let shown = visible as u32;
+        assert_eq!(layout.height, 2 * 22 + shown * 264 + (shown - 1) * 10);
+        assert_eq!(layout.width, 2 * 22 + 380);
+        for pair in layout.thumbs.windows(2) {
+            assert!(pair[0].y + pair[0].h + 10 <= pair[1].y, "cards overlap");
+        }
+        let model_len = items.len();
+        assert_eq!(
+            animated_item_limit(model_len, visible, false, 0),
+            visible.min(model_len)
+        );
+    }
+    assert_eq!(overflow_card_opacity(0, 1, None, &[]), None);
+    assert_eq!(overflow_card_opacity(1, 1, Some(0.25), &[]), Some(0.75));
+}
+
+#[test]
+fn hanging_from_the_top_the_older_cards_slide_down_for_a_new_one() {
+    let cfg = LayoutConfig::default();
+    let items: Vec<_> = (1..=3).rev().map(|id| (id, 190, 132, 0.0)).collect();
+    let ys = |top, progress| {
+        animated_card_layout(&items, &cfg, 5, top, Some(progress))
+            .thumbs
+            .iter()
+            .map(|card| card.y)
+            .collect::<Vec<_>>()
+    };
+    // Each older card starts where it was and ends one slot lower.
+    assert_eq!(ys(true, 0.0), [22, 22, 164]);
+    assert_eq!(ys(true, 1.0), [22, 164, 306]);
+    // Hanging from the bottom, the shelf grows upward and they stay put.
+    assert_eq!(ys(false, 0.0), [22, 164, 306]);
+}
+
+#[test]
+fn each_corner_anchors_the_shelf_24_px_from_both_its_edges() {
+    use crate::shelf::layout::Corner;
+    assert_eq!(
+        cards::anchor(Corner::BottomLeft),
+        (Anchor::BOTTOM | Anchor::LEFT, [0, 0, 24, 24])
+    );
+    assert_eq!(
+        cards::anchor(Corner::BottomRight),
+        (Anchor::BOTTOM | Anchor::RIGHT, [0, 24, 24, 0])
+    );
+    assert_eq!(
+        cards::anchor(Corner::TopLeft),
+        (Anchor::TOP | Anchor::LEFT, [24, 0, 0, 24])
+    );
+    assert_eq!(
+        cards::anchor(Corner::TopRight),
+        (Anchor::TOP | Anchor::RIGHT, [24, 24, 0, 0])
+    );
 }
 
 #[test]
 fn animated_layout_hit_tracks_the_card_on_screen() {
     let cfg = LayoutConfig::default();
     let items = [(2, 190, 132, 1.0), (1, 190, 132, 0.0)];
-    let animated = animated_card_layout(&items, &cfg, None);
+    let animated = animated_card_layout(&items, &cfg, 5, false, None);
 
     assert_eq!(
         animated.hit(60.0, 60.0, &cfg),
