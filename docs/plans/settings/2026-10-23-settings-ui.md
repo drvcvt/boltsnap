@@ -2316,6 +2316,82 @@ mittig), Helligkeit je Ziel, Brücke nur bei Both + Combined, ohne Monitore
 kein Block; P3 Schrittweiten für 15 s, 30 s, 1 min, 10 min, Füllung aus
 `duration_us`, dunkler Teil im Engpass, Länge wechseln gleitet; Gates.
 
+### Phase 5e: Vorschauen und Ecken schöner (26.10., Meldung des Nutzers)
+
+Meldung: die Shelf-Vorschau wirkt unspektakulär, die Ecken-Icons sind nicht
+schön, die Replay-Leiste könnte schöner sein, die Monitor-Anzeige ist
+„sehr hässlich“. Befunde am Screenshot des Nutzers und am Code:
+- Monitore: Namen sind die Wayland-Beschreibung mit Seriennummer
+  („BNQ ZOWIE XL LCD EB66M01776SL…“), gekürzt; zwei flache graue Kästen.
+  `OutputInfo` hat `make` und `model` getrennt (sctk `output.rs:324`);
+  hier `AOC`/`27G4HRE`, `BNQ`/`ZOWIE XL LCD`.
+- Replay: Puffer läuft mit 29,85 von 30 s (gemessen), die Leiste war also
+  fast voll; `SELECTED` auf `RAISE` (1,33:1) liest sich wie leer.
+- Ecken-Icons: 1,5-px-Striche bei 14 px, die Karte 3,5 px breit.
+- Shelf: dunkler, leerer Bildschirm mit grauen Kästen.
+
+Gemeinsame Quelle für echte Inhalte: die Screenshots im Speicherordner
+(`resolve_save_dir`, hier 13 Dateien, PNG und MP4); nur PNG, die neuesten
+zuerst, einmal beim Öffnen im Hintergrund geladen und verkleinert, nie
+eine neue Aufnahme. Keine Screenshots: die Vorschauen bleiben wie jetzt
+(Flächen). Nichts verlässt den Rechner.
+
+V1 Monitore:
+- Jeder Monitor als Monitor: Gehäuse (`RAISE`, Radius `RADIUS − GAP_XS`),
+  Bildschirm 3 px eingerückt, darunter ein kurzer Fuß (Hals und Standfläche,
+  `RAISE`). Wohin aufgenommen wird, dessen Bildschirm ist an: er zeigt den
+  passenden Ausschnitt des neuesten Screenshots, der so groß ist wie die
+  ganze Anordnung (sonst `SELECTED`); die anderen sind aus (`WINDOW`).
+  Focused: alle halb an.
+- Name unter dem Fuß: Hersteller und Modell („BenQ ZOWIE XL LCD“,
+  „AOC 27G4HRE“; Herstellercodes BNQ→BenQ, GSM→LG, DEL→Dell, SAM→Samsung,
+  ACR→Acer, AUS→ASUS, HWP→HP, LEN→Lenovo, PHL→Philips, GBT→Gigabyte,
+  ENC→EIZO, sonst der Code), darunter der Anschluss (`Key`, `SUB`). Gleiche
+  Beschriftung im Display-Dropdown.
+- Bei Both eine Zeile unter allen: „One clip“ (Combined) bzw. „Two clips“
+  (Separate); bei Focused „The one with focus when you start“.
+- Wechsel blenden (`QUICK`), nichts wandert.
+
+V2 Ecken:
+- Segment-Teile als gefüllte Mini-Bildschirme statt Strich-Icons: Fläche
+  20 × 13 (`SUB` für nicht gewählt, `TEXT` für gewählt, Deckkraft gedämpft),
+  darin die Karte 8 × 5 voll in der Ecke; eigener Teil-Typ im Segment
+  (`Part::Corner`).
+- Direkte Wahl in der Shelf-Vorschau: Klick in ein Viertel des Bildschirms
+  setzt die Ecke (wie das Segment, schreibt `shelf.corner`); Hover zeigt
+  die Karten blass in diesem Viertel. Tastatur bleibt das Segment.
+
+V3 Replay:
+- Kopfzeile in der Fläche: links „Holds 29 s“ (läuft) bzw. „Off“ (`Label`,
+  `TEXT`), rechts die Bitrate wie im Hinweis („41 Mbit/s“, `SUB`).
+- Die Leiste aus Zellen (eine je Sekunde bis 60, sonst je Länge/60 s),
+  16 px hoch, 2 px Fuge: gehaltene Zellen hell (`TEXT` gedämpft auf 0,85),
+  leere `RAISE`, nicht haltbare `WINDOW`; eine Zelle blendet beim Füllen
+  stetig ein (Anteil aus der gleitenden Füllung).
+- Zeiten darunter wie jetzt, „now“ in `TEXT`.
+
+V4 Shelf:
+- Hintergrund: der neueste Screenshot, auf 16:9 zugeschnitten (bei einem
+  Bild über beide Monitore der Teil des ersten), Richtung `WINDOW`
+  abgedunkelt (60 %), damit die Karten vorne stehen.
+- Karten: die nächsten Screenshots als Vorschaubilder (füllend zugeschnitten
+  auf das Kartenformat), Radius maßstäblich; mehr Karten als Bilder: die
+  übrigen als Fläche.
+
+Code: `linux/app/shots.rs` (neu: neueste PNG laden, verkleinern, über einen
+Kanal an das Fenster), `app/preview/` (Bilder als Pixmaps, Zeichnen mit
+`tiny_skia::Pattern` in abgerundete Pfade), `widgets/segment.rs`
+(`Part::Corner`), `pages/` (Beschriftung), Klick und Hover auf der
+Shelf-Vorschau in `App` (`Target::Preview`).
+
+Tests: Herstellercodes; Monitor-Teile und Beschriftung; Ecke per Klick in
+ein Viertel schreibt `shelf.corner`, Hover blendet die Geisterkarten;
+Zellenzahl je Länge, Kopfzeile; Bild-Zuschnitt (16:9, Kartenformat) als
+reine Funktion; Gates (Überlauf, Abstände, Kontrast der neuen Texte).
+
+Macht nicht: Live-Bild des Bildschirms (das zeigte das Settings-Fenster
+selbst), Videos als Karten, Schatten.
+
 ## 6. Reihenfolge
 
 Jede Phase ist ein eigener Commit (oder wenige), baut, testet und lässt den
