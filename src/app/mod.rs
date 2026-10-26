@@ -20,7 +20,7 @@ use std::time::Instant;
 
 pub use fades::Channel;
 pub use layout::{AT_REST, Layout, RowParts};
-pub use preview::{Preview, screen as preview_screen, shelf_cards};
+pub use preview::{Preview, display_places, screen as preview_screen, shelf_cards};
 pub use writes::{Bind, Encode, Write};
 
 use crate::ui::icons::Icon;
@@ -101,9 +101,8 @@ pub struct App {
     /// for it under the entries.
     mark: brand::Mark,
     mark_room: Spring,
-    /// The shelf preview's cards, and the shape they were last pointed at.
-    preview_cards: Vec<preview::Card>,
-    preview_shape: Option<preview::ShelfShape>,
+    /// What the previews move (`preview/`).
+    preview: preview::State,
     /// 1 while focus came from the keyboard, 0 after a click: the focus
     /// outline shows only for the first (like `:focus-visible`).
     keyed: Spring,
@@ -143,8 +142,7 @@ impl App {
             keyed: Spring::settled(0.0, now),
             mark: brand::Mark::default(),
             mark_room: Spring::settled(0.0, now),
-            preview_cards: Vec::new(),
-            preview_shape: None,
+            preview: preview::State::new(now),
             size,
             scroll: Scroll::new(now),
             focus: None,

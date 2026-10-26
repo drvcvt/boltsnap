@@ -9,8 +9,8 @@ pub struct Prefs {
     pub save_dir: String,
     pub both_combined: bool,
     pub display: Display,
-    /// The connected monitors: (connector, label as people know it).
-    pub displays: Vec<(String, String)>,
+    /// The connected monitors.
+    pub displays: Vec<Screen>,
     /// `record_codec`, `auto` when unset.
     pub codec: String,
     /// What gpu-screen-recorder can encode here (`--info`), once known.
@@ -60,6 +60,18 @@ pub enum Cursor {
     System,
     Mellow,
     Quick,
+}
+
+/// A connected monitor: its connector, its name as people know it, and where
+/// it sits in the compositor's layout (logical pixels).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Screen {
+    pub name: String,
+    pub label: String,
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
 }
 
 /// Where a fullscreen recording goes: `record_default_target`.

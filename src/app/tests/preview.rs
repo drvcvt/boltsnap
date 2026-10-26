@@ -65,3 +65,68 @@ fn a_new_corner_glides_the_cards_there_and_a_new_card_fades_in_in_place() {
         assert_eq!(before.0, after.0, "the others do not move");
     }
 }
+
+fn displays(app: &App, now: Instant) -> (Vec<(Rect, f32)>, f32) {
+    let index = app
+        .page()
+        .blocks
+        .iter()
+        .position(|block| matches!(block, Block::Preview(Preview::Displays(_))))
+        .expect("a display preview");
+    app.display_lights(app.layout(now).blocks[index], now)
+}
+
+#[test]
+fn the_monitors_sit_in_their_order_and_light_up_for_where_a_recording_goes() {
+    let now = Instant::now();
+    let mut app = app_on("recording", SIZE, now);
+    let (lit, bridge) = displays(&app, now);
+    // BenQ at 0, AOC at 1920: side by side, the same size, left to right.
+    assert_eq!(lit.len(), 2);
+    assert!(lit[0].0.x < lit[1].0.x && lit[0].0.w == lit[1].0.w);
+    assert_eq!(
+        (lit[0].1, lit[1].1, bridge),
+        (0.5, 0.5, 0.0),
+        "focused: any of them"
+    );
+    // The AOC: it lights, the BenQ goes dark.
+    focus(&mut app, "Display", now);
+    key(&mut app, Key::Enter, now);
+    key(&mut app, Key::Down, now);
+    key(&mut app, Key::Down, now);
+    key(&mut app, Key::Enter, now);
+    let (lit, _) = displays(&app, now + SETTLED);
+    assert_eq!((lit[0].1, lit[1].1), (0.0, 1.0));
+    // Both, as two clips: both light, the seam stays; combined, it closes.
+    key(&mut app, Key::Enter, now + SETTLED);
+    key(&mut app, Key::Down, now + SETTLED);
+    key(&mut app, Key::Enter, now + SETTLED);
+    let (lit, bridge) = displays(&app, now + SETTLED + SETTLED);
+    assert_eq!((lit[0].1, lit[1].1, bridge), (1.0, 1.0, 0.0));
+    let later = now + SETTLED + SETTLED;
+    focus(&mut app, "Both displays as", later);
+    key(&mut app, Key::Right, later);
+    let (_, closing) = displays(&app, later + Duration::from_millis(60));
+    assert!(closing > 0.0 && closing < 1.0, "the bridge fades in");
+    assert_eq!(displays(&app, later + SETTLED).1, 1.0);
+}
+
+#[test]
+fn without_known_monitors_there_is_no_display_preview() {
+    let now = Instant::now();
+    let mut prefs = super::prefs();
+    prefs.displays.clear();
+    let mut app = App::new(
+        crate::ui::text::Fonts::fallback(),
+        crate::app::pages::pages(&prefs, None, now),
+        SIZE,
+        now,
+    );
+    app.show_named("recording", now);
+    assert!(
+        !app.page()
+            .blocks
+            .iter()
+            .any(|b| matches!(b, Block::Preview(_)))
+    );
+}

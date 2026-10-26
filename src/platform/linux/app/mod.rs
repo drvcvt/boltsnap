@@ -102,7 +102,7 @@ pub fn cli(args: &[String]) -> DynResult<()> {
 
 fn settings_pages(
     notice: Option<&pages::Notice>,
-    displays: Vec<(String, String)>,
+    displays: Vec<pages::Screen>,
     now: Instant,
 ) -> Vec<Page> {
     pages::pages(&prefs::load(displays), notice, now)

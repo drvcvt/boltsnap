@@ -121,13 +121,10 @@ pub(super) fn display_entries(prefs: &Prefs) -> (Vec<(String, String)>, String) 
         prefs
             .displays
             .iter()
-            .map(|(name, label)| (format!("output:{name}"), label.clone())),
+            .map(|screen| (format!("output:{}", screen.name), screen.label.clone())),
     );
     if let Display::Output(name) = &prefs.display
-        && !prefs
-            .displays
-            .iter()
-            .any(|(connected, _)| connected == name)
+        && !prefs.displays.iter().any(|screen| screen.name == *name)
     {
         entries.push((format!("output:{name}"), format!("{name} (disconnected)")));
     }

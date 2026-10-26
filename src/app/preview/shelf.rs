@@ -1,19 +1,13 @@
-//! Pictures of what a page's settings do, following its controls as they
-//! move (settings plan, 5d). P1: the shelf on a screen, to scale.
+//! P1: the shelf on a screen, to scale, following the page's controls.
 
 use std::time::Instant;
 
-use super::{App, Bind, Block};
+use super::super::{App, Bind, Block};
+use super::Preview;
 use crate::ui::motion::Spring;
 use crate::ui::theme::{self, GAP_M, GLIDE, PANEL_RADIUS, QUICK, SNAP};
 use crate::ui::widgets::Value;
 use crate::ui::{Canvas, Rect};
-
-/// What a preview block shows.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Preview {
-    Shelf,
-}
 
 /// The screen the shelf preview scales from.
 const SCREEN: (f32, f32) = (1920.0, 1080.0);
@@ -29,7 +23,7 @@ const CARD_RADIUS: f32 = 10.0;
 /// The most cards the shelf shows (`shelf.visible_cards`, schema).
 pub const MOST: usize = 8;
 
-/// A preview block's height for a column `width` wide.
+/// The shelf preview's height for a column `width` wide.
 pub fn height(width: f32) -> f32 {
     screen_w(width) * SCREEN.1 / SCREEN.0 + 2.0 * GAP_M
 }
@@ -144,23 +138,23 @@ impl App {
     /// glides them there, a new width resizes them, a new count fades cards
     /// in or out where they belong. `animate` false sets them (a page just
     /// shown).
-    pub(super) fn sync_preview(&mut self, animate: bool, now: Instant) {
+    pub(super) fn sync_shelf(&mut self, animate: bool, now: Instant) {
         let Some(shape) = self.shelf_shape() else {
-            self.preview_shape = None;
+            self.preview.shape = None;
             return;
         };
         let animate = animate && !self.reduced_motion;
         let slots = shelf_cards(shape.corner, shape.width, MOST);
-        let moved = self.preview_shape.map(|old| old.corner != shape.corner);
-        if self.preview_cards.len() != MOST || moved.is_none() || !animate {
-            self.preview_cards = slots
+        let moved = self.preview.shape.map(|old| old.corner != shape.corner);
+        if self.preview.cards.len() != MOST || moved.is_none() || !animate {
+            self.preview.cards = slots
                 .iter()
                 .enumerate()
                 .map(|(index, slot)| Card::at(*slot, index < shape.count, now))
                 .collect();
-        } else if self.preview_shape != Some(shape) {
+        } else if self.preview.shape != Some(shape) {
             let token = if moved == Some(true) { GLIDE } else { SNAP };
-            for (index, (card, slot)) in self.preview_cards.iter_mut().zip(&slots).enumerate() {
+            for (index, (card, slot)) in self.preview.cards.iter_mut().zip(&slots).enumerate() {
                 let shown = index < shape.count;
                 if shown && card.shown.target() > 0.0 {
                     card.x.retarget(slot.x, token, now);
@@ -177,11 +171,11 @@ impl App {
                 card.shown.retarget(f32::from(u8::from(shown)), QUICK, now);
             }
         }
-        self.preview_shape = Some(shape);
+        self.preview.shape = Some(shape);
     }
 
-    pub(super) fn preview_moving(&self, now: Instant) -> bool {
-        self.preview_cards.iter().any(|card| card.moving(now))
+    pub(super) fn shelf_moving(&self, now: Instant) -> bool {
+        self.preview.cards.iter().any(|card| card.moving(now))
     }
 
     /// The shelf preview's cards right now, in window coordinates inside the
@@ -189,7 +183,8 @@ impl App {
     pub fn preview_cards(&self, rect: Rect, now: Instant) -> Vec<(Rect, f32)> {
         let screen = screen(rect);
         let scale = screen.w / SCREEN.0;
-        self.preview_cards
+        self.preview
+            .cards
             .iter()
             .map(|card| {
                 let r = Rect::new(
@@ -204,7 +199,7 @@ impl App {
             .collect()
     }
 
-    pub(super) fn draw_preview(&self, canvas: &mut Canvas, rect: Rect, now: Instant) {
+    pub(super) fn draw_shelf(&self, canvas: &mut Canvas, rect: Rect, now: Instant) {
         canvas.fill(rect, PANEL_RADIUS, theme::PANEL, 1.0);
         let screen = screen(rect);
         // Inside a group whose padding equals its radius: the next step down.

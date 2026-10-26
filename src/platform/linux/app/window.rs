@@ -178,8 +178,9 @@ impl Win {
         }
     }
 
-    /// The connected monitors as (connector, label), as the tray shows them.
-    pub(super) fn displays(&self) -> Vec<(String, String)> {
+    /// The connected monitors as the tray names them, where the compositor
+    /// lays them out (logical position and size, as the shelf reads them).
+    pub(super) fn displays(&self) -> Vec<boltsnap::app::pages::Screen> {
         self.outputs
             .outputs()
             .filter_map(|output| self.outputs.info(&output))
@@ -187,7 +188,16 @@ impl Win {
                 let name = info.name?;
                 let label =
                     crate::tray::output_label(&name, info.description.as_deref().unwrap_or(""));
-                Some((name, label))
+                let (x, y) = info.logical_position.unwrap_or(info.location);
+                let (w, h) = info.logical_size.filter(|(w, h)| *w > 0 && *h > 0)?;
+                Some(boltsnap::app::pages::Screen {
+                    name,
+                    label,
+                    x: x as f32,
+                    y: y as f32,
+                    w: w as f32,
+                    h: h as f32,
+                })
             })
             .collect()
     }

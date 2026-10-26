@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use boltsnap::app::pages::{AudioSource, Corner, Cursor, Display, Prefs};
+use boltsnap::app::pages::{AudioSource, Corner, Cursor, Display, Prefs, Screen};
 
 use crate::config::{
     Config, RecordAudioSource, RecordBothMode, RecordCursor, RecordDefaultTarget,
@@ -35,7 +35,7 @@ pub(super) fn untilde(path: &str) -> std::path::PathBuf {
     }
 }
 
-pub fn load(displays: Vec<(String, String)>) -> Prefs {
+pub fn load(displays: Vec<Screen>) -> Prefs {
     let cfg = Config::load();
     let shelf = cfg.shelf_prefs();
     let recording = cfg.recording_prefs();

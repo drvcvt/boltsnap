@@ -162,7 +162,7 @@ impl App {
             Block::Heading(text) => {
                 fonts.draw_in(canvas, TextStyle::Heading, text, rect, theme::SUB, 1.0);
             }
-            Block::Preview(_) => self.draw_preview(canvas, rect, now),
+            Block::Preview(preview) => self.draw_preview(canvas, preview, rect, now),
             Block::Banner { icon, text, color } => {
                 widgets::draw_banner(canvas, fonts, rect, *icon, text, *color);
             }

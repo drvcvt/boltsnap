@@ -277,7 +277,19 @@ fn gate_groups_pad_equally_and_siblings_share_an_axis() {
         every_page((w, 900.0), now, |app, name| {
             let layout = app.layout(now + SETTLED);
             for (block, rect) in app.page().blocks.iter().zip(&layout.blocks) {
-                if let Block::Preview(_) = block {
+                if let Block::Preview(crate::app::Preview::Displays(screens)) = block {
+                    // Every monitor inside, the picture centred in the room.
+                    let places = crate::app::display_places(*rect, screens);
+                    let inner = rect.inset(GAP_M);
+                    for place in &places {
+                        assert!(inside(*place, inner), "{name} monitor outside at {w}");
+                    }
+                    let left = places.iter().map(|p| p.x).fold(f32::MAX, f32::min);
+                    let right = places.iter().map(|p| p.right()).fold(f32::MIN, f32::max);
+                    let off = ((left - inner.x) - (inner.right() - right)).abs();
+                    assert!(off <= 1.0, "{name} monitors off centre by {off} at {w}");
+                }
+                if let Block::Preview(crate::app::Preview::Shelf) = block {
                     let screen = crate::app::preview_screen(*rect);
                     let pads = [
                         screen.x - rect.x,

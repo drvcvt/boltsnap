@@ -7,7 +7,7 @@ use std::time::Instant;
 mod prefs;
 mod rows;
 
-pub use prefs::{AudioSource, Corner, Cursor, Display, Notice, Prefs};
+pub use prefs::{AudioSource, Corner, Cursor, Display, Notice, Prefs, Screen};
 
 use rows::{
     choose, choose_text, codec_entries, display_entries, duration, folder, fps, fps_value, int,
@@ -146,6 +146,12 @@ fn recording(prefs: &Prefs, now: Instant) -> Page {
             text: "A recording is running, changes here apply to the next one".into(),
             color: theme::SUB,
         });
+    }
+    // Where a recording goes, when the monitors are known.
+    if !prefs.displays.is_empty() {
+        blocks.push(Block::Preview(super::Preview::Displays(
+            prefs.displays.clone(),
+        )));
     }
     blocks.extend([
         Block::Heading("Video".into()),

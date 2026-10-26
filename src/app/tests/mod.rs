@@ -29,8 +29,22 @@ pub fn prefs() -> Prefs {
         both_combined: false,
         display: pages::Display::Focused,
         displays: vec![
-            ("DP-3".into(), "BenQ (DP-3)".into()),
-            ("DP-1".into(), "AOC 27G4HRE (DP-1)".into()),
+            pages::Screen {
+                name: "DP-3".into(),
+                label: "BenQ (DP-3)".into(),
+                x: 0.0,
+                y: 0.0,
+                w: 1920.0,
+                h: 1080.0,
+            },
+            pages::Screen {
+                name: "DP-1".into(),
+                label: "AOC 27G4HRE (DP-1)".into(),
+                x: 1920.0,
+                y: 0.0,
+                w: 1920.0,
+                h: 1080.0,
+            },
         ],
         codec: "auto".into(),
         codecs: Some(
