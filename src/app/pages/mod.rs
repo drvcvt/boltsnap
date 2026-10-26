@@ -29,7 +29,7 @@ const REPLAY_SECONDS: [u64; 6] = [15, 30, 60, 120, 300, 600];
 /// (`replay::settings::video_kbps`): the video's bitrate, or, where even the
 /// lowest bitrate does not fit, how much does.
 fn memory_hint(prefs: &Prefs) -> String {
-    use crate::replay::settings::{AUDIO_KBPS, Settings};
+    use crate::replay::settings::Settings;
     let settings = Settings {
         seconds: prefs.replay_seconds,
         memory_mib: prefs.replay_memory_mib,
@@ -37,9 +37,7 @@ fn memory_hint(prefs: &Prefs) -> String {
         ..Settings::default()
     };
     let kbps = u64::from(settings.video_kbps());
-    let live_bits = prefs.replay_memory_mib as u64 * 1024 * 1024 / 3 * 8;
-    // One second stays spare: eviction drops whole one-second GOPs.
-    let fits = (live_bits / ((kbps + AUDIO_KBPS) * 1000)).saturating_sub(1);
+    let fits = settings.seconds_held();
     if fits < prefs.replay_seconds {
         let time = if fits < 120 {
             format!("{fits}\u{a0}s")
@@ -266,6 +264,9 @@ fn recording(prefs: &Prefs, now: Instant) -> Page {
 
 fn replay(prefs: &Prefs, now: Instant) -> Page {
     let mut blocks = vec![
+        Block::Preview(super::Preview::Replay {
+            bitrate_kbps: prefs.replay_bitrate,
+        }),
         Block::Heading("Buffer".into()),
         row(
             Icon::RotateCcwClock,
@@ -326,8 +327,12 @@ fn replay(prefs: &Prefs, now: Instant) -> Page {
     ];
     if prefs.replay_running && prefs.replay_stale {
         // Right under the buffer it would empty; never on its own.
+        let buffer = blocks
+            .iter()
+            .position(|block| matches!(block, Block::Row(row) if row.label == "Replay buffer"))
+            .map_or(blocks.len(), |index| index + 1);
         blocks.insert(
-            2,
+            buffer,
             row(
                 Icon::RotateCcw,
                 "Restart replay",

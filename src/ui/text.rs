@@ -13,10 +13,12 @@ use super::{Canvas, Rect, Rgb};
 /// (printable ASCII and ×).
 const FALLBACK: &[u8] = include_bytes!("../../assets/fonts/dejavu-badge.ttf");
 
-/// `c`'s glyph; a no-break space the face lacks is drawn as a space.
+/// `c`'s glyph; a no-break space or minus sign the face lacks is drawn as a
+/// space or a hyphen.
 fn glyph(face: &FontVec, c: char) -> GlyphId {
     match face.glyph_id(c) {
         GlyphId(0) if c == '\u{a0}' => face.glyph_id(' '),
+        GlyphId(0) if c == '\u{2212}' => face.glyph_id('-'),
         id => id,
     }
 }

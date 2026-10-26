@@ -154,8 +154,9 @@ pub struct PreviewTarget {
     session: String,
 }
 
-/// Only fetch routing metadata on the UI startup path, never a decoded frame.
-pub fn preview_target() -> Option<PreviewTarget> {
+/// The replay control's status, asked directly with short timeouts: never
+/// starts the daemon, `None` when nothing answers.
+pub fn status_quiet() -> Option<Value> {
     let mut stream = UnixStream::connect_addr(&socket::address("control").ok()?).ok()?;
     socket::configure(&stream).ok()?;
     stream
@@ -165,7 +166,12 @@ pub fn preview_target() -> Option<PreviewTarget> {
         .set_write_timeout(Some(Duration::from_millis(100)))
         .ok()?;
     wire::write(&mut stream, &json!({"version":1,"command":"status"})).ok()?;
-    let response = wire::read(&mut stream).ok()?;
+    wire::read(&mut stream).ok()
+}
+
+/// Only fetch routing metadata on the UI startup path, never a decoded frame.
+pub fn preview_target() -> Option<PreviewTarget> {
+    let response = status_quiet()?;
     if response["ok"] != true || response["ready"] != true || response["busy"] == true {
         return None;
     }

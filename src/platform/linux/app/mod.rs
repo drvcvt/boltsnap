@@ -195,6 +195,16 @@ fn run(page: Option<&str>) -> DynResult<()> {
     save::probe_codecs(watch_tx.clone());
     save::probe_fonts(watch_tx.clone());
     folder::probe(watch_tx.clone());
+    let (held_tx, held_rx) = calloop::channel::channel();
+    save::poll_replay(held_tx);
+    handle
+        .insert_source(held_rx, |event, _, win: &mut Win| {
+            if let calloop::channel::Event::Msg(seconds) = event {
+                win.app.set_replay_held(seconds, Instant::now());
+                win.changed();
+            }
+        })
+        .map_err(|error| format!("replay source: {error}"))?;
     let (picks_tx, picks_rx) = calloop::channel::channel();
     win.picks = Some(picks_tx);
     handle

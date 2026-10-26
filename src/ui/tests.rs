@@ -450,3 +450,10 @@ fn a_dropdown_measures_once_per_loaded_font() {
         "measured again, same face"
     );
 }
+
+#[test]
+fn a_minus_sign_the_face_lacks_draws_as_a_hyphen() {
+    let fonts = Fonts::fallback();
+    let style = TextStyle::Key;
+    assert_eq!(fonts.width(style, "\u{2212}5"), fonts.width(style, "-5"));
+}

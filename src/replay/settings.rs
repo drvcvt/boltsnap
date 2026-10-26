@@ -34,6 +34,14 @@ impl Settings {
     /// worker's live third of `memory_mib` with `seconds` of video and audio,
     /// one spare second because eviction drops whole one-second GOPs, and a
     /// tenth for rate-control bursts.
+    /// How many seconds the live buffer holds at `video_kbps`, one spare
+    /// second taken off (eviction drops whole one-second GOPs).
+    pub fn seconds_held(&self) -> u64 {
+        let live_bits = self.memory_mib as u64 * 1024 * 1024 / 3 * 8;
+        let kbps = u64::from(self.video_kbps()) + AUDIO_KBPS;
+        (live_bits / (kbps * 1000)).saturating_sub(1)
+    }
+
     pub fn video_kbps(&self) -> u32 {
         if let Some(kbps) = self.bitrate_kbps {
             return kbps;

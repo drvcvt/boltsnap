@@ -3,6 +3,7 @@
 //! recording takes (P2), the replay buffer on a timeline (P3).
 
 mod displays;
+mod replay;
 mod shelf;
 
 use std::time::Instant;
@@ -11,6 +12,7 @@ use super::App;
 use crate::ui::{Canvas, Rect};
 
 pub use displays::places as display_places;
+pub use replay::{bar as replay_bar_rect, step as replay_step};
 pub use shelf::{screen, shelf_cards};
 
 use super::pages::Screen;
@@ -22,6 +24,10 @@ pub enum Preview {
     Shelf,
     /// The connected monitors, where a recording goes.
     Displays(Vec<Screen>),
+    /// The replay buffer on a timeline; a fixed bitrate changes what fits.
+    Replay {
+        bitrate_kbps: Option<u32>,
+    },
 }
 
 impl Preview {
@@ -30,6 +36,7 @@ impl Preview {
         match self {
             Preview::Shelf => shelf::height(width),
             Preview::Displays(screens) => displays::height(width, screens),
+            Preview::Replay { .. } => replay::height(),
         }
     }
 }
@@ -41,6 +48,10 @@ pub(super) struct State {
     /// Per monitor how lit it is, and the bridge of a combined clip.
     lit: Vec<Spring>,
     bridge: Spring,
+    /// The replay buffer's length, what its memory holds, what it holds now.
+    length: Spring,
+    holds: Spring,
+    held: Spring,
 }
 
 impl State {
@@ -50,6 +61,9 @@ impl State {
             shape: None,
             lit: Vec::new(),
             bridge: Spring::settled(0.0, now),
+            length: Spring::settled(60.0, now),
+            holds: Spring::settled(60.0, now),
+            held: Spring::settled(0.0, now),
         }
     }
 }
@@ -60,10 +74,11 @@ impl App {
     pub(super) fn sync_preview(&mut self, animate: bool, now: Instant) {
         self.sync_shelf(animate, now);
         self.sync_displays(animate, now);
+        self.sync_replay(animate, now);
     }
 
     pub(super) fn preview_moving(&self, now: Instant) -> bool {
-        self.shelf_moving(now) || self.displays_moving(now)
+        self.shelf_moving(now) || self.displays_moving(now) || self.replay_moving(now)
     }
 
     pub(super) fn draw_preview(
@@ -76,6 +91,7 @@ impl App {
         match preview {
             Preview::Shelf => self.draw_shelf(canvas, rect, now),
             Preview::Displays(_) => self.draw_displays(canvas, rect, now),
+            Preview::Replay { .. } => self.draw_replay(canvas, rect, now),
         }
     }
 }

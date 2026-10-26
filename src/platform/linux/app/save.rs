@@ -215,6 +215,24 @@ pub(super) fn probe_fonts(changed: calloop::channel::Sender<()>) {
     });
 }
 
+/// How many seconds the replay buffer holds, once a second, for the bar on
+/// the replay page; `None` while it does not run. Asks the control socket
+/// directly (`replay::status_quiet`), so it never starts the daemon.
+pub(super) fn poll_replay(held: calloop::channel::Sender<Option<f32>>) {
+    std::thread::spawn(move || {
+        loop {
+            let seconds = super::super::replay::status_quiet()
+                .filter(|status| matches!(status["state"].as_str(), Some("running" | "stalled")))
+                .and_then(|status| status["duration_us"].as_u64())
+                .map(|us| us as f32 / 1e6);
+            if held.send(seconds).is_err() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
+    });
+}
+
 /// The replay buffer as its control reports it.
 #[derive(Default)]
 pub(super) struct ReplayState {

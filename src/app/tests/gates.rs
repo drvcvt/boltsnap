@@ -289,6 +289,16 @@ fn gate_groups_pad_equally_and_siblings_share_an_axis() {
                     let off = ((left - inner.x) - (inner.right() - right)).abs();
                     assert!(off <= 1.0, "{name} monitors off centre by {off} at {w}");
                 }
+                if let Block::Preview(crate::app::Preview::Replay { .. }) = block {
+                    let bar = crate::app::replay_bar_rect(*rect);
+                    let pads = [bar.x - rect.x, rect.right() - bar.right(), bar.y - rect.y];
+                    for pad in pads {
+                        assert!(
+                            (pad - GAP_M).abs() <= 0.5,
+                            "{name} replay bar pad {pads:?} at {w}"
+                        );
+                    }
+                }
                 if let Block::Preview(crate::app::Preview::Shelf) = block {
                     let screen = crate::app::preview_screen(*rect);
                     let pads = [

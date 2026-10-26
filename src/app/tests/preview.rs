@@ -130,3 +130,45 @@ fn without_known_monitors_there_is_no_display_preview() {
             .any(|b| matches!(b, Block::Preview(_)))
     );
 }
+
+#[test]
+fn the_replay_bar_marks_round_steps_fills_with_what_it_holds_and_greys_what_cannot_fit() {
+    use crate::app::replay_step as step;
+    // At most six marks on a wide bar, fewer on a narrow one.
+    assert_eq!(
+        (step(15.0, 656.0), step(30.0, 656.0), step(60.0, 656.0)),
+        (5, 5, 10)
+    );
+    assert_eq!(step(600.0, 656.0), 120);
+    assert_eq!(step(60.0, 266.0), 15);
+    let now = Instant::now();
+    let mut app = app_on("replay", SIZE, now);
+    assert_eq!(app.replay_bar(now), (0.0, 0.0), "stopped and enough memory");
+    // A quarter of a minute held: a quarter filled, from the right.
+    app.set_replay_held(Some(15.0), now);
+    let (filled, _) = app.replay_bar(now + SETTLED);
+    assert!((filled - 0.25).abs() < 0.001, "{filled}");
+    // Ten minutes in 256 MiB: about 335 s fit, the older rest is greyed.
+    let mut p = super::prefs();
+    p.replay_seconds = 600;
+    p.replay_memory_mib = 256;
+    let mut tight = App::new(
+        crate::ui::text::Fonts::fallback(),
+        crate::app::pages::pages(&p, None, now),
+        SIZE,
+        now,
+    );
+    tight.show_named("replay", now);
+    let (_, lost) = tight.replay_bar(now);
+    assert!((lost - (1.0 - 335.0 / 600.0)).abs() < 0.01, "{lost}");
+    // A new length, once the fill stands: the scale glides there.
+    let later = now + SETTLED;
+    focus(&mut app, "Length", later);
+    key(&mut app, Key::Enter, later);
+    key(&mut app, Key::Down, later);
+    key(&mut app, Key::Enter, later);
+    let (half, _) = app.replay_bar(later + Duration::from_millis(150));
+    let (end, _) = app.replay_bar(later + SETTLED);
+    assert!((end - 0.125).abs() < 0.001, "15 s of 2 min: {end}");
+    assert!(half > end && half < 0.25, "gliding: {half}");
+}
