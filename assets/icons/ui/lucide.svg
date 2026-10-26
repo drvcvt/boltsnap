@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- @license lucide-static v1.54.0 - ISC -->
+<!-- Subset of lucide-static/sprite.svg: the symbols Boltsnap draws, unchanged. -->
+<svg xmlns="http://www.w3.org/2000/svg" version="1.1">
+  <defs>
+    <symbol id="arrow-down-left" viewBox="0 0 24 24">
+      <path d="M17 7 7 17" />
+      <path d="M17 17H7V7" />
+    </symbol>
+    <symbol id="arrow-down-right" viewBox="0 0 24 24">
+      <path d="m7 7 10 10" />
+      <path d="M17 7v10H7" />
+    </symbol>
+    <symbol id="arrow-up-left" viewBox="0 0 24 24">
+      <path d="M7 17V7h10" />
+      <path d="M17 17 7 7" />
+    </symbol>
+    <symbol id="arrow-up-right" viewBox="0 0 24 24">
+      <path d="M7 7h10v10" />
+      <path d="M7 17 17 7" />
+    </symbol>
+    <symbol id="check" viewBox="0 0 24 24">
+      <path d="M20 6 9 17l-5-5" />
+    </symbol>
+    <symbol id="chevron-down" viewBox="0 0 24 24">
+      <path d="m6 9 6 6 6-6" />
+    </symbol>
+    <symbol id="folder" viewBox="0 0 24 24">
+      <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
+    </symbol>
+    <symbol id="folder-open" viewBox="0 0 24 24">
+      <path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2" />
+    </symbol>
+    <symbol id="gauge" viewBox="0 0 24 24">
+      <path d="m12 14 4-4" />
+      <path d="M3.34 19a10 10 0 1 1 17.32 0" />
+    </symbol>
+    <symbol id="info" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="10" />
+      <path d="M12 16v-4" />
+      <path d="M12 8h.01" />
+    </symbol>
+    <symbol id="layers" viewBox="0 0 24 24">
+      <path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83z" />
+      <path d="M2 12a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 12" />
+      <path d="M2 17a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 17" />
+    </symbol>
+    <symbol id="layout-grid" viewBox="0 0 24 24">
+      <rect width="7" height="7" x="3" y="3" rx="1" />
+      <rect width="7" height="7" x="14" y="3" rx="1" />
+      <rect width="7" height="7" x="14" y="14" rx="1" />
+      <rect width="7" height="7" x="3" y="14" rx="1" />
+    </symbol>
+    <symbol id="minus" viewBox="0 0 24 24">
+      <path d="M5 12h14" />
+    </symbol>
+    <symbol id="monitor" viewBox="0 0 24 24">
+      <rect width="20" height="14" x="2" y="3" rx="2" />
+      <line x1="8" x2="16" y1="21" y2="21" />
+      <line x1="12" x2="12" y1="17" y2="21" />
+    </symbol>
+    <symbol id="plus" viewBox="0 0 24 24">
+      <path d="M5 12h14" />
+      <path d="M12 5v14" />
+    </symbol>
+    <symbol id="rotate-ccw" viewBox="0 0 24 24">
+      <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+      <path d="M3 3v5h5" />
+    </symbol>
+    <symbol id="scaling" viewBox="0 0 24 24">
+      <path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+      <path d="M14 15H9v-5" />
+      <path d="M16 3h5v5" />
+      <path d="M21 3 9 15" />
+    </symbol>
+    <symbol id="triangle-alert" viewBox="0 0 24 24">
+      <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3" />
+      <path d="M12 9v4" />
+      <path d="M12 17h.01" />
+    </symbol>
+    <symbol id="type" viewBox="0 0 24 24">
+      <path d="M12 4v16" />
+      <path d="M4 7V5a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v2" />
+      <path d="M9 20h6" />
+    </symbol>
+    <symbol id="volume-2" viewBox="0 0 24 24">
+      <path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z" />
+      <path d="M16 9a5 5 0 0 1 0 6" />
+      <path d="M19.364 18.364a9 9 0 0 0 0-12.728" />
+    </symbol>
+  </defs>
+</svg>

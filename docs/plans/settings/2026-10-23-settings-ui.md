@@ -1172,8 +1172,10 @@ Lib (`src/lib.rs` bekommt `pub mod ui; pub mod app;`), keine Wayland-Typen:
 - `src/app/mod.rs`: `App` mit Navigation, Seiten, Fokus, Scroll;
   `handle(Input) -> Vec<Effect>`, `draw(&mut Canvas)`, `animating()`.
 - `src/app/gallery.rs`: die zwei Testseiten.
-- `assets/icons/ui/`: die genutzten Lucide-SVGs, unverändert kopiert, plus
-  `LICENSE` (ISC).
+- `assets/icons/ui/lucide.svg`: die genutzten Symbole aus
+  `lucide-static/sprite.svg`, unverändert, plus `LICENSE` (ISC). Abweichung:
+  ein Sprite statt Einzeldateien, weil Phase 5 sonst über 40 Dateien in einen
+  Ordner legt (Limit 12).
 
 Plattform:
 
@@ -1374,5 +1376,6 @@ Vom Nutzer am 24.10. so bestätigt:
 | Entfernen ruckelt | umgesetzt 26.10. nach „Nebenbei: ruckelndes Entfernen“ (Abschnitt 3): `cards::hold_size`, `animated_layout` hält die Layer-Größe, solange eine Karte verschwindet, `draw` fordert nur einen Frame-Callback gleichzeitig an, `place_on_output` setzt ihn zurück. Test `a_leaving_card_keeps_the_layer_size_and_the_stack_on_its_anchored_edge`. Checks: `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test` 41 + 367 grün; installiert, Daemon neu gestartet. Offen: der Nutzer schließt eine Karte und beurteilt die Bewegung (kein Klick-Tool hier) |
 | 4 | ausgeplant 26.10. („Phase 4 im Detail“, Abschnitt 5), in Arbeit |
 | 4, Schritt 1 | Probe gelaufen 26.10. (`examples/activation_probe.rs`, danach entfernt; Skript fokussiert vor jedem Versuch das vorher aktive Fenster `termo` zurück und am Ende wieder): `xdg_activation_v1` ist da; Token ohne Serial plus `activate` → aktiv bleibt `termo`, kein Fokus. Neu-Mappen (neues `xdg_toplevel`, altes verworfen) → aktiv ist `boltsnap-probe`. `urgent` steht nicht in `hyprctl clients -j`, ließ sich also nicht messen. **Entscheidung: Weg (b), Neu-Mappen.** |
+| 4, Schritt 2 | umgesetzt 26.10.: `src/ui/` (Lib) mit `mod.rs` (`Rect`, `Canvas` mit Scale, abgerundete Flächen), `theme.rs` (Farben, Schriftskala Title/Label/Heading/Hint/Key, Abstände, Maße, Dauern), `text.rs` (`Fonts`, Breite, Versalhöhe aus dem `H`-Umriss, Baseline auf Versalien-Mitte, Ellipse, Caret-Positionen, Zeichnen premultipliziert), `icons.rs` (Sprite-Parser für die sieben Elemente, Pfadbefehle samt kompakter Zahlen und Bögen nach F.6.5, Zeichnen auf ganze Pixel mit Strich 1,5), `motion.rs` (Minimum-Jerk, `Tween` mit Retarget samt Geschwindigkeit, `Scroll`); `assets/icons/ui/lucide.svg` mit 20 Symbolen plus `LICENSE`. Abweichungen: Sprite statt Einzeldateien (siehe Code-Liste); der eingebettete Font hat kein „…“, `ellipsize` nimmt dann drei Punkte. Tests: 10 (`ui::tests`). Checks: `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test --lib ui::` grün. |
 | 5 | geplant, freigegeben 24.10. |
 | 6 (Library) | Skizze im Library-Plan |
