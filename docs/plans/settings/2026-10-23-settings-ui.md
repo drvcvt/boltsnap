@@ -1559,6 +1559,42 @@ Abnahme: dasselbe Frame-Log, Median ≤ 1,5 ms, keine 10-ms-Lücke während eine
 Animation; Tests für den Cache (gleiche Pixel wie ohne) und das
 Schadensrechteck.
 
+### Review 26.10.: Ausrichtung und UI/UX (Wunsch des Nutzers)
+
+Grundlage: Renders aller Seiten mit Outfit bei 360, 560, 946 und 1400 px,
+Skala 2 vergrößert, Stress-Fixture, alle Gates (`cargo test gate`,
+`boltsnap settings --measure`), Flächen-Kontraste nachgerechnet (WCAG-Formel).
+
+Ausrichtung, gemessen, ohne Befund: Versalien je Control 0,00 px; Icons auf
+der Versalien-Mitte höchstens 0,31 px, eine Achse (0,31), eine Textkante
+(0,00), `GAP_S` + 0,37 vom breitesten Icon; Gruppen 12 px Innenabstand auf
+allen Seiten; Titel und erster Navigationseintrag auf einer Mittellinie
+(y 39); Controls bündig rechts auf `inner.right`; Spalte bei 946 px links und
+rechts 33 px Rand.
+
+| # | Prio | Befund (Auslöser, Wirkung) | Beleg | Lösung, Abwägung |
+|---|---|---|---|---|
+| U1 | P1 | Tastatur-Fokus praktisch unsichtbar: fokussiert `HOVER` gegen ruhend `RAISE` | 1,11:1 nachgerechnet; `widgets/mod.rs` `surface()` | Fokus als 2-px-Kontur in `SUB` innen auf der Fläche (5,38:1 gegen `RAISE`), konzentrischer Radius, `QUICK`; kein Glow. Alternative nur Fläche `SELECTED` (1,33:1) reicht nicht. |
+| U2 | P1 | Fehler-Banner kürzt lange Meldungen mit „…“, der Grund ist nicht lesbar | Fixture: „config.toml cannot be read: /home/someone/Videos/boltsnap/recordin…“ | Banner bricht um (bis 4 Zeilen, Pfade an `/` und überall), Höhe wächst mit; Layout bekommt die Höhe aus dem Umbruch. |
+| U3 | P1 | Bei 360 px werden Namen und Hinweise abgeschnitten (`/ui`: nichts horizontal abschneiden) | „Show saved videos on th…“, „Outline around a recorded r…“ in `recording-360` | Name und Hinweis brechen in zwei Zeilen um, Zeilenhöhe folgt; Gates prüfen „kein …“ bei 360. |
+| U4 | P2 | Hinweise wiederholen sich: „Applies to the next recording“ 2×, „Applies when replay restarts“ 3× (`/ui`: keine Erklärsätze unter jeder Zeile) | `pages.rs` | Recording-Hinweis nur während einer Aufnahme (so stand es in „Zustände und Randfälle“); Replay-Hinweis einmal, und bei laufendem Puffer nach einer Änderung ein Knopf „Restart replay“ (Plan „Aufbau“). |
+| U5 | P2 | Klick auf den Zeilennamen tut nichts, nur das Control ist Trefferfläche | `App::target_at` | Ganze Zeile ist Trefferfläche: Schalter schaltet, andere Controls bekommen Fokus; Hover hellt den Namen auf. |
+| U6 | P2 | Length-Slider 5 bis 600 s linear, 119 Schritte auf 225 px; übliche 30 bis 120 s liegen im ersten Fünftel, „60 s“ statt „1 min“ | `replay-946` | Dropdown mit Stufen (15 s, 30 s, 1 min, 2 min, 5 min, 10 min) wie bei „Keep long shelf saves“; ein krummer Wert aus der Datei bleibt als eigener Eintrag (`choose`). |
+| U7 | P2 | Ob die Länge in den Speicher passt, sieht man nicht | Plan „Aufbau“ verlangt es | Hinweis unter Memory „Holds about 75 s at 60 fps“, gerechnet wie `replay::settings`. |
+| U8 | P2 | Tray kann „Default monitor“ setzen, das Fenster nicht; Codec und Font fehlen | Tray-Menü, Tabelle „Aufbau“ | Rest von Phase 5 (Display-Dropdown aus den Monitoren, Codec aus `gsr --info`, Font aus fontconfig). |
+| U9 | P3 | Control-Spalte ausgefranst: Breiten 90 bis 371 px, linke Kanten springen von Zeile zu Zeile | `recording-946` | Dropdowns bekommen eine gemeinsame Mindestbreite (Token, z. B. 120), Segmente bleiben nach Inhalt; Abwägung: etwas mehr Leerraum in kurzen Dropdowns. |
+| U10 | P3 | Bei 1400 px schwebt die Spalte mittig, 260 px Abstand zur Navigation | `recording-1400` | Spalte links an der Navigation (`GAP_XL`), höchstens 680 breit, Rest rechts frei; Abwägung: libadwaita zentriert, macOS nicht; Geschmacksfrage. |
+| U11 | P3 | Corner-Segment mit Pfeilen liest sich als Richtung, nicht als Ecke | `shelf-946` | Vier kleine Positions-Piktogramme (Bildschirm-Rahmen mit Punkt in der Ecke), eigenes Sprite-Symbol. |
+| U12 | P3 | Dünne Seiten: Screenshots 1 Zeile, Shelf 3 | Renders | Produktfrage: zusammenlegen oder um erwartete Einstellungen ergänzen (Format, Kopieren in die Zwischenablage, Dateiname). |
+| U13 | P3 | Kein Accessibility-Baum (AT-SPI), Screenreader lesen das Fenster nicht; schmale Navigation ohne Namen | eigenes Toolkit | Groß, eigenes Vorhaben (AccessKit); bis dahin als Lücke im README. |
+
+Kein Befund, bewusst so: ausgeschalteter Schalter (Spur 1,13:1 gegen die
+Gruppe, Knopf 5,38:1 trägt die Form), Seitenleiste gegen Seite 1,04:1 (ruhig
+gewollt), drei linke Achsen (Gruppenkante, Icon, Name) wie in Systemeinstellungen.
+
+Umsetzung nach Wahl des Nutzers; je Punkt eigener Commit, Gates und Renders
+danach.
+
 ## 6. Reihenfolge
 
 Jede Phase ist ein eigener Commit (oder wenige), baut, testet und lässt den
