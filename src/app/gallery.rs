@@ -5,7 +5,7 @@
 
 use std::time::Instant;
 
-use super::{Block, Page, Row};
+use super::{Bind, Block, Page, Row};
 use crate::ui::icons::Icon;
 use crate::ui::theme;
 use crate::ui::widgets::{
@@ -24,6 +24,7 @@ fn row(icon: Icon, label: &str, hint: Option<&str>, control: Box<dyn Widget>) ->
         hint: hint.map(str::to_owned),
         control,
         enabled: true,
+        bind: Bind::None,
     })
 }
 

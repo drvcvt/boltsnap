@@ -3,6 +3,7 @@
 
 mod input;
 mod prefs;
+mod save;
 mod single;
 mod window;
 
@@ -87,8 +88,8 @@ pub fn cli(args: &[String]) -> DynResult<()> {
     }
 }
 
-fn settings_pages(now: Instant) -> Vec<Page> {
-    pages::pages(&prefs::load(), now)
+fn settings_pages(notice: Option<&pages::Notice>, now: Instant) -> Vec<Page> {
+    pages::pages(&prefs::load(), notice, now)
 }
 
 /// The UI face the selector and the recording controls use.
@@ -106,7 +107,7 @@ fn render(page: &str, out: &Path, render: Render) -> DynResult<()> {
     let pages = if render.fixture {
         gallery::pages(now)
     } else {
-        settings_pages(now)
+        settings_pages(None, now)
     };
     let mut app = App::new(fonts(), pages, (w as f32, h as f32), now);
     if !app.show_named(page, now) {
@@ -127,15 +128,16 @@ fn render(page: &str, out: &Path, render: Render) -> DynResult<()> {
 fn run(page: Option<&str>) -> DynResult<()> {
     let now = Instant::now();
     let size = (SIZE.0 as f32, SIZE.1 as f32);
-    let mut app = App::new(fonts(), settings_pages(now), size, now);
+    let single::Instance::First { _lock, listener } = single::claim(page)? else {
+        return Ok(());
+    };
+    let notice = save::notice();
+    let mut app = App::new(fonts(), settings_pages(notice.as_ref(), now), size, now);
     if let Some(page) = page
         && !app.show_named(page, now)
     {
         return Err(format!("no page named '{page}'").into());
     }
-    let single::Instance::First { _lock, listener } = single::claim(page)? else {
-        return Ok(());
-    };
 
     let conn = Connection::connect_to_env()?;
     let (globals, queue) = registry_queue_init(&conn)?;
@@ -155,6 +157,16 @@ fn run(page: Option<&str>) -> DynResult<()> {
     };
     let (paste_tx, paste_rx) = calloop::channel::channel();
     let mut win = Win::new(parts, app, &qh, handle.clone(), paste_tx)?;
+    let (done_tx, done_rx) = calloop::channel::channel();
+    win.saver = Some(save::Saver::spawn(done_tx));
+    win.notice = notice;
+    handle
+        .insert_source(done_rx, |event, _, win: &mut Win| {
+            if let calloop::channel::Event::Msg(result) = event {
+                win.saved(result);
+            }
+        })
+        .map_err(|error| format!("save source: {error}"))?;
     handle
         .insert_source(paste_rx, |event, _, win: &mut Win| {
             if let calloop::channel::Event::Msg(text) = event {
@@ -176,5 +188,27 @@ fn run(page: Option<&str>) -> DynResult<()> {
     while !win.exit {
         event_loop.dispatch(None, &mut win)?;
     }
+    // A text field still being edited counts, and no write is cut off.
+    win.finish();
     Ok(())
+}
+
+impl Win {
+    /// What came of a write. A refusal shows its reason on every page and
+    /// puts the values back to what is saved; the next success clears it.
+    fn saved(&mut self, result: Result<boltsnap::app::Write, String>) {
+        let notice = match result {
+            Err(text) => Some(pages::Notice {
+                text,
+                locked: false,
+            }),
+            Ok(_) if self.notice.as_ref().is_some_and(|n| !n.locked) => None,
+            Ok(_) => return,
+        };
+        self.notice = notice;
+        let now = Instant::now();
+        self.app
+            .reload(settings_pages(self.notice.as_ref(), now), now);
+        self.changed();
+    }
 }

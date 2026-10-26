@@ -55,6 +55,9 @@ pub(super) struct Win {
     pub(super) handle: LoopHandle<'static, Win>,
     qh: QueueHandle<Win>,
     paste: calloop::channel::Sender<String>,
+    pub(super) saver: Option<super::save::Saver>,
+    /// What the pages show on top: a refused write, or why nothing saves.
+    pub(super) notice: Option<boltsnap::app::pages::Notice>,
     pub(super) exit: bool,
 }
 
@@ -112,6 +115,8 @@ impl Win {
             handle,
             qh: qh.clone(),
             paste,
+            saver: None,
+            notice: None,
             exit: false,
         })
     }
@@ -125,13 +130,33 @@ impl Win {
         for effect in self.app.handle(input, Instant::now()) {
             self.effect(effect);
         }
+        self.changed();
+    }
+
+    /// The app has something new to show.
+    pub(super) fn changed(&mut self) {
         self.dirty = true;
         self.redraw();
+    }
+
+    /// Closing: commit what is being edited and wait for every write.
+    pub(super) fn finish(&mut self) {
+        for effect in self.app.finish(Instant::now()) {
+            self.effect(effect);
+        }
+        if let Some(saver) = self.saver.take() {
+            saver.finish();
+        }
     }
 
     fn effect(&mut self, effect: Effect) {
         match effect {
             Effect::Close => self.exit = true,
+            Effect::Changed(block) => {
+                if let (Some(write), Some(saver)) = (self.app.write(block), &self.saver) {
+                    saver.send(write);
+                }
+            }
             Effect::Copy(text) => {
                 // Served from a thread until another client owns the
                 // clipboard; it ends with the window like any app's copy.

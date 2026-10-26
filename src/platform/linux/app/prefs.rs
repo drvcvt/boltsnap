@@ -1,5 +1,5 @@
 //! The pages' values from the config, as `Config::load()` has them in
-//! effect (Phase 5 asks the daemon instead).
+//! effect, and the replay buffer's state from its control.
 
 use std::path::Path;
 
@@ -24,6 +24,7 @@ fn tilde(path: &Path) -> String {
 }
 
 pub fn load() -> Prefs {
+    let (replay_running, replay_stalled) = super::save::replay_state();
     let cfg = Config::load();
     let shelf = cfg.shelf_prefs();
     let recording = cfg.recording_prefs();
@@ -56,6 +57,8 @@ pub fn load() -> Prefs {
         disk_to_shelf: recording.disk_add_to_shelf,
         shelf_to_disk_after: cfg.shelf_to_disk_after().map(|after| after.as_secs()),
         replay_autostart: replay.autostart,
+        replay_running,
+        replay_stalled,
         replay_seconds: replay.seconds,
         replay_memory_mib: replay.memory_mib,
         replay_fps: replay.fps,

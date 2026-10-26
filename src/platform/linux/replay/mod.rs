@@ -639,6 +639,8 @@ pub(crate) fn serve(sender: calloop::channel::Sender<DaemonEvent>) -> Result<Ser
                         if let Some(notice) = notice {
                             notify_error(&notice);
                         }
+                        // The tray's checkmark follows, whoever asked.
+                        let _ = sender.send(DaemonEvent::ReplayStateChanged);
                         return Ok((json!({"ok":true}), Vec::new()));
                     }
                     if command == "stop" {
@@ -648,6 +650,8 @@ pub(crate) fn serve(sender: calloop::channel::Sender<DaemonEvent>) -> Result<Ser
                             owner.take()
                         };
                         drop(session);
+                        // The tray's checkmark follows, whoever asked.
+                        let _ = sender.send(DaemonEvent::ReplayStateChanged);
                         return Ok((json!({"ok":true}), Vec::new()));
                     }
                     let (name, output, output_limit) = {

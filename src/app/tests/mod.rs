@@ -1,5 +1,9 @@
 use std::time::{Duration, Instant};
 
+mod gates;
+mod shape;
+mod writes;
+
 use super::pages::{AudioSource, Corner, Cursor, Prefs};
 use super::{App, Block, Channel, Target, gallery, pages};
 use crate::ui::text::Fonts;
@@ -29,6 +33,8 @@ pub fn prefs() -> Prefs {
         disk_to_shelf: true,
         shelf_to_disk_after: Some(60),
         replay_autostart: false,
+        replay_running: false,
+        replay_stalled: false,
         replay_seconds: 60,
         replay_memory_mib: 512,
         replay_fps: 60,
@@ -36,7 +42,12 @@ pub fn prefs() -> Prefs {
 }
 
 pub fn app_on(page: &str, size: (f32, f32), now: Instant) -> App {
-    let mut app = App::new(Fonts::fallback(), pages::pages(&prefs(), now), size, now);
+    let mut app = App::new(
+        Fonts::fallback(),
+        pages::pages(&prefs(), None, now),
+        size,
+        now,
+    );
     assert!(app.show_named(page, now), "{page}");
     app
 }
@@ -478,7 +489,7 @@ fn every_page_and_the_fixture_draw_at_every_width_and_scale() {
             let pages = if fixture {
                 gallery::pages(now)
             } else {
-                pages::pages(&prefs(), now)
+                pages::pages(&prefs(), None, now)
             };
             let mut app = App::new(Fonts::fallback(), pages, size, now);
             for name in &names {

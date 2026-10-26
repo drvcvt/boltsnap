@@ -4,8 +4,8 @@
 
 use std::time::{Duration, Instant};
 
-use super::tests::prefs;
-use super::{App, Block, gallery, measure, pages};
+use super::prefs;
+use crate::app::{App, Block, gallery, measure, pages};
 use crate::ui::Rect;
 use crate::ui::text::Fonts;
 use crate::ui::theme::{self, GAP_M, ICON, Rgb, TextStyle};
@@ -13,13 +13,18 @@ use crate::ui::theme::{self, GAP_M, ICON, Rgb, TextStyle};
 const WIDTHS: [f32; 4] = [360.0, 480.0, 760.0, 1400.0];
 const SETTLED: Duration = Duration::from_secs(2);
 
-/// Every page of the window and of the stress fixture, at `size`.
+/// Every page of the window, also in its error state, and of the stress
+/// fixture, at `size`.
 fn every_page(size: (f32, f32), now: Instant, mut check: impl FnMut(&App, &str)) {
-    for fixture in [false, true] {
-        let pages = if fixture {
-            gallery::pages(now)
-        } else {
-            pages::pages(&prefs(), now)
+    let locked = pages::Notice {
+        text: format!("config.toml has an error on line 3: {}", gallery::LONG_PATH),
+        locked: true,
+    };
+    for variant in 0..3 {
+        let pages = match variant {
+            0 => pages::pages(&prefs(), None, now),
+            1 => pages::pages(&prefs(), Some(&locked), now),
+            _ => gallery::pages(now),
         };
         let names: Vec<String> = pages.iter().map(|page| page.name.clone()).collect();
         let mut app = App::new(Fonts::fallback(), pages, size, now);
@@ -175,7 +180,7 @@ fn gate_groups_pad_equally_and_siblings_share_an_axis() {
         every_page((w, 900.0), now, |app, name| {
             let layout = app.layout(now + SETTLED);
             for panel in &layout.panels {
-                let rows: Vec<(Rect, &super::Row)> = app
+                let rows: Vec<(Rect, &crate::app::Row)> = app
                     .page()
                     .blocks
                     .iter()
@@ -277,7 +282,7 @@ fn gate_contrast_every_text_on_its_surface() {
 #[test]
 fn gate_copy_reads_like_a_person_wrote_it() {
     let now = Instant::now();
-    let pages = pages::pages(&prefs(), now);
+    let pages = pages::pages(&prefs(), None, now);
     let mut strings: Vec<String> = Vec::new();
     for page in &pages {
         strings.push(page.name.clone());

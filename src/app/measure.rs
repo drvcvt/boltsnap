@@ -4,7 +4,7 @@
 
 use std::time::Instant;
 
-use super::{App, Block, Page, Row};
+use super::{App, Bind, Block, Page, Row};
 use crate::ui::icons::Icon;
 use crate::ui::text::Fonts;
 use crate::ui::theme::{self, Rgb};
@@ -59,6 +59,7 @@ fn probe_row(label: &str, control: Box<dyn Widget>) -> Block {
         hint: None,
         control,
         enabled: true,
+        bind: Bind::None,
     })
 }
 

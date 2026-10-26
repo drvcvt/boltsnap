@@ -1483,6 +1483,58 @@ Vorschau aus 4b.
   Phase 6), keine Dateien, die das Binary selbst nach `~/.local/share` legt.
 
 
+### Phase 5b: Zeilen speichern, Replay-Puffer schalten (26.10., Meldung des Nutzers)
+
+Meldung: „man kann garnicht den replay state steuern … wenn ich was toggle und
+dann settings erneut oeffne ist es wieder aus“. Befund: das Fenster schreibt
+noch nichts (4b-Vorschau), und eine Zeile für den laufenden Puffer gibt es
+nicht, nur „Start with Boltsnap“ (`replay.autostart`).
+
+Verhalten:
+- Jede Zeile mit Key schreibt bei Änderung sofort über `set_settings` an den
+  Daemon (prüft, schreibt, wendet an). Schalter, Segment, Dropdown, Stepper:
+  beim Ändern. Slider: beim Ziehen höchstens alle 100 ms, der letzte Wert beim
+  Loslassen immer. Textfeld: beim Verlassen oder `Enter` (wie `value()` es
+  schon hält). Ein unveränderter Wert schreibt nichts.
+- Neue erste Zeile der Replay-Seite **Replay buffer** (Schalter): an = der
+  Puffer läuft (Status `running`, `starting` oder `stalled`), Umschalten ruft
+  `start`/`stop` der Replay-Steuerung auf, abseits des Fensters, Start dauert
+  Sekunden. Der Daemon meldet danach `ReplayStateChanged`, damit der Tray-Haken
+  folgt, auch für `boltsnap replay start|stop` (bisher nur bei Tray-Klicks).
+- Lehnt der Daemon oder Replay ab: das Fenster lädt die Werte neu (das
+  Control springt auf den gespeicherten Stand) und zeigt oben auf jeder Seite
+  ein Banner mit dem Grund (`ERROR`, Warn-Icon). Der nächste Erfolg nimmt es
+  wieder weg.
+- Daemon nicht erreichbar (`ensure_daemon` scheitert) oder `config.toml`
+  kaputt: Banner mit Grund, alle Zeilen aus, kein Schreiben.
+- Das Preview-Banner entfällt.
+
+Code:
+- `app/writes.rs` (neu): `Bind` (Key mit Kodierung oder Replay-Puffer),
+  `Write`, Erkennung geänderter Werte nach jeder Eingabe (Vergleich mit dem
+  zuletzt gemeldeten Wert, Drossel während Capture), `App::write`,
+  `App::reload` (neue Seiten, gleiche Seite und Scroll, Fokus weg).
+- `ui::Effect::Changed(block)`; `Row::bind`; `pages.rs` bindet jede Zeile
+  (Kodierung je Key, Dropdowns aus ihrer Werteliste), `Notice` für Banner und
+  gesperrte Zeilen, `Prefs::replay_running`.
+- `linux/app/save.rs` (neu): ein Thread schreibt der Reihe nach
+  (`call_daemon(SetSettings)` bzw. `replay::call`), Ergebnis über einen
+  calloop-Kanal zurück; `status()` aus `get_settings`.
+- `linux/replay/mod.rs`: `ReplayStateChanged` nach `start` und `stop`.
+
+Tests: Schalter schreibt seinen Key, Dropdown schreibt den gelisteten Wert,
+Slider gedrosselt und letzter Wert beim Loslassen, Textfeld erst beim
+Bestätigen, unveränderter Wert schreibt nichts, jede gebundene Zeile kodiert
+ihren Wert so, dass `settings::load::check` ihn annimmt, Replay-Schalter
+liefert `Write::Replay`, `reload` behält Seite, gesperrte Zeilen schreiben
+nicht. Live: eine Zeile ändern, Fenster schließen und öffnen, Wert bleibt;
+Datei zeigt den Key; Replay an und aus, Tray-Haken folgt.
+
+Macht nicht (bleibt Phase 5): `SettingsWatch` (Tray-Änderung bei offenem
+Fenster erscheint erst beim nächsten Öffnen), Zurücksetzen-Icon je Zeile,
+Hinweise je ungültigem Key, System-Listen (Display, Codec, Font), Ordner-Dialog,
+Bitrate, „Restart replay“-Knopf.
+
 ## 6. Reihenfolge
 
 Jede Phase ist ein eigener Commit (oder wenige), baut, testet und lässt den
@@ -1617,6 +1669,7 @@ Vom Nutzer am 24.10. so bestätigt:
 | 4, Schritt 4 | umgesetzt 26.10.: `linux/app/window.rs` (SCTK-Fenster App-ID `boltsnap`, Server-Deko angefordert, Minimum 560×400, `SlotPool`, ganzzahliger Buffer-Scale aus `scale_factor_changed`, jede Zeichnung fordert einen Frame-Callback an und die nächste wartet darauf, Copy über einen Thread mit `wl-clipboard-rs` im Vordergrund, Paste über einen Thread zurück per calloop-Kanal), `input.rs` (Zeiger mit `ThemedPointer` und `Clicks`, Rad mit `discrete`/`absolute`, Tastatur mit Wiederholung, `key_input`), `single.rs` (Lock `boltsnap-app.lock` über `ipc::lock_file`, Socket `boltsnap-app.sock`, Zeile `raise <page>`; Abweichung: Namen mit Präfix `boltsnap-app.`, weil sie direkt in `XDG_RUNTIME_DIR` liegen), `boltsnap settings [PAGE]`. Live mit dem Debug-Build: Fenster erscheint und zeichnet die Galerie; zweiter Aufruf `boltsnap settings text` endet nach 8 ms, aktiv wird `boltsnap`, weiter genau ein Fenster und derselbe Prozess, Seite Text, Layout folgt der gekachelten Breite 946 px; Schließen per `hl.dsp.window.close` beendet den Prozess (xdg `close`), Fokus danach zurück auf das vorherige Fenster. Screenshots per `boltsnap full --no-copy -o` (Zwischenablage unberührt). Tests: `key_input` (Tab mit Shift, Space, Ctrl+Buchstabe trotz Steuerzeichen, Umlaut als Text, Modifier allein), `read_raise`. Checks: `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test` 65 + 369 grün. Offen durch den Nutzer: Hover flackert nicht, Tastatur erreicht alles, Scroll gleitet. |
 | 4b | umgesetzt 26.10. nach „Phase 4b: Überarbeitung nach `/ui`“ (Abschnitt 5). Federn (`Spring`, analytisch, kritisch gedämpft, Retarget mit Geschwindigkeit, Ende über Schwellen) ersetzen `Tween`; Tokens `QUICK` 150, `SNAP` 200, `GLIDE` 300 ms. Hover, Druck und Fokus je Ziel über `app/fades.rs`; Segment-Teile und Stepper-Knöpfe leuchten mit eigener Feder, die Dropdown-Markierung gleitet, eine neue Seite blendet ein und steigt 6 px. `app/layout.rs`: Spalte (höchstens 680, mittig), Gruppenflächen, Zeilen 46, Stapeln, schmale Navigation unter 600 px; Mindestgröße 360×320. `app/pages.rs` mit den echten Werten (`linux/app/prefs.rs` aus `Config::load()`), Banner „Preview: changes here are not saved yet“; Galerie als Stress-Fixture. Text mit Kerning, geschütztes Leerzeichen, Pfade ohne Fokus in der Mitte gekürzt. Sprite um 13 Lucide-Symbole erweitert (`history` heißt im Sprite `rotate-ccw-clock`), `layout-grid` und `type` entfallen. Abweichungen: Segment-Teile werden bei Platzmangel nach Inhalt breit statt gleich breit (sonst stapelt „System and mic“ schon bei 760 px mit dem eingebetteten Font); Zeilennamen nach README-Bedeutung („Show saved videos on the shelf“, „Keep long shelf saves“, „Corner“, „Start with Boltsnap“); `--measure` als CLI für die Messung mit dem echten Font statt eines `#[ignore]`-Tests. Gates (gemessen): Überlauf 399 Teile in ihrer Gruppe bei 360/480/760/1400 px, jede offene Liste im Fenster; Versalien-Abstand oben gegen unten 0,00 px je Control-Art mit eingebettetem Font und mit Outfit (`--measure`), Gegenprobe erkennt 1 px Versatz als 2,0; Gruppen-Innenabstand 12 an allen vier Seiten (Abweichung 0,00), gemeinsame Mittellinie Abweichung 0,00; Kontrast 12 Paare, niedrigstes 4,83:1 (`SUB` auf `HOVER`); Copy 66 Strings ohne Treffer; Screenshots bei 360, 760 und 1400 angesehen. Checks: `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test` 75 + 369 grün, `git diff --check`. Live (Debug-Build, gekachelt 946×1032): Fenster zeichnet die Recording-Seite, Hover hellt Segment-Teil und Dropdown auf (Fläche 38 → 46), Verlassen nimmt ihn zurück; Fokus und Cursor danach zurückgestellt. Nicht live prüfbar: Bewegung innerhalb einer Fläche (Hyprlands `cursor.move` meldet dem Client nur das Betreten), Klicks, Resize per Maus. Offen: „Ohne Animation“-Liste durch den Nutzer bestätigen; Augenschein durch den Nutzer. |
 | 4c | umgesetzt 26.10. nach „Phase 4c: Harte Wechsel an Schwellen“: M1 bis M8 wie in der Tabelle, Schrift auf ganze Versalhöhen mit Grundlinie auf ganzen Pixeln, Icons 14. Tests neu in `app/shape_tests.rs` (7): Navigation und Zeile halbwegs und exakt am Ende, Retarget zurück, Reduced Motion springt, neue Seite gestapelt ohne Bewegung, Name des aktuellen Eintrags blendet, Scroll-Daumen blendet ein, Segment-Breiten in 1-px-Schritten ohne Sprung > 1 px, Stepper-Knopf blendet an der Grenze. Gates: Überlauf 399 Teile bei 360/480/760/1400, Versalien 0,00 px je Control (eingebettet und Outfit über `--measure`), Innenabstand 12 (Abweichung 0,00), Kontrast niedrigstes 4,83:1, Copy 66 Strings ohne Treffer; Renders bei 360, 946 und 1400 angesehen. Checks: `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test` 82 + 371 grün. Offen: Ohne-Animation-Liste durch den Nutzer. |
+| 5b | umgesetzt 26.10. nach „Phase 5b: Zeilen speichern, Replay-Puffer schalten“: `app/writes.rs` (`Bind`, `Write`, Erkennung über den zuletzt gemeldeten Wert, Drossel 100 ms beim Ziehen, `finish` beim Schließen, `reload`), `Effect::Changed`, alle 17 Zeilen gebunden, Zeile „Replay buffer“, `Notice` (Fehler-Banner, gesperrte Zeilen), Preview-Banner entfernt; `linux/app/save.rs` (geordneter Schreib-Thread, wartet beim Schließen, `notice()` aus `get_settings`, Replay-Status); Replay meldet `ReplayStateChanged` nach `start`/`stop`. Aufgeräumt: Tests nach `app/tests/` (`mod.rs`, `gates.rs`, `shape.rs`, `writes.rs`), Tastatur nach `app/keys.rs` (`app/mod.rs` 448 Zeilen). Tests neu (8): Schalter schreibt einmal, Dropdown schreibt gelisteten Wert und Segment sein Wort, Slider gedrosselt, Textfeld erst beim Bestätigen, Schließen übernimmt die Eingabe, Replay-Schalter, jede gebundene Zeile vom Schema angenommen (17), gesperrte Zeilen schreiben nichts und `reload` behält die Seite. Gates laufen zusätzlich mit gesperrtem Fehler-Banner (langer Pfad). Checks: `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test` 90 + 371 grün. Live (Release, Daemon neu gestartet, Config vorher gesichert und danach byte-gleich zurück, sha256 9efb7cd3…): Tasten per `hl.dsp.send_shortcut`, auf „Cards shown“ schreibt `→` `[shelf] visible_cards = 6`, Fenster zu und wieder auf zeigt 6; „Replay buffer“ per `Space` an: Status `running`, Tray-Haken `toggle-state 1`; wieder aus: `stopped`. Offen wie im Abschnitt „Macht nicht“. |
 | 5a | umgesetzt 26.10. nach „Phase 5a: Öffnen ohne Terminal“: Tray-Eintrag „Settings…“ ganz unten (Prozessstart im Tray-Thread), `assets/linux/boltsnap.desktop` mit Icons 64/128/256 aus `boltsnap.ico`, `.deb`-Assets, Flake-`postInstall`, Release-Tarball, README. Abweichung: `Categories=Graphics;`. Checks: `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test` 75 + 371 grün, `desktop-file-validate` ohne Meldung. Live: Daemon neu gestartet, dbusmenu-`GetLayout` endet auf „Settings…“; `gio launch` der installierten `.desktop`-Datei öffnet das Fenster (Klasse `boltsnap`). Nicht live prüfbar: Klick im Tray. |
 | 5 | geplant, freigegeben 24.10. |
 | 6 (Library) | Skizze im Library-Plan |

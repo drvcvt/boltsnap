@@ -76,6 +76,8 @@ pub enum Effect {
     Copy(String),
     Paste,
     Close,
+    /// The value of the row in this block of the current page changed.
+    Changed(usize),
 }
 
 /// Counts a press as the second of a double click when it comes soon after

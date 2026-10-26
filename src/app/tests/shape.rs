@@ -2,8 +2,8 @@
 
 use std::time::{Duration, Instant};
 
-use super::tests::{SETTLED, app_on, block};
-use super::{Channel, Target};
+use super::{SETTLED, app_on, block};
+use crate::app::{Channel, Target};
 use crate::ui::text::Fonts;
 use crate::ui::theme::{GLIDE, NAV_NARROW_W, NAV_W, ROW_H};
 use crate::ui::widgets::{Part, Segment, Stepper, Widget};
