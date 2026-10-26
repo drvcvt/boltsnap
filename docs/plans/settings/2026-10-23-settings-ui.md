@@ -1718,6 +1718,44 @@ Umsetzung:
 - Risiko: Höhen hängen nun am Text; `reshape` muss mit der Zielbreite
   rechnen (wie heute), Tests für Zeilenhöhen bei 360 und 1000.
 
+##### S3 im Detail (Gegenprüfung am Code, 26.10.)
+
+Befund: Banner zeichnet eine Zeile mit `draw_in` (kürzt mit „…“,
+`widgets/button.rs:69`), Höhe fest `ROW_H` (`layout.rs:199`); Zeilen haben
+feste Höhen `ROW_H`/`STACKED_H`, Name und Hinweis je eine Zeile `LINE` 16 /
+`HINT_LINE` 14 (`layout.rs:268`), gekürzt über `draw_in` in `draw.rs`.
+
+Verhalten:
+- `Fonts::wrap(style, text, width, max_lines)`: gierig nach Wörtern; ein
+  Wort, das allein nicht passt, bricht nach `/`, `-`, `_` oder notfalls
+  zwischen Zeichen; mehr Zeilen als `max_lines`: die letzte endet mit „…“.
+- Banner: bis 4 Zeilen, Zeilenabstand 20 (Versalhöhe 10, `(20 − 10) / 2`
+  ganzzahlig), Höhe `2 · GAP_M + max(22, n · 20)` (eine Zeile wie heute 46),
+  Icon auf der Mitte der ersten Zeile.
+- Zeile: Name bis 3 Zeilen, Hinweis bis 3 Zeilen, in der Breite, die ihnen
+  neben dem Control bleibt (gestapelt: volle Breite). Zeilenabstand eine
+  Zeile 16 / 14 wie heute, ab zwei Zeilen 18 / 16 (Versalien 10 / 9, Abstand
+  bis zur nächsten Versalie ≥ 4 px). Textblock `tb` = Summe der Zeilen.
+  Höhe neben dem Control `max(ROW_H, tb + 2 · GAP_S)`, gestapelt
+  `max(CTL_H, tb) + CTL_H + 3 · GAP_S`; die Feder beim Stapeln mischt jetzt
+  zwischen diesen zwei Höhen je Zeile.
+- `RowParts`: `text` (der ganze Textblock, bisher `label_block`), `label` und
+  `hint` (die erste Zeile je Art, für Gates und Messung), `names`, `hints`
+  (die umbrochenen Zeilen).
+- Überschriften und Navigationsnamen bleiben einzeilig (kurz, eigene
+  Strings); Textfeld kürzt weiter mittig (ein Feld, der volle Wert steht
+  beim Bearbeiten da).
+
+Gates und Tests: neues Gate „kein ‚…‘ in Namen, Hinweisen und Bannern“ bei
+360/480/760/1400 über alle echten Seiten und den Fehlerzustand; Innenabstand-
+und Achsen-Gate nutzen `text` statt `label` für die Oberkante gestapelter
+Zeilen; `wrap`-Tests (Wörter, Pfad, Kompositum, `max_lines`); Zeilenhöhe mit
+zwei Namenszeilen.
+
+Risiko: alle Höhen hängen jetzt am Text, `layout_at` rechnet den Umbruch je
+Frame (rund 20 Zeilen, Breiten aus dem Glyphen-Cache); Gates fangen Überlauf
+und Achsen.
+
 #### S4 Ganze Zeile klickbar (U5)
 
 - `target_at`: die Zeile (ohne Hinweis-Unterkante) zählt als Ziel ihres
@@ -1968,6 +2006,7 @@ Vom Nutzer am 24.10. so bestätigt:
 | 4f-Folge | offen, Verdacht aus 4f, nicht gemessen: der Shelf (`shelf/mod.rs:2030`, Layer-Draw) und der Selector (`select_skia/mod.rs:628`) legen ebenfalls je Zeichnung einen neuen `wl_buffer` über `create_buffer` an; bei Shelf-Animationen hätte der Compositor dieselbe Mehrarbeit. P2 bis gemessen. Messung wie in 4f (CPU des Daemons, Commit-Abstände) beim Erscheinen und Entfernen einer Karte, dann gleicher Fix. |
 | 5c S1 | umgesetzt 26.10.: `linux/buffers.rs` (`Buffers`, bis zu drei je Größe, freier zuerst, sonst neu und der älteste geht), genutzt vom Fenster (ersetzt die Logik aus 4f) und vom Shelf-Draw (`shelf/mod.rs` bleibt bei 3681 Zeilen). Test `a_released_buffer_is_reused_before_a_new_one_is_made`. Checks: fmt, clippy ohne Warnung, `cargo test` 95 + 374 grün. Live nicht gemessen (siehe S1 Abnahme: Versuch brach den Desktop des Nutzers aus, abgebrochen); greift im Shelf erst nach einem Daemon-Neustart. |
 | 5c S2 | umgesetzt 26.10. nach „S2 im Detail“ (Abweichung dort begründet: Kontur außen statt innen; `:focus-visible`-Verhalten gleich mit eingebaut). `Canvas::ring`, Token `FOCUS_W = 2`, `widgets::focus_ring`; Fläche hebt nur noch bei Hover; Schalter um die Spur, Slider um den Knopf mit 2 px Abstand, Navigation um die Auswahl; `App::keyed` (Feder `QUICK`): Tab und Pfeile in der Navigation zeigen, ein Klick blendet aus. Gemessen: Kontur auf Gruppe 6,06:1, auf Seitenleiste 6,37:1, gegen das Control 5,38:1 (vorher Fokus 1,11:1). Test `tab_shows_the_outline_and_a_click_hides_it` (Pixel 1 px links des Dropdowns), Render der fünf Arten angesehen. Checks: fmt, clippy ohne Warnung, `cargo test` 96 + 374 grün. |
+| 5c S3 | umgesetzt 26.10. nach „S3 im Detail“. `Fonts::wrap` (Wörter, nach `/`, `-`, `_`, sonst zwischen Zeichen, eine Cursor-Liste je Wort), Banner bis 4 Zeilen (Abstand 20, eine Zeile wie bisher 46 hoch), Namen und Hinweise bis 3 Zeilen (Abstand ab zwei Zeilen 18/16), Zeilenhöhe je Anordnung (`side`, `stacked`), die Feder mischt zwischen beiden. Abweichung, beim Test gefunden: die Anordnung neben dem Control lässt dem Namen mindestens `LABEL_MIN` zum Umbrechen, sonst brach ein zu schmaler Name Buchstabe für Buchstabe und die Zeile sprang beim Stapeln von 46 auf 70 px. Gates: neu `gate_text_wraps_instead_of_being_cut` (238 Zeilen bei 360/480/760/1400, echte Seiten und Fehlerzustand, keine gekürzt; Gegenprobe mit einer Zeile schlägt an „Outline around a recorde...“); Innenabstand misst oben die höhere von Control und erster Textzeile, unten die tiefere; Überlauf 626 Teile, Abstände 0,00, Versalien 0,00, Icons 0,31/0,31/0,00/0,37 (Outfit). Render bei 360 px und Stress-Banner angesehen. Checks: fmt, clippy ohne Warnung, `cargo test` 98 + 374 grün. |
 | 5a | umgesetzt 26.10. nach „Phase 5a: Öffnen ohne Terminal“: Tray-Eintrag „Settings…“ ganz unten (Prozessstart im Tray-Thread), `assets/linux/boltsnap.desktop` mit Icons 64/128/256 aus `boltsnap.ico`, `.deb`-Assets, Flake-`postInstall`, Release-Tarball, README. Abweichung: `Categories=Graphics;`. Checks: `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test` 75 + 371 grün, `desktop-file-validate` ohne Meldung. Live: Daemon neu gestartet, dbusmenu-`GetLayout` endet auf „Settings…“; `gio launch` der installierten `.desktop`-Datei öffnet das Fenster (Klasse `boltsnap`). Nicht live prüfbar: Klick im Tray. |
 | 5 | geplant, freigegeben 24.10. |
 | 6 (Library) | Skizze im Library-Plan |

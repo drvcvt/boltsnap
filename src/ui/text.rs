@@ -146,6 +146,68 @@ impl Fonts {
         Cow::Owned(cut.trim_end().to_owned() + dots)
     }
 
+    /// `text` in lines at most `width` wide, at most `max_lines` of them.
+    /// Lines break between words; a word that does not fit on a line of its
+    /// own breaks after its last `/`, `-` or `_` that fits, or between
+    /// characters. Text left over after `max_lines` ends the last line
+    /// with an ellipsis.
+    pub fn wrap(&self, style: TextStyle, text: &str, width: f32, max_lines: usize) -> Vec<String> {
+        let mut lines: Vec<String> = Vec::new();
+        let mut line = String::new();
+        for word in text.split(' ') {
+            let joined = if line.is_empty() {
+                word.to_owned()
+            } else {
+                format!("{line} {word}")
+            };
+            if self.width(style, &joined) <= width {
+                line = joined;
+                continue;
+            }
+            if !line.is_empty() {
+                lines.push(std::mem::take(&mut line));
+            }
+            let mut rest = word;
+            while !rest.is_empty() && self.width(style, rest) > width {
+                let cut = self.cut(style, rest, width);
+                lines.push(rest[..cut].to_owned());
+                rest = &rest[cut..];
+            }
+            line = rest.to_owned();
+        }
+        if !line.is_empty() || lines.is_empty() {
+            lines.push(line);
+        }
+        let max_lines = max_lines.max(1);
+        if lines.len() > max_lines {
+            let rest = lines.split_off(max_lines - 1).join(" ");
+            lines.push(self.ellipsize(style, &rest, width).into_owned());
+        }
+        lines
+    }
+
+    /// Where to cut `word` so its start fits `width`: after the last `/`,
+    /// `-` or `_` that fits, else after the last character that fits, and
+    /// after one character at least.
+    fn cut(&self, style: TextStyle, word: &str, width: f32) -> usize {
+        let mut fit = 0;
+        let mut soft = None;
+        // Carets are in order: (byte index, x) before each character, then
+        // the end; one pass finds the last that fits.
+        for (index, x) in self.carets(style, word).into_iter().skip(1) {
+            if x > width {
+                break;
+            }
+            fit = index;
+            let before = word[..index].chars().next_back();
+            if matches!(before, Some('/' | '-' | '_')) && index < word.len() {
+                soft = Some(index);
+            }
+        }
+        let first = word.chars().next().map_or(word.len(), char::len_utf8);
+        soft.unwrap_or(fit).max(first)
+    }
+
     /// `text` cut to `max` wide in the middle, for paths: the start and the
     /// end stay readable.
     pub fn ellipsize_middle<'a>(&self, style: TextStyle, text: &'a str, max: f32) -> Cow<'a, str> {

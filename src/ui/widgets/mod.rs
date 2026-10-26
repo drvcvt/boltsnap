@@ -11,7 +11,7 @@ mod text_field;
 
 use std::time::Instant;
 
-pub use button::{IconButton, draw_banner};
+pub use button::{IconButton, banner_height, banner_lines, draw_banner};
 pub use dropdown::Dropdown;
 pub use segment::{Part, Segment};
 pub use slider::Slider;

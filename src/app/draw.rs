@@ -170,9 +170,17 @@ impl App {
                     (theme::DIM, theme::DIM)
                 };
                 row.icon.draw(canvas, parts.icon, sub, 1.0);
-                fonts.draw_in(canvas, TextStyle::Label, &row.label, parts.label, text, 1.0);
-                if let (Some(hint), Some(line)) = (&row.hint, parts.hint) {
-                    fonts.draw_in(canvas, TextStyle::Hint, hint, line, sub, 1.0);
+                // Names and hints come broken into lines that fit.
+                for (index, name) in parts.names.iter().enumerate() {
+                    let y = parts.label.y + index as f32 * parts.name_pitch;
+                    let line = Rect { y, ..parts.label };
+                    fonts.draw_in(canvas, TextStyle::Label, name, line, text, 1.0);
+                }
+                if let Some(first) = parts.hint {
+                    for (index, hint) in parts.hints.iter().enumerate() {
+                        let y = first.y + index as f32 * parts.hint_pitch;
+                        fonts.draw_in(canvas, TextStyle::Hint, hint, Rect { y, ..first }, sub, 1.0);
+                    }
                 }
                 let target = Target::Control(index);
                 let look = Look {

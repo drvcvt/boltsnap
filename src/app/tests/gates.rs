@@ -194,14 +194,26 @@ fn gate_groups_pad_equally_and_siblings_share_an_axis() {
                     .collect();
                 let (first, last) = (rows[0], rows[rows.len() - 1]);
                 let first_parts = app.row_parts(first.0, first.1);
-                // A stacked row starts with its name's line, a single one
-                // with its control (the name's box spans the row).
-                let top = if first.0.h > theme::ROW_H {
-                    first_parts.label.y
+                // A stacked row starts with its name's line, a `CTL_H` slot
+                // like a control; beside its control a row starts with
+                // whichever is higher, the control or the name's first line.
+                let top = if first_parts.control.y >= first_parts.text.bottom() {
+                    first_parts.text.y
                 } else {
-                    first_parts.control.y
+                    first_parts.control.y.min(first_parts.label.y)
                 } - panel.y;
-                let bottom = panel.bottom() - app.row_parts(last.0, last.1).control.bottom();
+                // The lower of the control and the last line of text.
+                let last_parts = app.row_parts(last.0, last.1);
+                let text_bottom = last_parts.label.y
+                    + last_parts.names.len() as f32 * last_parts.name_pitch
+                    + last_parts.hints.len() as f32 * last_parts.hint_pitch;
+                let stacked = last_parts.control.y >= last_parts.text.bottom();
+                let content = if stacked {
+                    last_parts.control.bottom()
+                } else {
+                    last_parts.control.bottom().max(text_bottom)
+                };
+                let bottom = panel.bottom() - content;
                 let mut pads = vec![top, bottom];
                 for (rect, row) in &rows {
                     let parts = app.row_parts(*rect, row);
@@ -398,4 +410,52 @@ fn report_icon_rows(rows: &[measure::IconRow]) {
             row.text_x
         );
     }
+}
+
+/// `/ui`: nothing is cut. Names, hints and banners of the real pages, also
+/// in the error state with the real message, wrap instead of ending in an
+/// ellipsis at every width.
+#[test]
+fn gate_text_wraps_instead_of_being_cut() {
+    use crate::ui::widgets::banner_lines;
+    let now = Instant::now();
+    let notice = pages::Notice {
+        text: "config.toml has an error on line 3, fix it to change settings here".into(),
+        locked: true,
+    };
+    let cut = |line: &str| line.ends_with('\u{2026}') || line.ends_with("...");
+    let mut lines = 0;
+    for w in WIDTHS {
+        for notice in [None, Some(&notice)] {
+            let names: Vec<String> = pages::pages(&prefs(), notice, now)
+                .iter()
+                .map(|page| page.name.clone())
+                .collect();
+            let mut app = App::new(
+                Fonts::fallback(),
+                pages::pages(&prefs(), notice, now),
+                (w, 900.0),
+                now,
+            );
+            for name in names {
+                app.show_named(&name, now);
+                let layout = app.layout(now + SETTLED);
+                for (block, rect) in app.page().blocks.iter().zip(&layout.blocks) {
+                    let text: Vec<String> = match block {
+                        Block::Row(row) => {
+                            let parts = app.row_parts(*rect, row);
+                            parts.names.into_iter().chain(parts.hints).collect()
+                        }
+                        Block::Banner { text, .. } => banner_lines(&app.fonts, rect.w, text),
+                        Block::Heading(_) => continue,
+                    };
+                    for line in text {
+                        assert!(!cut(&line), "{name} at {w}: {line:?} is cut");
+                        lines += 1;
+                    }
+                }
+            }
+        }
+    }
+    println!("gate wrap: {lines} lines at widths {WIDTHS:?}, none cut");
 }

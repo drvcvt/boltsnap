@@ -288,3 +288,35 @@ fn cached_glyphs_draw_the_same_pixels_as_the_first_time() {
     assert!(first.chunks_exact(4).any(|px| px[0] > 0xC0), "text drew");
     assert_eq!(first, second);
 }
+
+#[test]
+fn wrap_breaks_words_paths_and_compounds_and_marks_what_is_left() {
+    let fonts = Fonts::fallback();
+    let style = TextStyle::Label;
+    let width = fonts.width(style, "Show saved videos");
+    let lines = fonts.wrap(style, "Show saved videos on the shelf", width, 3);
+    assert_eq!(lines, vec!["Show saved videos", "on the shelf"]);
+    assert!(lines.iter().all(|line| fonts.width(style, line) <= width));
+    // A path breaks after a slash, a compound between letters.
+    let path = fonts.wrap(
+        style,
+        "/home/someone/Videos/boltsnap",
+        fonts.width(style, "/home/someone/"),
+        4,
+    );
+    assert_eq!(path[0], "/home/someone/");
+    let compound = "Bildschirmaufnahmeeinstellungsänderung";
+    let parts = fonts.wrap(style, compound, 60.0, 9);
+    assert!(parts.len() > 1 && parts.concat() == compound);
+    assert!(parts.iter().all(|line| fonts.width(style, line) <= 60.0));
+    // Too much for the lines it may take: the last one says so.
+    let cut = fonts.wrap(
+        style,
+        "one two three four five six",
+        fonts.width(style, "one two"),
+        2,
+    );
+    assert_eq!(cut.len(), 2);
+    assert!(cut[1].ends_with('…') || cut[1].ends_with("..."));
+    assert_eq!(fonts.wrap(style, "", 100.0, 3), vec![""]);
+}

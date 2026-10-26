@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use super::{App, Block, Row};
 use crate::ui::Rect;
 use crate::ui::motion::Spring;
+use crate::ui::theme::TextStyle;
 use crate::ui::theme::{
     CONTENT_MAX, CTL_H, GAP_L, GAP_M, GAP_S, GAP_XL, GAP_XS, GLIDE, ICON, LABEL_MIN,
     NAV_NARROW_BELOW, NAV_NARROW_W, NAV_W, ROW_H,
@@ -18,16 +19,65 @@ use crate::ui::widgets::{self, Widget};
 /// A text line: a group heading, a row's name above its hint.
 pub const LINE: f32 = 16.0;
 const HINT_LINE: f32 = 14.0;
-/// A stacked row: the name's line, then the control, each `CTL_H`.
-const STACKED_H: f32 = 2.0 * CTL_H + 3.0 * GAP_S;
+/// A name or hint keeps to this many lines; more ends with an ellipsis.
+const TEXT_LINES: usize = 3;
+/// The line pitch of a name or hint that takes more than one line: capitals
+/// 10 and 9 px, at least 4 px from a descender to the next line's capitals.
+const NAME_PITCH: f32 = 18.0;
+const HINT_PITCH: f32 = 16.0;
 
 /// Where a row's parts go.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct RowParts {
     pub icon: Rect,
+    /// The name's first line.
     pub label: Rect,
+    /// The hint's first line.
     pub hint: Option<Rect>,
     pub control: Rect,
+    /// Everything the name and hint may take up; their lines sit centred in it.
+    pub text: Rect,
+    pub names: Vec<String>,
+    pub hints: Vec<String>,
+    pub name_pitch: f32,
+    pub hint_pitch: f32,
+}
+
+/// A row's name and hint, broken into lines for one width.
+#[derive(Clone, Debug)]
+struct RowText {
+    names: Vec<String>,
+    hints: Vec<String>,
+}
+
+impl RowText {
+    fn name_pitch(&self) -> f32 {
+        if self.names.len() > 1 {
+            NAME_PITCH
+        } else {
+            LINE
+        }
+    }
+
+    fn hint_pitch(&self) -> f32 {
+        if self.hints.len() > 1 {
+            HINT_PITCH
+        } else {
+            HINT_LINE
+        }
+    }
+
+    fn height(&self) -> f32 {
+        self.names.len() as f32 * self.name_pitch() + self.hints.len() as f32 * self.hint_pitch()
+    }
+}
+
+/// One way to lay a row out: beside its control, or stacked over it.
+struct Arrangement {
+    text: Rect,
+    control: Rect,
+    lines: RowText,
+    height: f32,
 }
 
 /// The page at the current size and scroll, in window coordinates.
@@ -93,6 +143,62 @@ fn beside(row: &Row, fonts: &crate::ui::text::Fonts, inner: Rect) -> Option<f32>
 }
 
 impl App {
+    fn row_text(&self, row: &Row, width: f32) -> RowText {
+        RowText {
+            names: self
+                .fonts
+                .wrap(TextStyle::Label, &row.label, width, TEXT_LINES),
+            hints: row.hint.as_deref().map_or_else(Vec::new, |hint| {
+                self.fonts.wrap(TextStyle::Hint, hint, width, TEXT_LINES)
+            }),
+        }
+    }
+
+    /// The control on the right, the text in the room left of it; the row
+    /// grows when the text takes more than `ROW_H` allows.
+    fn side(&self, row: &Row, rect: Rect) -> Arrangement {
+        let line = inner(rect);
+        let x = text_x(line);
+        let width = row.control.width(&self.fonts, room_beside(line));
+        // A control too wide for this row still leaves the name `LABEL_MIN`
+        // to wrap in: that arrangement only shows while the row stacks, and
+        // a name broken letter by letter would make the row jump first.
+        let text_w = (line.right() - width - GAP_M - x).max(LABEL_MIN);
+        let lines = self.row_text(row, text_w);
+        let height = ROW_H.max(lines.height() + 2.0 * GAP_S);
+        Arrangement {
+            text: Rect::new(x, rect.y, text_w, height),
+            control: Rect::new(
+                line.right() - width,
+                rect.y + (height - CTL_H) / 2.0,
+                width,
+                CTL_H,
+            ),
+            lines,
+            height,
+        }
+    }
+
+    /// The text over the whole width, the control under it.
+    fn stacked(&self, row: &Row, rect: Rect) -> Arrangement {
+        let line = inner(rect);
+        let x = text_x(line);
+        let full = line.right() - x;
+        let lines = self.row_text(row, full);
+        let text = Rect::new(x, rect.y + GAP_S, full, CTL_H.max(lines.height()));
+        let width = if row.control.stretches() {
+            full
+        } else {
+            row.control.width(&self.fonts, full).min(full)
+        };
+        Arrangement {
+            control: Rect::new(line.right() - width, text.bottom() + GAP_S, width, CTL_H),
+            height: text.h + CTL_H + 3.0 * GAP_S,
+            text,
+            lines,
+        }
+    }
+
     /// Where the navigation is going: icons only below `NAV_NARROW_BELOW`.
     pub fn narrow(&self) -> bool {
         self.size.0 < NAV_NARROW_BELOW
@@ -196,14 +302,16 @@ impl App {
             }
             let h = match block {
                 Block::Heading(_) => LINE,
-                Block::Banner { .. } => ROW_H,
-                Block::Row(_) => {
+                Block::Banner { text, .. } => widgets::banner_height(&self.fonts, w, text),
+                Block::Row(row) => {
                     if panel.is_none() {
                         panel = Some(y);
                         y += GAP_XS;
                     }
-                    let stacked = self.stacked.get(index).map_or(0.0, |s| s.value(now));
-                    lerp(ROW_H, STACKED_H, stacked.clamp(0.0, 1.0)).round()
+                    let t = self.stacked.get(index).map_or(0.0, |s| s.value(now));
+                    let probe = Rect::new(x, 0.0, w, 0.0);
+                    let (side, stacked) = (self.side(row, probe), self.stacked(row, probe));
+                    lerp(side.height, stacked.height, t.clamp(0.0, 1.0)).round()
                 }
             };
             layout.blocks.push(Rect::new(x, top + y, w, h));
@@ -227,57 +335,54 @@ impl App {
     }
 
     /// A row's parts. How far it has stacked is in its height, which the
-    /// layout takes between `ROW_H` and `STACKED_H` from the row's spring.
+    /// layout mixes between its two arrangements' heights from the row's
+    /// spring.
     pub fn row_parts(&self, rect: Rect, row: &Row) -> RowParts {
         let line = inner(rect);
-        let text_x = text_x(line);
-        let side = {
-            let width = row.control.width(&self.fonts, room_beside(line));
-            let control = Rect::new(
-                line.right() - width,
-                rect.y + (ROW_H - CTL_H) / 2.0,
-                width,
-                CTL_H,
-            );
-            let label = Rect::new(text_x, rect.y, (control.x - GAP_M - text_x).max(0.0), ROW_H);
-            (label, control)
-        };
-        let stacked = {
-            let label = Rect::new(text_x, rect.y + GAP_S, line.right() - text_x, CTL_H);
-            let full = line.right() - text_x;
-            let width = if row.control.stretches() {
-                full
+        let (side, stacked) = (self.side(row, rect), self.stacked(row, rect));
+        let span = stacked.height - side.height;
+        let t = if span.abs() < 0.5 {
+            // Both as tall: which one the row is in, it says itself.
+            if beside(row, &self.fonts, line).is_some() {
+                0.0
             } else {
-                row.control.width(&self.fonts, full).min(full)
-            };
-            let control = Rect::new(line.right() - width, label.bottom() + GAP_S, width, CTL_H);
-            (label, control)
+                1.0
+            }
+        } else {
+            ((rect.h - side.height) / span).clamp(0.0, 1.0)
         };
-        let t = ((rect.h - ROW_H) / (STACKED_H - ROW_H)).clamp(0.0, 1.0);
-        let (label_block, control) = if t == 0.0 {
-            side
+        let (text, control) = if t == 0.0 {
+            (side.text, side.control)
         } else if t == 1.0 {
-            stacked
+            (stacked.text, stacked.control)
         } else {
             (
-                lerp_rect(side.0, stacked.0, t),
-                lerp_rect(side.1, stacked.1, t),
+                lerp_rect(side.text, stacked.text, t),
+                lerp_rect(side.control, stacked.control, t),
             )
         };
-        let (label, hint) = if row.hint.is_some() {
-            let y = label_block.y + (label_block.h - LINE - HINT_LINE) / 2.0;
-            (
-                Rect::new(label_block.x, y, label_block.w, LINE),
-                Some(Rect::new(label_block.x, y + LINE, label_block.w, HINT_LINE)),
+        let lines = if t < 0.5 { side.lines } else { stacked.lines };
+        let (name_pitch, hint_pitch) = (lines.name_pitch(), lines.hint_pitch());
+        let top = (text.y + (text.h - lines.height()) / 2.0).round();
+        let label = Rect::new(text.x, top, text.w, name_pitch);
+        let hint = (!lines.hints.is_empty()).then(|| {
+            Rect::new(
+                text.x,
+                top + lines.names.len() as f32 * name_pitch,
+                text.w,
+                hint_pitch,
             )
-        } else {
-            (label_block, None)
-        };
+        });
         RowParts {
             icon: widgets::icon_box(label, line.x, ICON),
             label,
             hint,
             control,
+            text,
+            names: lines.names,
+            hints: lines.hints,
+            name_pitch,
+            hint_pitch,
         }
     }
 
