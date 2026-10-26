@@ -2039,6 +2039,43 @@ genommen; Copy-Gate über die Hinweise.
 - Dropdown mit vielen Einträgen: Liste scrollt in sich (Rad, Pfeile),
   höchstens 10 sichtbar.
 
+##### S10 im Detail (Gegenprüfung am Code, 26.10.)
+
+Aufgeteilt, weil der Font eine scrollende Liste mit Tipp-Suche braucht:
+S10a Display und Codec, S10b Seite General mit Font.
+
+S10a, Belege:
+- Monitore: der Tray nimmt Waylands `OutputState` (`shelf/mod.rs:1144`,
+  `name`, `description`); das Fenster hat einen eigenen `OutputState`
+  (`app/window.rs`, `Parts::outputs`) und meldet Monitore beim Erscheinen
+  und Gehen (`OutputHandler`), dann Neuaufbau. Beschriftung wie im Tray
+  (`tray::monitor_label`, wird als reine Funktion über Name und Beschreibung
+  geteilt), dazu „Focused display“, „Both displays“, ein konfigurierter, nicht
+  angeschlossener als „… (disconnected)“ (Logik wie `tray::default_targets`).
+  Werte: `focused`, `both`, `output:<name>` (`schema.rs`, `Kind::Target`).
+- Codec: `record_codec` nimmt `auto`, `libx264`, `h264`, `hevc`, `av1`,
+  `*_vulkan` (`gsr::choose`, `gsr.rs:112`); HDR- und 10-Bit-Einträge aus
+  `gsr --info` lehnt `choose` ab und erscheinen nicht. Hier verfügbar
+  (gemessen): h264, h264_software, hevc, av1, h264_vulkan, hevc_vulkan …
+  Beschriftung: Auto, H.264, HEVC, AV1, „H.264 via Vulkan“, „H.264 on the CPU“
+  (`libx264`); ein Wert aus der Datei, der nicht in der Liste ist, bleibt als
+  eigener Eintrag. `gsr --info` dauert rund 0,5 s: einmal im Hintergrund beim
+  Start, bis dahin nur Auto und der Wert aus der Datei, dann Neuaufbau.
+- Icons: Display `monitor`, Both displays neu `columns-2`, Codec neu `film`
+  (aus `lucide-static`, ins Sprite).
+- Copy-Gate-Allowlist: „Vulkan“, „CPU“.
+
+S10b (eigener Schritt): Seite General mit Font (`ui_font`, „Desktop font“
+zuerst, Familien aus `fc-list : family`, 11 ms gemessen); Dropdown-Liste
+höchstens 10 Einträge hoch, scrollt in sich (Rad, Pfeile, Markierung bleibt
+sichtbar), Tippen springt zum ersten passenden Eintrag; das Fenster lädt
+seine Schrift neu, wenn `ui_font` sich ändert.
+
+Tests S10a: Display-Einträge mit zwei Monitoren und einem abgesteckten,
+Kodierung `output:DP-1`; Codec-Einträge aus einer Info-Liste (HDR fällt
+weg, `h264_software` → `libx264`); eigener Wert bleibt; Gates und
+Copy-Gate über die neuen Zeilen.
+
 #### S11 Ordner-Dialog
 
 - Icon-Knopf `folder-open` neben den Ordnerfeldern;
@@ -2231,6 +2268,7 @@ Vom Nutzer am 24.10. so bestätigt:
 | 4i | umgesetzt 26.10. nach „Phase 4i“: Segment-Spur ohne Hover und Druck, Fokus-Kontur bleibt. Test `a_segment_track_does_not_light_up_when_pressed`, Gegenprobe mit altem `Look` schlägt an. Checks: fmt, clippy ohne Warnung, `cargo test` 107 + 374 grün. |
 | 5c S8 | umgesetzt 26.10. nach „S8 im Detail“ (Abweichung dort: Knopf im Textbereich statt einem Platz, der das Control verschiebt). `Row::reset`, `Prefs::set_keys` (aus `settings_state().doc`, neu `Doc::keys`), `Target::Reset` (Hover, Druck, Fokus-Kontur, Tab vor dem Control), `RowParts::reset` und `reset_place`, Kanal `Shown` (blendet mit `QUICK`, beim Öffnen sofort), `Effect::Reset` → `Write::Reset(key)` → `Change::Remove`; der Default kommt über S6 zurück. Test `a_set_key_offers_a_reset_that_leaves_the_control_where_it_is` (nur der gesetzte Key, Control-Rechteck gleich, Knopf `GAP_S` davor, Tab-Reihenfolge, Klick liefert `Reset(\"record_fps\")`, Ausblenden halb und am Ende 0). Gates laufen im Zustand „alle Keys gesetzt“, das Überlauf-Gate prüft jetzt auch die Reset-Knöpfe (922 Teile, keiner auf Name oder Control). Render bei 946 und 360 angesehen. Befund am Rand (älter, nicht S8): mit der eingebetteten Ersatzschrift kürzt ein gestapeltes Segment bei 360 px seine Teile („System and…“, „…“); mit Outfit passt es; das Umbruch-Gate prüft Segment-Teile nicht, offen als eigener Punkt. Checks: fmt, clippy ohne Warnung, `cargo test` 108 + 374 grün. |
 | 5c S9 | umgesetzt 26.10. nach „S9 im Detail“ (Abweichung dort: Hinweis nennt im Engpass, was passt, wegen der unteren Bitrate-Klemme). Length als Dropdown 15 s bis 10 min (eigener Wert aus der Datei bleibt Eintrag), `Prefs::replay_bitrate`, Hinweis unter Memory aus `video_kbps` und `AUDIO_KBPS`. Belegt: Standard 60 s/512 MiB ergibt 20 994 kbit/s, gleich dem `-q 20994` des laufenden Recorders; mit den Werten des Nutzers (30 s, 512 MiB) „Video at about 41 Mbit/s“. Gates laufen jetzt auch mit 600 s/256 MiB („Only about 5 min fit, give it more memory“); Copy-Gate-Allowlist um die Einheit „Mbit/s“ ergänzt (134 Strings). Test `replay_length_steps_and_what_the_memory_buys`. Render angesehen. Checks: fmt, clippy ohne Warnung, `cargo test` 109 + 374 grün. |
+| 5c S10a | umgesetzt 26.10. nach „S10 im Detail“: Zeilen Display (Focused display, jeder Monitor aus dem `OutputState` des Fensters mit `tray::output_label`, jetzt geteilt, abgesteckter als „(disconnected)“, Both displays; schreibt `focused`/`both`/`output:<name>`) und Codec (Auto, H.264, „H.264 on the CPU“ = `libx264`, HEVC, AV1, „… via Vulkan“; HDR/10-Bit fallen weg; `gsr --info` einmal im Hintergrund, `save::probe_codecs`); `choose_text` für Text-Werte; Monitor-Ereignisse bauen neu; Icons `columns-2`, `film` ins Sprite (33). Abweichung: die Zeile „Both displays“ (Separate/Combined) heißt jetzt „Both displays as“, weil das Display-Dropdown selbst eine Option „Both displays“ hat. Copy-Allowlist um „CPU“ und „Vulkan“ (158 Strings). Test `display_and_codec_offer_what_this_machine_has`. Gates: Überlauf 1002 Teile, Umbruch 337 Zeilen, Dropdowns 30. Render angesehen. Live nicht geprüft (echte Monitor- und Codec-Liste nur im laufenden Fenster). Checks: fmt, clippy ohne Warnung, `cargo test` 110 + 374 grün. |
 | 5a | umgesetzt 26.10. nach „Phase 5a: Öffnen ohne Terminal“: Tray-Eintrag „Settings…“ ganz unten (Prozessstart im Tray-Thread), `assets/linux/boltsnap.desktop` mit Icons 64/128/256 aus `boltsnap.ico`, `.deb`-Assets, Flake-`postInstall`, Release-Tarball, README. Abweichung: `Categories=Graphics;`. Checks: `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test` 75 + 371 grün, `desktop-file-validate` ohne Meldung. Live: Daemon neu gestartet, dbusmenu-`GetLayout` endet auf „Settings…“; `gio launch` der installierten `.desktop`-Datei öffnet das Fenster (Klasse `boltsnap`). Nicht live prüfbar: Klick im Tray. |
 | 5 | geplant, freigegeben 24.10. |
 | 6 (Library) | Skizze im Library-Plan |

@@ -21,6 +21,8 @@ pub enum Icon {
     Check,
     ChevronDown,
     Clock,
+    Columns2,
+    Film,
     Folder,
     FolderOpen,
     GalleryVerticalEnd,
@@ -48,7 +50,7 @@ pub enum Icon {
 }
 
 impl Icon {
-    pub const ALL: [Icon; 31] = [
+    pub const ALL: [Icon; 33] = [
         Icon::ArrowDownLeft,
         Icon::ArrowDownRight,
         Icon::ArrowUpLeft,
@@ -56,6 +58,8 @@ impl Icon {
         Icon::Check,
         Icon::ChevronDown,
         Icon::Clock,
+        Icon::Columns2,
+        Icon::Film,
         Icon::Folder,
         Icon::FolderOpen,
         Icon::GalleryVerticalEnd,
@@ -92,6 +96,8 @@ impl Icon {
             Icon::Check => "check",
             Icon::ChevronDown => "chevron-down",
             Icon::Clock => "clock",
+            Icon::Columns2 => "columns-2",
+            Icon::Film => "film",
             Icon::Folder => "folder",
             Icon::FolderOpen => "folder-open",
             Icon::GalleryVerticalEnd => "gallery-vertical-end",

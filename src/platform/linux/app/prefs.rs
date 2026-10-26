@@ -3,10 +3,11 @@
 
 use std::path::Path;
 
-use boltsnap::app::pages::{AudioSource, Corner, Cursor, Prefs};
+use boltsnap::app::pages::{AudioSource, Corner, Cursor, Display, Prefs};
 
 use crate::config::{
-    Config, RecordAudioSource, RecordBothMode, RecordCursor, resolve_record_dir, resolve_save_dir,
+    Config, RecordAudioSource, RecordBothMode, RecordCursor, RecordDefaultTarget,
+    resolve_record_dir, resolve_save_dir,
 };
 use crate::shelf::layout;
 
@@ -23,7 +24,9 @@ fn tilde(path: &Path) -> String {
     }
 }
 
-pub fn load() -> Prefs {
+/// `displays`: the connected monitors as (connector, label), from the
+/// window's own Wayland outputs.
+pub fn load(displays: Vec<(String, String)>) -> Prefs {
     let cfg = Config::load();
     let shelf = cfg.shelf_prefs();
     let recording = cfg.recording_prefs();
@@ -40,6 +43,14 @@ pub fn load() -> Prefs {
         },
         save_dir: tilde(&resolve_save_dir(None, &cfg)),
         both_combined: recording.both_mode == RecordBothMode::Combined,
+        display: match &recording.default_target {
+            RecordDefaultTarget::Focused => Display::Focused,
+            RecordDefaultTarget::Both => Display::Both,
+            RecordDefaultTarget::Output(name) => Display::Output(name.clone()),
+        },
+        displays,
+        codec: cfg.record_codec.clone().unwrap_or_else(|| "auto".into()),
+        codecs: super::save::codecs(),
         fps: cfg.record_profile().unwrap_or_default().fps(),
         cursor: match recording.cursor {
             RecordCursor::System => Cursor::System,

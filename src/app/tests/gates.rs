@@ -367,7 +367,7 @@ fn gate_copy_reads_like_a_person_wrote_it() {
         "next level",
     ];
     // Names and units that keep their capitals mid-sentence.
-    const PROPER: [&str; 5] = ["Boltsnap", "GiB", "MiB", "Mbit/s", "Off"];
+    const PROPER: [&str; 7] = ["Boltsnap", "CPU", "GiB", "MiB", "Mbit/s", "Off", "Vulkan"];
     for text in &strings {
         assert!(!text.contains(['!', '\u{2014}', '\u{2013}']), "{text}");
         assert!(!text.ends_with('.'), "a label, not a sentence: {text}");

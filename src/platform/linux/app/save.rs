@@ -165,6 +165,25 @@ fn follow(
     });
 }
 
+static CODECS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+
+/// What gpu-screen-recorder can encode here, once [`probe_codecs`] has
+/// asked it.
+pub(super) fn codecs() -> Option<Vec<String>> {
+    CODECS.get().cloned()
+}
+
+/// Ask gpu-screen-recorder once, off the window's loop (`--info` takes about
+/// half a second); `changed` gets a signal when the answer is in.
+pub(super) fn probe_codecs(changed: calloop::channel::Sender<()>) {
+    std::thread::spawn(move || {
+        if let Ok(info) = super::super::gsr::info() {
+            let _ = CODECS.set(info.codecs);
+            let _ = changed.send(());
+        }
+    });
+}
+
 /// The replay buffer as its control reports it.
 #[derive(Default)]
 pub(super) struct ReplayState {

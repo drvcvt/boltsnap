@@ -151,6 +151,20 @@ impl Win {
         self.changed();
     }
 
+    /// The connected monitors as (connector, label), as the tray shows them.
+    pub(super) fn displays(&self) -> Vec<(String, String)> {
+        self.outputs
+            .outputs()
+            .filter_map(|output| self.outputs.info(&output))
+            .filter_map(|info| {
+                let name = info.name?;
+                let label =
+                    crate::tray::output_label(&name, info.description.as_deref().unwrap_or(""));
+                Some((name, label))
+            })
+            .collect()
+    }
+
     /// The app has something new to show.
     pub(super) fn changed(&mut self) {
         self.dirty = true;
@@ -434,9 +448,16 @@ impl OutputHandler for Win {
     fn output_state(&mut self) -> &mut OutputState {
         &mut self.outputs
     }
-    fn new_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
-    fn update_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
-    fn output_destroyed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
+    // A monitor that comes, changes or goes changes the Display row.
+    fn new_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {
+        self.refresh();
+    }
+    fn update_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {
+        self.refresh();
+    }
+    fn output_destroyed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {
+        self.refresh();
+    }
 }
 
 impl ShmHandler for Win {

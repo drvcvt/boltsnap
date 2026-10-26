@@ -152,13 +152,18 @@ fn recording_entries(state: PublicRecordingState) -> Vec<(&'static str, Option<R
 }
 
 fn monitor_label(monitor: &Monitor) -> String {
-    let description = monitor.description.trim();
+    output_label(&monitor.name, &monitor.description)
+}
+
+/// A monitor as people know it: its description with the connector, once.
+pub(crate) fn output_label(name: &str, description: &str) -> String {
+    let description = description.trim();
     if description.is_empty() {
-        monitor.name.clone()
-    } else if description == monitor.name || description.contains(&format!("({})", monitor.name)) {
+        name.to_owned()
+    } else if description == name || description.contains(&format!("({name})")) {
         description.to_owned()
     } else {
-        format!("{description} ({})", monitor.name)
+        format!("{description} ({name})")
     }
 }
 

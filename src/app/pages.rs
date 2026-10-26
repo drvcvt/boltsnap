@@ -20,6 +20,13 @@ pub struct Prefs {
     pub corner: Corner,
     pub save_dir: String,
     pub both_combined: bool,
+    pub display: Display,
+    /// The connected monitors: (connector, label as people know it).
+    pub displays: Vec<(String, String)>,
+    /// `record_codec`, `auto` when unset.
+    pub codec: String,
+    /// What gpu-screen-recorder can encode here (`--info`), once known.
+    pub codecs: Option<Vec<String>>,
     pub fps: u32,
     pub cursor: Cursor,
     pub show_frame: bool,
@@ -59,6 +66,14 @@ pub enum Cursor {
     System,
     Mellow,
     Quick,
+}
+
+/// Where a fullscreen recording goes: `record_default_target`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Display {
+    Focused,
+    Output(String),
+    Both,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -189,6 +204,81 @@ fn choose<T: PartialEq + Copy + 'static>(
         _ => None,
     });
     (Box::new(dropdown), bind)
+}
+
+/// A dropdown over (value, label) entries writing the chosen value as text;
+/// `current` not among them is added under its own name, so the page never
+/// shows a value that is not the real one.
+fn choose_text(
+    name: &'static str,
+    mut entries: Vec<(String, String)>,
+    current: &str,
+    now: Instant,
+) -> (Box<dyn Widget>, Bind) {
+    if !entries.iter().any(|(value, _)| value == current) {
+        entries.push((current.to_owned(), current.to_owned()));
+    }
+    let chosen = entries
+        .iter()
+        .position(|(value, _)| value == current)
+        .unwrap_or(0);
+    let labels = entries.iter().map(|(_, label)| label.clone()).collect();
+    let values: Vec<String> = entries.into_iter().map(|(value, _)| value).collect();
+    let bind = key(name, move |value| match value {
+        Value::Choice(index) => values.get(*index).cloned().map(settings::Value::Text),
+        _ => None,
+    });
+    (Box::new(Dropdown::new(labels, chosen, now)), bind)
+}
+
+/// Focused display, each connected monitor, a configured one that is not
+/// connected, both: as the tray offers them.
+fn display_entries(prefs: &Prefs) -> (Vec<(String, String)>, String) {
+    let mut entries = vec![("focused".to_owned(), "Focused display".to_owned())];
+    entries.extend(
+        prefs
+            .displays
+            .iter()
+            .map(|(name, label)| (format!("output:{name}"), label.clone())),
+    );
+    if let Display::Output(name) = &prefs.display
+        && !prefs
+            .displays
+            .iter()
+            .any(|(connected, _)| connected == name)
+    {
+        entries.push((format!("output:{name}"), format!("{name} (disconnected)")));
+    }
+    entries.push(("both".to_owned(), "Both displays".to_owned()));
+    let current = match &prefs.display {
+        Display::Focused => "focused".to_owned(),
+        Display::Both => "both".to_owned(),
+        Display::Output(name) => format!("output:{name}"),
+    };
+    (entries, current)
+}
+
+/// Auto, then what gpu-screen-recorder can encode here as `record_codec`
+/// takes it (`gsr::choose`): HDR and 10-bit variants it refuses stay out.
+fn codec_entries(prefs: &Prefs) -> Vec<(String, String)> {
+    let mut entries = vec![("auto".to_owned(), "Auto".to_owned())];
+    let label = |base: &str| match base {
+        "h264" => Some("H.264"),
+        "hevc" => Some("HEVC"),
+        "av1" => Some("AV1"),
+        _ => None,
+    };
+    for codec in prefs.codecs.iter().flatten() {
+        let entry = if codec == "h264_software" {
+            Some(("libx264".to_owned(), "H.264 on the CPU".to_owned()))
+        } else if let Some(base) = codec.strip_suffix("_vulkan") {
+            label(base).map(|label| (codec.clone(), format!("{label} via Vulkan")))
+        } else {
+            label(codec).map(|label| (codec.clone(), label.to_owned()))
+        };
+        entries.extend(entry);
+    }
+    entries
 }
 
 fn fps(fps: u32) -> String {
@@ -323,15 +413,14 @@ fn recording(prefs: &Prefs, now: Instant) -> Page {
     }
     blocks.extend([
         Block::Heading("Video".into()),
+        row(Icon::Monitor, "Display", None, {
+            let (entries, current) = display_entries(prefs);
+            choose_text("record_default_target", entries, &current, now)
+        }),
         row(
-            Icon::Gauge,
-            "Frame rate",
-            None,
-            choose("record_fps", &FRAME_RATES, prefs.fps, fps, fps_value, now),
-        ),
-        row(
-            Icon::Monitor,
-            "Both displays",
+            Icon::Columns2,
+            // The Display row offers "Both displays"; this one says how.
+            "Both displays as",
             None,
             segment(
                 "record_both_mode",
@@ -340,6 +429,18 @@ fn recording(prefs: &Prefs, now: Instant) -> Page {
                 usize::from(prefs.both_combined),
                 now,
             ),
+        ),
+        row(
+            Icon::Gauge,
+            "Frame rate",
+            None,
+            choose("record_fps", &FRAME_RATES, prefs.fps, fps, fps_value, now),
+        ),
+        row(
+            Icon::Film,
+            "Codec",
+            None,
+            choose_text("record_codec", codec_entries(prefs), &prefs.codec, now),
         ),
         row(
             Icon::MousePointer2,

@@ -84,7 +84,7 @@ pub fn cli(args: &[String]) -> DynResult<()> {
             let now = Instant::now();
             let rows = boltsnap::app::measure::icon_rows(
                 fonts(),
-                settings_pages(None, now),
+                settings_pages(None, Vec::new(), now),
                 (1000.0, 900.0),
             );
             match boltsnap::app::measure::icon_gate(&rows) {
@@ -99,8 +99,12 @@ pub fn cli(args: &[String]) -> DynResult<()> {
     }
 }
 
-fn settings_pages(notice: Option<&pages::Notice>, now: Instant) -> Vec<Page> {
-    pages::pages(&prefs::load(), notice, now)
+fn settings_pages(
+    notice: Option<&pages::Notice>,
+    displays: Vec<(String, String)>,
+    now: Instant,
+) -> Vec<Page> {
+    pages::pages(&prefs::load(displays), notice, now)
 }
 
 /// The UI face the selector and the recording controls use.
@@ -118,7 +122,7 @@ fn render(page: &str, out: &Path, render: Render) -> DynResult<()> {
     let pages = if render.fixture {
         gallery::pages(now)
     } else {
-        settings_pages(None, now)
+        settings_pages(None, Vec::new(), now)
     };
     let mut app = App::new(fonts(), pages, (w as f32, h as f32), now);
     if !app.show_named(page, now) {
@@ -143,7 +147,12 @@ fn run(page: Option<&str>) -> DynResult<()> {
         return Ok(());
     };
     let notice = save::notice();
-    let mut app = App::new(fonts(), settings_pages(notice.as_ref(), now), size, now);
+    let mut app = App::new(
+        fonts(),
+        settings_pages(notice.as_ref(), Vec::new(), now),
+        size,
+        now,
+    );
     if let Some(page) = page
         && !app.show_named(page, now)
     {
@@ -179,6 +188,7 @@ fn run(page: Option<&str>) -> DynResult<()> {
         })
         .map_err(|error| format!("save source: {error}"))?;
     let (watch_tx, watch_rx) = calloop::channel::channel();
+    save::probe_codecs(watch_tx.clone());
     save::watch(watch_tx);
     handle
         .insert_source(watch_rx, |event, _, win: &mut Win| {
@@ -233,8 +243,10 @@ impl Win {
         };
         self.notice = notice;
         let now = Instant::now();
-        self.app
-            .reload(settings_pages(self.notice.as_ref(), now), now);
+        self.app.reload(
+            settings_pages(self.notice.as_ref(), self.displays(), now),
+            now,
+        );
         self.changed();
     }
 
@@ -249,7 +261,7 @@ impl Win {
         let now = Instant::now();
         let pending = &self.pending;
         self.app.update(
-            settings_pages(self.notice.as_ref(), now),
+            settings_pages(self.notice.as_ref(), self.displays(), now),
             now,
             |page, block| pending.contains_key(&(page, block)),
         );

@@ -158,7 +158,7 @@ fn every_bound_row_writes_a_value_its_key_accepts() {
         // Nothing has changed yet, so nothing went out.
         assert!(changed(&app.finish(now)).is_empty());
     }
-    assert_eq!(checked, 17, "every row but the replay buffer has a key");
+    assert_eq!(checked, 19, "every row but the replay buffer has a key");
 }
 
 #[test]
@@ -347,4 +347,77 @@ fn replay_length_steps_and_what_the_memory_buys() {
             settings::Value::Int(120)
         ))
     );
+}
+
+#[test]
+fn display_and_codec_offer_what_this_machine_has() {
+    let now = Instant::now();
+    let rows = |p: &crate::app::pages::Prefs| {
+        let mut app = App::new(Fonts::fallback(), pages::pages(p, None, now), SIZE, now);
+        app.show_named("recording", now);
+        app
+    };
+    let labels = |app: &App, label: &str| -> Vec<String> {
+        let Block::Row(row) = &app.page().blocks[block(app, label)] else {
+            unreachable!()
+        };
+        row.control.labels().iter().map(|s| s.to_string()).collect()
+    };
+    let mut p = prefs();
+    p.display = crate::app::pages::Display::Output("HDMI-A-1".into());
+    let mut app = rows(&p);
+    assert_eq!(
+        labels(&app, "Display"),
+        [
+            "Focused display",
+            "BenQ (DP-3)",
+            "AOC 27G4HRE (DP-1)",
+            "HDMI-A-1 (disconnected)",
+            "Both displays"
+        ]
+    );
+    // HDR and 10-bit variants gpu-screen-recorder lists stay out; the CPU
+    // encoder is `libx264` in the file.
+    assert_eq!(
+        labels(&app, "Codec"),
+        [
+            "Auto",
+            "H.264",
+            "H.264 on the CPU",
+            "HEVC",
+            "AV1",
+            "H.264 via Vulkan"
+        ]
+    );
+    let display = block(&app, "Display");
+    // From HDMI-A-1 one up is the AOC on DP-1.
+    focus(&mut app, "Display", now);
+    key(&mut app, Key::Enter, now);
+    key(&mut app, Key::Up, now);
+    key(&mut app, Key::Enter, now);
+    assert_eq!(
+        app.write(display),
+        Some(Write::Key(
+            "record_default_target",
+            settings::Value::Text("output:DP-1".into())
+        ))
+    );
+    let codec = block(&app, "Codec");
+    focus(&mut app, "Codec", now);
+    key(&mut app, Key::Enter, now);
+    key(&mut app, Key::Down, now);
+    key(&mut app, Key::Down, now);
+    key(&mut app, Key::Enter, now);
+    assert_eq!(
+        app.write(codec),
+        Some(Write::Key(
+            "record_codec",
+            settings::Value::Text("libx264".into())
+        ))
+    );
+    // Before gpu-screen-recorder has answered: Auto and the file's value.
+    let mut p = prefs();
+    p.codecs = None;
+    p.codec = "hevc".into();
+    assert_eq!(labels(&rows(&p), "Codec"), ["Auto", "hevc"]);
 }

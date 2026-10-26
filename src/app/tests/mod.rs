@@ -26,6 +26,25 @@ pub fn prefs() -> Prefs {
         corner: Corner::BottomLeft,
         save_dir: "~/Pictures/boltsnap".into(),
         both_combined: false,
+        display: pages::Display::Focused,
+        displays: vec![
+            ("DP-3".into(), "BenQ (DP-3)".into()),
+            ("DP-1".into(), "AOC 27G4HRE (DP-1)".into()),
+        ],
+        codec: "auto".into(),
+        codecs: Some(
+            [
+                "h264",
+                "h264_software",
+                "hevc",
+                "hevc_hdr",
+                "hevc_10bit",
+                "av1",
+                "h264_vulkan",
+            ]
+            .map(String::from)
+            .to_vec(),
+        ),
         fps: 120,
         cursor: Cursor::System,
         show_frame: true,
@@ -125,7 +144,7 @@ fn tab_runs_through_navigation_and_enabled_controls_in_reading_order() {
         })
         .collect();
     assert!(blocks.windows(2).all(|pair| pair[0] < pair[1]));
-    assert_eq!(blocks.len(), 9, "every row of the page");
+    assert_eq!(blocks.len(), 11, "every row of the page");
     for target in &order {
         key(&mut app, Key::Tab, now);
         assert_eq!(app.focus(), Some(*target));
@@ -164,8 +183,8 @@ fn a_switch_toggles_by_click_and_key_and_its_knob_slides() {
 fn a_segment_takes_the_part_under_the_pointer_and_the_arrow_keys() {
     let now = Instant::now();
     let mut app = app("recording", now);
-    let both = block(&app, "Both displays");
-    let rect = control(&app, "Both displays", now);
+    let both = block(&app, "Both displays as");
+    let rect = control(&app, "Both displays as", now);
     press(&mut app, (rect.right() - 4.0, rect.y + 15.0), now);
     assert_eq!(app.value(both), Some(Value::Choice(1)));
     key(&mut app, Key::Right, now);
