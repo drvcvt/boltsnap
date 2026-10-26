@@ -180,5 +180,22 @@
       <path d="M4 7V5a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v2" />
       <path d="M9 20h6" />
     </symbol>
+    <!-- Own symbols in the Lucide style (24 grid): a screen with the shelf card in one corner. -->
+    <symbol id="shelf-top-left" viewBox="0 0 24 24">
+      <rect width="20" height="16" x="2" y="4" rx="2" />
+      <rect width="8" height="5" x="5" y="7" rx="1" />
+    </symbol>
+    <symbol id="shelf-top-right" viewBox="0 0 24 24">
+      <rect width="20" height="16" x="2" y="4" rx="2" />
+      <rect width="8" height="5" x="11" y="7" rx="1" />
+    </symbol>
+    <symbol id="shelf-bottom-left" viewBox="0 0 24 24">
+      <rect width="20" height="16" x="2" y="4" rx="2" />
+      <rect width="8" height="5" x="5" y="12" rx="1" />
+    </symbol>
+    <symbol id="shelf-bottom-right" viewBox="0 0 24 24">
+      <rect width="20" height="16" x="2" y="4" rx="2" />
+      <rect width="8" height="5" x="11" y="12" rx="1" />
+    </symbol>
   </defs>
 </svg>

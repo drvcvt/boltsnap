@@ -60,10 +60,10 @@ fn memory_hint(prefs: &Prefs) -> String {
 
 fn shelf(prefs: &Prefs, now: Instant) -> Page {
     let corners = [
-        (Corner::TopLeft, Icon::ArrowUpLeft),
-        (Corner::TopRight, Icon::ArrowUpRight),
-        (Corner::BottomLeft, Icon::ArrowDownLeft),
-        (Corner::BottomRight, Icon::ArrowDownRight),
+        (Corner::TopLeft, Icon::ShelfTopLeft),
+        (Corner::TopRight, Icon::ShelfTopRight),
+        (Corner::BottomLeft, Icon::ShelfBottomLeft),
+        (Corner::BottomRight, Icon::ShelfBottomRight),
     ];
     let corner = corners
         .iter()

@@ -403,3 +403,34 @@ fn a_long_list_shows_ten_scrolls_in_itself_and_jumps_to_what_is_typed() {
         "nothing starts with x; Escape keeps it"
     );
 }
+
+#[test]
+fn the_corner_pictograms_put_the_card_in_their_corner() {
+    let draw = |icon: Icon| {
+        let mut canvas = Canvas::new(48, 48, 1).unwrap();
+        canvas.clear(theme::PANEL);
+        icon.draw(
+            &mut canvas,
+            Rect::new(0.0, 0.0, 48.0, 48.0),
+            theme::TEXT,
+            1.0,
+        );
+        canvas
+    };
+    // The card's middle in grid units, scaled to 48 px: (8, 9) and (16, 15).
+    let lit = |canvas: &Canvas, (x, y): (f32, f32)| {
+        let (x, y) = ((x * 2.0) as usize, (y * 2.0) as usize);
+        // Any ink on the card's outline near its middle row.
+        (0..12).any(|dx| canvas.pixmap.data()[(y * 48 + x - 6 + dx) * 4] > 0x60)
+    };
+    for (icon, here, there) in [
+        (Icon::ShelfTopLeft, (8.0, 7.0), (16.0, 17.0)),
+        (Icon::ShelfTopRight, (16.0, 7.0), (8.0, 17.0)),
+        (Icon::ShelfBottomLeft, (8.0, 17.0), (16.0, 7.0)),
+        (Icon::ShelfBottomRight, (16.0, 17.0), (8.0, 7.0)),
+    ] {
+        let canvas = draw(icon);
+        assert!(lit(&canvas, here), "{icon:?} has its card there");
+        assert!(!lit(&canvas, there), "{icon:?} has nothing across");
+    }
+}

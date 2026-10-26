@@ -43,6 +43,10 @@ pub enum Icon {
     Scaling,
     Scan,
     Settings,
+    ShelfBottomLeft,
+    ShelfBottomRight,
+    ShelfTopLeft,
+    ShelfTopRight,
     SquareDashed,
     Timer,
     TriangleAlert,
@@ -52,7 +56,7 @@ pub enum Icon {
 }
 
 impl Icon {
-    pub const ALL: [Icon; 35] = [
+    pub const ALL: [Icon; 39] = [
         Icon::ArrowDownLeft,
         Icon::ArrowDownRight,
         Icon::ArrowUpLeft,
@@ -82,6 +86,10 @@ impl Icon {
         Icon::Scaling,
         Icon::Scan,
         Icon::Settings,
+        Icon::ShelfBottomLeft,
+        Icon::ShelfBottomRight,
+        Icon::ShelfTopLeft,
+        Icon::ShelfTopRight,
         Icon::SquareDashed,
         Icon::Timer,
         Icon::TriangleAlert,
@@ -122,6 +130,10 @@ impl Icon {
             Icon::Scaling => "scaling",
             Icon::Scan => "scan",
             Icon::Settings => "settings",
+            Icon::ShelfBottomLeft => "shelf-bottom-left",
+            Icon::ShelfBottomRight => "shelf-bottom-right",
+            Icon::ShelfTopLeft => "shelf-top-left",
+            Icon::ShelfTopRight => "shelf-top-right",
             Icon::Type => "type",
             Icon::SquareDashed => "square-dashed",
             Icon::Timer => "timer",
