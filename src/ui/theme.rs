@@ -15,6 +15,9 @@ pub const TEXT: Rgb = (0xEC, 0xEC, 0xEC);
 pub const SUB: Rgb = (0x96, 0x96, 0x96);
 pub const DIM: Rgb = (0x6A, 0x6A, 0x6A);
 pub const ERROR: Rgb = (0xE5, 0x48, 0x4D);
+/// The chosen part of a segment and an open list's hovered entry: a step
+/// above `HOVER`, so the choice still reads while the pointer is on it.
+pub const SELECTED: Rgb = (0x38, 0x38, 0x38);
 /// The one emphasis: a switch that is on and a slider's value, inverted like
 /// the controls' primary button.
 pub const ACCENT: Rgb = TEXT;
@@ -51,6 +54,13 @@ impl TextStyle {
     }
 }
 
+/// `a` to `b` by `t` (0 to 1).
+pub fn mix(a: Rgb, b: Rgb, t: f32) -> Rgb {
+    let t = t.clamp(0.0, 1.0);
+    let channel = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * t).round() as u8;
+    (channel(a.0, b.0), channel(a.1, b.1), channel(a.2, b.2))
+}
+
 /// Spacing scale: 4, 8, 12, 16, 24.
 pub const GAP_XS: f32 = 4.0;
 pub const GAP_S: f32 = 8.0;
@@ -65,9 +75,11 @@ pub const CTL_H: f32 = 30.0;
 pub const RADIUS: f32 = 9.0;
 /// A row: one control plus 7 above and below.
 pub const ROW_H: f32 = 44.0;
-/// Icon box next to `Label` text: never larger than the text.
+/// Icon box next to `Label` text: never larger than the text, so the
+/// navigation uses it too.
 pub const ICON: f32 = 13.0;
-pub const NAV_ICON: f32 = 16.0;
+/// A standalone icon, alone on an icon-only button.
+pub const ICON_ALONE: f32 = 16.0;
 pub const NAV_W: f32 = 184.0;
 /// Icon stroke in logical pixels at any icon size.
 pub const STROKE: f32 = 1.5;

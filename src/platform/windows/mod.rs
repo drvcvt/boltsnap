@@ -1,3 +1,9 @@
+/// The Boltsnap window is Linux-only while the Windows backend is frozen.
+pub mod app {
+    pub fn cli(_: &[String]) -> crate::DynResult<()> {
+        Err("settings are not available on Windows".into())
+    }
+}
 pub mod audio;
 pub mod autostart;
 pub mod capture;

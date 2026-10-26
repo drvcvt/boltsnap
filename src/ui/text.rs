@@ -103,14 +103,34 @@ impl Fonts {
         canvas: &mut Canvas,
         style: TextStyle,
         text: &str,
+        at: (f32, f32),
+        color: Rgb,
+        alpha: f32,
+    ) {
+        let all = Rect::new(0.0, 0.0, canvas.width(), canvas.height());
+        self.draw_clipped(canvas, style, text, at, color, alpha, all);
+    }
+
+    /// [`Fonts::draw`], leaving everything outside `clip` untouched.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_clipped(
+        &self,
+        canvas: &mut Canvas,
+        style: TextStyle,
+        text: &str,
         (x, baseline): (f32, f32),
         color: Rgb,
         alpha: f32,
+        clip: Rect,
     ) {
         let face = self.face(style);
         let scale = PxScale::from(style.px() * canvas.scale);
         let scaled = face.as_scaled(scale);
-        let (width, height) = (canvas.pixmap.width() as i32, canvas.pixmap.height() as i32);
+        let width = canvas.pixmap.width() as i32;
+        let device = |v: f32| (v * canvas.scale).round() as i32;
+        let (left, top) = (device(clip.x).max(0), device(clip.y).max(0));
+        let right = device(clip.right()).min(width);
+        let bottom = device(clip.bottom()).min(canvas.pixmap.height() as i32);
         let data = canvas.pixmap.data_mut();
         let mut caret = x * canvas.scale;
         let baseline = baseline * canvas.scale;
@@ -125,7 +145,7 @@ impl Fonts {
             outlined.draw(|gx, gy, coverage| {
                 let px = bounds.min.x as i32 + gx as i32;
                 let py = bounds.min.y as i32 + gy as i32;
-                if px < 0 || px >= width || py < 0 || py >= height {
+                if px < left || px >= right || py < top || py >= bottom {
                     return;
                 }
                 let a = (coverage * alpha).clamp(0.0, 1.0);

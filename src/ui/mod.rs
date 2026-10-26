@@ -5,6 +5,7 @@ pub mod icons;
 pub mod motion;
 pub mod text;
 pub mod theme;
+pub mod widgets;
 
 #[cfg(test)]
 mod tests;
@@ -12,6 +13,97 @@ mod tests;
 use tiny_skia::{FillRule, Paint, PathBuilder, Pixmap, Transform};
 
 pub use theme::Rgb;
+
+/// Modifier keys held with a key.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Mods {
+    pub ctrl: bool,
+    pub shift: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Key {
+    Tab,
+    Up,
+    Down,
+    Left,
+    Right,
+    Home,
+    End,
+    Enter,
+    Space,
+    Escape,
+    Backspace,
+    Delete,
+    /// A letter or digit pressed with Ctrl, lower case.
+    Char(char),
+}
+
+/// What the window hands the UI, in logical pixels.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Input {
+    Move {
+        x: f32,
+        y: f32,
+    },
+    /// The pointer left the window, or the window lost it to a grab.
+    Leave,
+    /// `clicks` is 2 for the second press of a double click.
+    Press {
+        x: f32,
+        y: f32,
+        clicks: u8,
+    },
+    Release,
+    /// Whole wheel `notches`, or touchpad `pixels` when `notches` is 0.
+    Wheel {
+        notches: i32,
+        pixels: f32,
+    },
+    Key {
+        key: Key,
+        mods: Mods,
+    },
+    /// Typed text, without control characters.
+    Text(String),
+    /// The clipboard's text after an [`Effect::Paste`].
+    Pasted(String),
+}
+
+/// What the UI asks the window to do.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Effect {
+    Copy(String),
+    Paste,
+    Close,
+}
+
+/// Counts a press as the second of a double click when it comes soon after
+/// the last one, near it. Times are the windowing system's milliseconds.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Clicks {
+    last: Option<(u32, f32, f32, u8)>,
+}
+
+impl Clicks {
+    const WITHIN_MS: u32 = 400;
+    const NEAR: f32 = 4.0;
+
+    pub fn press(&mut self, time: u32, x: f32, y: f32) -> u8 {
+        let count = match self.last {
+            Some((at, lx, ly, count))
+                if time.wrapping_sub(at) <= Self::WITHIN_MS
+                    && (x - lx).abs() <= Self::NEAR
+                    && (y - ly).abs() <= Self::NEAR =>
+            {
+                count.saturating_add(1)
+            }
+            _ => 1,
+        };
+        self.last = Some((time, x, y, count));
+        count
+    }
+}
 
 /// A rectangle in logical pixels.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]

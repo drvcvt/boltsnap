@@ -163,6 +163,7 @@ Usage:
   boltsnap recording show-controls
   boltsnap recording pause|resume|save-shelf|save-disk|discard
   boltsnap stop                           compatibility alias for recording save-shelf
+  boltsnap settings --render PAGE OUT.png draw a page of the Boltsnap window to a PNG
   Config: platform config directory       (save_dir, record_codec, record_dir)
   boltsnap doctor
 
@@ -249,6 +250,10 @@ fn main() {
 
 fn run() -> DynResult<()> {
     let raw: Vec<String> = env::args().collect();
+    // Its own flags; the screenshot flags do not apply.
+    if raw.get(1).is_some_and(|command| command == "settings") {
+        return crate::platform::app::cli(&raw[2..]);
+    }
     let args = parse_args(&raw)?;
 
     match args.command.as_str() {
