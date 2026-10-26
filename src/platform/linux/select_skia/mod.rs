@@ -1,28 +1,18 @@
 //! Wayland screenshot and recording selector using SCTK layer surfaces and tiny-skia.
 
-use crate::selector::{
-    desktop, edit, render,
-    scene::{Scene, SceneCache},
-};
+use crate::selector::{desktop, edit, render, scene::SceneCache};
 
 use std::thread;
 
 use image::RgbaImage;
 use smithay_client_toolkit::{
-    compositor::{CompositorHandler, CompositorState},
+    compositor::CompositorState,
     delegate_compositor, delegate_keyboard, delegate_layer, delegate_output, delegate_pointer,
     delegate_registry, delegate_seat, delegate_shm,
     output::{OutputHandler, OutputState},
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
-    seat::{
-        Capability, SeatHandler, SeatState,
-        keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers},
-        pointer::{
-            BTN_LEFT, CursorIcon, PointerEvent, PointerEventKind, PointerHandler, ThemeSpec,
-            ThemedPointer,
-        },
-    },
+    seat::{SeatState, pointer::ThemedPointer},
     shell::{
         WaylandSurface,
         wlr_layer::{
@@ -30,21 +20,21 @@ use smithay_client_toolkit::{
             LayerSurfaceConfigure,
         },
     },
-    shm::{
-        Shm, ShmHandler,
-        slot::{Buffer, SlotPool},
-    },
+    shm::{Shm, ShmHandler, slot::SlotPool},
 };
 use wayland_client::{
     Connection, QueueHandle,
     globals::registry_queue_init,
-    protocol::{
-        wl_keyboard::WlKeyboard, wl_output, wl_pointer::WlPointer, wl_seat::WlSeat,
-        wl_surface::WlSurface,
-    },
+    protocol::{wl_keyboard::WlKeyboard, wl_output},
 };
 
 use crate::DynResult;
+
+mod input;
+mod present;
+
+use input::{Interaction, MIN_SEL, contains};
+use present::OutputView;
 
 /// Draw the overlay's labels in the desktop UI font, the same one the shelf
 /// resolves, so selector and shelf read as one surface set. Idempotent.
@@ -346,30 +336,6 @@ fn run_selector(
     Ok(sel)
 }
 
-struct FrameBuffer {
-    buffer: Buffer,
-    generation: Option<u64>,
-    size: (u32, u32),
-}
-
-struct OutputView {
-    layer: LayerSurface,
-    output: wl_output::WlOutput,
-    viewport: desktop::Viewport,
-    configured: bool,
-    buffers: Vec<FrameBuffer>,
-    committed_generation: Option<u64>,
-    frame_pending: bool,
-    needs_redraw: bool,
-}
-
-impl OutputView {
-    fn contains(&self, point: (f64, f64)) -> bool {
-        let (x, y, w, h) = self.viewport;
-        contains((x as f64, y as f64, w as f64, h as f64), point)
-    }
-}
-
 struct Selector {
     registry_state: RegistryState,
     seat_state: SeatState,
@@ -427,41 +393,6 @@ struct Selector {
     failure: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum RecordControlHit {
-    Clip,
-    Audio,
-    Frame,
-    Record,
-    Background,
-}
-
-fn contains(rect: (f64, f64, f64, f64), point: (f64, f64)) -> bool {
-    point.0 >= rect.0 && point.0 < rect.0 + rect.2 && point.1 >= rect.1 && point.1 < rect.1 + rect.3
-}
-
-fn record_control_hit(
-    sel: (f32, f32, f32, f32),
-    surf_w: u32,
-    surf_h: u32,
-    point: (f64, f64),
-) -> Option<RecordControlHit> {
-    let toolbar = render::record_toolbar(sel, surf_w, surf_h)?;
-    toolbar
-        .controls
-        .iter()
-        .position(|&rect| contains(rect, point))
-        .map(|i| {
-            [
-                RecordControlHit::Record,
-                RecordControlHit::Clip,
-                RecordControlHit::Frame,
-                RecordControlHit::Audio,
-            ][i]
-        })
-        .or_else(|| contains(toolbar.bounds, point).then_some(RecordControlHit::Background))
-}
-
 #[derive(Clone, Copy)]
 enum Mode {
     /// No selection yet; waiting for a press.
@@ -471,24 +402,6 @@ enum Mode {
     /// Committed, editable selection.
     Editing { rect: edit::Rect },
 }
-
-#[derive(Clone, Copy)]
-enum Interaction {
-    /// Resizing via a handle.
-    Resize { handle: edit::Handle },
-    /// Moving the whole rect; `grab` is cursor-minus-origin at press time.
-    Move { grab: (f64, f64) },
-    /// Pressed inside; becomes a Move once the cursor leaves a small slop radius,
-    /// otherwise a confirm on release. `press` is the press position.
-    ClickInside { press: (f64, f64) },
-}
-
-/// Handle hit radius (px) and minimum selection size (px).
-const HANDLE_R: f64 = 9.0;
-const MIN_SEL: f64 = 4.0;
-/// Pixels of motion before a press-inside counts as a drag (move) rather than a
-/// click-to-confirm — tolerates pointer jitter on a confirm click.
-const DRAG_SLOP: f64 = 3.0;
 
 impl Selector {
     /// Captured pixels must remain attached to the same logical output layout.
@@ -525,159 +438,6 @@ impl Selector {
                     .cloned()
             })
             .or_else(|| outputs.into_iter().next())
-    }
-
-    /// Request a redraw, throttled to the compositor's frame clock. Draws now if
-    /// no frame callback is pending; otherwise marks a redraw owed so the next
-    /// `frame` callback coalesces it. Keeps a fast drag from flooding commits.
-    fn request_redraw(&mut self) {
-        self.needs_redraw = true;
-        for view in &mut self.views {
-            view.needs_redraw = true;
-        }
-        self.draw();
-    }
-
-    /// Render the current frame (screenshot + dim + optional selection) into a
-    /// reusable wl_shm buffer and commit only changed regions.
-    fn draw(&mut self) {
-        if !self.configured || self.done {
-            return;
-        }
-        // Pointer events arrive far faster than frames (1000 Hz mice). Render
-        // the scene only when some output can take a frame; `needs_redraw`
-        // stays set so its frame callback draws the latest state.
-        if !self
-            .views
-            .iter()
-            .any(|view| view.needs_redraw && !view.frame_pending)
-        {
-            return;
-        }
-        let (Some(base), Some(overlay)) = (self.base.as_ref(), self.overlay.as_mut()) else {
-            return;
-        };
-        let (w, h) = (self.surf_w, self.surf_h);
-        let sel = match self.mode {
-            Mode::Idle => None,
-            Mode::Drawing { anchor, now } => {
-                let r = edit::Rect::from_corners(anchor, now);
-                Some((r.x as f32, r.y as f32, r.w as f32, r.h as f32))
-            }
-            Mode::Editing { rect } => {
-                Some((rect.x as f32, rect.y as f32, rect.w as f32, rect.h as f32))
-            }
-        };
-
-        let hovered = sel
-            .and_then(|s| render::record_toolbar(s, w, h))
-            .and_then(|t| {
-                t.controls
-                    .iter()
-                    .position(|&rect| contains(rect, self.cursor))
-            });
-        overlay.update(
-            base,
-            Scene {
-                chrome_viewport: (!self.record_mode && self.views.len() > 1)
-                    .then(|| {
-                        self.views
-                            .iter()
-                            .find(|v| v.contains(self.cursor))
-                            .map(|v| v.viewport)
-                    })
-                    .flatten(),
-                selection: sel,
-                editing: matches!(self.mode, Mode::Editing { .. }),
-                record: self.record_mode,
-                toggles: if self.record_mode {
-                    (self.frozen.is_some(), self.show_frame, self.audio_enabled)
-                } else {
-                    (false, false, false)
-                },
-                hovered: self.record_mode.then_some(hovered).flatten(),
-                magnifier: (self.alt_held && !self.record_mode).then_some(self.cursor),
-            },
-        );
-        for view in &mut self.views {
-            if view.frame_pending || !view.needs_redraw {
-                continue;
-            }
-            let (_, _, w, h) = view.viewport;
-            let damage: Vec<_> = overlay
-                .damage_since(view.committed_generation)
-                .into_iter()
-                .filter_map(|r| desktop::local_damage(view.viewport, r))
-                .collect();
-            if view.committed_generation.is_some() && damage.is_empty() {
-                view.committed_generation = Some(overlay.generation());
-                view.needs_redraw = false;
-                continue;
-            }
-            // Retire differently sized slots only after release. They count toward
-            // the same three-slot cap even during rapid compositor resizes.
-            view.buffers
-                .retain(|slot| slot.size == (w, h) || slot.buffer.canvas(&mut self.pool).is_none());
-            let free = view
-                .buffers
-                .iter()
-                .position(|b| b.size == (w, h) && b.buffer.canvas(&mut self.pool).is_some());
-            let index = match free {
-                Some(index) => index,
-                None if view.buffers.len() < 3 => {
-                    let created = self.pool.create_buffer(
-                        w as i32,
-                        h as i32,
-                        (w * 4) as i32,
-                        wayland_client::protocol::wl_shm::Format::Argb8888,
-                    );
-                    let (buffer, _) = match created {
-                        Ok(v) => v,
-                        Err(error) => {
-                            self.failure = Some(format!("selector buffer: {error}"));
-                            self.done = true;
-                            return;
-                        }
-                    };
-                    view.buffers.push(FrameBuffer {
-                        buffer,
-                        generation: None,
-                        size: (w, h),
-                    });
-                    view.buffers.len() - 1
-                }
-                None => {
-                    view.needs_redraw = true;
-                    continue;
-                }
-            };
-            let slot = &mut view.buffers[index];
-            let repair = overlay.damage_since(slot.generation);
-            let Some(canvas) = slot.buffer.canvas(&mut self.pool) else {
-                view.needs_redraw = true;
-                continue;
-            };
-            overlay.copy_viewport(canvas, &repair, view.viewport);
-            slot.generation = Some(overlay.generation());
-            let surface = view.layer.wl_surface();
-            if let Err(error) = slot.buffer.attach_to(surface) {
-                self.failure = Some(format!("selector attach: {error}"));
-                self.done = true;
-                return;
-            }
-            for (x0, y0, x1, y1) in damage {
-                surface.damage_buffer(x0 as i32, y0 as i32, (x1 - x0) as i32, (y1 - y0) as i32);
-            }
-            surface.frame(&self.qh, surface.clone());
-            view.layer.commit();
-            if view.committed_generation.is_none() {
-                super::timing::mark("selector_first_commit");
-            }
-            view.committed_generation = Some(overlay.generation());
-            view.frame_pending = true;
-            view.needs_redraw = false;
-        }
-        self.needs_redraw = self.views.iter().any(|v| v.needs_redraw);
     }
 
     /// Confirm the selection. In record mode, store the rect (surface px) and
@@ -722,53 +482,6 @@ impl Selector {
                 self.request_redraw();
             }
         }
-    }
-}
-
-impl CompositorHandler for Selector {
-    fn scale_factor_changed(
-        &mut self,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-        _: &WlSurface,
-        _: i32,
-    ) {
-    }
-    fn transform_changed(
-        &mut self,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-        _: &WlSurface,
-        _: wl_output::Transform,
-    ) {
-    }
-    fn frame(&mut self, _: &Connection, _: &QueueHandle<Self>, surface: &WlSurface, _: u32) {
-        if let Some(view) = self
-            .views
-            .iter_mut()
-            .find(|v| v.layer.wl_surface() == surface)
-        {
-            view.frame_pending = false;
-        }
-        if self.needs_redraw {
-            self.draw();
-        }
-    }
-    fn surface_enter(
-        &mut self,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-        _: &WlSurface,
-        _: &wl_output::WlOutput,
-    ) {
-    }
-    fn surface_leave(
-        &mut self,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-        _: &WlSurface,
-        _: &wl_output::WlOutput,
-    ) {
     }
 }
 
@@ -872,333 +585,6 @@ impl LayerShellHandler for Selector {
     }
 }
 
-impl SeatHandler for Selector {
-    fn seat_state(&mut self) -> &mut SeatState {
-        &mut self.seat_state
-    }
-    fn new_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: WlSeat) {}
-    fn new_capability(
-        &mut self,
-        _: &Connection,
-        qh: &QueueHandle<Self>,
-        seat: WlSeat,
-        cap: Capability,
-    ) {
-        if cap == Capability::Pointer && self.pointer.is_none() {
-            let cursor_surface = self.compositor.create_surface(qh);
-            if let Ok(tp) = self.seat_state.get_pointer_with_theme(
-                qh,
-                &seat,
-                self.shm.wl_shm(),
-                cursor_surface,
-                ThemeSpec::default(),
-            ) {
-                self.pointer = Some(tp);
-            }
-        }
-        if cap == Capability::Keyboard
-            && self.keyboard.is_none()
-            && let Ok(k) = self.seat_state.get_keyboard(qh, &seat, None)
-        {
-            self.keyboard = Some(k);
-        }
-    }
-    fn remove_capability(
-        &mut self,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-        _: WlSeat,
-        cap: Capability,
-    ) {
-        if cap == Capability::Keyboard {
-            self.keyboard = None;
-        }
-    }
-    fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: WlSeat) {}
-}
-
-impl PointerHandler for Selector {
-    fn pointer_frame(
-        &mut self,
-        conn: &Connection,
-        _: &QueueHandle<Self>,
-        _: &WlPointer,
-        events: &[PointerEvent],
-    ) {
-        let mut redraw = false;
-        for ev in events {
-            if matches!(ev.kind, PointerEventKind::Enter { .. })
-                && let Some(p) = self.pointer.as_ref()
-            {
-                let _ = p.set_cursor(conn, CursorIcon::Crosshair);
-            }
-            let Some(view) = self
-                .views
-                .iter()
-                .find(|v| v.layer.wl_surface() == &ev.surface)
-            else {
-                continue;
-            };
-            // During the implicit button grab, positions remain relative to the
-            // starting surface even after the pointer crosses onto another output.
-            let (x, y) =
-                desktop::pointer_position(view.viewport, ev.position, (self.surf_w, self.surf_h));
-            let previous_cursor = self.cursor;
-            if !self.record_mode && self.views.len() > 1 {
-                // Chrome must follow the pointer onto a real monitor, not land
-                // in a gap of an offset desktop layout.
-                redraw |= self.views.iter().position(|v| v.contains(previous_cursor))
-                    != self.views.iter().position(|v| v.contains((x, y)));
-            }
-            self.cursor = (x, y);
-            if self.record_mode
-                && let Mode::Editing { rect } = self.mode
-            {
-                let sel = (rect.x as f32, rect.y as f32, rect.w as f32, rect.h as f32);
-                redraw |= record_control_hit(sel, self.surf_w, self.surf_h, previous_cursor)
-                    != record_control_hit(sel, self.surf_w, self.surf_h, self.cursor);
-            }
-            match ev.kind {
-                PointerEventKind::Press { button, .. } if button == BTN_LEFT => {
-                    match self.mode {
-                        Mode::Editing { rect } => {
-                            // Toolbar clicks do not alter the selection.
-                            if self.record_mode {
-                                let sel =
-                                    (rect.x as f32, rect.y as f32, rect.w as f32, rect.h as f32);
-                                match record_control_hit(sel, self.surf_w, self.surf_h, (x, y)) {
-                                    Some(RecordControlHit::Clip) => {
-                                        if self.frozen.is_some() {
-                                            self.result_clip = true;
-                                            self.confirm_rect(rect);
-                                        } else if !self.clip_reported {
-                                            // A control that does nothing when
-                                            // pressed is worse than one that
-                                            // says why. Once per selection, so
-                                            // repeated presses do not stack up.
-                                            self.clip_reported = true;
-                                            crate::platform::replay::notify_error(
-                                                if self.replay_output.is_some() {
-                                                    "Replay preview is unavailable or still loading. REC remains available."
-                                                } else {
-                                                    "No replay buffer to clip from. Start it from the tray menu (Replay buffer \u{2192} Start) or with `boltsnap replay start`."
-                                                },
-                                            );
-                                        }
-                                        return;
-                                    }
-                                    Some(RecordControlHit::Audio) => {
-                                        self.audio_enabled = !self.audio_enabled;
-                                        self.interaction = None;
-                                        self.request_redraw();
-                                        return;
-                                    }
-                                    Some(RecordControlHit::Frame) => {
-                                        self.show_frame = !self.show_frame;
-                                        self.interaction = None;
-                                        self.request_redraw();
-                                        return;
-                                    }
-                                    Some(RecordControlHit::Record) => {
-                                        self.confirm_rect(rect);
-                                        return;
-                                    }
-                                    Some(RecordControlHit::Background) => return,
-                                    None => {}
-                                }
-                            }
-                            match edit::hit_region(rect, (x, y), HANDLE_R) {
-                                edit::Region::Handle(h) => {
-                                    self.interaction = Some(Interaction::Resize { handle: h });
-                                }
-                                edit::Region::Inside => {
-                                    self.interaction =
-                                        Some(Interaction::ClickInside { press: (x, y) });
-                                }
-                                edit::Region::Outside => {
-                                    self.mode = Mode::Drawing {
-                                        anchor: (x, y),
-                                        now: (x, y),
-                                    };
-                                    self.interaction = None;
-                                }
-                            }
-                        }
-                        _ => {
-                            self.mode = Mode::Drawing {
-                                anchor: (x, y),
-                                now: (x, y),
-                            };
-                            self.interaction = None;
-                        }
-                    }
-                    redraw = true;
-                }
-                PointerEventKind::Motion { .. } => match self.mode {
-                    Mode::Drawing { anchor, .. } => {
-                        self.mode = Mode::Drawing {
-                            anchor,
-                            now: (x, y),
-                        };
-                        redraw = true;
-                    }
-                    Mode::Editing { rect } => {
-                        match self.interaction {
-                            Some(Interaction::Resize { handle }) => {
-                                let nr = edit::resize_rect(
-                                    rect,
-                                    handle,
-                                    (x, y),
-                                    MIN_SEL,
-                                    self.surf_w as f64,
-                                    self.surf_h as f64,
-                                );
-                                self.mode = Mode::Editing { rect: nr };
-                                redraw = true;
-                            }
-                            Some(Interaction::Move { grab }) => {
-                                let target = edit::Rect {
-                                    x: x - grab.0,
-                                    y: y - grab.1,
-                                    w: rect.w,
-                                    h: rect.h,
-                                };
-                                let nr = edit::move_rect(
-                                    target,
-                                    0.0,
-                                    0.0,
-                                    self.surf_w as f64,
-                                    self.surf_h as f64,
-                                );
-                                self.mode = Mode::Editing { rect: nr };
-                                redraw = true;
-                            }
-                            // Promote to a move only once the cursor leaves the
-                            // slop radius, so a jittery click still confirms.
-                            Some(Interaction::ClickInside { press })
-                                if (x - press.0).powi(2) + (y - press.1).powi(2)
-                                    > DRAG_SLOP * DRAG_SLOP =>
-                            {
-                                self.interaction = Some(Interaction::Move {
-                                    grab: (x - rect.x, y - rect.y),
-                                });
-                                redraw = true;
-                            }
-                            Some(Interaction::ClickInside { .. }) | None => {}
-                        }
-                        if self.alt_held {
-                            redraw = true;
-                        }
-                    }
-                    Mode::Idle => {
-                        if self.alt_held {
-                            redraw = true;
-                        }
-                    }
-                },
-                PointerEventKind::Release { button, .. } if button == BTN_LEFT => {
-                    match self.mode {
-                        Mode::Drawing { anchor, now } => {
-                            let rect = edit::Rect::from_corners(anchor, now);
-                            if rect.w < MIN_SEL || rect.h < MIN_SEL {
-                                self.mode = Mode::Idle;
-                            } else if self.instant {
-                                self.confirm_rect(rect);
-                                return;
-                            } else {
-                                self.mode = Mode::Editing { rect };
-                            }
-                            self.interaction = None;
-                            redraw = true;
-                        }
-                        Mode::Editing { rect } => {
-                            // A press-inside with no drag is a confirm click.
-                            if matches!(self.interaction, Some(Interaction::ClickInside { .. })) {
-                                self.confirm_rect(rect);
-                                return;
-                            }
-                            self.interaction = None;
-                        }
-                        Mode::Idle => {}
-                    }
-                }
-                _ => {}
-            }
-        }
-        if redraw {
-            self.request_redraw();
-        }
-    }
-}
-
-impl KeyboardHandler for Selector {
-    fn enter(
-        &mut self,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-        _: &WlKeyboard,
-        _: &WlSurface,
-        _: u32,
-        _: &[u32],
-        _: &[Keysym],
-    ) {
-    }
-    fn leave(
-        &mut self,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-        _: &WlKeyboard,
-        _: &WlSurface,
-        _: u32,
-    ) {
-    }
-    fn press_key(
-        &mut self,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-        _: &WlKeyboard,
-        _: u32,
-        event: KeyEvent,
-    ) {
-        match event.keysym {
-            Keysym::Escape => {
-                self.result = None;
-                self.done = true;
-            }
-            // Space or Enter confirms the editable selection (Space by habit).
-            Keysym::space | Keysym::Return | Keysym::KP_Enter => {
-                if let Mode::Editing { rect } = self.mode {
-                    self.confirm_rect(rect);
-                }
-            }
-            _ => {}
-        }
-    }
-    fn release_key(
-        &mut self,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-        _: &WlKeyboard,
-        _: u32,
-        _: KeyEvent,
-    ) {
-    }
-    fn update_modifiers(
-        &mut self,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-        _: &WlKeyboard,
-        _: u32,
-        modifiers: Modifiers,
-        _: u32,
-    ) {
-        if self.alt_held != modifiers.alt {
-            self.alt_held = modifiers.alt;
-            self.request_redraw();
-        }
-    }
-}
-
 impl ShmHandler for Selector {
     fn shm_state(&mut self) -> &mut Shm {
         &mut self.shm
@@ -1222,30 +608,4 @@ delegate_layer!(Selector);
 delegate_registry!(Selector);
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn audio_control_hit_does_not_confirm() {
-        let sel = (80.0, 80.0, 200.0, 120.0);
-        let toolbar = render::record_toolbar(sel, 400, 300).unwrap();
-        let audio = toolbar.controls[3];
-        let center = (audio.0 + audio.2 / 2.0, audio.1 + audio.3 / 2.0);
-        assert_eq!(
-            record_control_hit(sel, 400, 300, center),
-            Some(RecordControlHit::Audio)
-        );
-        assert_eq!(
-            record_control_hit(
-                sel,
-                400,
-                300,
-                (
-                    toolbar.bounds.0 + toolbar.bounds.2 / 2.0,
-                    (toolbar.bounds.1 + toolbar.controls[0].1) / 2.0,
-                )
-            ),
-            Some(RecordControlHit::Background)
-        );
-    }
-}
+mod shots;

@@ -121,6 +121,155 @@ Trefferflächen gegen Zeichnung (Test: jede gezeichnete Control-Fläche ist ihre
 Trefferfläche); Damage bei laufenden Federn (Test: Damage bleibt in der
 Leiste); Leistung beim Ziehen großer Auswahlen (Damage-Strips bleiben).
 
+## 4a. Umsetzung im Detail (geschrieben 27.10. vor dem Code)
+
+Belege: `ui::text::Fonts` (`src/ui/text.rs`: `size`, `width`, `baseline`,
+`draw`, `ellipsize`), `ui::Canvas` (`src/ui/mod.rs:171`, `fill`, Feld
+`pixmap`), `ui::icons::Icon::draw` (`src/ui/icons.rs`), `ui::motion::Spring`
+(`retarget`, `value`, `done`, `settled`), Tokens `src/ui/theme.rs`
+(`PANEL`, `RAISE`, `HOVER`, `SELECTED`, `TEXT`, `SUB`, `DIM`, `ERROR`,
+`WINDOW`, `GAP_XS/S/M`, `CTL_H`, `RADIUS`, `ICON`, `QUICK`), Gruppen-Deckkraft
+über `Pixmap::draw_pixmap` mit `PixmapPaint { opacity }` (tiny-skia 0.11,
+`tiny-skia-0.11.4/src/painter.rs:150`, `shaders/pattern.rs:32`), leerer Commit mit
+Frame-Callback während einer Animation wie `linux/app/window.rs:306`.
+Selector und `ui` liegen in verschiedenen Crates (Binary `boltsnap`, Lib
+`boltsnap::ui`), der Selector benutzt `boltsnap::ui::…` wie
+`linux/app/mod.rs:16`.
+
+**S0, reine Aufteilung (keine Pixeländerung):**
+- `src/selector/render.rs` → `render/mod.rs` (Overlay, Cache, Rahmen,
+  Griffe, Schrift-Helfer, Badge, Lupe), `render/toolbar.rs`
+  (`record_toolbar`, `draw_record_toolbar`, die eigenen Icons),
+  `render/legacy.rs` (nur Windows: `rec_pill_rect`, `draw_rec_pill`,
+  `record_frame_checkbox_rect`, `draw_record_frame_checkbox`,
+  `record_audio_button_rect`, `draw_record_audio_button`), `render/tests.rs`.
+  Öffentliche Pfade bleiben über `pub use` gleich, Windows ändert sich nicht.
+- `select_skia/mod.rs` → `input.rs` (Pointer, Tastatur, Seat,
+  `record_control_hit`, `Interaction`, Konstanten, Test) und `present.rs`
+  (`draw`, `FrameBuffer`, `OutputView`, `CompositorHandler`).
+  **Abweichung (freigegeben 27.10.):** `present.rs` zusätzlich, sonst bliebe
+  `mod.rs` bei etwa 970 Zeilen.
+- Neuer ignorierter Test `select_skia/shots.rs::selector_shots`
+  (`SEL_OUT=dir cargo test --bin boltsnap selector_shots -- --ignored`):
+  Schrift des Nutzers, Hintergrund `SEL_BASE` (sonst ein Verlauf), Szenen
+  Ruhe, Hover je Control, Clip nicht verfügbar, 2×2 bei 400×300, Spalte bei
+  160×240, Auswahl oben (Leiste unten), bildschirmfüllend (Leiste innen),
+  Screenshot-Modus mit Badge und Griffen; ab S2 auch Zwischenbilder.
+- Neuer Test `render/tests.rs::windows_pixels_stay_pinned`: Hash über die
+  Pixel aller Windows-Funktionen (Pille, Audio-Knopf, Badge, Rahmen und
+  Griffe in beiden Windows-Stilen, Lupe) mit der eingebetteten Schrift; der
+  Wert stammt aus dem Stand vor S0. **Abweichung (freigegeben):** statt
+  „Test auf identische Pixel“ gegen eine Kopie ein Hash, der S0–S3 überdauert.
+- Abnahme S0: Renders vor und nach der Aufteilung byte-gleich (`cmp`).
+
+**S1, Tokens und Icons:**
+- Schrift: `install_ui_font` wird `ui_fonts() -> Fonts` (gleicher Lader
+  `load_ui_font_weights`, 500/600), im Font-Thread geladen, Feld
+  `Selector::fonts`. `render::set_ui_font` entfällt; das alte `ui_font` liefert
+  nur noch die eingebettete Schrift für `legacy.rs` (Windows hat sie nie
+  gesetzt, Pixel gleich).
+- `CachedOverlay::frame` wird `ui::Canvas` (Skala 1); `scene::paint(frame:
+  &mut Canvas, base, scene, fonts)`. Die Windows-Funktionen bekommen weiter
+  `&mut Pixmap` (`&mut canvas.pixmap`).
+- `toolbar.rs` neu für Linux: `Metrics::new(&Fonts)` (Breite je Control
+  einmal), `layout(sel, area, &Metrics) -> Option<Layout>` mit `columns`,
+  `placement` (Above/Below/Inside), `bounds`, `controls`, `hits`. Maße:
+  Fläche `PANEL`, Innenrand `GAP_XS`, Controls `CTL_H`, Abstand zwischen
+  Controls `GAP_XS`, Radius außen `RADIUS`, innen `RADIUS − GAP_XS`; Control
+  = `(CTL_H − cap)/2` + `ICON` + `GAP_S` + Label + `(CTL_H − cap)/2`. Lage wie
+  bisher (über, sonst unter, sonst in der Auswahl; `GAP_M` Abstand zur
+  Auswahl, `GAP_S` zum Bildschirmrand), auf ganze Pixel gerundet. Treffer:
+  Control-Rechteck plus halber Abstand zum Nachbarn und der Innenrand zum
+  Leistenrand, also keine Totzone. **Abweichung (freigegeben):** Treffer
+  größer als die Fläche, „Listen ohne Totzonen“ des `/ui`-Skills.
+- Zustände über eine Leiter `PANEL`(keine Fläche) → `RAISE` → `HOVER` →
+  `SELECTED`: Stufe = Ruhe + Hover + Druck, höchstens `SELECTED`. Ruhe:
+  Record 1, Clip 0, Frame/Audio aus 0, an 2. Text: Record/Clip `TEXT`,
+  Frame/Audio `mix(SUB, TEXT, max(an, hover))`, Clip nicht verfügbar `DIM`.
+  **Abweichungen (freigegeben):** „an“ ist `HOVER` statt `SELECTED` (sonst
+  hätte Hover auf einem eingeschalteten Control keine Stufe mehr, gleicher
+  Abstand von zwei Stufen wie die gewählte Segment-Fläche auf ihrer Spur);
+  Druck ist eine Stufe heller wie `Look::surface` im Settings-Fenster.
+- Icons: `circle` (gefüllt, `ERROR`), `scissors`, `square-dashed`,
+  `volume-2`/`volume-x`. Neu im Sprite `circle`, `scissors`, `volume-x`,
+  unverändert aus `lucide-static` 1.54.0 `sprite.svg` (gleiche Version wie der
+  Sprite, gefunden unter `~/projects/stepi/node_modules/lucide-static`).
+  `Icon::fill` neu (gefüllter Pfad) für den Aufnahmepunkt.
+- Rahmen (Linux, beide Modi): gerundetes Crop-Rechteck `X0 = round(x)`,
+  `X1 = round(x + w)`; weißer Ring 1 px direkt außen, Kontur 1 px `WINDOW`
+  außen daran, beides deckend ohne Kantenglättung. Griffe 8 × 8 weiß mit
+  1 px `WINDOW`-Kontur, Mitte auf der Crop-Kante bzw. `round` der Kantenmitte,
+  ohne Rundung. Deckend und auf ganzen Pixeln heißt: zweimal zeichnen ändert
+  nichts (Voraussetzung für Damage nur in der Leiste, S2).
+- Badge (Screenshot-Modus, Linux): Fläche `PANEL`, `CTL_H` hoch, Radius
+  `RADIUS`, Text `Label` in `TEXT`, „1450 × 942“ mit geschützten Leerzeichen,
+  Ziffern in gleich breiten Zellen (tabular von Hand, ab_glyph kennt kein
+  `tnum`); Lage wie die Leiste (`GAP_M` zur Auswahl) im Bereich des Monitors
+  unter dem Zeiger (`chrome_viewport`).
+- Windows: `legacy.rs`, `WINDOWS_RECORD_OVERLAY_STYLE`,
+  `SCREENSHOT_OVERLAY_STYLE` und `*_with_style` unverändert; der Test
+  „Windows-Screenshot gleich Linux“ entfällt, weil Linux jetzt anders zeichnet,
+  die Windows-Pixel hält der Hash-Test.
+
+**S2, Federn:**
+- `src/selector/motion.rs`: `BarMotion` mit `QUICK`-Federn je Control
+  (hover, press, on, enabled), Deckkraft der Leiste, Deckkraft des Hinweises,
+  dazu bis zu vier ausblendende alte Leisten (`ghosts`: eingefrorenes Layout
+  und Aussehen). `update(layout, targets, now)`; `sample(now) -> Bar`;
+  `moving(now)`.
+- Leiste blendet ein, sobald die erste Auswahl losgelassen ist (Modus
+  Editing), aus beim neuen Aufziehen. Beim Ändern der Auswahl folgt sie direkt.
+  Wechselt `columns` oder `placement`, blendet die alte an ihrer letzten Stelle
+  aus und die neue ein (beide `QUICK`); nur die aktuelle nimmt Eingaben.
+- Gruppen-Deckkraft: jede Leiste wird in eine eigene kleine Pixmap
+  gezeichnet und mit `opacity` aufgelegt, damit innere Flächen beim Blenden
+  nicht durchscheinen.
+- `Scene` bekommt `bar: Bar` (gesampelte Werte) statt `toggles`/`hovered`.
+  `SceneCache::update`: ist alles außer `bar` gleich, sind die Damage-Regionen
+  nur alte und neue Leisten-, Geister- und Hinweisflächen; gezeichnet wird
+  trotzdem die ganze Szene (Rahmen und Griffe sind idempotent, siehe S1).
+- `select_skia`: `Instant::now()` je Zeichnen; läuft eine Feder, bleibt
+  `needs_redraw` gesetzt; hat ein Output dann keinen neuen Puffer bekommen,
+  geht ein leerer Commit mit Frame-Callback raus (wie das Settings-Fenster).
+  Zeiger verlässt die Fläche (`Leave`): Hover und Druck aus.
+- **Reduced Motion (Abweichung, freigegeben):** wie `App::reduced_motion`:
+  Blenden bleiben, nur räumliche Bewegung entfällt; der Selector hat keine
+  räumliche Bewegung, also kein eigener Schalter. Die Plattform meldet ohnehin
+  keine Einstellung (Settings-Plan Phase 4b).
+- Ohne Animation: das Mitziehen der Leiste mit der Auswahl (direkte
+  Manipulation), Rahmen und Griffe.
+
+**S3, Clip-Grund:**
+- `selector::clip::ClipState` (plattformneutral): `Ready`, `Off`, `Starting`,
+  `Loading`, `Busy`, `Stalled`, `Failed`; Texte „Replay is off“, „Replay is
+  starting“, „Replay is loading“, „Replay is busy“, „Replay has no video“,
+  „Replay could not load“. **Abweichung (freigegeben):** sechs Gründe statt
+  zwei, jeder ein kurzer Satz ohne Punkt, durch den Copy-Gate.
+- Quelle: `replay::preview_target()` liefert `Result<PreviewTarget,
+  ClipState>` aus `status_quiet` (`state` stopped/starting, `ready`, `busy`;
+  keine Antwort heißt Off). Mit Ziel startet der Selector in `Loading`;
+  `FrozenSelection::prepare` → `Ready`, scheitert es → `Failed` (bisher blieb
+  der Zustand stumm).
+- Hinweis: Fläche `PANEL`, `CTL_H`, Radius `RADIUS`, Text `Label` in `SUB`,
+  links bündig mit dem Clip-Control, `GAP_XS` neben der Leiste auf der Seite
+  weg von der Auswahl (Leiste darüber: Hinweis darüber; darunter oder innen:
+  darunter), sonst die andere Seite; immer im Bildschirm, zu lang wird er
+  mit … gekürzt. **Abweichung (freigegeben):** nicht immer „unter“, damit er
+  nie die Auswahl verdeckt. Sichtbar, solange der Zeiger auf dem nicht
+  verfügbaren Clip liegt; blendet mit `QUICK`. Wird Clip verfügbar, blendet
+  der Hinweis aus und Clip hellt auf. Die Meldung beim Drücken bleibt.
+- Kein „Start replay“ (V-b), keine Maße (V-a).
+
+**Randfälle:** Streifen/2×2/Spalte nach Bildschirmgröße; Leiste über, unter,
+in der Auswahl; winzige Auswahl (Leiste bleibt im Bildschirm, Test);
+Auswahl am Bildschirmrand (Rahmen teils außerhalb, `fill_rect` schneidet);
+mehrere Monitore nur im Screenshot-Modus (Badge im Monitor unter dem Zeiger),
+die Aufnahme hat genau ein Output; HiDPI: der Selector zeichnet in logischen
+Pixeln ohne Buffer-Scale (unverändert), ganze Pixel gelten dort.
+
+**Macht nicht (zusätzlich):** HiDPI-Puffer, Tastatur-Fokus in der Leiste
+(gibt es heute nicht), Hysterese beim Layoutwechsel.
+
 ## 5. Abnahme (Gates mit Zahlen)
 
 Offscreen über einen ignorierten Test, der `scene::paint` auf ein Bild rendert
@@ -147,4 +296,6 @@ oberen Rand (Leiste unten) und bildschirmfüllend (Leiste innen).
 | --- | --- | --- |
 | Befund, Plan | geschrieben 27.10. | Offscreen-Render von vier Zuständen |
 | Richtung | entschieden 27.10., Abschnitt 2 | |
-| S0–S3 | nicht begonnen | |
+| Detailplan | 27.10., Abschnitt 4a, Abweichungen freigegeben | |
+| S0 | umgesetzt 27.10.: `selector/render/{mod,toolbar,legacy,tests}.rs` (721/287/301/~490 Zeilen), `select_skia/{mod,input,present}.rs` (611/430/240), `select_skia/shots.rs` (ignorierter `selector_shots`), `windows_pixels_stay_pinned` (Hash `0x34ed7442fdc3e91d` vom Stand vor der Aufteilung), `examples/selector_bench.rs` auf den neuen Pfad | 14 Offscreen-Renders vor/nach der Aufteilung byte-gleich (`cmp`); `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test` 133 + 376 grün (4 ignoriert), `git diff --check`. Kein Windows-Target installiert: keine `cargo check --target x86_64-pc-windows-msvc`, Windows-Code unverändert |
+| S1–S3 | offen | |

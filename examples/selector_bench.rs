@@ -12,7 +12,7 @@ mod shelf {
 pub mod desktop;
 #[path = "../src/selector/edit.rs"]
 pub mod edit;
-#[path = "../src/selector/render.rs"]
+#[path = "../src/selector/render/mod.rs"]
 pub mod render;
 #[path = "../src/selector/scene.rs"]
 pub mod scene;
