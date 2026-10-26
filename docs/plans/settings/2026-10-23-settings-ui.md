@@ -1447,6 +1447,24 @@ Stapeln halb und am Ende, Reduced Motion springt, Seitenwechsel stapelt ohne
 Bewegung, Segment-Breiten stetig (1-px-Schritte, Sprung ≤ 1 px), Stepper-Knopf
 blendet. Gates unverändert im Ruhezustand.
 
+### Phase 4g: Navigation gleitet wieder (26.10., Meldung des Nutzers)
+
+Meldung: die Animation von Icons und Text in der Seitenleiste wirkt nicht wie
+eine Feder. Befund: seit 4e rundet `draw_nav` die Icon-x auf ganze Pixel
+(`draw.rs`); beim Einklappen legt das Icon nur 5 px zurück (x 20 → 15), also
+5 Stufen in 300 ms statt einer Bewegung, und der Name hängt am Icon und
+springt mit. Die Regel aus 4e gilt für Text und was ihn trägt, nicht für
+Formen, die allein kurze Wege gehen.
+
+Fix: Icon-x und -Größe folgen der Feder ohne Runden (Vektor, in Ruhe trotzdem
+ganze Pixel: offen 20, zu 15); der Name bleibt an seiner offenen Stelle
+(ganze Pixel), blendet aus und wird von der schmaler werdenden Fläche
+abgeschnitten, statt mitzurutschen. Geometrie in `App::nav_icon` und
+`App::nav_text_x` (layout.rs), damit Zeichnen und Test dieselbe nutzen. Test:
+alle 5 ms über das Einklappen mindestens 20 verschiedene Icon-x, monoton,
+Name-x konstant und ganzzahlig. `/ui`-Skill: Ergänzung „kurze Wege nicht auf
+ganze Pixel runden, nur Text“.
+
 ### Phase 5a: Öffnen ohne Terminal (vorgezogen 26.10., Wunsch des Nutzers)
 
 Die zwei Wege aus „Öffnen und Fenster“ kommen vor dem Rest von Phase 5, damit
@@ -1867,6 +1885,41 @@ andere Struktur → `reload`; je Widget `set`.
   = `stop`, dann `start` im Schreib-Thread); verwirft den Puffer, deshalb nie
   automatisch.
 
+##### S7 im Detail (Gegenprüfung am Code, 26.10.)
+
+Befund: „Applies to the next recording“ steht fest an Frame rate und Audio,
+„Applies when replay restarts“ an Length, Memory, Frame rate (`pages.rs`).
+Der Recording-Watch schickt bei jeder Änderung eine Zeile mit `state`
+(`shelf/mod.rs:1433`, `RecordingSnapshot`, `protocol.rs:101`), auch für die
+Laufzeit; der Replay-Status liefert `state`, `session`, `seconds`,
+`budget_bytes` (= `memory_mib · 2²⁰ / 3`, gemessen 178956970 bei 512 MiB).
+
+Abweichung von S7 oben, Aufnahme: statt den Hinweis an sechs Zeilen zu hängen
+(wieder Rauschen) steht während einer Aufnahme oben auf der Recording-Seite
+ein Banner „A recording is running. Changes here apply to the next one.“ (Icon
+`info`, `SUB`); die festen Zeilenhinweise entfallen. Show frame, Video folder
+und Show saved videos wirken sofort und sind davon nicht betroffen.
+
+Replay:
+- Die drei festen Hinweise entfallen.
+- Veraltet ist der laufende Puffer, wenn `seconds` oder `budget_bytes` nicht
+  zur Datei passen, oder wenn in dieser Puffer-Sitzung (`session`) ein
+  anderer `ReplayRestart`-Key (Frame rate, Encoder, Output, Bitrate)
+  erfolgreich geschrieben wurde (im Fenster gemerkt je Sitzung; ein Neustart
+  hat eine neue Sitzung und ist damit wieder aktuell).
+- Dann steht in der Buffer-Gruppe unter „Replay buffer“ die Zeile **Restart
+  replay** (Icon `rotate-ccw`, Hinweis „Applies your changes. The buffer
+  starts empty.“, Icon-Knopf). Klick: `Write::Restart` = `stop`, dann `start`
+  im Schreib-Thread; nie automatisch.
+
+Fenster: ein zweiter Watch-Thread auf `watch_recording()`, der nur bei
+geändertem `state` signalisiert; `Prefs` bekommt `recording` (aus
+`RecordingStatus`), `replay_stale`.
+
+Tests: Banner nur mit `recording`; keine festen Hinweise mehr; Restart-Zeile
+nur mit `replay_running && replay_stale`, ihr Knopf liefert
+`Write::Restart`; Copy-Gate über die neuen Strings.
+
 #### S8 Zurücksetzen je Zeile
 
 - Steht der Key in der Datei (`State::doc`), zeigt die Zeile links vom
@@ -2080,6 +2133,7 @@ Vom Nutzer am 24.10. so bestätigt:
 | 5c S4 | umgesetzt 26.10. nach „S4 im Detail“ (Abweichung: nur Schalter-Zeilen ganz klickbar). `Widget::row_click` (Schalter `true`), `App::target_at` nimmt die ganze Zeile für solche Controls; Klick und Hover laufen über den bestehenden Pfad. Test `a_click_on_a_switch_rows_name_switches_and_other_names_do_nothing` (Hover hellt den Schalter auf, Klick schreibt `record_show_frame`, Klick auf den Namen „Frame rate“ schreibt nichts und fokussiert nichts). Checks: fmt, clippy ohne Warnung, `cargo test` 99 + 374 grün. |
 | 5c S5 | umgesetzt 26.10. nach „S5 im Detail“: `MENU_MIN = 120`, `Dropdown::width` mindestens so breit. Gate `gate_menus_share_a_left_edge`: 16 Dropdowns (Recording und Replay, Fehlerzustand, 760 und 1400 px) je Seite auf einer Kante; Gegenprobe ohne Mindestbreite schlägt an („only 0 dropdowns found“, das Gate verlangt mindestens 8, damit es nicht leer besteht). Render angesehen (Kanten bei 548 px). Checks: fmt, clippy ohne Warnung, `cargo test` 100 + 374 grün. |
 | 5c S6 | umgesetzt 26.10. nach „S6 im Detail“ (Abweichung dort: Werte weiter aus `prefs::load()`, die Watch-Zeile ist Auslöser). `Widget::adopt` für Schalter, Segment, Dropdown, Stepper (gleiten bzw. blenden), Slider und Feld (springen); `App::update` (gleiche Struktur → Werte übernehmen, fokussierte, gezogene und Zeilen mit offenem Schreibauftrag bleiben, übernommene Werte gelten als gemeldet; sonst `reload`); `ipc::watch_settings`, `save::watch` (Thread, neu alle 2 s, wenn der Daemon weg ist); Schreibaufträge tragen (Seite, Block), das Fenster zählt offene je Zeile. Tests (`app/tests/live.rs`, 3): Wert aus dem Tray gleitet und wird nicht zurückgeschrieben; fokussiertes Feld und Zeile mit offenem Auftrag bleiben; neue Notice baut auf derselben Seite neu. Checks: fmt, clippy ohne Warnung, `cargo test` 103 + 374 grün. Live nicht geprüft (bräuchte einen Tray-Klick bei offenem Fenster und einen Screenshot; nach Absprache). |
+| 4g | umgesetzt 26.10. nach „Phase 4g“. Beim Test zusätzlich gefunden: das Icon schwang beim Einklappen erst 17 px nach rechts (x 20 → 37) und dann zurück auf 15, weil zwischen „mittig in der schrumpfenden Fläche“ und „links eingerückt“ gemischt wurde; jetzt zwischen den Ruhelagen 20 und 15, ohne Runden. Name an fester Stelle (x 42). Test `closing_navigation_icons_glide_between_pixels_and_names_stay_put` (61 Proben alle 5 ms: monoton, ≥ 20 verschiedene x, Ruhelagen ganzzahlig). `/ui`-Skill um kurze Wege und Mischen zwischen Ruhelagen ergänzt. Checks: fmt, clippy ohne Warnung, `cargo test` 104 + 374 grün; Icon-Gate mit Outfit unverändert. |
 | 5a | umgesetzt 26.10. nach „Phase 5a: Öffnen ohne Terminal“: Tray-Eintrag „Settings…“ ganz unten (Prozessstart im Tray-Thread), `assets/linux/boltsnap.desktop` mit Icons 64/128/256 aus `boltsnap.ico`, `.deb`-Assets, Flake-`postInstall`, Release-Tarball, README. Abweichung: `Categories=Graphics;`. Checks: `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test` 75 + 371 grün, `desktop-file-validate` ohne Meldung. Live: Daemon neu gestartet, dbusmenu-`GetLayout` endet auf „Settings…“; `gio launch` der installierten `.desktop`-Datei öffnet das Fenster (Klasse `boltsnap`). Nicht live prüfbar: Klick im Tray. |
 | 5 | geplant, freigegeben 24.10. |
 | 6 (Library) | Skizze im Library-Plan |

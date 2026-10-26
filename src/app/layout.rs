@@ -11,7 +11,7 @@ use crate::ui::Rect;
 use crate::ui::motion::Spring;
 use crate::ui::theme::TextStyle;
 use crate::ui::theme::{
-    CONTENT_MAX, CTL_H, GAP_L, GAP_M, GAP_S, GAP_XL, GAP_XS, GLIDE, ICON, LABEL_MIN,
+    CONTENT_MAX, CTL_H, GAP_L, GAP_M, GAP_S, GAP_XL, GAP_XS, GLIDE, ICON, ICON_ALONE, LABEL_MIN,
     NAV_NARROW_BELOW, NAV_NARROW_W, NAV_W, ROW_H,
 };
 use crate::ui::widgets::{self, Widget};
@@ -211,6 +211,28 @@ impl App {
 
     pub fn nav_w(&self, now: Instant) -> f32 {
         lerp(NAV_NARROW_W, NAV_W, self.nav_open(now))
+    }
+
+    /// A navigation entry's icon. Closing, it grows to its free-standing size
+    /// and moves to the middle, between pixels while it goes (a 5 px way in
+    /// whole pixels would be 5 steps); at rest it sits on whole pixels.
+    pub fn nav_icon(&self, index: usize, now: Instant) -> Rect {
+        let open = self.nav_open(now);
+        let rect = self.nav_rect(index, now);
+        // Between its two places at rest: in the middle of the closed
+        // entry, and inset like a control's text in the open one. Mixing
+        // with the middle of the entry as it shrinks would swing it right
+        // first.
+        let closed = GAP_S + (NAV_NARROW_W - 2.0 * GAP_S - ICON_ALONE) / 2.0;
+        let x = lerp(closed, rect.x + GAP_M, open);
+        widgets::icon_box(rect, x, lerp(ICON_ALONE, ICON, open))
+    }
+
+    /// Where navigation names start: their place in the open navigation, on
+    /// a whole pixel. A closing navigation fades and cuts them there instead
+    /// of sliding them.
+    pub fn nav_text_x(&self) -> f32 {
+        GAP_S + GAP_M + ICON + GAP_S
     }
 
     /// A navigation entry's surface. Entries follow each other with no gap

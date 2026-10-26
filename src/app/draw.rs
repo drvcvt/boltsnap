@@ -3,9 +3,7 @@
 use std::time::Instant;
 
 use super::{App, Block, Channel, Target};
-use crate::ui::theme::{
-    self, GAP_S, GAP_XS, ICON, ICON_ALONE, NAV_W, PANEL_RADIUS, RADIUS, THUMB_W, TextStyle,
-};
+use crate::ui::theme::{self, GAP_S, GAP_XS, NAV_W, PANEL_RADIUS, RADIUS, THUMB_W, TextStyle};
 use crate::ui::widgets::{self, Look};
 use crate::ui::{Canvas, Rect};
 
@@ -108,23 +106,19 @@ impl App {
         // edge, never shortened while they go.
         let open = self.nav_open(now);
         let names = (2.0 * open - 1.0).clamp(0.0, 1.0);
-        let size = ICON_ALONE + (ICON - ICON_ALONE) * open;
         let full = NAV_W - 2.0 * GAP_S;
+        let text_x = self.nav_text_x();
         for (index, page) in self.pages.iter().enumerate() {
             let rect = self.nav_rect(index, now);
             let lit = self
                 .fade(Target::Nav(index), Channel::Current, now)
                 .max(self.fade(Target::Nav(index), Channel::Hover, now));
             let color = theme::mix(theme::SUB, theme::TEXT, lit);
-            // Text inset like a control's: (height − capitals) / 2 ≈ 12.
-            let centred = rect.x + (rect.w - size) / 2.0;
-            let x = (centred + (rect.x + theme::GAP_M - centred) * open).round();
             page.icon
-                .draw(canvas, widgets::icon_box(rect, x, size), color, 1.0);
+                .draw(canvas, self.nav_icon(index, now), color, 1.0);
             if names <= 0.0 {
                 continue;
             }
-            let text_x = x + size + GAP_S;
             let name = self.fonts.ellipsize(
                 TextStyle::Label,
                 &page.name,

@@ -178,3 +178,28 @@ fn the_page_moves_in_whole_pixels_while_it_scrolls_rises_and_reshapes() {
         }
     }
 }
+
+#[test]
+fn closing_navigation_icons_glide_between_pixels_and_names_stay_put() {
+    let now = Instant::now();
+    let mut app = app_on("recording", WIDE, now);
+    let text_x = app.nav_text_x();
+    assert_eq!(app.nav_icon(0, now).x, 20.0, "open, on a whole pixel");
+    app.resize(NARROW, now);
+    let mut xs: Vec<f32> = (0..=60)
+        .map(|step| app.nav_icon(0, now + Duration::from_millis(5 * step)).x)
+        .collect();
+    assert!(
+        xs.windows(2).all(|pair| pair[1] <= pair[0]),
+        "one way: {xs:?}"
+    );
+    assert_eq!(
+        app.nav_icon(0, now + SETTLED).x,
+        15.0,
+        "closed, on a whole pixel"
+    );
+    xs.dedup();
+    assert!(xs.len() >= 20, "glides, not {} steps", xs.len());
+    assert_eq!(app.nav_text_x(), text_x);
+    assert_eq!(text_x, text_x.round());
+}
