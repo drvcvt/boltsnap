@@ -1,17 +1,22 @@
 //! Pictures of what a page's settings do, following its controls as they
 //! move (settings plan, 5d): the shelf on a screen (P1), the monitors a
-//! recording takes (P2), the replay buffer on a timeline (P3).
+//! recording takes (P2), the replay buffer on a timeline (P3); with the
+//! newest screenshots where there are some (5e).
 
 mod displays;
 mod replay;
 mod shelf;
+pub mod shots;
 
 use std::time::Instant;
 
 use super::App;
 use crate::ui::{Canvas, Rect};
 
-pub use displays::places as display_places;
+pub use displays::{
+    caption_place as display_caption_place, every_caption as display_lines,
+    name_places as display_name_places, places as display_places,
+};
 pub use replay::{
     bar as replay_bar_rect, cells as replay_cells, head as replay_head_rect, step as replay_step,
 };
@@ -19,6 +24,8 @@ pub use shelf::{screen, shelf_cards};
 
 use super::pages::Screen;
 use crate::ui::motion::Spring;
+use crate::ui::text::Fonts;
+use crate::ui::theme::QUICK;
 
 /// What a preview block shows.
 #[derive(Clone, Debug, PartialEq)]
@@ -34,10 +41,10 @@ pub enum Preview {
 
 impl Preview {
     /// The block's height in a column `width` wide.
-    pub fn height(&self, width: f32) -> f32 {
+    pub fn height(&self, fonts: &Fonts, width: f32) -> f32 {
         match self {
             Preview::Shelf => shelf::height(width),
-            Preview::Displays(screens) => displays::height(width, screens),
+            Preview::Displays(screens) => displays::height(fonts, width, screens),
             Preview::Replay { .. } => replay::height(),
         }
     }
@@ -50,6 +57,11 @@ pub(super) struct State {
     /// Per monitor how lit it is, and the bridge of a combined clip.
     lit: Vec<Spring>,
     bridge: Spring,
+    /// The line under the monitors, the old one fading out.
+    captions: Vec<(String, Spring)>,
+    /// The newest screenshots, and 0 to 1 while they come in.
+    shots: shots::Shots,
+    shots_in: Spring,
     /// The replay buffer's length, what its memory holds, what it holds now.
     length: Spring,
     holds: Spring,
@@ -66,6 +78,9 @@ impl State {
             shape: None,
             lit: Vec::new(),
             bridge: Spring::settled(0.0, now),
+            captions: Vec::new(),
+            shots: shots::Shots::default(),
+            shots_in: Spring::settled(0.0, now),
             length: Spring::settled(60.0, now),
             holds: Spring::settled(60.0, now),
             held: Spring::settled(0.0, now),
@@ -85,7 +100,18 @@ impl App {
     }
 
     pub(super) fn preview_moving(&self, now: Instant) -> bool {
-        self.shelf_moving(now) || self.displays_moving(now) || self.replay_moving(now)
+        self.shelf_moving(now)
+            || self.displays_moving(now)
+            || self.replay_moving(now)
+            || !self.preview.shots_in.done(now)
+    }
+
+    /// The save folder's newest screenshots arrived: the previews show them,
+    /// fading in.
+    pub fn set_shots(&mut self, shots: shots::Shots, now: Instant) {
+        self.preview.shots = shots;
+        self.preview.shots_in.set(0.0, now);
+        self.preview.shots_in.retarget(1.0, QUICK, now);
     }
 
     pub(super) fn draw_preview(

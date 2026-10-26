@@ -288,6 +288,24 @@ fn gate_groups_pad_equally_and_siblings_share_an_axis() {
                     let right = places.iter().map(|p| p.right()).fold(f32::MIN, f32::max);
                     let off = ((left - inner.x) - (inner.right() - right)).abs();
                     assert!(off <= 1.0, "{name} monitors off centre by {off} at {w}");
+                    // Their names under them and the line under all of them
+                    // stay inside too, the names apart from each other.
+                    let names = crate::app::display_name_places(*rect, screens);
+                    for (i, place) in names.iter().enumerate() {
+                        assert!(inside(*place, inner), "{name} monitor name outside at {w}");
+                        assert!(
+                            names[i + 1..].iter().all(|other| !other.overlaps(*place)),
+                            "{name} monitor names overlap at {w}"
+                        );
+                    }
+                    let caption = crate::app::display_caption_place(*rect, screens);
+                    assert!(inside(caption, inner), "{name} caption outside at {w}");
+                    // One or two whole lines of `Label`, nothing left over.
+                    assert!(
+                        [16.0, 32.0].iter().any(|h| (caption.h - h).abs() <= 0.5),
+                        "{name} caption {} high at {w}",
+                        caption.h
+                    );
                 }
                 if let Block::Preview(crate::app::Preview::Replay { .. }) = block {
                     let bar = crate::app::replay_bar_rect(*rect);
@@ -391,13 +409,24 @@ fn gate_copy_reads_like_a_person_wrote_it() {
         for block in &page.blocks {
             match block {
                 Block::Heading(text) | Block::Banner { text, .. } => strings.push(text.clone()),
+                Block::Preview(crate::app::Preview::Displays(screens)) => {
+                    strings.extend(crate::app::display_lines(screens.len()));
+                }
                 Block::Preview(_) => {}
                 Block::Row(row) => {
                     strings.push(row.label.clone());
                     strings.extend(row.hint.clone());
-                    // Font families are names, not copy.
+                    // Font families and monitor models are names, not copy.
+                    let monitors: Vec<String> =
+                        prefs().displays.iter().map(|s| s.entry()).collect();
                     if row.label != "Font" {
-                        strings.extend(row.control.labels().iter().map(|s| s.to_string()));
+                        strings.extend(
+                            row.control
+                                .labels()
+                                .iter()
+                                .map(|s| s.to_string())
+                                .filter(|s| !monitors.contains(s)),
+                        );
                     }
                 }
             }

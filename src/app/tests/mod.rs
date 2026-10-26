@@ -31,7 +31,7 @@ pub fn prefs() -> Prefs {
         displays: vec![
             pages::Screen {
                 name: "DP-3".into(),
-                label: "BenQ (DP-3)".into(),
+                label: "BenQ ZOWIE XL LCD".into(),
                 x: 0.0,
                 y: 0.0,
                 w: 1920.0,
@@ -39,7 +39,7 @@ pub fn prefs() -> Prefs {
             },
             pages::Screen {
                 name: "DP-1".into(),
-                label: "AOC 27G4HRE (DP-1)".into(),
+                label: "AOC 27G4HRE".into(),
                 x: 1920.0,
                 y: 0.0,
                 w: 1920.0,

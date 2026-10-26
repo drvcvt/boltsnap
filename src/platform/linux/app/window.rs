@@ -178,16 +178,15 @@ impl Win {
         }
     }
 
-    /// The connected monitors as the tray names them, where the compositor
-    /// lays them out (logical position and size, as the shelf reads them).
+    /// The connected monitors by maker and model, where the compositor lays
+    /// them out (logical position and size, as the shelf reads them).
     pub(super) fn displays(&self) -> Vec<boltsnap::app::pages::Screen> {
         self.outputs
             .outputs()
             .filter_map(|output| self.outputs.info(&output))
             .filter_map(|info| {
                 let name = info.name?;
-                let label =
-                    crate::tray::output_label(&name, info.description.as_deref().unwrap_or(""));
+                let label = boltsnap::app::pages::monitor_name(&info.make, &info.model, &name);
                 let (x, y) = info.logical_position.unwrap_or(info.location);
                 let (w, h) = info.logical_size.filter(|(w, h)| *w > 0 && *h > 0)?;
                 Some(boltsnap::app::pages::Screen {

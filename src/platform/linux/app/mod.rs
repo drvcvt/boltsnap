@@ -5,6 +5,7 @@ mod folder;
 mod input;
 mod prefs;
 mod save;
+mod shots;
 mod single;
 mod window;
 
@@ -108,6 +109,11 @@ fn settings_pages(
     pages::pages(&prefs::load(displays), notice, now)
 }
 
+/// Where screenshots are saved, for the previews.
+fn save_dir() -> std::path::PathBuf {
+    crate::config::resolve_save_dir(None, &crate::config::Config::load())
+}
+
 /// The UI face the selector and the recording controls use.
 fn fonts() -> Fonts {
     fonts_of(crate::config::Config::load().ui_font.as_deref())
@@ -130,6 +136,10 @@ fn render(page: &str, out: &Path, render: Render) -> DynResult<()> {
     let mut app = App::new(fonts(), pages, (w as f32, h as f32), now);
     if !app.show_named(page, now) {
         return Err(format!("no page named '{page}'").into());
+    }
+    // The screenshots the window loads once it is open.
+    if !render.fixture {
+        app.set_shots(shots::load(&save_dir()), now);
     }
     // The page has come in; nothing is moving.
     let settled = now + std::time::Duration::from_secs(2);
@@ -195,6 +205,16 @@ fn run(page: Option<&str>) -> DynResult<()> {
     save::probe_codecs(watch_tx.clone());
     save::probe_fonts(watch_tx.clone());
     folder::probe(watch_tx.clone());
+    let (shots_tx, shots_rx) = calloop::channel::channel();
+    shots::spawn(save_dir(), shots_tx);
+    handle
+        .insert_source(shots_rx, |event, _, win: &mut Win| {
+            if let calloop::channel::Event::Msg(shots) = event {
+                win.app.set_shots(shots, Instant::now());
+                win.changed();
+            }
+        })
+        .map_err(|error| format!("screenshots source: {error}"))?;
     let (held_tx, held_rx) = calloop::channel::channel();
     save::poll_replay(held_tx);
     handle

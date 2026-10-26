@@ -370,7 +370,7 @@ fn display_and_codec_offer_what_this_machine_has() {
         labels(&app, "Display"),
         [
             "Focused display",
-            "BenQ (DP-3)",
+            "BenQ ZOWIE XL LCD (DP-3)",
             "AOC 27G4HRE (DP-1)",
             "HDMI-A-1 (disconnected)",
             "Both displays"

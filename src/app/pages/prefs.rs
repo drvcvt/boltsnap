@@ -62,8 +62,51 @@ pub enum Cursor {
     Quick,
 }
 
-/// A connected monitor: its connector, its name as people know it, and where
-/// it sits in the compositor's layout (logical pixels).
+/// Makers as monitors report them (EDID's PNP codes) and as people call them.
+const MAKERS: [(&str, &str); 11] = [
+    ("BNQ", "BenQ"),
+    ("GSM", "LG"),
+    ("DEL", "Dell"),
+    ("SAM", "Samsung"),
+    ("ACR", "Acer"),
+    ("AUS", "ASUS"),
+    ("HWP", "HP"),
+    ("LEN", "Lenovo"),
+    ("PHL", "Philips"),
+    ("GBT", "Gigabyte"),
+    ("ENC", "EIZO"),
+];
+
+/// A monitor's name as people know it: maker and model ("BenQ ZOWIE XL
+/// LCD"), the connector when it reports neither.
+pub fn monitor_name(make: &str, model: &str, connector: &str) -> String {
+    fn known(part: &str) -> Option<&str> {
+        let part = part.trim();
+        (!part.is_empty() && !part.eq_ignore_ascii_case("unknown")).then_some(part)
+    }
+    let make = known(make).map(|make| {
+        MAKERS
+            .iter()
+            .find(|(code, _)| code.eq_ignore_ascii_case(make))
+            .map_or(make, |(_, name)| name)
+    });
+    match (make, known(model)) {
+        (Some(make), Some(model))
+            if model
+                .get(..make.len())
+                .is_some_and(|start| start.eq_ignore_ascii_case(make)) =>
+        {
+            model.to_owned()
+        }
+        (Some(make), Some(model)) => format!("{make} {model}"),
+        (Some(only), None) | (None, Some(only)) => only.to_owned(),
+        (None, None) => connector.to_owned(),
+    }
+}
+
+/// A connected monitor: its connector, its name as people know it
+/// ([`monitor_name`]), and where it sits in the compositor's layout (logical
+/// pixels).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Screen {
     pub name: String,
@@ -72,6 +115,18 @@ pub struct Screen {
     pub y: f32,
     pub w: f32,
     pub h: f32,
+}
+
+impl Screen {
+    /// In the Display list: the name, then the connector, so two monitors
+    /// of one model stay apart.
+    pub fn entry(&self) -> String {
+        if self.label == self.name {
+            self.label.clone()
+        } else {
+            format!("{} ({})", self.label, self.name)
+        }
+    }
 }
 
 /// Where a fullscreen recording goes: `record_default_target`.

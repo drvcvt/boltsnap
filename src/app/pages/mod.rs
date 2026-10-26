@@ -7,7 +7,7 @@ use std::time::Instant;
 mod prefs;
 mod rows;
 
-pub use prefs::{AudioSource, Corner, Cursor, Display, Notice, Prefs, Screen};
+pub use prefs::{AudioSource, Corner, Cursor, Display, Notice, Prefs, Screen, monitor_name};
 
 use rows::{
     choose, choose_text, codec_entries, display_entries, duration, folder, fps, fps_value, int,

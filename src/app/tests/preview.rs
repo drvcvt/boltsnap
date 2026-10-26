@@ -190,3 +190,143 @@ fn the_replay_head_says_what_it_holds_and_the_bar_is_cells() {
     app.set_replay_held(Some(15.0), now);
     assert_eq!(app.replay_head(now + SETTLED).0, "Holds 15\u{a0}s");
 }
+
+#[test]
+fn monitors_are_named_by_maker_and_model() {
+    use crate::app::pages::monitor_name as name;
+    assert_eq!(name("BNQ", "ZOWIE XL LCD", "DP-3"), "BenQ ZOWIE XL LCD");
+    assert_eq!(name("AOC", "27G4HRE", "DP-1"), "AOC 27G4HRE");
+    assert_eq!(
+        name("GSM", "LG ULTRAGEAR", "DP-2"),
+        "LG ULTRAGEAR",
+        "not twice"
+    );
+    assert_eq!(name("del", "U2720Q", "DP-4"), "Dell U2720Q");
+    assert_eq!(name("Unknown", "", "HDMI-A-1"), "HDMI-A-1");
+    assert_eq!(name("", "Virtual-1", "WL-1"), "Virtual-1");
+}
+
+fn recording_with(prefs: &crate::app::pages::Prefs, now: Instant) -> App {
+    let mut app = App::new(
+        crate::ui::text::Fonts::fallback(),
+        crate::app::pages::pages(prefs, None, now),
+        SIZE,
+        now,
+    );
+    app.show_named("recording", now);
+    app
+}
+
+fn screen(name: &str, x: f32, y: f32) -> crate::app::pages::Screen {
+    crate::app::pages::Screen {
+        name: name.into(),
+        label: format!("Model {name}"),
+        x,
+        y,
+        w: 1920.0,
+        h: 1080.0,
+    }
+}
+
+#[test]
+fn the_line_under_the_monitors_says_what_a_recording_makes_and_crossfades() {
+    let now = Instant::now();
+    let mut app = app_on("recording", SIZE, now);
+    let captions = |app: &App, at| app.display_captions(at);
+    assert_eq!(
+        captions(&app, now),
+        vec![("The one with focus when you start".into(), 1.0)]
+    );
+    // The AOC alone: one clip; the old line fades out as the new one comes.
+    focus(&mut app, "Display", now);
+    for k in [Key::Enter, Key::Down, Key::Down, Key::Enter] {
+        key(&mut app, k, now);
+    }
+    let fading = captions(&app, now + Duration::from_millis(60));
+    assert_eq!(fading.len(), 2, "{fading:?}");
+    assert!(fading.iter().all(|(_, shown)| *shown > 0.0 && *shown < 1.0));
+    assert_eq!(
+        captions(&app, now + SETTLED),
+        vec![("One clip".into(), 1.0)]
+    );
+    // Both, separately: two clips; combined: one.
+    let later = now + SETTLED;
+    for k in [Key::Enter, Key::Down, Key::Enter] {
+        key(&mut app, k, later);
+    }
+    assert_eq!(captions(&app, later + SETTLED)[0].0, "Two clips");
+    let later = later + SETTLED;
+    focus(&mut app, "Both displays as", later);
+    key(&mut app, Key::Right, later);
+    assert_eq!(
+        captions(&app, later + SETTLED),
+        vec![("One clip".into(), 1.0)]
+    );
+    // A configured monitor that is not plugged in: the focused one records.
+    let mut prefs = super::prefs();
+    prefs.display = crate::app::pages::Display::Output("HDMI-A-9".into());
+    let missing = recording_with(&prefs, now);
+    assert_eq!(
+        missing.display_captions(now)[0].0,
+        "Not connected, the focused one records"
+    );
+    let (lit, _) = displays(&missing, now);
+    assert!(lit.iter().all(|(_, on)| *on == 0.5));
+}
+
+#[test]
+fn three_monitors_in_a_row_and_two_stacked_keep_their_names_apart() {
+    let now = Instant::now();
+    let mut prefs = super::prefs();
+    prefs.displays = vec![
+        screen("DP-1", 0.0, 0.0),
+        screen("DP-2", 1920.0, 0.0),
+        screen("DP-3", 3840.0, 0.0),
+    ];
+    prefs.display = crate::app::pages::Display::Both;
+    let app = recording_with(&prefs, now);
+    assert_eq!(app.display_captions(now)[0].0, "Three clips");
+    let index = |app: &App| {
+        app.page()
+            .blocks
+            .iter()
+            .position(|b| matches!(b, Block::Preview(Preview::Displays(_))))
+            .unwrap()
+    };
+    let rect = app.layout(now).blocks[index(&app)];
+    let names = crate::app::display_name_places(rect, &prefs.displays);
+    let bodies = crate::app::display_places(rect, &prefs.displays);
+    for (name, body) in names.iter().zip(&bodies) {
+        assert_eq!((name.x, name.w), (body.x, body.w), "under its monitor");
+        assert!(name.y > body.bottom() + 8.0, "below the stand");
+    }
+    // One above the other: each name gets half the width, in order.
+    prefs.displays = vec![screen("DP-1", 0.0, 0.0), screen("DP-2", 0.0, 1080.0)];
+    let app = recording_with(&prefs, now);
+    let rect = app.layout(now).blocks[index(&app)];
+    let names = crate::app::display_name_places(rect, &prefs.displays);
+    assert!(!names[0].overlaps(names[1]) && names[0].w == names[1].w);
+}
+
+#[test]
+fn a_whole_screen_is_told_from_an_area_and_pictures_fit_and_cover() {
+    use crate::app::shots::{cover, fit, same_shape, whole_screen};
+    assert!(whole_screen((1920, 1080)) && whole_screen((3840, 1080)));
+    assert!(!whole_screen((588, 375)) && !whole_screen((1920, 600)));
+    assert_eq!(fit((3840, 1080), (1600, 900)), (1600, 450));
+    assert_eq!(fit((1920, 1080), (1600, 900)), (1600, 900));
+    assert_eq!(fit((300, 200), (1600, 900)), (300, 200), "never grown");
+    let pair = Rect::new(0.0, 0.0, 569.0, 160.0);
+    assert!(same_shape((3840, 1080), pair) && !same_shape((1920, 1080), pair));
+    // Over both monitors onto a 16:9 screen: the left part, full height.
+    let screen = Rect::new(10.0, 20.0, 640.0, 360.0);
+    assert_eq!(
+        cover((3840, 1080), screen),
+        Rect::new(10.0, 20.0, 1280.0, 360.0)
+    );
+    // 4:3 onto 16:9: full width, the middle.
+    assert_eq!(
+        cover((1600, 1200), screen),
+        Rect::new(10.0, -40.0, 640.0, 480.0)
+    );
+}

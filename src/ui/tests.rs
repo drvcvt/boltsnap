@@ -457,3 +457,23 @@ fn a_minus_sign_the_face_lacks_draws_as_a_hyphen() {
     let style = TextStyle::Key;
     assert_eq!(fonts.width(style, "\u{2212}5"), fonts.width(style, "-5"));
 }
+
+#[test]
+fn a_picture_keeps_halves_down_to_64_px_and_premultiplies() {
+    use super::picture::Picture;
+    // Half-transparent white: stored premultiplied, so drawing blends right.
+    let picture = Picture::from_rgba(384, 267, [255, 255, 255, 128].repeat(384 * 267)).unwrap();
+    assert_eq!(picture.size(), (384, 267));
+    assert_eq!(picture.levels(), 3, "384, 192, 96");
+    assert!(
+        Picture::from_rgba(10, 10, vec![0; 3]).is_none(),
+        "pixels must match"
+    );
+    let mut canvas = Canvas::new(40, 40, 1).unwrap();
+    canvas.clear((0, 0, 0));
+    let place = Rect::new(0.0, 0.0, 40.0, 40.0);
+    canvas.picture(&picture, place, Rect::new(10.0, 10.0, 20.0, 20.0), 0.0, 1.0);
+    let at = |x: usize, y: usize| canvas.pixmap.data()[(y * 40 + x) * 4];
+    assert_eq!(at(20, 20), 128, "white at half over black");
+    assert_eq!(at(2, 2), 0, "nothing outside the clip");
+}

@@ -346,7 +346,7 @@ impl App {
             let h = match block {
                 Block::Heading(_) => LINE,
                 Block::Banner { text, .. } => widgets::banner_height(&self.fonts, w, text),
-                Block::Preview(preview) => preview.height(w).round(),
+                Block::Preview(preview) => preview.height(&self.fonts, w).round(),
                 Block::Row(row) => {
                     if panel.is_none() {
                         panel = Some(y);

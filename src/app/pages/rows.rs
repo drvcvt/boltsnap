@@ -121,7 +121,7 @@ pub(super) fn display_entries(prefs: &Prefs) -> (Vec<(String, String)>, String) 
         prefs
             .displays
             .iter()
-            .map(|screen| (format!("output:{}", screen.name), screen.label.clone())),
+            .map(|screen| (format!("output:{}", screen.name), screen.entry())),
     );
     if let Display::Output(name) = &prefs.display
         && !prefs.displays.iter().any(|screen| screen.name == *name)

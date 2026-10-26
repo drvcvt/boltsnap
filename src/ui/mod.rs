@@ -3,6 +3,7 @@
 
 pub mod icons;
 pub mod motion;
+pub mod picture;
 pub mod text;
 pub mod theme;
 pub mod widgets;
