@@ -152,7 +152,9 @@ impl App {
         let animate = animate && !self.reduced_motion;
         let slots = shelf_cards(shape.corner, shape.width, MOST);
         let moved = self.preview.shape.map(|old| old.corner != shape.corner);
+        let far = super::dims::far_end(shape.corner, shape.width, shape.count);
         if self.preview.cards.len() != MOST || moved.is_none() || !animate {
+            self.preview.far.set(far, now);
             self.preview.cards = slots
                 .iter()
                 .enumerate()
@@ -160,6 +162,7 @@ impl App {
                 .collect();
         } else if self.preview.shape != Some(shape) {
             let token = if moved == Some(true) { GLIDE } else { SNAP };
+            self.preview.far.retarget(far, token, now);
             for (index, (card, slot)) in self.preview.cards.iter_mut().zip(&slots).enumerate() {
                 let shown = index < shape.count;
                 if shown && card.shown.target() > 0.0 {
@@ -182,7 +185,7 @@ impl App {
     }
 
     pub(super) fn shelf_moving(&self, now: Instant) -> bool {
-        self.preview.cards.iter().any(|card| card.moving(now))
+        self.preview.cards.iter().any(|card| card.moving(now)) || !self.preview.far.done(now)
     }
 
     /// Every slot's card right now, in window coordinates inside the

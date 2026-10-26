@@ -345,33 +345,75 @@ fn shelf_rect(app: &App, now: Instant) -> Rect {
 fn the_front_card_measures_190_by_132_beside_it_and_follows_the_slider() {
     let now = Instant::now();
     let mut app = app_on("shelf", SIZE, now);
-    assert_eq!(app.measure_shown(now), 1.0, "room in the corner's margin");
+    assert_eq!(app.measure_shown(now), 1.0, "room past the stack");
     assert_eq!(
         app.shelf_measure_text(),
         Some(("190\u{a0}px".into(), "132\u{a0}px".into()))
     );
     let rect = shelf_rect(&app, now);
-    let card = app.preview_cards(rect, now)[0].0;
+    let cards = app.preview_cards(rect, now);
+    let (front, last) = (cards[0].0, cards[cards.len() - 1].0);
     let m = app.shelf_measure(rect, now).unwrap();
-    // Bottom left: the height line right of the card, the width line in the
-    // margin under it, the numbers in a column past the height line.
-    assert_eq!(m.height_line.x, card.right().round() + 8.0);
+    // Bottom left: the height line right of the front card, its number right
+    // of it on the card's middle; the width line over the top card, its
+    // number centred over it.
+    assert_eq!(m.height_line.x, front.right().round() + 8.0);
     assert_eq!(
         (m.height_line.y, m.height_line.bottom()),
-        (card.y.round(), card.bottom().round())
+        (front.y.round(), front.bottom().round())
     );
-    let screen = crate::app::preview_screen(rect);
-    assert!(m.width_line.y > card.bottom() + 2.0 && m.width_line.y + 9.0 <= screen.bottom());
-    assert_eq!(m.label_x, m.height_line.right() + 4.0);
+    assert_eq!(m.height_chip.x, m.height_line.right() + 4.0);
+    let middle = |r: crate::ui::Rect| r.y + r.h / 2.0;
+    assert!((middle(m.height_chip) - middle(m.height_line)).abs() <= 0.5);
+    assert_eq!(m.width_line.y, last.y.round() - 9.0);
+    assert_eq!(m.width_chip.bottom(), m.width_line.y - 4.0);
+    let centre = |r: crate::ui::Rect| r.x + r.w / 2.0;
+    assert!((centre(m.width_chip) - centre(m.width_line)).abs() <= 0.5);
+    assert_eq!(m.width_chip.h, 16.0);
     focus(&mut app, "Card size", now);
     key(&mut app, Key::Right, now);
     assert_eq!(
         app.shelf_measure_text(),
         Some(("200\u{a0}px".into(), "139\u{a0}px".into()))
     );
-    // A narrow window leaves no room in the margin: the measure is not there.
+    // A phone-wide window still has room past five cards.
     let narrow = app_on("shelf", (360.0, 800.0), now);
-    assert_eq!(narrow.measure_shown(now), 0.0);
+    assert_eq!(narrow.measure_shown(now), 1.0);
+}
+
+#[test]
+fn the_width_line_moves_with_the_end_of_the_stack_and_leaves_a_full_screen() {
+    let now = Instant::now();
+    let mut app = app_on("shelf", SIZE, now);
+    let rect = shelf_rect(&app, now);
+    let before = app.shelf_measure(rect, now).unwrap().width_line.y;
+    focus(&mut app, "Cards shown", now);
+    key(&mut app, Key::Right, now);
+    let mid = app
+        .shelf_measure(rect, now + Duration::from_millis(60))
+        .unwrap()
+        .width_line
+        .y;
+    let after = app.shelf_measure(rect, now + SETTLED).unwrap().width_line.y;
+    let last = app.preview_cards(rect, now + SETTLED);
+    assert_eq!(
+        after,
+        last[last.len() - 1].0.y.round() - 9.0,
+        "past the new top card"
+    );
+    assert!(
+        after < mid && mid < before,
+        "it glides there: {before} {mid} {after}"
+    );
+    // Eight big cards fill the screen: no room past them, the measure goes.
+    for _ in 0..3 {
+        key(&mut app, Key::Right, now + SETTLED);
+    }
+    focus(&mut app, "Card size", now + SETTLED);
+    for _ in 0..20 {
+        key(&mut app, Key::Right, now + SETTLED);
+    }
+    assert_eq!(app.measure_shown(now + SETTLED + SETTLED), 0.0);
 }
 
 #[test]

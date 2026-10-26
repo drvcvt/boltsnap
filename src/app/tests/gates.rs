@@ -325,14 +325,18 @@ fn gate_groups_pad_equally_and_siblings_share_an_axis() {
                         let m = app
                             .shelf_measure(*rect, now + SETTLED)
                             .expect("a front card");
-                        for part in [m.width_line, m.height_line, m.edge] {
-                            assert!(inside(part, screen), "{name} measure off the screen at {w}");
+                        for part in [
+                            m.width_line,
+                            m.height_line,
+                            m.width_chip,
+                            m.height_chip,
+                            m.edge,
+                        ] {
+                            assert!(
+                                inside(part, screen),
+                                "{name} measure off the screen at {w}: {part:?} in {screen:?}"
+                            );
                         }
-                        assert!(
-                            m.width_line.y + 9.0 <= screen.bottom()
-                                && m.width_line.y - 4.0 >= screen.y,
-                            "{name} width number off the screen at {w}"
-                        );
                     }
                     let pads = [
                         screen.x - rect.x,

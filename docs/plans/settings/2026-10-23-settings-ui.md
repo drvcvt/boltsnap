@@ -2540,6 +2540,50 @@ den Standard-Zeiger), Neuladen der Bilder bei neuem Ordner, Videos und
 Bilder außerhalb des Speicherordners, Ziehen der Höhe, V2 (Ecken-Segment
 und Klick in ein Viertel).
 
+#### V4b Maße, die zum Fenster passen (27.10., Meldung des Nutzers)
+
+Meldung zum Render von V4: „so wie im bild sieht das kacke aus es soll schon
+zum ui und so passen“. Befund am Render (760 px, unten rechts): beide Zahlen
+stehen übereinander in der Ecke links unter der Karte, „190 px“ sitzt neben
+dem Ende seiner Linie statt an ihr, die Breitenlinie klebt 9 px über der
+Bildschirmkante, die Zahlen schweben ohne Fläche über dem Screenshot. Das
+liest sich wie eine technische Zeichnung, nicht wie ein Teil des Fensters.
+
+Soll:
+- Jede Zahl steht in einer kleinen Fläche (`RAISE`, Radius `GAP_XS`, Höhe
+  `Key`-Versalhöhe + 2 · `GAP_XS` = 16, Innenrand `GAP_XS` rundum, Versalien
+  exakt mittig), mittig an **ihrer** Linie, auf der Seite weg von der Karte,
+  `GAP_XS` Abstand. Damit heißen sie überall gleich: wie die Werte der
+  Controls.
+- Höhe: Linie `GAP_S` neben der Innenkante der vordersten Karte (wie jetzt),
+  Zahl links davon (rechte Ecken) bzw. rechts davon, auf der Kartenmitte.
+- Breite: Linie `GAP_S` hinter der **letzten** Karte des Stapels, auf der
+  freien Seite (unten: über der obersten Karte, oben: unter der untersten),
+  Zahl mittig darüber bzw. darunter. Dort ist Platz; der Rand zur
+  Bildschirmkante ist es nicht.
+- Linien 1 px, Endstriche 1 × 5 px, `SUB`; Hover und Drücken der Kante: Linien
+  `TEXT`, Flächen `HOVER` (`QUICK`, wie jetzt).
+- Die Lage der Breitenlinie ist eine Feder in Bildschirmkoordinaten: neue
+  Kartenzahl `SNAP`, neue Ecke `GLIDE` (wie die Karten), sonst gesetzt. Sie
+  wandert also mit dem Stapel, statt zu springen.
+- Sichtbar, wenn hinter dem Stapel Platz für Linie und Zahl ist
+  (`GAP_S + 1 + GAP_XS + 16 + GAP_XS`) und neben der vordersten Karte Platz für
+  die Höhenzahl; sonst blendet das Maß aus (`QUICK`, wie jetzt). Bei 360 px
+  zeigt es damit (bisher nicht); bei vielen großen Karten, die den Bildschirm
+  füllen, nicht.
+
+Code: `preview/dims.rs` (`Measure` mit `width_chip`/`height_chip` statt
+`label_x`/`width_y`/`height_y`, `measure` bekommt den Rand der letzten Karte
+und die Breiten der Zahlen, Zeichnen), `preview/mod.rs` (Feder `far`),
+`preview/shelf.rs` (`sync_shelf` setzt die Feder). Tests: Lage an der
+vordersten und der letzten Karte für unten rechts und oben links, Zahl mittig
+an ihrer Linie, Versalien mittig in der Fläche, Feder bei neuer Kartenzahl,
+Ausblenden bei vollem Bildschirm; Gate: Linien, Flächen und Kante auf dem
+Bildschirm bei allen Breiten.
+
+Macht nicht: andere Linienstärken, Maße an anderen Karten, Zahlen in der
+Karte.
+
 ## 6. Reihenfolge
 
 Jede Phase ist ein eigener Commit (oder wenige), baut, testet und lässt den
@@ -2704,6 +2748,7 @@ Vom Nutzer am 24.10. so bestätigt:
 | 5e V3 | umgesetzt 26.10. nach „Phase 5e“ V3: Kopfzeile („Holds 22 s“ bzw. „Off“ in `TEXT`, Bitrate in `SUB`), Leiste aus Zellen (eine je Sekunde bis 60, 16 px, 2 px Fuge, gehalten `TEXT` zu 85 %, die wachsende Zelle blendet anteilig, nicht haltbare `WINDOW`), „now“ in `TEXT`. Gate prüft den Rand über die Kopfzeile. Test `the_replay_head_says_what_it_holds_and_the_bar_is_cells`. Render angesehen. Checks: fmt, clippy ohne Warnung, `cargo test` 124 + 374 grün. |
 | 5e V1 | umgesetzt 27.10. nach „V1 und V4 im Detail“: `preview/displays.rs` (Gehäuse `RAISE` Radius 5, 4 px Fuge, Bildschirm 3 px eingerückt Radius 2, Fuß 5 + 3 px nur ohne Monitor darunter, Anordnung höchstens 160 px; Name `Hint` und Anschluss `Key` unter jedem Monitor, übereinander gestapelte teilen die Breite; Zeile „One clip“/„Two clips“/„Three clips“/„The one with focus when you start“/„Not connected, the focused one records“ in `Label`, `TEXT`, mittig, Platz für die längste bei der Breite, Kreuzblende `QUICK`; Combined schließt nur die Fugen zwischen den Bildschirmen statt eines Rechtecks über alles, damit versetzte Monitore keine leere Fläche bekommen). Abweichung beim Render: ohne Bild war „halb an“ (`SELECTED` zu 50 % auf `WINDOW`) genau `RAISE` und das Gehäuse verschwand; an ist jetzt `SELECTED` 30 % Richtung `SUB` (#575757, halb #343434). `pages::monitor_name` (Herstellercodes, `Unknown` fällt weg, kein doppelter Hersteller), `Screen::entry` fürs Dropdown („BenQ ZOWIE XL LCD (DP-3)“), Copy-Gate nimmt Modellnamen aus und die Zeilen dazu. `ui/picture.rs` (`Picture`: vormultipliziert, Halbstufen bis 64 px, `Canvas::picture` mit `Pattern` in einen runden Pfad), `preview/shots.rs` (reine Regeln), `linux/app/shots.rs` (Lader im Thread, Kanal ins Fenster; `--render` lädt sofort), `App::set_shots` (blendet `QUICK`). Tests: `monitors_are_named_by_maker_and_model`, `the_line_under_the_monitors_says_what_a_recording_makes_and_crossfades`, `three_monitors_in_a_row_and_two_stacked_keep_their_names_apart`, `a_whole_screen_is_told_from_an_area_and_pictures_fit_and_cover`, `a_picture_keeps_halves_down_to_64_px_and_premultiplies`, Lader `the_newest_whole_screen_is_the_screen_and_the_others_are_cards` (Bildschirm, Bereiche, kaputtes PNG, MP4, fehlender Ordner); Gate: Namen und Zeile in `GAP_M`, Namen ohne Überlappung, Zeile ganze `Label`-Zeilen. Renders (echte Schrift, Wegwerf-Test im Binary, nicht eingecheckt) bei 760 und 360, Zustände Focused, AOC, Both Combined, abgesteckt, dazu mit einem Bild über beide Monitore bei Skala 2 angesehen. Gates: Padding 12 px, Abweichung 0,00; Versalien 0,00 px (`--measure`, Outfit); Überlauf 1067 Teile grün bei 360 bis 1400; Kontrast unverändert, niedrigstes Paar 4,83:1. Live nicht geprüft (echte Monitore und Namen aus `OutputInfo`). Checks: fmt, clippy ohne Warnung, `cargo test` 129 + 375 grün, `git diff --check`. |
 | 5e V4 | umgesetzt 27.10. nach „V1 und V4 im Detail“: Hintergrund aus dem Bildschirm-PNG (`shots::cover`, breiter: linker Teil), zu 65 % Richtung `WINDOW`; Karte i trägt Bild i von der Ecke aus, ohne Bild `SELECTED`; Bilder blenden beim Ankommen ein (`QUICK`). `preview/dims.rs`: Maß an Karte 0, Höhenlinie `GAP_S` neben der Innenkante, Breitenlinie im Rand zur Bildschirmkante, 1 px mit 5 px Endstrichen, „190 px“/„132 px“ (`Key`, `TEXT`) in einer Spalte `GAP_XS` hinter der Höhenlinie, Versalien mittig auf Kartenmitte und Breitenlinie (gemessen 0,0 px Abweichung bei 760). Abweichung beim Render: mit der Breitenlinie mittig im Rand ragte die Unterlänge von „px“ bei 760 px 1 bis 2 px unter den Bildschirm; die Linie hält jetzt 9 px Abstand zur unteren Kante, die Schwelle ist 11,5 px Rand statt 10 (bei 760 sind es 11,7, das Maß zeigt; bei 360 und zwischen 600 und etwa 700 blendet es aus, Feder in `resize`). Ziehen: `Target::Preview(block)`, 8 px Streifen über der Innenkante, Hover/Drücken hellen die Linien auf, `grab_edge`/`drag_edge` setzen den Slider über `adopt` (rastet 10, klemmt), geschrieben über die Drossel wie der Slider, `update` hält die gezogene Zeile. Tests: `the_front_card_measures_190_by_132_beside_it_and_follows_the_slider`, `dragging_the_cards_edge_sets_card_size_in_steps_and_writes_like_the_slider` (30 px → 280, Drossel, Daemon-Wert zieht nicht zurück, Loslassen schreibt 310), `the_cards_show_the_newest_screenshots_on_the_darkened_screen` (Pixel: Kartenbild, leere Karte `SELECTED`, weißer Hintergrund 101); Gate: Maß auf dem Bildschirm bei allen Breiten, Kontrast `TEXT` auf weißem Screenshot hinter 65 % 4,93:1. Renders (echte Schrift, echte Screenshots: zwei fast schwarze, eine Bereichsaufnahme; dazu ein Hintergrund-PNG zur Probe) bei 360, 760, 1400 und oben links/unten links bei Skala 2 angesehen. Gates: Padding 0,00, Überlauf 1067 Teile, niedrigster Kontrast 4,83:1 (unverändert). Live nicht geprüft: Ziehen im echten Fenster, Laden im Thread nach dem Öffnen. Checks: fmt, clippy ohne Warnung, `cargo test` 132 + 375 grün, `git diff --check`. |
+| 5e V4b | umgesetzt 27.10. nach „V4b Maße, die zum Fenster passen“: `preview/dims.rs` (`Measure` mit `width_chip`/`height_chip`, `far_end`), Zahlen in `RAISE`-Flächen (16 px, Radius `GAP_XS`, Versalien mittig), Höhe neben der vordersten Karte, Breite `GAP_S` hinter der letzten Karte; Feder `far` in `preview/mod.rs`, gesetzt in `sync_shelf` (`SNAP` neue Zahl, `GLIDE` neue Ecke). Abweichung: bei kleinen Karten (360 px Fenster, Karte 24 px breit) ist die Breitenzahl breiter als die Karte und wird an den Bildschirmrand geklemmt statt mittig zu stehen. Tests: `the_front_card_measures_190_by_132_beside_it_and_follows_the_slider` (neu: Lage an vorderster und letzter Karte, Zahl mittig an der Linie, zeigt jetzt auch bei 360), `the_width_line_moves_with_the_end_of_the_stack_and_leaves_a_full_screen`; Gate: Linien, Flächen, Kante auf dem Bildschirm bei allen Breiten. Renders bei 760 (Skala 2) und 360 angesehen; gemessen bei Skala 2: Ziffern oben/unten 8/8 Gerätepixel, links/rechts 9/9 und 9/10 (≤ 0,5 px logisch). Kontrast `TEXT` auf `RAISE`/`HOVER` im bestehenden Gate. Checks: fmt, clippy ohne Warnung, `cargo test` 133 + 375 grün, `git diff --check`. Live: nach Install offen (Fenster neu öffnen). |
 | 5a | umgesetzt 26.10. nach „Phase 5a: Öffnen ohne Terminal“: Tray-Eintrag „Settings…“ ganz unten (Prozessstart im Tray-Thread), `assets/linux/boltsnap.desktop` mit Icons 64/128/256 aus `boltsnap.ico`, `.deb`-Assets, Flake-`postInstall`, Release-Tarball, README. Abweichung: `Categories=Graphics;`. Checks: `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test` 75 + 371 grün, `desktop-file-validate` ohne Meldung. Live: Daemon neu gestartet, dbusmenu-`GetLayout` endet auf „Settings…“; `gio launch` der installierten `.desktop`-Datei öffnet das Fenster (Klasse `boltsnap`). Nicht live prüfbar: Klick im Tray. |
 | 5 | geplant, freigegeben 24.10. |
 | 6 (Library) | Skizze im Library-Plan |

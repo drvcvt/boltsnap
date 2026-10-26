@@ -67,6 +67,8 @@ pub(super) struct State {
     /// 0 to 1: the front card's measure shows; the edge being dragged.
     dims: Spring,
     drag: Option<dims::Drag>,
+    /// Where the stack ends on the reference screen: the width line's place.
+    far: Spring,
     /// The replay buffer's length, what its memory holds, what it holds now.
     length: Spring,
     holds: Spring,
@@ -88,6 +90,7 @@ impl State {
             shots_in: Spring::settled(0.0, now),
             dims: Spring::settled(0.0, now),
             drag: None,
+            far: Spring::settled(0.0, now),
             length: Spring::settled(60.0, now),
             holds: Spring::settled(60.0, now),
             held: Spring::settled(0.0, now),
