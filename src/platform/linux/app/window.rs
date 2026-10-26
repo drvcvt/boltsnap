@@ -21,7 +21,10 @@ use smithay_client_toolkit::{
             window::{Window, WindowConfigure, WindowDecorations, WindowHandler},
         },
     },
-    shm::{Shm, ShmHandler, slot::SlotPool},
+    shm::{
+        Shm, ShmHandler,
+        slot::{Buffer, SlotPool},
+    },
 };
 use wayland_client::{
     Connection, QueueHandle,
@@ -40,6 +43,10 @@ pub(super) struct Win {
     pub(super) xdg: XdgShell,
     pub(super) shm: Shm,
     pool: SlotPool,
+    /// The buffers the compositor knows, reused as it releases them. A new
+    /// `wl_buffer` every frame is a new texture and a full upload in the
+    /// compositor, whatever the damage says, and that stalls every screen.
+    buffers: Vec<Buffer>,
     window: Window,
     configured: bool,
     size: (u32, u32),
@@ -81,6 +88,10 @@ fn open_window(compositor: &CompositorState, xdg: &XdgShell, qh: &QueueHandle<Wi
     window
 }
 
+/// Enough for the compositor to hold one on screen and one queued while the
+/// next is drawn.
+const MAX_BUFFERS: usize = 3;
+
 pub(super) struct Parts {
     pub(super) registry: RegistryState,
     pub(super) seats: SeatState,
@@ -109,6 +120,7 @@ impl Win {
             xdg: parts.xdg,
             shm: parts.shm,
             pool,
+            buffers: Vec::new(),
             window,
             configured: false,
             size: OPEN_SIZE,
@@ -249,10 +261,32 @@ impl Win {
         } else {
             wl_shm::Format::Argb8888
         };
-        let Ok((buffer, pixels)) =
-            self.pool
-                .create_buffer(bw as i32, bh as i32, bw as i32 * 4, format)
-        else {
+        let stride = bw as i32 * 4;
+        self.buffers
+            .retain(|buffer| (buffer.height(), buffer.stride()) == (bh as i32, stride));
+        let pool = &mut self.pool;
+        let free = self
+            .buffers
+            .iter()
+            .position(|buffer| buffer.canvas(pool).is_some());
+        let index = match free {
+            Some(index) => index,
+            None => {
+                // Every kept buffer is still with the compositor: one more,
+                // and past `MAX_BUFFERS` the oldest goes once it is released.
+                let Ok((buffer, _)) = pool.create_buffer(bw as i32, bh as i32, stride, format)
+                else {
+                    return;
+                };
+                if self.buffers.len() >= MAX_BUFFERS {
+                    self.buffers.remove(0);
+                }
+                self.buffers.push(buffer);
+                self.buffers.len() - 1
+            }
+        };
+        let buffer = &self.buffers[index];
+        let Some(pixels) = buffer.canvas(pool) else {
             return;
         };
         if self.rgba {
@@ -352,10 +386,10 @@ impl WindowHandler for Win {
         self.app
             .resize((self.size.0 as f32, self.size.1 as f32), Instant::now());
         self.configured = true;
-        // A configure needs an answer with a whole buffer now, even when
-        // nothing in it changed.
+        // A configure is answered with a whole buffer at the latest size, on
+        // the display's beat: dragging a window edge sends one per pointer
+        // event, and drawing each at once floods the compositor.
         self.last = None;
-        self.frame_pending = false;
         self.dirty = true;
         self.redraw();
     }
