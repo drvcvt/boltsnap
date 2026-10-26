@@ -34,6 +34,8 @@ pub struct Prefs {
     pub recording: bool,
     /// The keys `config.toml` sets; their rows offer a reset.
     pub set_keys: Vec<String>,
+    /// The desktop has a folder dialog (the FileChooser portal).
+    pub can_browse: bool,
     /// `ui_font`; unset, the desktop's font.
     pub ui_font: Option<String>,
     /// The installed font families, once known.

@@ -59,6 +59,7 @@ pub fn prefs() -> Prefs {
         replay_stale: false,
         recording: false,
         set_keys: Vec::new(),
+        can_browse: true,
         ui_font: None,
         fonts: Some(
             [

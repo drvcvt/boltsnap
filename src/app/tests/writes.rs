@@ -461,3 +461,44 @@ fn the_font_row_offers_the_desktop_font_and_the_installed_families() {
         "the desktop's font: the key goes"
     );
 }
+
+#[test]
+fn a_folder_field_asks_for_the_dialog_and_saves_what_it_picks() {
+    let now = Instant::now();
+    let mut app = app_on("screenshots", SIZE, now);
+    let folder = block(&app, "Save folder");
+    let field = control(&app, "Save folder", now);
+    // The button sits at the field's right end; the text before it.
+    let button = (field.right() - 15.0, field.y + 15.0);
+    assert!(press(&mut app, button, now).contains(&Effect::PickFolder(folder)));
+    let text = (field.x + 20.0, field.y + 15.0);
+    assert!(!press(&mut app, text, now).contains(&Effect::PickFolder(folder)));
+    // From the keyboard too.
+    let ctrl_o = Input::Key {
+        key: Key::Char('o'),
+        mods: crate::ui::Mods {
+            ctrl: true,
+            shift: false,
+        },
+    };
+    assert!(
+        app.handle(ctrl_o, now)
+            .contains(&Effect::PickFolder(folder))
+    );
+    // What the dialog picks shows and goes out like a confirmed edit.
+    let effects = app.pick(folder, "~/Pictures/elsewhere", now);
+    assert_eq!(changed(&effects), vec![folder]);
+    assert_eq!(
+        app.write(folder),
+        Some(Write::Key(
+            "save_dir",
+            settings::Value::Text("~/Pictures/elsewhere".into())
+        ))
+    );
+    // Without a dialog on the desktop there is no button.
+    let mut p = prefs();
+    p.can_browse = false;
+    let mut app = App::new(Fonts::fallback(), pages::pages(&p, None, now), SIZE, now);
+    app.show_named("screenshots", now);
+    assert!(!press(&mut app, button, now).contains(&Effect::PickFolder(folder)));
+}

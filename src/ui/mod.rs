@@ -80,6 +80,11 @@ pub enum Effect {
     Changed(usize),
     /// The row in this block asks for its key to go back to the default.
     Reset(usize),
+    /// A folder field asks for a folder dialog; the app names its row as
+    /// [`Effect::PickFolder`].
+    Browse,
+    /// The folder field in this block of the current page wants a folder.
+    PickFolder(usize),
 }
 
 /// Counts a press as the second of a double click when it comes soon after

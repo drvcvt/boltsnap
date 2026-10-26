@@ -201,8 +201,17 @@ pub(super) fn segment(
     )
 }
 
-pub(super) fn folder(name: &'static str, path: &str) -> (Box<dyn Widget>, Bind) {
-    (Box::new(TextField::new(path)), key(name, text))
+/// A folder field, with the folder dialog's button when there is a dialog.
+pub(super) fn folder(
+    name: &'static str,
+    path: &str,
+    browse: bool,
+    now: Instant,
+) -> (Box<dyn Widget>, Bind) {
+    (
+        Box::new(TextField::new(path).with_browse(browse, now)),
+        key(name, text),
+    )
 }
 
 pub(super) fn fps_value(fps: u32) -> settings::Value {

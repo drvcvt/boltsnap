@@ -1,9 +1,14 @@
 use std::time::Instant;
 
-use super::{Look, Outcome, Value, Widget, surface};
+use super::{Look, Outcome, Value, Widget, icon_box, surface};
+use crate::ui::icons::Icon;
+use crate::ui::motion::Spring;
 use crate::ui::text::Fonts;
-use crate::ui::theme::{self, GAP_M, TextStyle};
+use crate::ui::theme::{self, CTL_H, GAP_M, GAP_S, ICON_ALONE, QUICK, RADIUS, TextStyle};
 use crate::ui::{Canvas, Effect, Key, Mods, Rect};
+
+/// Gap around the folder button's hover surface, as in a segment.
+const INSET: f32 = 3.0;
 
 /// Caret and selection height, centred on the line.
 const CARET_H: f32 = 16.0;
@@ -12,13 +17,16 @@ const MIN_W: f32 = 160.0;
 const MAX_W: f32 = 360.0;
 
 /// One line of text. Edits stay local until `Enter` or losing focus commits
-/// them; only a commit that differs counts as a change.
+/// them; only a commit that differs counts as a change. A folder field has a
+/// button at its right end that asks for a folder dialog ([`Effect::Browse`]).
 pub struct TextField {
     text: String,
     committed: String,
     /// Byte indices; the selection runs between them.
     caret: usize,
     anchor: usize,
+    /// The folder button, and how lit it is under the pointer.
+    browse: Option<Spring>,
 }
 
 impl TextField {
@@ -28,7 +36,23 @@ impl TextField {
             committed: text.to_owned(),
             caret: text.len(),
             anchor: text.len(),
+            browse: None,
         }
+    }
+
+    /// With the folder button when `on`.
+    pub fn with_browse(mut self, on: bool, now: Instant) -> Self {
+        self.browse = on.then(|| Spring::settled(0.0, now));
+        self
+    }
+
+    /// The folder button: a `CTL_H` square at the field's right end.
+    fn button(rect: Rect) -> Rect {
+        Rect::new(rect.right() - CTL_H, rect.y, CTL_H, CTL_H)
+    }
+
+    fn on_button(&self, rect: Rect, (x, y): (f32, f32)) -> bool {
+        self.browse.is_some() && Self::button(rect).contains(x, y)
     }
 
     pub fn content(&self) -> &str {
@@ -39,8 +63,15 @@ impl TextField {
         self.caret.min(self.anchor)..self.caret.max(self.anchor)
     }
 
-    fn inner(rect: Rect) -> Rect {
-        Rect::new(rect.x + GAP_M, rect.y, rect.w - 2.0 * GAP_M, rect.h)
+    /// Where the text goes: `GAP_M` in from the left, and from the right or
+    /// `GAP_S` before the folder button.
+    fn inner(&self, rect: Rect) -> Rect {
+        let right = if self.browse.is_some() {
+            Self::button(rect).x - GAP_S
+        } else {
+            rect.right() - GAP_M
+        };
+        Rect::new(rect.x + GAP_M, rect.y, right - rect.x - GAP_M, rect.h)
     }
 
     /// How far the text is shifted left so the caret stays inside.
@@ -50,7 +81,7 @@ impl TextField {
     }
 
     fn index_at(&self, fonts: &Fonts, rect: Rect, x: f32) -> usize {
-        let inner = Self::inner(rect);
+        let inner = self.inner(rect);
         let x = x - inner.x + self.shift(fonts, inner.w);
         fonts
             .carets(TextStyle::Label, &self.text)
@@ -157,10 +188,20 @@ impl Widget for TextField {
         true
     }
 
-    fn draw(&self, canvas: &mut Canvas, fonts: &Fonts, rect: Rect, look: Look, _: Instant) {
+    fn draw(&self, canvas: &mut Canvas, fonts: &Fonts, rect: Rect, look: Look, now: Instant) {
         // A press places the caret; the surface does not flash for it.
         surface(canvas, rect, &Look { press: 0.0, ..look });
-        let inner = Self::inner(rect);
+        if let Some(lit) = &self.browse {
+            let button = Self::button(rect);
+            let lit = lit.value(now).clamp(0.0, 1.0);
+            if look.enabled && lit > 0.0 {
+                canvas.fill(button.inset(INSET), RADIUS - INSET, theme::SELECTED, lit);
+            }
+            let color = if look.enabled { theme::SUB } else { theme::DIM };
+            let x = button.x + (button.w - ICON_ALONE) / 2.0;
+            Icon::FolderOpen.draw(canvas, icon_box(button, x, ICON_ALONE), color, 1.0);
+        }
+        let inner = self.inner(rect);
         let shift = self.shift(fonts, inner.w);
         let x_of =
             |index: usize| inner.x + fonts.width(TextStyle::Label, &self.text[..index]) - shift;
@@ -220,6 +261,17 @@ impl Widget for TextField {
         }
     }
 
+    fn hover(&mut self, rect: Rect, at: Option<(f32, f32)>, _: &Fonts, now: Instant) {
+        let on = at.is_some_and(|at| self.on_button(rect, at));
+        if let Some(lit) = &mut self.browse {
+            lit.retarget(f32::from(u8::from(on)), QUICK, now);
+        }
+    }
+
+    fn animating(&self, now: Instant) -> bool {
+        self.browse.as_ref().is_some_and(|lit| !lit.done(now))
+    }
+
     fn value(&self) -> Value {
         Value::Text(self.committed.clone())
     }
@@ -236,11 +288,17 @@ impl Widget for TextField {
     fn press(
         &mut self,
         rect: Rect,
-        (x, _): (f32, f32),
+        (x, y): (f32, f32),
         clicks: u8,
         fonts: &Fonts,
         _: Instant,
     ) -> Outcome {
+        if self.on_button(rect, (x, y)) {
+            return Outcome {
+                effect: Some(Effect::Browse),
+                ..Outcome::HANDLED
+            };
+        }
         let index = self.index_at(fonts, rect, x);
         if clicks >= 2 {
             self.select_word(index);
@@ -257,6 +315,12 @@ impl Widget for TextField {
 
     fn key(&mut self, key: Key, mods: Mods, _: &Fonts, _: Instant) -> Outcome {
         let range = self.selection();
+        if mods.ctrl && key == Key::Char('o') && self.browse.is_some() {
+            return Outcome {
+                effect: Some(Effect::Browse),
+                ..Outcome::HANDLED
+            };
+        }
         match key {
             Key::Left if !mods.shift && !range.is_empty() => self.move_to(range.start, false),
             Key::Right if !mods.shift && !range.is_empty() => self.move_to(range.end, false),

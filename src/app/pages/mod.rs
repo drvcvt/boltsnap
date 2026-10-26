@@ -108,7 +108,7 @@ fn shelf(prefs: &Prefs, now: Instant) -> Page {
     }
 }
 
-fn screenshots(prefs: &Prefs) -> Page {
+fn screenshots(prefs: &Prefs, now: Instant) -> Page {
     Page {
         name: "Screenshots".into(),
         icon: Icon::Image,
@@ -118,7 +118,7 @@ fn screenshots(prefs: &Prefs) -> Page {
                 Icon::Folder,
                 "Save folder",
                 None,
-                folder("save_dir", &prefs.save_dir),
+                folder("save_dir", &prefs.save_dir, prefs.can_browse, now),
             ),
         ],
     }
@@ -227,7 +227,7 @@ fn recording(prefs: &Prefs, now: Instant) -> Page {
             Icon::Folder,
             "Video folder",
             None,
-            folder("record_dir", &prefs.record_dir),
+            folder("record_dir", &prefs.record_dir, prefs.can_browse, now),
         ),
         row(
             Icon::HardDriveDownload,
@@ -392,7 +392,7 @@ fn general(prefs: &Prefs, now: Instant) -> Page {
 pub fn pages(prefs: &Prefs, notice: Option<&Notice>, now: Instant) -> Vec<Page> {
     let mut pages = vec![
         shelf(prefs, now),
-        screenshots(prefs),
+        screenshots(prefs, now),
         recording(prefs, now),
         replay(prefs, now),
         general(prefs, now),

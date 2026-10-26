@@ -1,6 +1,7 @@
 //! The Boltsnap window, `boltsnap settings`: its own process with one
 //! window, so a crash here never touches the daemon or a recording.
 
+mod folder;
 mod input;
 mod prefs;
 mod save;
@@ -193,6 +194,16 @@ fn run(page: Option<&str>) -> DynResult<()> {
     let (watch_tx, watch_rx) = calloop::channel::channel();
     save::probe_codecs(watch_tx.clone());
     save::probe_fonts(watch_tx.clone());
+    folder::probe(watch_tx.clone());
+    let (picks_tx, picks_rx) = calloop::channel::channel();
+    win.picks = Some(picks_tx);
+    handle
+        .insert_source(picks_rx, |event, _, win: &mut Win| {
+            if let calloop::channel::Event::Msg((tag, result)) = event {
+                win.picked(tag, result);
+            }
+        })
+        .map_err(|error| format!("folder source: {error}"))?;
     save::watch(watch_tx);
     handle
         .insert_source(watch_rx, |event, _, win: &mut Win| {
@@ -252,6 +263,37 @@ impl Win {
             now,
         );
         self.changed();
+    }
+
+    /// Open the folder dialog for the field in `block`, at its folder.
+    pub(super) fn pick_folder(&self, block: usize) {
+        let Some(picks) = self.picks.clone() else {
+            return;
+        };
+        let start = match self.app.value(block) {
+            Some(boltsnap::ui::widgets::Value::Text(path)) => prefs::untilde(&path),
+            _ => return,
+        };
+        let tag = (self.app.current(), block);
+        std::thread::spawn(move || {
+            let _ = picks.send((tag, folder::pick(&start)));
+        });
+    }
+
+    /// The folder dialog answered: the field shows the folder and saves it,
+    /// unless its page is no longer shown.
+    fn picked(&mut self, tag: save::Tag, result: Result<Option<std::path::PathBuf>, String>) {
+        match result {
+            Ok(Some(path)) if tag.0 == self.app.current() => {
+                let now = Instant::now();
+                for effect in self.app.pick(tag.1, &prefs::tilde(&path), now) {
+                    self.effect(effect);
+                }
+                self.changed();
+            }
+            Ok(_) => {}
+            Err(error) => self.saved(tag, Err(error)),
+        }
     }
 
     /// The daemon's settings changed (the tray, the file, our own write):

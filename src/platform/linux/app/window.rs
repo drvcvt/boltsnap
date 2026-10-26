@@ -72,6 +72,8 @@ pub(super) struct Win {
     pub(super) notice: Option<boltsnap::app::pages::Notice>,
     /// The `ui_font` the window draws with.
     pub(super) font: Option<String>,
+    /// Where folder dialogs answer: (page, block) and the folder.
+    pub(super) picks: Option<calloop::channel::Sender<super::folder::Picked>>,
     pub(super) exit: bool,
 }
 
@@ -138,6 +140,7 @@ impl Win {
             pending: Default::default(),
             notice: None,
             font: None,
+            picks: None,
             exit: false,
         })
     }
@@ -184,9 +187,12 @@ impl Win {
         }
     }
 
-    fn effect(&mut self, effect: Effect) {
+    pub(super) fn effect(&mut self, effect: Effect) {
         match effect {
             Effect::Close => self.exit = true,
+            Effect::PickFolder(block) => self.pick_folder(block),
+            // The app names the row; a bare Browse does not reach here.
+            Effect::Browse => {}
             Effect::Changed(block) | Effect::Reset(block) => {
                 let write = match effect {
                     Effect::Reset(_) => self.app.reset_write(block),

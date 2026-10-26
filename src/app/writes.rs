@@ -134,6 +134,15 @@ impl App {
         }
     }
 
+    /// The folder dialog answered for the field in `block`: it shows `path`
+    /// and reports it, as if typed and confirmed.
+    pub fn pick(&mut self, block: usize, path: &str, now: Instant) -> Vec<Effect> {
+        if let Some(control) = self.control(block) {
+            control.adopt(&Value::Text(path.to_owned()), now);
+        }
+        self.changes(now)
+    }
+
     /// The window closes: a control being edited commits, and what changed
     /// reports.
     pub fn finish(&mut self, now: Instant) -> Vec<Effect> {

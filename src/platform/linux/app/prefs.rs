@@ -12,7 +12,7 @@ use crate::config::{
 use crate::shelf::layout;
 
 /// `path` with the home folder written as `~`, as people type it.
-fn tilde(path: &Path) -> String {
+pub(super) fn tilde(path: &Path) -> String {
     let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
     match home
         .as_deref()
@@ -26,6 +26,15 @@ fn tilde(path: &Path) -> String {
 
 /// `displays`: the connected monitors as (connector, label), from the
 /// window's own Wayland outputs.
+/// `path` as typed, with a leading `~` for the home folder.
+pub(super) fn untilde(path: &str) -> std::path::PathBuf {
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    match (path.strip_prefix('~'), home) {
+        (Some(rest), Some(home)) => home.join(rest.trim_start_matches('/')),
+        _ => std::path::PathBuf::from(path),
+    }
+}
+
 pub fn load(displays: Vec<(String, String)>) -> Prefs {
     let cfg = Config::load();
     let shelf = cfg.shelf_prefs();
@@ -51,6 +60,7 @@ pub fn load(displays: Vec<(String, String)>) -> Prefs {
         displays,
         codec: cfg.record_codec.clone().unwrap_or_else(|| "auto".into()),
         codecs: super::save::codecs(),
+        can_browse: super::folder::available(),
         ui_font: cfg.ui_font.clone().filter(|font| !font.is_empty()),
         fonts: super::save::fonts(),
         fps: cfg.record_profile().unwrap_or_default().fps(),

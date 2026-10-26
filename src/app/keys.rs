@@ -65,7 +65,9 @@ impl App {
             Some(Target::Control(block)) => {
                 let fonts = &self.fonts;
                 match self.pages[self.current].blocks.get_mut(block) {
-                    Some(Block::Row(row)) => row.control.key(key, mods, fonts, now),
+                    Some(Block::Row(row)) => {
+                        super::named(row.control.key(key, mods, fonts, now), block)
+                    }
                     _ => Outcome::IGNORED,
                 }
             }

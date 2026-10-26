@@ -67,6 +67,17 @@ pub enum Target {
     Reset(usize),
 }
 
+/// A control's [`Effect::Browse`] as the row's [`Effect::PickFolder`].
+fn named(outcome: Outcome, block: usize) -> Outcome {
+    match outcome.effect {
+        Some(Effect::Browse) => Outcome {
+            effect: Some(Effect::PickFolder(block)),
+            ..outcome
+        },
+        _ => outcome,
+    }
+}
+
 pub struct App {
     pub fonts: Fonts,
     pages: Vec<Page>,
@@ -462,7 +473,7 @@ impl App {
                 let Some(Block::Row(row)) = self.pages[self.current].blocks.get_mut(block) else {
                     return Outcome::IGNORED;
                 };
-                row.control.press(rect, at, clicks, fonts, now)
+                named(row.control.press(rect, at, clicks, fonts, now), block)
             }
             None => self.set_focus(None, now),
         }

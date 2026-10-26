@@ -2115,6 +2115,32 @@ Copy-Gate über die neuen Zeilen.
   (Request-Signal abonnieren, dann rufen); Ergebnis-URI → Pfad mit `~`.
   Kein Portal: Knopf aus, Feld bleibt.
 
+##### S11 im Detail (Gegenprüfung am Code, 26.10.)
+
+Belege: `org.freedesktop.portal.FileChooser` Version 4 auf dem Bus (gtk-
+Backend), `OpenFile(s parent, s title, a{sv} options) → o`, Option
+`directory` (ab Version 3), `current_folder` (Bytes mit Null am Ende),
+`handle_token`; Antwort über `org.freedesktop.portal.Request.Response`
+(`u` Code, `a{sv}` mit `uris`). Ablauf und `percent_decode` wie
+`capture/portal.rs:22-97` (Signal abonnieren, dann rufen).
+
+Verhalten:
+- Ordnerfelder (Save folder, Video folder) haben rechts im Feld einen
+  Icon-Knopf `folder-open` (quadratisch, eigene Hover-Fläche); die Textfläche
+  endet `GAP_S` davor. Klick oder `Ctrl+O` im Feld öffnet den Dialog mit dem
+  aktuellen Ordner; die Wahl landet im Feld mit `~` und wird geschrieben wie
+  ein bestätigtes Feld. Abbruch ändert nichts.
+- Der Dialog läuft in einem Thread (er wartet auf den Nutzer); die Antwort
+  kommt mit (Seite, Block) zurück, eine andere Seite inzwischen verwirft sie.
+- Kein FileChooser auf dem Bus: der Knopf fehlt, das Feld bleibt (geprüft
+  beim Start im Hintergrund).
+- `Effect::Browse` (vom Feld) wird in der App zu `Effect::PickFolder(block)`;
+  `App::pick(block, path, now)` setzt den Text und meldet die Änderung.
+
+Tests: Knopf nur mit `browse`; Klick auf den Knopf und `Ctrl+O` liefern
+`PickFolder(block)`, Klick in den Text nicht; `pick` schreibt `save_dir`;
+Überlauf- und Achsen-Gates mit Knopf (Fixture-Pfad).
+
 #### S12 Ecken-Piktogramme (U11)
 
 - Vier Sprite-Symbole: Bildschirmrahmen 16 × 12 mit gefülltem Punkt in der
@@ -2301,6 +2327,7 @@ Vom Nutzer am 24.10. so bestätigt:
 | 5c S9 | umgesetzt 26.10. nach „S9 im Detail“ (Abweichung dort: Hinweis nennt im Engpass, was passt, wegen der unteren Bitrate-Klemme). Length als Dropdown 15 s bis 10 min (eigener Wert aus der Datei bleibt Eintrag), `Prefs::replay_bitrate`, Hinweis unter Memory aus `video_kbps` und `AUDIO_KBPS`. Belegt: Standard 60 s/512 MiB ergibt 20 994 kbit/s, gleich dem `-q 20994` des laufenden Recorders; mit den Werten des Nutzers (30 s, 512 MiB) „Video at about 41 Mbit/s“. Gates laufen jetzt auch mit 600 s/256 MiB („Only about 5 min fit, give it more memory“); Copy-Gate-Allowlist um die Einheit „Mbit/s“ ergänzt (134 Strings). Test `replay_length_steps_and_what_the_memory_buys`. Render angesehen. Checks: fmt, clippy ohne Warnung, `cargo test` 109 + 374 grün. |
 | 5c S10a | umgesetzt 26.10. nach „S10 im Detail“: Zeilen Display (Focused display, jeder Monitor aus dem `OutputState` des Fensters mit `tray::output_label`, jetzt geteilt, abgesteckter als „(disconnected)“, Both displays; schreibt `focused`/`both`/`output:<name>`) und Codec (Auto, H.264, „H.264 on the CPU“ = `libx264`, HEVC, AV1, „… via Vulkan“; HDR/10-Bit fallen weg; `gsr --info` einmal im Hintergrund, `save::probe_codecs`); `choose_text` für Text-Werte; Monitor-Ereignisse bauen neu; Icons `columns-2`, `film` ins Sprite (33). Abweichung: die Zeile „Both displays“ (Separate/Combined) heißt jetzt „Both displays as“, weil das Display-Dropdown selbst eine Option „Both displays“ hat. Copy-Allowlist um „CPU“ und „Vulkan“ (158 Strings). Test `display_and_codec_offer_what_this_machine_has`. Gates: Überlauf 1002 Teile, Umbruch 337 Zeilen, Dropdowns 30. Render angesehen. Live nicht geprüft (echte Monitor- und Codec-Liste nur im laufenden Fenster). Checks: fmt, clippy ohne Warnung, `cargo test` 110 + 374 grün. |
 | 5c S10b | umgesetzt 26.10. nach „S10b im Detail“. Dropdown: höchstens 10 Einträge sichtbar, scrollt in sich (`Scroll`, neu `Scroll::jump`, öffnet mit dem gewählten Eintrag in der Mitte), Rad über offener Liste scrollt die Liste (`Widget::overlay_wheel`), Pfeile halten die Markierung sichtbar, Randeinträge mit Clip, Liste so breit wie ihr längster Eintrag (mindestens das Control, höchstens der Platz), geschlossen höchstens `MENU_MAX = 280`; Tippen springt (Groß/klein egal, 1 s Fenster, Leertaste gehört zum Wort, `Widget::text` bekommt die Zeit). `Bind::Choices` (Wert oder `None` = Key entfernen). Seite General (Icon `settings`) mit Font (Icon `type`, „Desktop font“ schreibt `Reset(\"ui_font\")`), Familien einmal im Hintergrund (`fc-list`, 330 Familien), das Fenster lädt seine Schrift neu, wenn `ui_font` sich ändert. Fixture mit 40er-Liste; Copy-Gate zählt Font-Namen nicht. Aufgeräumt: `app/pages.rs` (700 Zeilen) nach `app/pages/` (`mod.rs` 427, `prefs.rs` 85, `rows.rs` 210), dabei ein verirrter Doc-Kommentar über `general` an `pages` zurück. Tests: `a_long_list_shows_ten_scrolls_in_itself_and_jumps_to_what_is_typed`, `the_font_row_offers_the_desktop_font_and_the_installed_families`; Gates: Überlauf 1067 Teile (die offene 40er-Liste bleibt im Fenster), Umbruch 376 Zeilen, Copy 166 Strings. Render der offenen Liste mitten im Scrollen angesehen. Live nicht geprüft (echte Familienliste und Neuladen der Schrift nur im laufenden Fenster). Checks: fmt, clippy ohne Warnung, `cargo test` 112 + 374 grün. |
+| 5c S11 | umgesetzt 26.10. nach „S11 im Detail“: Ordnerfelder mit Knopf `folder-open` rechts im Feld (eigene Hover-Fläche, Text endet `GAP_S` davor), Klick oder `Ctrl+O` → `Effect::Browse`, in der App `Effect::PickFolder(block)`; `linux/app/folder.rs` ruft `FileChooser.OpenFile` mit `directory`, `modal`, `current_folder` (Ablauf wie `capture/portal.rs`, `percent_decode` jetzt geteilt), in einem Thread, Antwort mit (Seite, Block), eine andere Seite verwirft sie; Abbruch (Code 1) ändert nichts; `App::pick` setzt den Text und meldet ihn wie ein bestätigtes Feld. Verfügbarkeit einmal im Hintergrund (`version ≥ 3`), ohne Portal kein Knopf. Test `a_folder_field_asks_for_the_dialog_and_saves_what_it_picks`. Render mit Hover angesehen. Live nicht geprüft (der Dialog wartet auf den Nutzer). Checks: fmt, clippy ohne Warnung, `cargo test` 113 + 374 grün. |
 | 5a | umgesetzt 26.10. nach „Phase 5a: Öffnen ohne Terminal“: Tray-Eintrag „Settings…“ ganz unten (Prozessstart im Tray-Thread), `assets/linux/boltsnap.desktop` mit Icons 64/128/256 aus `boltsnap.ico`, `.deb`-Assets, Flake-`postInstall`, Release-Tarball, README. Abweichung: `Categories=Graphics;`. Checks: `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test` 75 + 371 grün, `desktop-file-validate` ohne Meldung. Live: Daemon neu gestartet, dbusmenu-`GetLayout` endet auf „Settings…“; `gio launch` der installierten `.desktop`-Datei öffnet das Fenster (Klasse `boltsnap`). Nicht live prüfbar: Klick im Tray. |
 | 5 | geplant, freigegeben 24.10. |
 | 6 (Library) | Skizze im Library-Plan |
