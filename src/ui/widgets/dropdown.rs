@@ -84,8 +84,11 @@ impl Widget for Dropdown {
             .iter()
             .map(|item| fonts.width(TextStyle::Label, item))
             .fold(0.0, f32::max);
-        // Entry text, the gap and the check mark must fit in the list too.
-        (2.0 * GAP_M + widest + GAP_S + ICON + 2.0 * GAP_XS).ceil()
+        // Entry text, the gap and the check mark must fit in the list too;
+        // short lists keep one width so their left edges line up.
+        (2.0 * GAP_M + widest + GAP_S + ICON + 2.0 * GAP_XS)
+            .ceil()
+            .max(theme::MENU_MIN)
     }
 
     fn draw(&self, canvas: &mut Canvas, fonts: &Fonts, rect: Rect, look: Look, _: Instant) {

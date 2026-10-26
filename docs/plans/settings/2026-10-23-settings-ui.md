@@ -1792,6 +1792,16 @@ Umsetzung:
 - Gate: linke Kanten aller Dropdowns einer Seite gleich, wenn ihr Inhalt
   passt.
 
+##### S5 im Detail (Gegenprüfung am Code, 26.10.)
+
+Befund: `Dropdown::width` nimmt den breitesten Eintrag + Ränder + Haken
+(`dropdown.rs:81`); die echten Listen ergeben 90 (Frame rate 60 fps), 93
+(Keep long shelf saves), 102 bis 104 (Frame rate, Memory). Umsetzung: Token
+`MENU_MIN = 120` in `theme.rs`, `width = max(Inhalt, MENU_MIN)`; Text links,
+Haken rechts wie heute. Gate `gate_menus_share_a_left_edge`: auf jeder echten
+Seite haben alle Dropdowns neben ihrem Namen, deren Inhalt in `MENU_MIN`
+passt, dieselbe linke Kante (bei 760 und 1400 px).
+
 #### S6 Live-Werte: `SettingsWatch` und `Widget::set` (Voraussetzung für S7, S8)
 
 - `ipc.rs`: `watch_settings()` wie `watch_recording()` (`ipc.rs:187`); ein
@@ -2028,6 +2038,7 @@ Vom Nutzer am 24.10. so bestätigt:
 | 5c S2 | umgesetzt 26.10. nach „S2 im Detail“ (Abweichung dort begründet: Kontur außen statt innen; `:focus-visible`-Verhalten gleich mit eingebaut). `Canvas::ring`, Token `FOCUS_W = 2`, `widgets::focus_ring`; Fläche hebt nur noch bei Hover; Schalter um die Spur, Slider um den Knopf mit 2 px Abstand, Navigation um die Auswahl; `App::keyed` (Feder `QUICK`): Tab und Pfeile in der Navigation zeigen, ein Klick blendet aus. Gemessen: Kontur auf Gruppe 6,06:1, auf Seitenleiste 6,37:1, gegen das Control 5,38:1 (vorher Fokus 1,11:1). Test `tab_shows_the_outline_and_a_click_hides_it` (Pixel 1 px links des Dropdowns), Render der fünf Arten angesehen. Checks: fmt, clippy ohne Warnung, `cargo test` 96 + 374 grün. |
 | 5c S3 | umgesetzt 26.10. nach „S3 im Detail“. `Fonts::wrap` (Wörter, nach `/`, `-`, `_`, sonst zwischen Zeichen, eine Cursor-Liste je Wort), Banner bis 4 Zeilen (Abstand 20, eine Zeile wie bisher 46 hoch), Namen und Hinweise bis 3 Zeilen (Abstand ab zwei Zeilen 18/16), Zeilenhöhe je Anordnung (`side`, `stacked`), die Feder mischt zwischen beiden. Abweichung, beim Test gefunden: die Anordnung neben dem Control lässt dem Namen mindestens `LABEL_MIN` zum Umbrechen, sonst brach ein zu schmaler Name Buchstabe für Buchstabe und die Zeile sprang beim Stapeln von 46 auf 70 px. Gates: neu `gate_text_wraps_instead_of_being_cut` (238 Zeilen bei 360/480/760/1400, echte Seiten und Fehlerzustand, keine gekürzt; Gegenprobe mit einer Zeile schlägt an „Outline around a recorde...“); Innenabstand misst oben die höhere von Control und erster Textzeile, unten die tiefere; Überlauf 626 Teile, Abstände 0,00, Versalien 0,00, Icons 0,31/0,31/0,00/0,37 (Outfit). Render bei 360 px und Stress-Banner angesehen. Checks: fmt, clippy ohne Warnung, `cargo test` 98 + 374 grün. |
 | 5c S4 | umgesetzt 26.10. nach „S4 im Detail“ (Abweichung: nur Schalter-Zeilen ganz klickbar). `Widget::row_click` (Schalter `true`), `App::target_at` nimmt die ganze Zeile für solche Controls; Klick und Hover laufen über den bestehenden Pfad. Test `a_click_on_a_switch_rows_name_switches_and_other_names_do_nothing` (Hover hellt den Schalter auf, Klick schreibt `record_show_frame`, Klick auf den Namen „Frame rate“ schreibt nichts und fokussiert nichts). Checks: fmt, clippy ohne Warnung, `cargo test` 99 + 374 grün. |
+| 5c S5 | umgesetzt 26.10. nach „S5 im Detail“: `MENU_MIN = 120`, `Dropdown::width` mindestens so breit. Gate `gate_menus_share_a_left_edge`: 16 Dropdowns (Recording und Replay, Fehlerzustand, 760 und 1400 px) je Seite auf einer Kante; Gegenprobe ohne Mindestbreite schlägt an („only 0 dropdowns found“, das Gate verlangt mindestens 8, damit es nicht leer besteht). Render angesehen (Kanten bei 548 px). Checks: fmt, clippy ohne Warnung, `cargo test` 100 + 374 grün. |
 | 5a | umgesetzt 26.10. nach „Phase 5a: Öffnen ohne Terminal“: Tray-Eintrag „Settings…“ ganz unten (Prozessstart im Tray-Thread), `assets/linux/boltsnap.desktop` mit Icons 64/128/256 aus `boltsnap.ico`, `.deb`-Assets, Flake-`postInstall`, Release-Tarball, README. Abweichung: `Categories=Graphics;`. Checks: `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test` 75 + 371 grün, `desktop-file-validate` ohne Meldung. Live: Daemon neu gestartet, dbusmenu-`GetLayout` endet auf „Settings…“; `gio launch` der installierten `.desktop`-Datei öffnet das Fenster (Klasse `boltsnap`). Nicht live prüfbar: Klick im Tray. |
 | 5 | geplant, freigegeben 24.10. |
 | 6 (Library) | Skizze im Library-Plan |

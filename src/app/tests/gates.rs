@@ -459,3 +459,43 @@ fn gate_text_wraps_instead_of_being_cut() {
     }
     println!("gate wrap: {lines} lines at widths {WIDTHS:?}, none cut");
 }
+
+/// Dropdowns beside their names share one left edge when their entries fit
+/// `MENU_MIN` (settings plan, 5c S5).
+#[test]
+fn gate_menus_share_a_left_edge() {
+    let now = Instant::now();
+    let mut checked = 0;
+    for w in [760.0, 1400.0] {
+        every_page((w, 900.0), now, |app, name| {
+            let layout = app.layout(now + SETTLED);
+            let edges: Vec<f32> = app
+                .page()
+                .blocks
+                .iter()
+                .zip(&layout.blocks)
+                .filter_map(|(block, rect)| match block {
+                    // With all the room it wants, only a short dropdown is
+                    // exactly `MENU_MIN` wide (sliders 240, fields 360).
+                    Block::Row(row)
+                        if row.control.width(&app.fonts, f32::MAX) == theme::MENU_MIN =>
+                    {
+                        let parts = app.row_parts(*rect, row);
+                        (parts.control.y < parts.text.bottom()).then_some(parts.control.x)
+                    }
+                    _ => None,
+                })
+                .collect();
+            if let Some(first) = edges.first() {
+                for edge in &edges {
+                    assert_eq!(edge, first, "{name} at {w}: dropdown edges {edges:?}");
+                }
+                checked += edges.len();
+            }
+        });
+    }
+    // Frame rate, Keep long shelf saves, Memory and Frame rate on two pages
+    // at two widths: an empty pass would prove nothing.
+    assert!(checked >= 8, "only {checked} dropdowns found");
+    println!("gate menus: {checked} dropdowns on one edge per page");
+}

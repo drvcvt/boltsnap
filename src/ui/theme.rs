@@ -114,6 +114,8 @@ pub const NAV_NARROW_BELOW: f32 = 600.0;
 pub const CONTENT_MAX: f32 = 680.0;
 /// Room a row's name keeps before the row stacks its control below.
 pub const LABEL_MIN: f32 = 120.0;
+/// The narrowest a dropdown is, so the short ones of a page line up.
+pub const MENU_MIN: f32 = 120.0;
 /// The scroll thumb.
 pub const THUMB_W: f32 = 4.0;
 /// Icon stroke in logical pixels at any icon size.
