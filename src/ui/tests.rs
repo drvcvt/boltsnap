@@ -320,3 +320,32 @@ fn wrap_breaks_words_paths_and_compounds_and_marks_what_is_left() {
     assert!(cut[1].ends_with('…') || cut[1].ends_with("..."));
     assert_eq!(fonts.wrap(style, "", 100.0, 3), vec![""]);
 }
+
+#[test]
+fn a_segment_track_does_not_light_up_when_pressed() {
+    use super::widgets::{Look, Part, Segment, Widget};
+    let fonts = Fonts::fallback();
+    let now = Instant::now();
+    let segment = Segment::new(vec![Part::text("System"), Part::text("Mic")], 0, now);
+    let rect = Rect::new(0.0, 0.0, 200.0, 30.0);
+    let draw = |look: Look| {
+        let mut canvas = Canvas::new(200, 30, 1).unwrap();
+        canvas.clear(theme::PANEL);
+        segment.draw(&mut canvas, &fonts, rect, look, now);
+        // On the track, right of the chosen part, above the text.
+        let (x, y) = (190usize, 2usize);
+        canvas.pixmap.data()[(y * 200 + x) * 4]
+    };
+    let rest = Look {
+        enabled: true,
+        ..Look::default()
+    };
+    assert_eq!(
+        draw(Look {
+            press: 1.0,
+            hover: 1.0,
+            ..rest
+        }),
+        draw(rest)
+    );
+}

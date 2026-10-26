@@ -152,7 +152,18 @@ impl Widget for Segment {
     }
 
     fn draw(&self, canvas: &mut Canvas, fonts: &Fonts, rect: Rect, look: Look, now: Instant) {
-        surface(canvas, rect, &look);
+        // The track stays still: the part under the pointer lights its text
+        // and the chosen surface slides; lighting the whole track as well
+        // would answer on parts nobody meant (settings plan, 4i).
+        surface(
+            canvas,
+            rect,
+            &Look {
+                hover: 0.0,
+                press: 0.0,
+                ..look
+            },
+        );
         let cells = self.part_rects(fonts, rect);
         // Between two parts the surface takes both position and width.
         let at = self.slide.value(now).clamp(0.0, (cells.len() - 1) as f32);

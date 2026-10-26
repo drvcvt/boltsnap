@@ -1489,6 +1489,17 @@ Tests: Icon-x und -Größe der Navigation sind über das ganze Einklappen gleich
 Seite ohne Hub (der bisherige Test „fades in and rises“ wird zu „fades in“).
 Icon-Gate der Navigation: Abstand Icon → Name = `GAP_S`.
 
+### Phase 4i: Segment ohne Aufleuchten (26.10., Meldung des Nutzers)
+
+Meldung: das Klicken auf ein Segment wirkt komisch, vielleicht das
+Aufleuchten. Befund: `Segment::draw` zeichnet seine Fläche mit dem ganzen
+`Look` (`surface(canvas, rect, &look)`), also hellt Hover die ganze Spur auf
+und ein Druck mischt sie Richtung `SELECTED`, während die Auswahlfläche zum
+neuen Teil gleitet: zwei Rückmeldungen, die eine auch auf Teilen, die nicht
+gemeint sind. Fix: die Spur bleibt ruhig (Hover und Druck 0, Fokus-Kontur
+bleibt); Rückmeldung geben der Teil unter dem Zeiger (Text hellt auf, wie
+bisher) und die gleitende Auswahl. Test: Spur-Pixel mit Druck = ohne Druck.
+
 ### Phase 5a: Öffnen ohne Terminal (vorgezogen 26.10., Wunsch des Nutzers)
 
 Die zwei Wege aus „Öffnen und Fenster“ kommen vor dem Rest von Phase 5, damit
@@ -2160,6 +2171,7 @@ Vom Nutzer am 24.10. so bestätigt:
 | 4g | umgesetzt 26.10. nach „Phase 4g“. Beim Test zusätzlich gefunden: das Icon schwang beim Einklappen erst 17 px nach rechts (x 20 → 37) und dann zurück auf 15, weil zwischen „mittig in der schrumpfenden Fläche“ und „links eingerückt“ gemischt wurde; jetzt zwischen den Ruhelagen 20 und 15, ohne Runden. Name an fester Stelle (x 42). Test `closing_navigation_icons_glide_between_pixels_and_names_stay_put` (61 Proben alle 5 ms: monoton, ≥ 20 verschiedene x, Ruhelagen ganzzahlig). `/ui`-Skill um kurze Wege und Mischen zwischen Ruhelagen ergänzt. Checks: fmt, clippy ohne Warnung, `cargo test` 104 + 374 grün; Icon-Gate mit Outfit unverändert. |
 | 5c S7 | umgesetzt 26.10. nach „S7 im Detail“ (Abweichung dort: während einer Aufnahme ein Banner statt Hinweisen an sechs Zeilen). Feste Hinweise „Applies to the next recording“ und „Applies when replay restarts“ entfernt; Banner „A recording is running, changes here apply to the next one“; Zeile „Restart replay“ (Icon-Knopf, `Write::RestartReplay` = stop, start) nur bei laufendem, veraltetem Puffer. Veraltet: `seconds` oder `budget_bytes` (= `memory_mib · 2²⁰ / 3`, `worker/src/live.rs:108`) passen nicht zur Datei, oder in dieser Sitzung wurde ein Restart-Key geschrieben. Zweiter Watch-Thread auf `watch_recording`, signalisiert nur bei geändertem `state`. Texte ohne Schlusspunkt (Projektregel, vom Copy-Gate gefunden). Gates laufen jetzt auch im Zustand „Aufnahme läuft, Puffer veraltet“: Copy 120 Strings, Überlauf 854 Teile, Umbruch 297 Zeilen, Dropdowns 24. Tests: Banner nur bei Aufnahme und keine Zeile wiederholt ihn; Restart-Zeile nur bei laufend und veraltet, Klick liefert `RestartReplay`. Render beider Zustände angesehen. Checks: fmt, clippy ohne Warnung, `cargo test` 106 + 374 grün. Live nicht geprüft (Aufnahme und Replay-Neustart nach Absprache). |
 | 4h | umgesetzt 26.10. nach „Phase 4h“: Navigations-Icon fest auf x 16 in 14 px (eingeklappt mittig im 30er Quadrat, ausgeklappt 8 px eingerückt wie oben und unten), Name ab x 38; `PAGE_RISE` und `App::rise` entfernt, `layout_at` ohne Hub. Tests: `navigation_icons_keep_their_place_and_size_while_it_closes` (61 Proben gleich, Quadrat, Icon mittig), `a_new_page_fades_in_where_it_stays`. `/ui`-Skill: Regel „Keine Mini-Wege“ mit O-Ton, ersetzt die Gleit-Ausnahme aus 4g. Icon-Gate mit Outfit grün. Checks: fmt, clippy ohne Warnung, `cargo test` 106 + 374 grün. |
+| 4i | umgesetzt 26.10. nach „Phase 4i“: Segment-Spur ohne Hover und Druck, Fokus-Kontur bleibt. Test `a_segment_track_does_not_light_up_when_pressed`, Gegenprobe mit altem `Look` schlägt an. Checks: fmt, clippy ohne Warnung, `cargo test` 107 + 374 grün. |
 | 5a | umgesetzt 26.10. nach „Phase 5a: Öffnen ohne Terminal“: Tray-Eintrag „Settings…“ ganz unten (Prozessstart im Tray-Thread), `assets/linux/boltsnap.desktop` mit Icons 64/128/256 aus `boltsnap.ico`, `.deb`-Assets, Flake-`postInstall`, Release-Tarball, README. Abweichung: `Categories=Graphics;`. Checks: `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test` 75 + 371 grün, `desktop-file-validate` ohne Meldung. Live: Daemon neu gestartet, dbusmenu-`GetLayout` endet auf „Settings…“; `gio launch` der installierten `.desktop`-Datei öffnet das Fenster (Klasse `boltsnap`). Nicht live prüfbar: Klick im Tray. |
 | 5 | geplant, freigegeben 24.10. |
 | 6 (Library) | Skizze im Library-Plan |
