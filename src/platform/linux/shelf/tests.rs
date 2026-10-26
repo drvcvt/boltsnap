@@ -1,5 +1,6 @@
 use super::cards::{decode_shelf_image, prepare_pixels_with};
 use super::*;
+use crate::shelf::thumbnail::CardSize;
 
 #[test]
 fn popup_keys_map_to_their_buttons() {
@@ -76,6 +77,7 @@ fn pixels_prepare_preserves_rgb_and_unpublished_file_ownership() {
     let add = prepare_pixels_with(
         metadata(),
         &pixels,
+        CardSize::DEFAULT,
         |png| {
             assert_eq!(image::load_from_memory(png).unwrap().into_rgb8(), rgb);
             Ok(())
@@ -99,6 +101,7 @@ fn pixels_prepare_preserves_rgb_and_unpublished_file_ownership() {
         prepare_pixels_with(
             metadata(),
             &pixels,
+            CardSize::DEFAULT,
             |_| Err("injected publish failure".into()),
             |_| panic!()
         )
@@ -110,6 +113,7 @@ fn pixels_prepare_preserves_rgb_and_unpublished_file_ownership() {
     let result = prepare_pixels_with(
         copy_meta,
         &pixels,
+        CardSize::DEFAULT,
         |_| Ok(()),
         |path| {
             copy_path = Some(path.to_owned());
@@ -392,14 +396,28 @@ fn png_with_broken_data() -> Vec<u8> {
 #[test]
 fn client_thumbnail_skips_decoding_the_png() {
     use crate::shelf::thumbnail::{CARD_H, CARD_W};
+    let size = CardSize::DEFAULT;
     let png = png_with_broken_data();
-    assert!(prepare_add(png.clone(), "full".into(), None, None).is_err());
-    let add = prepare_add(png, "full".into(), None, Some(client_thumb(CARD_W, CARD_H))).unwrap();
+    assert!(prepare_add(png.clone(), "full".into(), None, None, size).is_err());
+    let thumb = Some(client_thumb(CARD_W, CARD_H));
+    let add = prepare_add(png, "full".into(), None, thumb, size).unwrap();
     assert_eq!(add.thumb.as_raw(), &vec![7; (CARD_W * CARD_H * 4) as usize]);
     // A thumbnail of the wrong size is ignored and the PNG decoded instead.
-    let add = prepare_add(png_bytes(), "full".into(), None, Some(client_thumb(2, 2))).unwrap();
+    let add = prepare_add(
+        png_bytes(),
+        "full".into(),
+        None,
+        Some(client_thumb(2, 2)),
+        size,
+    )
+    .unwrap();
     assert_eq!(add.thumb.dimensions(), (CARD_W, CARD_H));
     assert_ne!(add.thumb.as_raw()[..4], [7, 7, 7, 7]);
+    // So is one at the default size once the cards are bigger.
+    let big = CardSize::from_width(300).unwrap();
+    let thumb = Some(client_thumb(CARD_W, CARD_H));
+    let add = prepare_add(png_bytes(), "full".into(), None, thumb, big).unwrap();
+    assert_eq!(add.thumb.dimensions(), (300, 208));
 }
 
 #[test]
@@ -415,8 +433,8 @@ fn client_thumbnail_still_enforces_the_pixel_limit() {
     png[20..24].copy_from_slice(&9000u32.to_be_bytes());
     let crc = crc32fast_ihdr(&png[12..29]);
     png[29..33].copy_from_slice(&crc.to_be_bytes());
-    let Err(error) = prepare_add(png, "full".into(), None, Some(client_thumb(CARD_W, CARD_H)))
-    else {
+    let thumb = Some(client_thumb(CARD_W, CARD_H));
+    let Err(error) = prepare_add(png, "full".into(), None, thumb, CardSize::DEFAULT) else {
         panic!("oversized PNG was accepted")
     };
     assert!(error.contains("64 megapixel"), "{error}");
@@ -463,7 +481,7 @@ fn cli_card_thumbnail_matches_the_decoded_one() {
 
 #[test]
 fn invalid_png_preparation_returns_an_ingest_error() {
-    let result = prepare_add(vec![1, 2, 3], "area".into(), None, None);
+    let result = prepare_add(vec![1, 2, 3], "area".into(), None, None, CardSize::DEFAULT);
     let Err(error) = result else {
         panic!("invalid PNG was accepted")
     };
@@ -764,6 +782,34 @@ fn requested_audio_respects_toggle_and_keeps_source_choice() {
         requested_audio(&prefs),
         Some(crate::config::RecordAudioSource::System)
     );
+}
+
+#[test]
+fn rerender_renders_each_waiting_card_once_at_the_size_of_the_moment() {
+    use super::thumbnail::{Source, Worker};
+    let png = crate::paths::temp_file("rerender-test", "png");
+    image::RgbImage::from_pixel(64, 48, image::Rgb([200, 10, 10]))
+        .save(&png)
+        .unwrap();
+    let (tx, rx) = calloop::channel::channel();
+    let worker = Worker::spawn(tx, || CardSize::from_width(300).unwrap());
+    worker.rerender([
+        (1, Source::Image(png.clone())),
+        (2, Source::Image(png.with_extension("missing"))),
+        (1, Source::Image(png.clone())),
+    ]);
+    let mut results = Vec::new();
+    for _ in 0..2 {
+        let DaemonEvent::ThumbnailReady { id, image, .. } = receive_event(&rx) else {
+            panic!("expected a thumbnail");
+        };
+        results.push((id, image.map(|image| image.dimensions())));
+    }
+    results.sort();
+    assert_eq!(results, [(1, Some((300, 208))), (2, None)]);
+    std::thread::sleep(Duration::from_millis(50));
+    assert!(rx.try_recv().is_err(), "a card waiting twice renders once");
+    let _ = std::fs::remove_file(png);
 }
 
 fn receive_event(rx: &calloop::channel::Channel<DaemonEvent>) -> DaemonEvent {

@@ -43,6 +43,8 @@ pub fn rescale(card: &RgbaImage, size: CardSize) -> RgbaImage {
 /// Center-crop `src` to the card aspect ratio, then resize only that crop to
 /// exactly (card_w, card_h). Cropping before resizing avoids scaling huge full
 /// screenshots down to an oversized intermediate image on the hot shelf path.
+// Linux cards use the variants below; Windows, tests and the transfer bench use this.
+#[allow(dead_code)]
 pub fn make_card_thumbnail(src: &RgbaImage, card_w: u32, card_h: u32) -> RgbaImage {
     thumbnail(src, card_w, card_h)
 }

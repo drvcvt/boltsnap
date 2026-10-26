@@ -1,12 +1,29 @@
 //! What a shelf card is made of: its thumbnail, from a client's PNG or pixels,
 //! and where it sits in the stack while cards come and go.
 
+use std::sync::atomic::{AtomicU32, Ordering};
+
+use super::thumbnail::Source;
 use super::{
     Anchor, Daemon, Layout, LayoutConfig, MAX_CACHED_IMAGE_BYTES, PreparedAdd, ShelfModel, Thumb,
     ThumbRect,
 };
 use crate::config::ShelfPrefs;
 use crate::shelf::layout::Corner;
+use crate::shelf::model::CardKind;
+use crate::shelf::thumbnail::CardSize;
+
+/// `[shelf] card_width` as the daemon applies it. Client threads and the
+/// thumbnail worker read it; only `apply_shelf_prefs` writes it.
+static CARD_WIDTH: AtomicU32 = AtomicU32::new(CardSize::DEFAULT.w);
+
+pub(super) fn use_card_size(size: CardSize) {
+    CARD_WIDTH.store(size.w, Ordering::Relaxed);
+}
+
+pub(super) fn card_size() -> CardSize {
+    CardSize::from_width(CARD_WIDTH.load(Ordering::Relaxed).into()).unwrap_or(CardSize::DEFAULT)
+}
 
 /// Gap between the shelf and both screen edges of its corner.
 const EDGE_MARGIN: i32 = 24;
@@ -30,6 +47,10 @@ impl Daemon {
         if old == prefs {
             return;
         }
+        if old.card != prefs.card {
+            use_card_size(prefs.card);
+            self.resize_cards(prefs.card);
+        }
         let Some(qh) = self.qh.clone() else {
             return;
         };
@@ -42,6 +63,62 @@ impl Daemon {
             self.place_on_output(None, &qh);
         }
         self.draw(&qh);
+    }
+
+    /// Scales every card at once from the image it has, then has each
+    /// rendered sharp from its file.
+    fn resize_cards(&mut self, size: CardSize) {
+        let started = std::time::Instant::now();
+        let cards: Vec<_> = self
+            .model
+            .newest_first()
+            .map(|card| {
+                (
+                    card.id,
+                    crate::shelf::thumbnail::rescale(&card.thumb, size),
+                    source(card),
+                )
+            })
+            .collect();
+        let count = cards.len();
+        let mut sources = Vec::with_capacity(count);
+        for (id, thumb, source) in cards {
+            self.model.replace_thumb(id, thumb);
+            sources.push((id, source));
+        }
+        let took = started.elapsed();
+        if took > std::time::Duration::from_millis(8) {
+            eprintln!(
+                "boltsnap daemon: scaling {count} cards to {}x{} took {took:?}",
+                size.w, size.h
+            );
+        }
+        self.thumbnails.rerender(sources);
+    }
+
+    /// A card made at an older size, because the size changed while it was
+    /// on its way: scaled now, rendered sharp after.
+    pub(super) fn fit_card(&mut self, id: u64) {
+        let size = card_size();
+        let Some(card) = self.model.get(id) else {
+            return;
+        };
+        if card.thumb.dimensions() == size.dims() {
+            return;
+        }
+        let (thumb, source) = (
+            crate::shelf::thumbnail::rescale(&card.thumb, size),
+            source(card),
+        );
+        self.model.replace_thumb(id, thumb);
+        self.thumbnails.rerender([(id, source)]);
+    }
+}
+
+fn source(card: &Thumb) -> Source {
+    match card.kind {
+        CardKind::Image => Source::Image(card.png_path.clone()),
+        CardKind::Video => Source::Video(card.png_path.clone()),
     }
 }
 
@@ -139,20 +216,21 @@ pub(super) fn animated_card_layout(
     }
 }
 
-/// Store a screenshot PNG for a card. With the client's card thumbnail only the
-/// PNG header is checked; otherwise the PNG is decoded for the thumbnail.
+/// Store a screenshot PNG for a card. With the client's card thumbnail in
+/// `size` only the PNG header is checked; otherwise the PNG is decoded for the
+/// thumbnail.
 pub(super) fn prepare_add(
     png: Vec<u8>,
     source: String,
     output: Option<String>,
     thumb: Option<crate::protocol::CardThumb>,
+    size: CardSize,
 ) -> Result<PreparedAdd, String> {
-    use crate::shelf::thumbnail::{CARD_H, CARD_W};
     if png.len() as u64 > MAX_CACHED_IMAGE_BYTES {
         return Err("PNG exceeds the 256 MiB shelf cache limit".into());
     }
     let card = thumb
-        .filter(|thumb| (thumb.width, thumb.height) == (CARD_W, CARD_H))
+        .filter(|thumb| (thumb.width, thumb.height) == size.dims())
         .and_then(|thumb| image::RgbaImage::from_raw(thumb.width, thumb.height, thumb.rgba));
     let thumb = match card {
         Some(card) => {
@@ -161,8 +239,8 @@ pub(super) fn prepare_add(
         }
         None => crate::shelf::thumbnail::make_image_card_thumbnail(
             &decode_shelf_image(&png)?,
-            CARD_W,
-            CARD_H,
+            size.w,
+            size.h,
         ),
     };
     let path = write_temp_png("shelf", &png)?;
@@ -198,6 +276,7 @@ pub(super) fn prepare_pixels(
     prepare_pixels_with(
         metadata,
         pixels,
+        card_size(),
         |png| {
             crate::paths::publish_last_png(png)
                 .map(|_| ())
@@ -214,6 +293,7 @@ pub(super) fn prepare_pixels(
 pub(super) fn prepare_pixels_with(
     metadata: super::super::image_transfer::Metadata,
     pixels: &super::super::image_transfer::Pixels,
+    size: CardSize,
     publish: impl FnOnce(&[u8]) -> Result<(), String>,
     copy: impl FnOnce(&std::path::Path) -> Result<(), String>,
 ) -> Result<PreparedAdd, String> {
@@ -225,11 +305,7 @@ pub(super) fn prepare_pixels_with(
         pixels.bytes(),
     )
     .ok_or("invalid RGB image")?;
-    let thumb = crate::shelf::thumbnail::make_rgb_card_thumbnail(
-        &image,
-        crate::shelf::thumbnail::CARD_W,
-        crate::shelf::thumbnail::CARD_H,
-    );
+    let thumb = crate::shelf::thumbnail::make_rgb_card_thumbnail(&image, size.w, size.h);
     super::super::timing::mark_request("thumbnail_ready", metadata.trace);
     let mut png = Vec::new();
     image::codecs::png::PngEncoder::new(&mut png)

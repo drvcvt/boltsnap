@@ -582,11 +582,12 @@ fn capture_flow(args: &Args) -> DynResult<()> {
         // nonmutating raw offer. No image has been accepted on that path yet.
         // The card thumbnail comes along so the shelf need not decode the PNG.
         let thumbnail = crate::platform::timing::Span::new("card_thumbnail");
+        let card = crate::config::Config::load().shelf_prefs().card;
         let thumb = crate::shelf::thumbnail::make_rgb_card_thumbnail(
             &image::ImageBuffer::from_raw(image.width(), image.height(), image.as_raw().as_slice())
                 .expect("RGB view matches its image"),
-            crate::shelf::thumbnail::CARD_W,
-            crate::shelf::thumbnail::CARD_H,
+            card.w,
+            card.h,
         );
         drop(thumbnail);
         let encoding = crate::platform::timing::Span::new("png_encode");

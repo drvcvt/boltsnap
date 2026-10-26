@@ -586,10 +586,11 @@ fn spawn_client_reader(
                 let _timing = super::timing::Span::for_request("shelf_png_prepare", trace);
                 // Trust a client thumbnail only from our own user.
                 let thumb = thumb.filter(|_| super::image_transfer::same_user(&stream).is_ok());
-                let result = prepare_add(png, source, output, thumb).map(|mut add| {
-                    add.trace = trace;
-                    add
-                });
+                let result =
+                    prepare_add(png, source, output, thumb, cards::card_size()).map(|mut add| {
+                        add.trace = trace;
+                        add
+                    });
                 let _ = tx.send(DaemonEvent::AddPrepared {
                     result,
                     stream,
@@ -899,6 +900,7 @@ pub fn run_daemon(save_dir_cli: Option<std::path::PathBuf>) -> DynResult<()> {
     crate::config::on_broken(notify);
     let config = crate::config::Config::load();
     let (recording_prefs, shelf_prefs) = (config.recording_prefs(), config.shelf_prefs());
+    cards::use_card_size(shelf_prefs.card);
     let (event_tx, event_rx) = calloop::channel::channel::<DaemonEvent>();
     let settings_writer = settings::Writer::spawn(event_tx.clone());
     let changed_tx = event_tx.clone();
@@ -907,7 +909,7 @@ pub fn run_daemon(save_dir_cli: Option<std::path::PathBuf>) -> DynResult<()> {
     }) {
         eprintln!("boltsnap daemon: config edits apply on the next action only: {error}");
     }
-    let thumbnails = thumbnail::Worker::spawn(event_tx.clone());
+    let thumbnails = thumbnail::Worker::spawn(event_tx.clone(), cards::card_size);
     let mut daemon = Daemon {
         registry_state: RegistryState::new(&globals),
         seat_state: SeatState::new(&globals, &qh),
@@ -1547,6 +1549,7 @@ impl Daemon {
             std::mem::take(&mut add.thumb),
             std::mem::take(&mut add.source),
         );
+        self.fit_card(id);
         if let Some(trace) = add.trace {
             if self.pending_image_traces.len() == MAX_CACHED_CARDS {
                 self.pending_image_traces.remove(0);
@@ -2651,7 +2654,9 @@ impl Daemon {
     fn handle_daemon_event(&mut self, event: DaemonEvent) {
         match event {
             DaemonEvent::ThumbnailReady { id, image, _permit } => {
+                // One made for an older card size is redone for the new one.
                 if let Some(image) = image
+                    && image.dimensions() == cards::card_size().dims()
                     && self.model.replace_thumb(id, image)
                     && let Some(qh) = self.qh.clone()
                 {
@@ -2937,18 +2942,9 @@ impl Daemon {
             if clip.permanent && !self.recording_prefs.disk_add_to_shelf && !shelf_card {
                 continue;
             }
-            let mut image = image::RgbaImage::new(
-                crate::shelf::thumbnail::CARD_W,
-                crate::shelf::thumbnail::CARD_H,
-            );
-            for pixel in image.pixels_mut() {
-                *pixel = image::Rgba([32, 32, 40, 255]);
-            }
-            let placeholder = crate::shelf::thumbnail::make_card_thumbnail(
-                &image,
-                crate::shelf::thumbnail::CARD_W,
-                crate::shelf::thumbnail::CARD_H,
-            );
+            let size = cards::card_size();
+            let placeholder =
+                image::RgbaImage::from_pixel(size.w, size.h, image::Rgba([32, 32, 40, 255]));
             let source = clip
                 .output
                 .as_deref()
