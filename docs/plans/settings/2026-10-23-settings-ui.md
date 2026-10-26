@@ -1816,6 +1816,46 @@ passt, dieselbe linke Kante (bei 760 und 1400 px).
 - Tests: Tray-Änderung bei offenem Fenster kommt an; gezogener Slider wird
   nicht überschrieben.
 
+##### S6 im Detail (Gegenprüfung am Code, 26.10.)
+
+Befund: der Daemon schickt Beobachtern nach jedem eigenen Schreiben
+(`shelf/settings.rs:175`) und jeder Dateiänderung (`shelf/mod.rs:2873`) eine
+JSON-Zeile mit `State` (`shelf/settings.rs:179`), nur wenn sich etwas
+geändert hat. `State` enthält nur die in der Datei gesetzten Werte, die
+Defaults stecken in `Config`.
+
+Abweichung von S6 oben: die Werte kommen weiter aus `prefs::load()`
+(`Config::load()` liest dieselbe Datei, die der Daemon schreibt, mit allen
+Defaults); die Watch-Zeile ist der Auslöser und liefert `broken`. Ein eigener
+Umbau `State` → `Prefs` würde die Default-Logik von `Config` doppeln.
+
+Verhalten:
+- `ipc::watch_settings()` wie `watch_recording()`; ein Thread im Fenster liest
+  Zeilen und schickt je Zeile ein Signal über einen calloop-Kanal; endet der
+  Strom (Daemon weg), versucht er es alle 2 s neu und meldet „not running“
+  über die Notice (Zustandstabelle „Daemon stirbt“).
+- Auf ein Signal: Notice neu (`save::notice()`), Seiten neu bauen,
+  `App::update(pages, now, busy)`. Gleiche Struktur (Blöcke gleicher Art,
+  Zeilen mit gleichem Namen und gleichen Einträgen) → je Zeile mit anderem
+  Wert `control.set(value, now)`, Hinweis und `enabled` übernommen, der
+  gemeldete Wert (`sent`) gleich mitgesetzt, damit nichts zurückgeschrieben
+  wird. Sonst `reload`.
+- Übersprungen werden: die fokussierte und die gezogene Zeile, und Zeilen mit
+  einem Schreibauftrag in der Schlange (`busy(block)`; das Fenster zählt
+  Aufträge je Block bis zur Antwort). So springt ein Slider nach dem Ziehen
+  nicht auf einen älteren Zwischenwert zurück.
+- `Widget::set(&Value, now)`: Schalter (Knopf-Feder `SNAP`), Segment (Gleiten
+  wie bei Wahl), Dropdown (Markierung gleitet), Stepper (Knöpfe blenden),
+  Slider und Textfeld springen (Ohne-Animation: Zahl und Text, D1 vom Nutzer
+  bestätigt 26.10.).
+- Replay-Zustand (läuft/steht) kommt nicht über diesen Strom; er wird bei
+  jedem Signal und beim Öffnen gelesen (`save::replay_state`), ein Umschalten
+  im Tray erscheint daher beim nächsten Signal, nicht sofort (bleibt offen).
+
+Tests: `update` mit geändertem Schalterwert gleitet und schreibt nichts
+zurück; fokussiertes Feld und gezogener Slider bleiben; `busy`-Zeile bleibt;
+andere Struktur → `reload`; je Widget `set`.
+
 #### S7 Hinweise nur wenn sie stimmen, „Restart replay“ (U4)
 
 - `watch_recording()` im Fenster; „Applies to the next recording“ nur bei
@@ -2039,6 +2079,7 @@ Vom Nutzer am 24.10. so bestätigt:
 | 5c S3 | umgesetzt 26.10. nach „S3 im Detail“. `Fonts::wrap` (Wörter, nach `/`, `-`, `_`, sonst zwischen Zeichen, eine Cursor-Liste je Wort), Banner bis 4 Zeilen (Abstand 20, eine Zeile wie bisher 46 hoch), Namen und Hinweise bis 3 Zeilen (Abstand ab zwei Zeilen 18/16), Zeilenhöhe je Anordnung (`side`, `stacked`), die Feder mischt zwischen beiden. Abweichung, beim Test gefunden: die Anordnung neben dem Control lässt dem Namen mindestens `LABEL_MIN` zum Umbrechen, sonst brach ein zu schmaler Name Buchstabe für Buchstabe und die Zeile sprang beim Stapeln von 46 auf 70 px. Gates: neu `gate_text_wraps_instead_of_being_cut` (238 Zeilen bei 360/480/760/1400, echte Seiten und Fehlerzustand, keine gekürzt; Gegenprobe mit einer Zeile schlägt an „Outline around a recorde...“); Innenabstand misst oben die höhere von Control und erster Textzeile, unten die tiefere; Überlauf 626 Teile, Abstände 0,00, Versalien 0,00, Icons 0,31/0,31/0,00/0,37 (Outfit). Render bei 360 px und Stress-Banner angesehen. Checks: fmt, clippy ohne Warnung, `cargo test` 98 + 374 grün. |
 | 5c S4 | umgesetzt 26.10. nach „S4 im Detail“ (Abweichung: nur Schalter-Zeilen ganz klickbar). `Widget::row_click` (Schalter `true`), `App::target_at` nimmt die ganze Zeile für solche Controls; Klick und Hover laufen über den bestehenden Pfad. Test `a_click_on_a_switch_rows_name_switches_and_other_names_do_nothing` (Hover hellt den Schalter auf, Klick schreibt `record_show_frame`, Klick auf den Namen „Frame rate“ schreibt nichts und fokussiert nichts). Checks: fmt, clippy ohne Warnung, `cargo test` 99 + 374 grün. |
 | 5c S5 | umgesetzt 26.10. nach „S5 im Detail“: `MENU_MIN = 120`, `Dropdown::width` mindestens so breit. Gate `gate_menus_share_a_left_edge`: 16 Dropdowns (Recording und Replay, Fehlerzustand, 760 und 1400 px) je Seite auf einer Kante; Gegenprobe ohne Mindestbreite schlägt an („only 0 dropdowns found“, das Gate verlangt mindestens 8, damit es nicht leer besteht). Render angesehen (Kanten bei 548 px). Checks: fmt, clippy ohne Warnung, `cargo test` 100 + 374 grün. |
+| 5c S6 | umgesetzt 26.10. nach „S6 im Detail“ (Abweichung dort: Werte weiter aus `prefs::load()`, die Watch-Zeile ist Auslöser). `Widget::adopt` für Schalter, Segment, Dropdown, Stepper (gleiten bzw. blenden), Slider und Feld (springen); `App::update` (gleiche Struktur → Werte übernehmen, fokussierte, gezogene und Zeilen mit offenem Schreibauftrag bleiben, übernommene Werte gelten als gemeldet; sonst `reload`); `ipc::watch_settings`, `save::watch` (Thread, neu alle 2 s, wenn der Daemon weg ist); Schreibaufträge tragen (Seite, Block), das Fenster zählt offene je Zeile. Tests (`app/tests/live.rs`, 3): Wert aus dem Tray gleitet und wird nicht zurückgeschrieben; fokussiertes Feld und Zeile mit offenem Auftrag bleiben; neue Notice baut auf derselben Seite neu. Checks: fmt, clippy ohne Warnung, `cargo test` 103 + 374 grün. Live nicht geprüft (bräuchte einen Tray-Klick bei offenem Fenster und einen Screenshot; nach Absprache). |
 | 5a | umgesetzt 26.10. nach „Phase 5a: Öffnen ohne Terminal“: Tray-Eintrag „Settings…“ ganz unten (Prozessstart im Tray-Thread), `assets/linux/boltsnap.desktop` mit Icons 64/128/256 aus `boltsnap.ico`, `.deb`-Assets, Flake-`postInstall`, Release-Tarball, README. Abweichung: `Categories=Graphics;`. Checks: `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test` 75 + 371 grün, `desktop-file-validate` ohne Meldung. Live: Daemon neu gestartet, dbusmenu-`GetLayout` endet auf „Settings…“; `gio launch` der installierten `.desktop`-Datei öffnet das Fenster (Klasse `boltsnap`). Nicht live prüfbar: Klick im Tray. |
 | 5 | geplant, freigegeben 24.10. |
 | 6 (Library) | Skizze im Library-Plan |

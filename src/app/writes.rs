@@ -92,6 +92,49 @@ impl App {
         self.changes(now)
     }
 
+    /// The pages again with the values in effect, after they changed
+    /// elsewhere. Same blocks and rows (names and entries) → each row takes
+    /// its new value through [`Widget::adopt`], except the focused and the
+    /// dragged row and those `busy(page, block)` says still have a write on
+    /// its way; what a row takes counts as reported, so nothing writes it
+    /// back. Anything else changed → [`App::reload`].
+    pub fn update(&mut self, pages: Vec<Page>, now: Instant, busy: impl Fn(usize, usize) -> bool) {
+        if !same_shape(&self.pages, &pages) {
+            self.reload(pages, now);
+            return;
+        }
+        let (current, focus, capture) = (self.current, self.focus, self.capture);
+        for (page, (old, new)) in self.pages.iter_mut().zip(pages).enumerate() {
+            for (index, pair) in old.blocks.iter_mut().zip(new.blocks).enumerate() {
+                let (old, new) = match pair {
+                    (Block::Row(old), Block::Row(new)) => (old, new),
+                    (old, new) => {
+                        *old = new;
+                        continue;
+                    }
+                };
+                old.hint = new.hint;
+                old.enabled = new.enabled;
+                old.bind = new.bind;
+                let held = Some(Target::Control(index));
+                if page == current && (focus == held || capture == held || busy(page, index)) {
+                    continue;
+                }
+                let value = new.control.value();
+                if old.control.value() != value {
+                    old.control.adopt(&value, now);
+                    if page == current
+                        && let Some(sent) = self.sent.get_mut(index)
+                    {
+                        *sent = Some(value);
+                    }
+                }
+            }
+        }
+        // A hint that came or went changes heights.
+        self.resize(self.size, now);
+    }
+
     /// Fresh pages, after a write was refused or the state changed: the same
     /// page stays shown at the same scroll, controls show the new values and
     /// none keeps focus.
@@ -115,4 +158,21 @@ impl App {
             self.set_hover(target, now);
         }
     }
+}
+
+/// The same pages, blocks of the same kinds, rows with the same names and
+/// entries: then values can change in place.
+fn same_shape(old: &[Page], new: &[Page]) -> bool {
+    old.len() == new.len()
+        && old.iter().zip(new).all(|(old, new)| {
+            old.blocks.len() == new.blocks.len()
+                && old.blocks.iter().zip(&new.blocks).all(|pair| match pair {
+                    (Block::Row(a), Block::Row(b)) => {
+                        a.label == b.label && a.control.labels() == b.control.labels()
+                    }
+                    (Block::Heading(a), Block::Heading(b)) => a == b,
+                    (Block::Banner { .. }, Block::Banner { .. }) => true,
+                    _ => false,
+                })
+        })
 }

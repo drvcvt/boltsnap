@@ -65,6 +65,9 @@ pub(super) struct Win {
     qh: QueueHandle<Win>,
     paste: calloop::channel::Sender<String>,
     pub(super) saver: Option<super::save::Saver>,
+    /// Writes on their way, per (page, block): those rows keep the value
+    /// being written until the answer comes.
+    pub(super) pending: std::collections::HashMap<super::save::Tag, usize>,
     /// What the pages show on top: a refused write, or why nothing saves.
     pub(super) notice: Option<boltsnap::app::pages::Notice>,
     pub(super) exit: bool,
@@ -130,6 +133,7 @@ impl Win {
             qh: qh.clone(),
             paste,
             saver: None,
+            pending: Default::default(),
             notice: None,
             exit: false,
         })
@@ -168,7 +172,9 @@ impl Win {
             Effect::Close => self.exit = true,
             Effect::Changed(block) => {
                 if let (Some(write), Some(saver)) = (self.app.write(block), &self.saver) {
-                    saver.send(write);
+                    let tag = (self.app.current(), block);
+                    *self.pending.entry(tag).or_default() += 1;
+                    saver.send(tag, write);
                 }
             }
             Effect::Copy(text) => {

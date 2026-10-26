@@ -124,6 +124,11 @@ pub trait Widget {
 
     fn value(&self) -> Value;
 
+    /// Show `value`, which changed elsewhere (the tray, the file), as if it
+    /// had been chosen here: what glides when chosen glides, numbers and
+    /// text jump (settings plan, 5c S6). A value of the wrong kind is ignored.
+    fn adopt(&mut self, _value: &Value, _now: Instant) {}
+
     /// The words the control shows, for the copy check.
     fn labels(&self) -> Vec<&str> {
         Vec::new()

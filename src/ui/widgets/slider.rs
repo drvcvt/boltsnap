@@ -133,6 +133,12 @@ impl Widget for Slider {
         Value::Int(self.value)
     }
 
+    fn adopt(&mut self, value: &Value, _: Instant) {
+        if let Value::Int(value) = value {
+            self.set(*value);
+        }
+    }
+
     fn press(
         &mut self,
         rect: Rect,

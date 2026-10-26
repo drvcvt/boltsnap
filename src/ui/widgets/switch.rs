@@ -73,6 +73,14 @@ impl Widget for Switch {
         Value::Bool(self.on)
     }
 
+    fn adopt(&mut self, value: &Value, now: Instant) {
+        if let Value::Bool(on) = value
+            && *on != self.on
+        {
+            self.toggle(now);
+        }
+    }
+
     fn row_click(&self) -> bool {
         true
     }

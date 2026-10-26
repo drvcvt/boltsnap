@@ -115,6 +115,15 @@ impl Widget for Dropdown {
         Value::Choice(self.chosen)
     }
 
+    fn adopt(&mut self, value: &Value, now: Instant) {
+        if let Value::Choice(index) = value
+            && *index < self.items.len()
+        {
+            self.chosen = *index;
+            self.mark.set(*index as f32, now);
+        }
+    }
+
     fn labels(&self) -> Vec<&str> {
         self.items.iter().map(String::as_str).collect()
     }

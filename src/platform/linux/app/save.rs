@@ -13,29 +13,32 @@ use serde_json::json;
 
 use crate::ipc::{Request, call_daemon};
 
+/// Which row a write came from: (page, block).
+pub(super) type Tag = (usize, usize);
+
 pub(super) struct Saver {
-    writes: mpsc::Sender<Write>,
+    writes: mpsc::Sender<(Tag, Write)>,
     thread: JoinHandle<()>,
 }
 
 impl Saver {
-    /// `done` gets every write back with its outcome.
-    pub(super) fn spawn(done: calloop::channel::Sender<Result<Write, String>>) -> Self {
-        let (writes, queue) = mpsc::channel::<Write>();
+    /// `done` gets every write's tag back with its outcome.
+    pub(super) fn spawn(done: calloop::channel::Sender<(Tag, Result<(), String>)>) -> Self {
+        let (writes, queue) = mpsc::channel::<(Tag, Write)>();
         let thread = std::thread::spawn(move || {
-            for write in queue {
-                let result = send(&write).map(|()| write);
+            for (tag, write) in queue {
+                let result = send(&write);
                 if let Err(error) = &result {
                     eprintln!("boltsnap settings: {error}");
                 }
-                let _ = done.send(result);
+                let _ = done.send((tag, result));
             }
         });
         Self { writes, thread }
     }
 
-    pub(super) fn send(&self, write: Write) {
-        let _ = self.writes.send(write);
+    pub(super) fn send(&self, tag: Tag, write: Write) {
+        let _ = self.writes.send((tag, write));
     }
 
     /// Wait until every write sent so far has gone out; the window is closing.
@@ -86,6 +89,28 @@ pub(super) fn notice() -> Option<Notice> {
             None => None,
         },
     }
+}
+
+/// Follow the daemon's settings: `changed` gets a signal for every state it
+/// sends, and one when the daemon goes away; then the watch starts again
+/// every 2 s (starting the daemon, like any command).
+pub(super) fn watch(changed: calloop::channel::Sender<()>) {
+    std::thread::spawn(move || {
+        loop {
+            if let Ok(stream) = crate::ipc::watch_settings() {
+                use std::io::BufRead;
+                for line in std::io::BufReader::new(stream).lines() {
+                    if line.is_err() || changed.send(()).is_err() {
+                        break;
+                    }
+                }
+            }
+            if changed.send(()).is_err() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_secs(2));
+        }
+    });
 }
 
 /// (running, stalled): whether the replay buffer is up, and up without video.

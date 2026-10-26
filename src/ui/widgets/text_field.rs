@@ -224,6 +224,15 @@ impl Widget for TextField {
         Value::Text(self.committed.clone())
     }
 
+    fn adopt(&mut self, value: &Value, _: Instant) {
+        if let Value::Text(text) = value {
+            self.text.clone_from(text);
+            self.committed.clone_from(text);
+            self.caret = text.len();
+            self.anchor = text.len();
+        }
+    }
+
     fn press(
         &mut self,
         rect: Rect,

@@ -122,6 +122,12 @@ impl Widget for Stepper {
         Value::Int(self.value)
     }
 
+    fn adopt(&mut self, value: &Value, now: Instant) {
+        if let Value::Int(value) = value {
+            self.set(*value, now);
+        }
+    }
+
     fn press(&mut self, rect: Rect, (x, y): (f32, f32), _: u8, _: &Fonts, now: Instant) -> Outcome {
         let (minus, plus) = Self::buttons(rect);
         let (index, by) = if minus.contains(x, y) {

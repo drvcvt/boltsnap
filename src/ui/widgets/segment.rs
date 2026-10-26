@@ -209,6 +209,12 @@ impl Widget for Segment {
         Value::Choice(self.chosen)
     }
 
+    fn adopt(&mut self, value: &Value, now: Instant) {
+        if let Value::Choice(index) = value {
+            self.choose(*index, now);
+        }
+    }
+
     fn labels(&self) -> Vec<&str> {
         self.parts
             .iter()

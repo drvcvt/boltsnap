@@ -192,6 +192,14 @@ pub fn watch_recording() -> io::Result<UnixStream> {
     Ok(stream)
 }
 
+/// The settings state now, then again after every change (one JSON line each).
+pub fn watch_settings() -> io::Result<UnixStream> {
+    let mut stream = ensure_daemon()?;
+    stream.write_all(&Request::SettingsWatch.encode())?;
+    stream.flush()?;
+    Ok(stream)
+}
+
 #[cfg(test)]
 fn watch_recording_at(path: &std::path::Path) -> io::Result<UnixStream> {
     let mut stream = UnixStream::connect(path)?;

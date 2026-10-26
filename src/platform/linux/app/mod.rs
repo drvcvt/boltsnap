@@ -173,11 +173,20 @@ fn run(page: Option<&str>) -> DynResult<()> {
     win.notice = notice;
     handle
         .insert_source(done_rx, |event, _, win: &mut Win| {
-            if let calloop::channel::Event::Msg(result) = event {
-                win.saved(result);
+            if let calloop::channel::Event::Msg((tag, result)) = event {
+                win.saved(tag, result);
             }
         })
         .map_err(|error| format!("save source: {error}"))?;
+    let (watch_tx, watch_rx) = calloop::channel::channel();
+    save::watch(watch_tx);
+    handle
+        .insert_source(watch_rx, |event, _, win: &mut Win| {
+            if let calloop::channel::Event::Msg(()) = event {
+                win.refresh();
+            }
+        })
+        .map_err(|error| format!("watch source: {error}"))?;
     handle
         .insert_source(paste_rx, |event, _, win: &mut Win| {
             if let calloop::channel::Event::Msg(text) = event {
@@ -207,7 +216,13 @@ fn run(page: Option<&str>) -> DynResult<()> {
 impl Win {
     /// What came of a write. A refusal shows its reason on every page and
     /// puts the values back to what is saved; the next success clears it.
-    fn saved(&mut self, result: Result<boltsnap::app::Write, String>) {
+    fn saved(&mut self, tag: save::Tag, result: Result<(), String>) {
+        if let Some(count) = self.pending.get_mut(&tag) {
+            *count -= 1;
+            if *count == 0 {
+                self.pending.remove(&tag);
+            }
+        }
         let notice = match result {
             Err(text) => Some(pages::Notice {
                 text,
@@ -220,6 +235,24 @@ impl Win {
         let now = Instant::now();
         self.app
             .reload(settings_pages(self.notice.as_ref(), now), now);
+        self.changed();
+    }
+
+    /// The daemon's settings changed (the tray, the file, our own write):
+    /// show the values in effect without rebuilding what did not change.
+    fn refresh(&mut self) {
+        let notice = save::notice();
+        // A refused write keeps its message until the next success.
+        if !(notice.is_none() && self.notice.as_ref().is_some_and(|n| !n.locked)) {
+            self.notice = notice;
+        }
+        let now = Instant::now();
+        let pending = &self.pending;
+        self.app.update(
+            settings_pages(self.notice.as_ref(), now),
+            now,
+            |page, block| pending.contains_key(&(page, block)),
+        );
         self.changed();
     }
 }
