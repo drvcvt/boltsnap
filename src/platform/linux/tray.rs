@@ -222,7 +222,7 @@ const SETTINGS_LABEL: &str = "Settings…";
 /// Starts the settings window as its own process, right from the tray thread;
 /// an open window raises itself instead (single instance).
 fn open_settings() {
-    let result = std::env::current_exe()
+    let result = crate::paths::own_exe()
         .map_err(|error| format!("find boltsnap executable: {error}"))
         .and_then(|exe| {
             crate::paths::spawn_reaped(

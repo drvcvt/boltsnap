@@ -18,6 +18,23 @@ pub fn has_cmd(name: &str) -> bool {
     env::split_paths(&paths).any(|dir| dir.join(name).is_file())
 }
 
+/// This binary, to start another copy of. An update that replaced the file
+/// (`cargo install`, a package upgrade) leaves a long-lived process such as
+/// the daemon running from a deleted file, which Linux names `… (deleted)`;
+/// the file now at the original path is the new build, and the one to start.
+pub fn own_exe() -> io::Result<PathBuf> {
+    let exe = env::current_exe()?;
+    Ok(replaced_by(&exe)
+        .filter(|path| path.is_file())
+        .unwrap_or(exe))
+}
+
+fn replaced_by(exe: &Path) -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    let original = exe.as_os_str().as_bytes().strip_suffix(b" (deleted)")?;
+    Some(PathBuf::from(std::ffi::OsStr::from_bytes(original)))
+}
+
 /// Spawn a fire-and-forget child without leaving a zombie in long-lived callers.
 pub fn spawn_reaped(command: &mut Command) -> io::Result<u32> {
     let mut child = command.spawn()?;
@@ -337,6 +354,16 @@ pub fn local_timestamp() -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_replaced_binary_is_started_from_its_original_path() {
+        use std::path::Path;
+        assert_eq!(
+            super::replaced_by(Path::new("/home/u/.cargo/bin/boltsnap (deleted)")),
+            Some("/home/u/.cargo/bin/boltsnap".into())
+        );
+        assert_eq!(super::replaced_by(Path::new("/usr/bin/boltsnap")), None);
+    }
+
     #[test]
     fn local_timestamp_matches_date_format() {
         let stamp = super::local_timestamp();

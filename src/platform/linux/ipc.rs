@@ -94,7 +94,7 @@ pub(super) fn ensure_daemon() -> io::Result<UnixStream> {
     // Keep working on systems without a usable user service manager.
     if !managed {
         use std::os::unix::process::CommandExt;
-        let exe = std::env::current_exe()?;
+        let exe = crate::paths::own_exe()?;
         let mut daemon = Command::new(exe);
         daemon
             .arg("daemon")

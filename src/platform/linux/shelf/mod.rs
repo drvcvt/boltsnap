@@ -1261,7 +1261,7 @@ impl Daemon {
                 if self.recording.is_some() {
                     notify("A recording is already in progress");
                 } else {
-                    let result = std::env::current_exe()
+                    let result = crate::paths::own_exe()
                         .map_err(|error| format!("find boltsnap executable: {error}"))
                         .and_then(|exe| {
                             crate::paths::spawn_reaped(

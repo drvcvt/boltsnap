@@ -1,4 +1,3 @@
-use std::env;
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -74,7 +73,7 @@ pub fn serve_wayland_uri_list(path: &Path) -> DynResult<()> {
 /// `__serve-clipboard-uri` self that holds the data source open, so the caller
 /// returns immediately. Copies only the path — instant regardless of file size.
 pub fn copy_uri_to_clipboard(path: &Path) -> DynResult<()> {
-    let exe = env::current_exe()?;
+    let exe = crate::paths::own_exe()?;
     crate::paths::spawn_reaped(
         Command::new(exe)
             .arg("__serve-clipboard-uri")
@@ -104,7 +103,7 @@ fn copy_to_clipboard_with(
         Backend::Wayland => {
             // Spawn a detached self holding the clipboard data source open
             // so the foreground shell returns immediately.
-            let exe = env::current_exe()?;
+            let exe = crate::paths::own_exe()?;
             crate::paths::spawn_reaped(
                 Command::new(exe)
                     .arg(if remove_after_read {
