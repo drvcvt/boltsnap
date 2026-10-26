@@ -2377,6 +2377,12 @@ V4 Shelf:
 - Karten: die nächsten Screenshots als Vorschaubilder (füllend zugeschnitten
   auf das Kartenformat), Radius maßstäblich; mehr Karten als Bilder: die
   übrigen als Fläche.
+- Maße (Wunsch des Nutzers, 26.10.): an der vordersten Karte eine Maßlinie
+  für Breite und Höhe mit „190 px“ und „132 px“ (`Key`, `SUB`, dünne Linie
+  mit Endstrichen, nicht auf der Karte). Interaktiv: die Kante der vordersten
+  Karte lässt sich ziehen und ändert „Card size“ wie der Slider (in 10er
+  Schritten, gedrosselt geschrieben wie der Slider); Hover über der Kante
+  hellt die Maßlinie auf. Tastatur bleibt der Slider.
 
 Code: `linux/app/shots.rs` (neu: neueste PNG laden, verkleinern, über einen
 Kanal an das Fenster), `app/preview/` (Bilder als Pixmaps, Zeichnen mit
