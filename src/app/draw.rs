@@ -100,9 +100,9 @@ impl App {
             y: slot.y + self.nav.value(now) * pitch,
             ..slot
         };
+        canvas.fill(selection, RADIUS, theme::RAISE, 1.0);
         let focus = self.fade(Target::Nav(self.current), Channel::Focus, now);
-        let fill = theme::mix(theme::RAISE, theme::HOVER, focus);
-        canvas.fill(selection, RADIUS, fill, 1.0);
+        widgets::focus_ring(canvas, selection, RADIUS, focus * self.keyed(now));
         // Closing, the icon grows to its free-standing size and moves to the
         // middle; the names fade out in the first half and are cut at the
         // edge, never shortened while they go.
@@ -179,6 +179,7 @@ impl App {
                     hover: self.fade(target, Channel::Hover, now),
                     press: self.fade(target, Channel::Press, now),
                     focus: self.fade(target, Channel::Focus, now),
+                    ring: self.fade(target, Channel::Focus, now) * self.keyed(now),
                     focused: self.focus == Some(target),
                     enabled: row.enabled,
                 };

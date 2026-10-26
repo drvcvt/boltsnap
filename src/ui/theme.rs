@@ -118,6 +118,8 @@ pub const LABEL_MIN: f32 = 120.0;
 pub const THUMB_W: f32 = 4.0;
 /// Icon stroke in logical pixels at any icon size.
 pub const STROKE: f32 = 1.5;
+/// The keyboard focus outline, around a control (settings plan, 5c S2).
+pub const FOCUS_W: f32 = 2.0;
 
 /// Hover, press, focus, a list opening, text getting brighter.
 pub const QUICK: Token = Token { duration: 0.15 };

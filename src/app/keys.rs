@@ -4,7 +4,7 @@
 use std::time::Instant;
 
 use super::{AT_REST, App, Block, Target};
-use crate::ui::theme::GAP_S;
+use crate::ui::theme::{GAP_S, QUICK};
 use crate::ui::widgets::Outcome;
 use crate::ui::{Effect, Key, Mods};
 
@@ -35,6 +35,7 @@ impl App {
             (Some(at), false) => (at + 1) % order.len(),
             (Some(at), true) => (at + order.len() - 1) % order.len(),
         };
+        self.keyed.retarget(1.0, QUICK, now);
         let outcome = self.set_focus(Some(order[next]), now);
         if let Target::Control(block) = order[next] {
             let rect = self.layout_at(0.0, 0.0, now + AT_REST).blocks[block];
@@ -74,6 +75,7 @@ impl App {
                 };
                 match to {
                     Some(to) => {
+                        self.keyed.retarget(1.0, QUICK, now);
                         self.show(to, now);
                         self.set_focus(Some(Target::Nav(to)), now);
                         Outcome::HANDLED

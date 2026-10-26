@@ -53,6 +53,7 @@ impl Widget for Switch {
             (theme::RAISE, theme::DIM)
         };
         canvas.fill(track, TRACK_H / 2.0, theme::mix(off, on, t), 1.0);
+        super::focus_ring(canvas, track, TRACK_H / 2.0, look.ring);
         let knob = TRACK_H - 2.0 * KNOB_INSET;
         let x = track.x + KNOB_INSET + t * (TRACK_W - TRACK_H);
         let knob_color = if look.enabled {

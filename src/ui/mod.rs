@@ -223,6 +223,27 @@ impl Canvas {
         Transform::from_scale(self.scale, self.scale)
     }
 
+    /// A band `width` wide just inside `rect`'s rounded outline.
+    pub fn ring(&mut self, rect: Rect, radius: f32, width: f32, color: Rgb, alpha: f32) {
+        if rect.w <= 2.0 * width || rect.h <= 2.0 * width || alpha <= 0.0 {
+            return;
+        }
+        let mut pb = PathBuilder::new();
+        push_rounded(&mut pb, rect, radius);
+        push_rounded(&mut pb, rect.inset(width), (radius - width).max(0.0));
+        let Some(path) = pb.finish() else {
+            return;
+        };
+        let transform = self.transform();
+        self.pixmap.fill_path(
+            &path,
+            &paint(color, alpha),
+            FillRule::EvenOdd,
+            transform,
+            None,
+        );
+    }
+
     /// Fill `rect` with corners of `radius`, at `alpha` (0 to 1).
     pub fn fill(&mut self, rect: Rect, radius: f32, color: Rgb, alpha: f32) {
         if rect.w <= 0.0 || rect.h <= 0.0 || alpha <= 0.0 {

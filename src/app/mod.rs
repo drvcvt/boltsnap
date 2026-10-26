@@ -77,6 +77,9 @@ pub struct App {
     stacked: Vec<Spring>,
     /// 0 to 1: the scroll thumb, there while the page is longer than the window.
     thumb: Spring,
+    /// 1 while focus came from the keyboard, 0 after a click: the focus
+    /// outline shows only for the first (like `:focus-visible`).
+    keyed: Spring,
     size: (f32, f32),
     scroll: Scroll,
     focus: Option<Target>,
@@ -111,6 +114,7 @@ impl App {
             ),
             stacked: Vec::new(),
             thumb: Spring::settled(0.0, now),
+            keyed: Spring::settled(0.0, now),
             size,
             scroll: Scroll::new(now),
             focus: None,
@@ -163,6 +167,11 @@ impl App {
         self.scroll.set_max(height - size.1, now);
         let thumb = if self.scroll.max() > 0.0 { 1.0 } else { 0.0 };
         self.thumb.retarget(thumb, QUICK, now);
+    }
+
+    /// 0 to 1: how much the focus outline shows (see `keyed`).
+    pub fn keyed(&self, now: Instant) -> f32 {
+        self.keyed.value(now).clamp(0.0, 1.0)
     }
 
     /// 0 to 1: how much of the scroll thumb shows.
@@ -394,6 +403,7 @@ impl App {
     }
 
     fn press(&mut self, at: (f32, f32), clicks: u8, now: Instant) -> Outcome {
+        self.keyed.retarget(0.0, QUICK, now);
         if let Some((block, list)) = self.open_overlay(now) {
             let anchor = self.control_rect(block, now);
             let control = self.control(block).expect("overlay belongs to a row");
@@ -437,6 +447,7 @@ impl App {
             || !self.page_in.done(now)
             || !self.nav_open.done(now)
             || !self.thumb.done(now)
+            || !self.keyed.done(now)
             || self.stacked.iter().any(|spring| !spring.done(now))
             || self.scroll.moving(now)
             || self.fades.moving(now)

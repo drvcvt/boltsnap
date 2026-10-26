@@ -105,13 +105,16 @@ impl Widget for Slider {
         canvas.fill(bar(track.x, track.w * t), TRACK_H / 2.0, fill, 1.0);
         let knob_x = track.x + track.w * t - KNOB / 2.0;
         let knob = Rect::new(knob_x, rect.y + (rect.h - KNOB) / 2.0, KNOB, KNOB);
-        // A ring would be a glow; hover, focus and a drag lift a flat halo.
-        let halo = look.hover.max(look.focus).max(look.press);
+        // Hover and a drag lift a flat halo; keyboard focus is the outline.
+        let halo = look.hover.max(look.press);
         if look.enabled && halo > 0.0 {
             let lift = theme::mix(theme::HOVER, theme::SELECTED, look.press);
             canvas.fill(knob.inset(-3.0), KNOB / 2.0 + 3.0, lift, halo);
         }
         canvas.fill(knob, KNOB / 2.0, fill, 1.0);
+        // A gap between the white knob and its outline keeps both readable.
+        let gap = 2.0;
+        super::focus_ring(canvas, knob.inset(-gap), KNOB / 2.0 + gap, look.ring);
         let text = self.label(self.value);
         // Right-aligned so the number's last digit stays put while it changes.
         let x = rect.right() - fonts.width(TextStyle::Label, &text);

@@ -1666,6 +1666,40 @@ Macht nicht: Schaden im Shelf nur im geänderten Bereich, Popup, Rahmen.
 - Gate: Kontrast Kontur gegen `RAISE` ≥ 3:1 (5,38:1) neu in `gate_contrast`.
 - Dateien: `widgets/mod.rs` (`focus_ring`), alle Widgets, `draw.rs`.
 
+##### S2 im Detail (Gegenprüfung am Code, 26.10.)
+
+Befund: Fokus hebt heute nur die Fläche an, `RAISE` → `HOVER`
+(`Look::surface`, `widgets/mod.rs:46`, wie Hover), 1,11:1; der Slider zeigt
+Fokus über seinen Halo (`slider.rs:109`), die Navigation über die Fläche der
+Auswahl (`draw.rs`, `fill = mix(RAISE, HOVER, focus)`). Es gibt keine
+Kontur-Funktion im Canvas.
+
+Abweichung von S2 oben: die Kontur liegt **außen** um die Fläche, nicht innen.
+Innen läge sie bei einem eingeschalteten Schalter auf der hellen Spur (`SUB`
+gegen `TEXT` nur 2,3:1); außen liegt sie überall auf der Gruppe (`SUB` gegen
+`PANEL` 5,9:1) bzw. der Seitenleiste. Platz: Controls sind 30 hoch in 46er
+Zeilen, die Navigationsflächen haben 2 px bis zum Nachbarn, die Gruppe 12 px
+Innenabstand; die Kontur (2 px) passt überall, ohne etwas zu überdecken.
+
+Umsetzung:
+- `Canvas::ring(rect, radius, width, color, alpha)`: zwei abgerundete
+  Rechtecke, gerade-ungerade gefüllt.
+- Token `FOCUS_W = 2`. `widgets::focus_ring(canvas, rect, radius, look)`:
+  Kontur um `rect.inset(-2)` mit Radius + 2 (konzentrisch), Farbe `SUB`,
+  Deckkraft = Fokus-Fade (`QUICK`).
+- `Look::surface` hebt nur noch für Hover; `surface()` zeichnet die Kontur mit.
+  Schalter: um die Spur; Slider: um den Knopf, Halo nur noch Hover und Druck;
+  Navigation: um die Auswahlfläche.
+- Gate Kontrast: Paare „focus ring“ `SUB` auf `PANEL` und auf `SIDEBAR`.
+- Test: fokussiertes Dropdown hat 1 px außerhalb seiner Kante Kontur-Pixel,
+  ohne Fokus nicht; Fade-Mitte halb.
+
+- Nur bei Tastatur-Fokus (wie `:focus-visible`): `App` merkt sich, ob der
+  Fokus zuletzt per Taste kam (Tab, Pfeile in der Navigation) oder per Klick;
+  `Look::ring` = Fokus-Fade nur im ersten Fall, sonst 0. Ein Klick nach
+  Tastatur-Fokus blendet die Kontur mit `QUICK` aus. Test: Tab zeigt die
+  Kontur, Klick auf dasselbe Control nicht.
+
 #### S3 Umbruch statt Kürzen (U2, U3)
 
 - `text.rs`: `wrap(style, text, width) -> Vec<String>` (Wortgrenzen, in Pfaden
@@ -1933,6 +1967,7 @@ Vom Nutzer am 24.10. so bestätigt:
 | 4f | 26.10., Meldung des Nutzers: Animationen „droppen die kompletten fps“, gemeint beim Resizen, wenn die Navigation einklappt. Zwei Ursachen, gemessen mit einem nachgestellten Zieh-Resize (`hl.dsp.window.resize`, Breite 900 → 420 → 900 in 4-px-Schritten alle 4 ms, 241 configures): (1) der configure-Handler setzte `frame_pending = false` und zeichnete sofort, also ein kompletter Frame je Zeiger-Event außerhalb des Bildschirmtakts (wie beim Shelf, 8313b18); (2) `SlotPool::create_buffer` erzeugte jeden Frame einen neuen `wl_buffer` (für den Compositor neue Textur und voller Upload, egal welcher Schaden). Fix: configure merkt sich nur Größe und Schaden und zeichnet erst, wenn kein Frame unterwegs ist; bis zu drei Puffer werden wiederverwendet, sind alle beim Compositor, kommt einer dazu und der älteste geht (eine erste Fassung, die dann nur den nächsten Frame anforderte, lief in eine Leerlauf-Schleife: 1529 umsonst gezeichnete Frames in 1,9 s, gemessen und verworfen). Ergebnis: CPU des Fensterprozesses beim Resize 96,4 / 96,2 % eines Kerns (installierter Stand) → 36,8 / 35,9 % (zwei Läufe); Commits im Takt, Median 5,2 ms. Hyprlands eigene CPU ist hier kein Maß, weil jeder `hyprctl`-Aufruf der Simulation selbst Last erzeugt. Kein Unit-Test (braucht einen Compositor); Abnahme ist diese Messung. |
 | 4f-Folge | offen, Verdacht aus 4f, nicht gemessen: der Shelf (`shelf/mod.rs:2030`, Layer-Draw) und der Selector (`select_skia/mod.rs:628`) legen ebenfalls je Zeichnung einen neuen `wl_buffer` über `create_buffer` an; bei Shelf-Animationen hätte der Compositor dieselbe Mehrarbeit. P2 bis gemessen. Messung wie in 4f (CPU des Daemons, Commit-Abstände) beim Erscheinen und Entfernen einer Karte, dann gleicher Fix. |
 | 5c S1 | umgesetzt 26.10.: `linux/buffers.rs` (`Buffers`, bis zu drei je Größe, freier zuerst, sonst neu und der älteste geht), genutzt vom Fenster (ersetzt die Logik aus 4f) und vom Shelf-Draw (`shelf/mod.rs` bleibt bei 3681 Zeilen). Test `a_released_buffer_is_reused_before_a_new_one_is_made`. Checks: fmt, clippy ohne Warnung, `cargo test` 95 + 374 grün. Live nicht gemessen (siehe S1 Abnahme: Versuch brach den Desktop des Nutzers aus, abgebrochen); greift im Shelf erst nach einem Daemon-Neustart. |
+| 5c S2 | umgesetzt 26.10. nach „S2 im Detail“ (Abweichung dort begründet: Kontur außen statt innen; `:focus-visible`-Verhalten gleich mit eingebaut). `Canvas::ring`, Token `FOCUS_W = 2`, `widgets::focus_ring`; Fläche hebt nur noch bei Hover; Schalter um die Spur, Slider um den Knopf mit 2 px Abstand, Navigation um die Auswahl; `App::keyed` (Feder `QUICK`): Tab und Pfeile in der Navigation zeigen, ein Klick blendet aus. Gemessen: Kontur auf Gruppe 6,06:1, auf Seitenleiste 6,37:1, gegen das Control 5,38:1 (vorher Fokus 1,11:1). Test `tab_shows_the_outline_and_a_click_hides_it` (Pixel 1 px links des Dropdowns), Render der fünf Arten angesehen. Checks: fmt, clippy ohne Warnung, `cargo test` 96 + 374 grün. |
 | 5a | umgesetzt 26.10. nach „Phase 5a: Öffnen ohne Terminal“: Tray-Eintrag „Settings…“ ganz unten (Prozessstart im Tray-Thread), `assets/linux/boltsnap.desktop` mit Icons 64/128/256 aus `boltsnap.ico`, `.deb`-Assets, Flake-`postInstall`, Release-Tarball, README. Abweichung: `Categories=Graphics;`. Checks: `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test` 75 + 371 grün, `desktop-file-validate` ohne Meldung. Live: Daemon neu gestartet, dbusmenu-`GetLayout` endet auf „Settings…“; `gio launch` der installierten `.desktop`-Datei öffnet das Fenster (Klasse `boltsnap`). Nicht live prüfbar: Klick im Tray. |
 | 5 | geplant, freigegeben 24.10. |
 | 6 (Library) | Skizze im Library-Plan |

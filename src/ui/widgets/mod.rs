@@ -32,18 +32,20 @@ pub struct Look {
     pub hover: f32,
     pub press: f32,
     pub focus: f32,
+    /// 0 to 1: the focus outline, shown only for focus from the keyboard.
+    pub ring: f32,
     pub focused: bool,
     pub enabled: bool,
 }
 
 impl Look {
-    /// The control's surface: one step lighter on hover and focus, one more
-    /// while pressed.
+    /// The control's surface: one step lighter on hover, one more while
+    /// pressed. Focus shows as an outline (`focus_ring`).
     pub fn surface(&self) -> Rgb {
         if !self.enabled {
             return theme::RAISE;
         }
-        let lifted = theme::mix(theme::RAISE, theme::HOVER, self.hover.max(self.focus));
+        let lifted = theme::mix(theme::RAISE, theme::HOVER, self.hover);
         theme::mix(lifted, theme::SELECTED, self.press)
     }
 
@@ -196,6 +198,14 @@ pub(crate) fn light(springs: &mut [Spring], on: impl Fn(usize) -> bool, now: Ins
 /// The control's rounded surface.
 pub(crate) fn surface(canvas: &mut Canvas, rect: Rect, look: &Look) {
     canvas.fill(rect, theme::RADIUS, look.surface(), 1.0);
+    focus_ring(canvas, rect, theme::RADIUS, look.ring);
+}
+
+/// The keyboard focus outline: `FOCUS_W` around `rect`, concentric with its
+/// corners, in `SUB` on the group or sidebar behind (no glow).
+pub(crate) fn focus_ring(canvas: &mut Canvas, rect: Rect, radius: f32, strength: f32) {
+    let w = theme::FOCUS_W;
+    canvas.ring(rect.inset(-w), radius + w, w, theme::SUB, strength);
 }
 
 /// A `size` icon box at `x`, centred on `line`'s middle, where text drawn

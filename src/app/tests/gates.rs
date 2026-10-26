@@ -277,6 +277,17 @@ fn gate_contrast_every_text_on_its_surface() {
         assert!(ratio >= 4.5, "{what}: {ratio:.2}:1");
     }
     println!("gate contrast: {} pairs, lowest {lowest:.2}:1", pairs.len());
+    // The focus outline is a state, not text: 3:1 against what it sits on
+    // (WCAG 2.4.13), and against the control it surrounds.
+    for (what, bg) in [
+        ("on group", PANEL),
+        ("on sidebar", SIDEBAR),
+        ("against control", RAISE),
+    ] {
+        let ratio = contrast(SUB, bg);
+        assert!(ratio >= 3.0, "focus outline {what}: {ratio:.2}:1");
+        println!("gate contrast: focus outline {what} {ratio:.2}:1");
+    }
 }
 
 #[test]
