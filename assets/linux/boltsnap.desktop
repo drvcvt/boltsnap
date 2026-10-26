@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Boltsnap
+Comment=Shelf, recording and replay settings
+Exec=boltsnap settings
+Icon=boltsnap
+Terminal=false
+StartupWMClass=boltsnap
+Categories=Graphics;

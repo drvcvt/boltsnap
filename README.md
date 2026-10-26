@@ -99,6 +99,21 @@ libway's optional GPU support does not add a GBM requirement to Boltsnap.
 cargo install --path .
 ```
 
+The `.deb` and the Nix package install a launcher entry with the Boltsnap
+icon. After `cargo install` or with the tarball, add it from the checkout or
+the unpacked tarball; `sed` writes the binary's full path, since
+`~/.cargo/bin` is often not on the desktop session's `PATH`:
+
+```sh
+mkdir -p ~/.local/share/applications
+sed "s|^Exec=boltsnap|Exec=$(command -v boltsnap)|" assets/linux/boltsnap.desktop \
+  > ~/.local/share/applications/boltsnap.desktop
+for size in 64 128 256; do
+  install -Dm644 assets/linux/boltsnap-$size.png \
+    ~/.local/share/icons/hicolor/${size}x${size}/apps/boltsnap.png
+done
+```
+
 ### Arch Linux
 
 The tagged release binaries can lag behind `main` — for the current shelf and
@@ -198,7 +213,11 @@ boltsnap full --no-copy -o /tmp/x.png   # write file, skip clipboard
 boltsnap area --no-copy -o -            # PNG to stdout
 
 boltsnap doctor                         # check helpers + capabilities
+boltsnap settings                       # settings window (preview, saves nothing yet)
 ```
+
+The settings window also opens from the tray (**Settings…**) and from the app
+launcher (**Boltsnap**).
 
 Boltsnap does not bundle an editor. Linux shelf images open in the desktop's
 default image app; pipe PNG output when an explicit editor is preferred:

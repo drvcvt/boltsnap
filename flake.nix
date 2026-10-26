@@ -65,6 +65,10 @@
           postInstall = ''
             mkdir -p $out/lib/boltsnap
             ln -s ${cursorPlugin}/lib/libboltsnap_gsr_cursor.so $out/lib/boltsnap/
+            install -Dm644 assets/linux/boltsnap.desktop -t $out/share/applications
+            install -Dm644 assets/linux/boltsnap-64.png $out/share/icons/hicolor/64x64/apps/boltsnap.png
+            install -Dm644 assets/linux/boltsnap-128.png $out/share/icons/hicolor/128x128/apps/boltsnap.png
+            install -Dm644 assets/linux/boltsnap-256.png $out/share/icons/hicolor/256x256/apps/boltsnap.png
           '';
 
           # No helper PATH wrapping needed — boltsnap is fully in-process now.

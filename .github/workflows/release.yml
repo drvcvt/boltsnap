@@ -56,6 +56,7 @@ jobs:
           install -Dm755 target/release/boltsnap "dist/${NAME}/boltsnap"
           install -Dm644 README.md             "dist/${NAME}/README.md"
           install -Dm644 LICENSE               "dist/${NAME}/LICENSE"
+          install -Dm644 -t "dist/${NAME}/assets/linux" assets/linux/*
           tar -C dist -czvf "dist/${NAME}.tar.gz" "${NAME}"
           rm -rf "dist/${NAME}"
           echo "tarball=dist/${NAME}.tar.gz" >> "$GITHUB_OUTPUT"

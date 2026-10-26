@@ -122,5 +122,9 @@ assets = [
     ["target/release/boltsnap", "usr/bin/", "755"],
     ["README.md", "usr/share/doc/boltsnap/README", "644"],
     ["LICENSE", "usr/share/doc/boltsnap/LICENSE", "644"],
+    ["assets/linux/boltsnap.desktop", "usr/share/applications/", "644"],
+    ["assets/linux/boltsnap-64.png", "usr/share/icons/hicolor/64x64/apps/boltsnap.png", "644"],
+    ["assets/linux/boltsnap-128.png", "usr/share/icons/hicolor/128x128/apps/boltsnap.png", "644"],
+    ["assets/linux/boltsnap-256.png", "usr/share/icons/hicolor/256x256/apps/boltsnap.png", "644"],
 ]
 recommends = "libgl1, libegl1, libxkbcommon0, libwayland-client0"

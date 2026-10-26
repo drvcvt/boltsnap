@@ -217,6 +217,29 @@ fn menu_model(snapshot: &TraySnapshot) -> TrayMenuModel {
     }
 }
 
+const SETTINGS_LABEL: &str = "Settings…";
+
+/// Starts the settings window as its own process, right from the tray thread;
+/// an open window raises itself instead (single instance).
+fn open_settings() {
+    let result = std::env::current_exe()
+        .map_err(|error| format!("find boltsnap executable: {error}"))
+        .and_then(|exe| {
+            crate::paths::spawn_reaped(
+                std::process::Command::new(exe)
+                    .arg("settings")
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null()),
+            )
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+        });
+    if let Err(error) = result {
+        super::shelf::notify(&format!("Settings: {error}"));
+    }
+}
+
 pub struct BoltsnapTray {
     snapshot: TraySnapshot,
     sender: calloop::channel::Sender<super::shelf::DaemonEvent>,
@@ -495,6 +518,13 @@ impl ksni::Tray for BoltsnapTray {
                 ..Default::default()
             }
             .into(),
+            ksni::MenuItem::Separator,
+            StandardItem {
+                label: SETTINGS_LABEL.into(),
+                activate: Box::new(|_: &mut Self| open_settings()),
+                ..Default::default()
+            }
+            .into(),
         ]);
         items
     }
@@ -636,6 +666,56 @@ mod tests {
         assert!(!model.show_frame);
         assert!(model.disk_add_to_shelf);
         assert!(model.settings_enabled);
+    }
+
+    #[test]
+    fn settings_is_the_last_entry_and_stays_enabled_while_recording() {
+        use ksni::Tray;
+
+        for state in [PublicRecordingState::Idle, PublicRecordingState::Recording] {
+            let (sender, _receiver) = calloop::channel::channel();
+            let menu = BoltsnapTray::new(snapshot(state), sender).menu();
+            let [
+                ..,
+                ksni::MenuItem::Separator,
+                ksni::MenuItem::Standard(last),
+            ] = menu.as_slice()
+            else {
+                panic!("the menu ends with a separator and a plain entry");
+            };
+            assert_eq!(last.label, "Settings…");
+            assert!(last.enabled);
+        }
+    }
+
+    /// The launcher entry and its icons, as packaged (settings plan, Phase 5a).
+    #[test]
+    fn launcher_entry_names_the_window_and_its_icons_have_their_sizes() {
+        let entry = include_str!("../../../assets/linux/boltsnap.desktop");
+        for line in [
+            "Exec=boltsnap settings",
+            "Icon=boltsnap",
+            "StartupWMClass=boltsnap",
+        ] {
+            assert!(entry.lines().any(|l| l == line), "missing {line}");
+        }
+        for (png, size) in [
+            (
+                include_bytes!("../../../assets/linux/boltsnap-64.png").as_slice(),
+                64,
+            ),
+            (
+                include_bytes!("../../../assets/linux/boltsnap-128.png"),
+                128,
+            ),
+            (
+                include_bytes!("../../../assets/linux/boltsnap-256.png"),
+                256,
+            ),
+        ] {
+            let image = image::load_from_memory_with_format(png, image::ImageFormat::Png).unwrap();
+            assert_eq!((image.width(), image.height()), (size, size));
+        }
     }
 
     #[test]
