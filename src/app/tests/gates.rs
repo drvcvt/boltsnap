@@ -272,6 +272,30 @@ fn gate_groups_pad_equally_and_siblings_share_an_axis() {
         });
     }
     assert!(worst_axis <= 0.5, "axis off by {worst_axis}");
+    // The shelf preview's screen sits `GAP_M` in on all four sides too.
+    for w in WIDTHS {
+        every_page((w, 900.0), now, |app, name| {
+            let layout = app.layout(now + SETTLED);
+            for (block, rect) in app.page().blocks.iter().zip(&layout.blocks) {
+                if let Block::Preview(_) = block {
+                    let screen = crate::app::preview_screen(*rect);
+                    let pads = [
+                        screen.x - rect.x,
+                        rect.right() - screen.right(),
+                        screen.y - rect.y,
+                        rect.bottom() - screen.bottom(),
+                    ];
+                    for pad in pads {
+                        worst_pad = worst_pad.max((pad - GAP_M).abs());
+                        assert!(
+                            (pad - GAP_M).abs() <= 1.0,
+                            "{name} preview pad {pads:?} at {w}"
+                        );
+                    }
+                }
+            }
+        });
+    }
     println!(
         "gate padding: every group {GAP_M} px on all four sides (worst off {worst_pad:.2}); \
          shared axis worst off {worst_axis:.2} px"
@@ -344,6 +368,7 @@ fn gate_copy_reads_like_a_person_wrote_it() {
         for block in &page.blocks {
             match block {
                 Block::Heading(text) | Block::Banner { text, .. } => strings.push(text.clone()),
+                Block::Preview(_) => {}
                 Block::Row(row) => {
                     strings.push(row.label.clone());
                     strings.extend(row.hint.clone());
@@ -482,7 +507,7 @@ fn gate_text_wraps_instead_of_being_cut() {
                             parts.names.into_iter().chain(parts.hints).collect()
                         }
                         Block::Banner { text, .. } => banner_lines(&app.fonts, rect.w, text),
-                        Block::Heading(_) => continue,
+                        Block::Heading(_) | Block::Preview(_) => continue,
                     };
                     for line in text {
                         assert!(!cut(&line), "{name} at {w}: {line:?} is cut");

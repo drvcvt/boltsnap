@@ -2231,6 +2231,42 @@ Was kaputtgehen kann: S3 ändert alle Höhen (Gates und Tests decken
 wie `prefs::load()` für eine Beispiel-Datei); S1 fasst den Daemon an (Shelf
 zeigt, Karten erscheinen und verschwinden, live geprüft).
 
+### Phase 5d: Live-Vorschauen (26.10., Wahl des Nutzers)
+
+Der Nutzer will das Fenster „besonders“ machen und hat Live-Vorschauen
+gewählt (Seiten zeigen, was eine Einstellung tut). Reihenfolge: P1 Shelf,
+danach P2 Displays, P3 Replay-Puffer, je nach Rückmeldung zu P1.
+
+P1, Shelf. Belege: Karten `CardSize` (190 × 132, Seitenverhältnis bleibt,
+`shelf/thumbnail.rs:16`), Shelf 24 px von beiden Kanten seiner Ecke
+(`EDGE_MARGIN`, `linux/shelf/cards.rs:29`), darin 22 px Rand und 10 px
+zwischen den Karten (`LayoutConfig`, `shelf/layout.rs:9`), gestapelt von der
+Ecke aus. Verhalten:
+- Oben auf der Shelf-Seite eine eigene Fläche (`PANEL`, `PANEL_RADIUS`, kein
+  Rahmen) mit einem Bildschirm im Seitenverhältnis 16:9 (`WINDOW`, Radius `RADIUS`,
+  die Stufe unter `PANEL_RADIUS`, weil der Innenabstand gleich dem Radius ist),
+  so breit wie die Fläche innen, `GAP_M` rundum (zuerst höchstens 360 px
+  breit und mittig; der Render zeigte leere Ränder links und rechts, gegen
+  „gleicher Innenabstand“ und „Füllgrad“).
+- Darin die Karten des Shelfs maßstäblich (Bezug 1920 × 1080), in der
+  gewählten Ecke, so viele wie „Cards shown“, so breit wie „Card size“; was
+  nicht auf den Bildschirm passt, schneidet der Bildschirmrand ab.
+- Folgt den Controls sofort, auch beim Ziehen des Sliders, nicht erst nach
+  dem Speichern. Ecke wechseln: die Karten gleiten zur neuen Ecke (`GLIDE`);
+  Breite: sie wachsen und schrumpfen (`SNAP`); Anzahl: neue blenden ein,
+  überzählige aus (`QUICK`), keine wandert dafür ein paar Pixel (Regel 4h:
+  Karten bleiben auf ihrem Platz, nur die neue kommt).
+- Reduced Motion: springt.
+- Kein Text, keine Deko-Bilder: die Karten sind Flächen (`SELECTED`, Radius
+  maßstäblich), wie der Shelf ohne Inhalt.
+Code: `Block::Preview(Preview::Shelf)`, `app/preview.rs` (Ziele aus den
+Werten der Zeilen, Federn je Karte in Bildschirm-Koordinaten 0..1, damit ein
+Resize nichts animiert), Layout-Höhe aus der Spaltenbreite, `draw.rs`.
+Tests: Ziel-Rechtecke für Ecke, Breite, Anzahl gegen die Shelf-Formeln;
+Ecke wechseln gleitet (halbwegs zwischen den Ecken), Ende exakt; Anzahl +1
+blendet die neue ein, die anderen bleiben stehen; Gates (Überlauf, Abstände)
+mit Vorschau; Render.
+
 ## 6. Reihenfolge
 
 Jede Phase ist ein eigener Commit (oder wenige), baut, testet und lässt den
@@ -2389,6 +2425,7 @@ Vom Nutzer am 24.10. so bestätigt:
 | 5c S12 | umgesetzt 26.10. nach „S12 im Detail“: vier eigene Symbole `shelf-top-left` … `shelf-bottom-right` im Sprite (39), Corner-Segment nutzt sie statt der Pfeile (die Pfeile bleiben für das Fixture). Karte nach dem ersten Render auf 8 × 5 vergrößert. Test `the_corner_pictograms_put_the_card_in_their_corner`. Render bei Skala 2 angesehen; Icon-Gate mit Outfit unverändert. Checks: fmt, clippy ohne Warnung, `cargo test` 114 + 374 grün. |
 | 4j | umgesetzt 26.10. nach „Phase 4j“: `Fonts::id`, `Dropdown` merkt sich die Inhaltsbreite je Schrift; das Fenster gibt je Frame nur die letzte Zeigerbewegung weiter, andere Eingaben holen sie vorher nach. Sonde (Release, 330 Einträge, Liste offen): je Bewegung 1,67 ms → 96 µs, je Frame 2,09 → 0,58 ms. Test `a_dropdown_measures_once_per_loaded_font`. Checks: fmt, clippy ohne Warnung, `cargo test` 115 + 374 grün. |
 | 4k | umgesetzt 26.10. nach „Phase 4k“: `assets/logo/boltsnap-mark.svg` (die zwei Potrace-Pfade des finalen Logos, Herkunft und Umrechnung im Kommentar), `app/brand.rs` (`Mark`: einmal je Skala in eine Pixmap gerendert, jeder Pfad für sich gefüllt, Schatten oben, Licht unten), Töne `PRESSED`, `SHADE`, `LIP`; Feder `mark_room` (nur mit Platz unter den Einträgen) und mit den Namen ausgeblendet. Beim Render gefunden: ein gemeinsamer Pfad schnitt die Überlappung von Punkt und Körper aus (behoben); die erste Tönung (0x12 auf 0x17) war kaum sichtbar, jetzt 0x0F. Pixel geprüft: Punkt gefüllt, Lücke zur Kerbe, Kanten oben 0x13/unten 0x1E. Tests `the_mark_shows_in_the_free_corner_only`, `both_paths_of_the_mark_parse`. Checks: fmt, clippy ohne Warnung, `cargo test` 117 + 374 grün. |
+| 5d P1 | umgesetzt 26.10. nach „Phase 5d“: `Block::Preview(Preview::Shelf)` oben auf der Shelf-Seite, `app/preview.rs` (`shelf_cards` mit den Shelf-Formeln, Federn je Karte auf dem Bezugsbildschirm 1920 × 1080, Ecke `GLIDE`, Breite `SNAP`, Anzahl blendet `QUICK` an Ort und Stelle, Reduced Motion springt), folgt den Controls sofort. Abweichungen nach dem ersten Render: Bildschirm füllt die Fläche mit `GAP_M` rundum statt höchstens 360 px mittig; Radius `RADIUS` statt einer freien 6. Abstand-Gate prüft den Bildschirm (12 px rundum, Abweichung 0,00). Tests `the_cards_sit_where_the_shelf_puts_them`, `a_new_corner_glides_the_cards_there_and_a_new_card_fades_in_in_place`. Renders bei 946 und 360 angesehen. Checks: fmt, clippy ohne Warnung, `cargo test` 119 + 374 grün. |
 | 5a | umgesetzt 26.10. nach „Phase 5a: Öffnen ohne Terminal“: Tray-Eintrag „Settings…“ ganz unten (Prozessstart im Tray-Thread), `assets/linux/boltsnap.desktop` mit Icons 64/128/256 aus `boltsnap.ico`, `.deb`-Assets, Flake-`postInstall`, Release-Tarball, README. Abweichung: `Categories=Graphics;`. Checks: `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test` 75 + 371 grün, `desktop-file-validate` ohne Meldung. Live: Daemon neu gestartet, dbusmenu-`GetLayout` endet auf „Settings…“; `gio launch` der installierten `.desktop`-Datei öffnet das Fenster (Klasse `boltsnap`). Nicht live prüfbar: Klick im Tray. |
 | 5 | geplant, freigegeben 24.10. |
 | 6 (Library) | Skizze im Library-Plan |

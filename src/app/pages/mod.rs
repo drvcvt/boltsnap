@@ -73,6 +73,7 @@ fn shelf(prefs: &Prefs, now: Instant) -> Page {
         name: "Shelf".into(),
         icon: Icon::Layers,
         blocks: vec![
+            Block::Preview(super::Preview::Shelf),
             Block::Heading("Cards".into()),
             row(
                 Icon::Scaling,

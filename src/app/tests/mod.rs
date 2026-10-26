@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 mod focus;
 mod gates;
 mod live;
+mod preview;
 mod shape;
 mod writes;
 

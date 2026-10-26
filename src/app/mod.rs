@@ -10,6 +10,7 @@ mod keys;
 mod layout;
 pub mod measure;
 pub mod pages;
+mod preview;
 mod writes;
 
 #[cfg(test)]
@@ -19,6 +20,7 @@ use std::time::Instant;
 
 pub use fades::Channel;
 pub use layout::{AT_REST, Layout, RowParts};
+pub use preview::{Preview, screen as preview_screen, shelf_cards};
 pub use writes::{Bind, Encode, Write};
 
 use crate::ui::icons::Icon;
@@ -49,6 +51,8 @@ pub enum Block {
         text: String,
         color: Rgb,
     },
+    /// A picture of what the page's settings do.
+    Preview(Preview),
 }
 
 pub struct Page {
@@ -97,6 +101,9 @@ pub struct App {
     /// for it under the entries.
     mark: brand::Mark,
     mark_room: Spring,
+    /// The shelf preview's cards, and the shape they were last pointed at.
+    preview_cards: Vec<preview::Card>,
+    preview_shape: Option<preview::ShelfShape>,
     /// 1 while focus came from the keyboard, 0 after a click: the focus
     /// outline shows only for the first (like `:focus-visible`).
     keyed: Spring,
@@ -136,6 +143,8 @@ impl App {
             keyed: Spring::settled(0.0, now),
             mark: brand::Mark::default(),
             mark_room: Spring::settled(0.0, now),
+            preview_cards: Vec::new(),
+            preview_shape: None,
             size,
             scroll: Scroll::new(now),
             focus: None,
@@ -153,6 +162,7 @@ impl App {
         app.mark_room.set(app.mark_room.target(), now);
         app.remember_values();
         app.sync_resets(false, now);
+        app.sync_preview(false, now);
         app
     }
 
@@ -248,6 +258,7 @@ impl App {
         self.resize(self.size, now);
         self.remember_values();
         self.sync_resets(false, now);
+        self.sync_preview(false, now);
     }
 
     /// 0 to 1 while the current page fades in.
@@ -381,6 +392,8 @@ impl App {
     pub fn handle(&mut self, input: Input, now: Instant) -> Vec<Effect> {
         let mut effects = self.react(input, now);
         effects.extend(self.changes(now));
+        // The preview follows the controls while they move, before saving.
+        self.sync_preview(true, now);
         effects
     }
 
@@ -505,6 +518,7 @@ impl App {
             || !self.thumb.done(now)
             || !self.keyed.done(now)
             || !self.mark_room.done(now)
+            || self.preview_moving(now)
             || self.stacked.iter().any(|spring| !spring.done(now))
             || self.scroll.moving(now)
             || self.fades.moving(now)

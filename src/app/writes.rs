@@ -194,6 +194,7 @@ impl App {
         // A hint or reset button that came or went changes heights.
         self.resize(self.size, now);
         self.sync_resets(true, now);
+        self.sync_preview(true, now);
     }
 
     /// Fresh pages, after a write was refused or the state changed: the same
@@ -215,6 +216,7 @@ impl App {
         self.resize(self.size, now);
         self.remember_values();
         self.sync_resets(false, now);
+        self.sync_preview(false, now);
         if let Some(at) = self.pointer {
             let target = self.target_at(at, now);
             self.set_hover(target, now);
@@ -234,6 +236,7 @@ fn same_shape(old: &[Page], new: &[Page]) -> bool {
                     }
                     (Block::Heading(a), Block::Heading(b)) => a == b,
                     (Block::Banner { .. }, Block::Banner { .. }) => true,
+                    (Block::Preview(a), Block::Preview(b)) => a == b,
                     _ => false,
                 })
         })
