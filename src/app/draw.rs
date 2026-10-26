@@ -118,7 +118,7 @@ impl App {
             let color = theme::mix(theme::SUB, theme::TEXT, lit);
             // Text inset like a control's: (height − capitals) / 2 ≈ 12.
             let centred = rect.x + (rect.w - size) / 2.0;
-            let x = centred + (rect.x + theme::GAP_M - centred) * open;
+            let x = (centred + (rect.x + theme::GAP_M - centred) * open).round();
             page.icon
                 .draw(canvas, widgets::icon_box(rect, x, size), color, 1.0);
             if names <= 0.0 {

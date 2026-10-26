@@ -137,3 +137,44 @@ fn a_stepper_button_fades_when_it_reaches_its_bound() {
     assert!(stepper.animating(now + Duration::from_millis(60)));
     assert!(!stepper.animating(now + SETTLED));
 }
+
+#[test]
+fn the_page_moves_in_whole_pixels_while_it_scrolls_rises_and_reshapes() {
+    use crate::ui::Input;
+    let now = Instant::now();
+    let mut app = app_on("recording", WIDE, now);
+    app.handle(
+        Input::Wheel {
+            notches: 1,
+            pixels: 0.0,
+        },
+        now,
+    );
+    app.resize(NARROW, now + Duration::from_millis(20));
+    assert!(app.show_named("replay", now + Duration::from_millis(30)));
+    assert!(app.show_named("recording", now + Duration::from_millis(40)));
+    let whole = |v: f32| v == v.round();
+    for ms in (40..400).step_by(7) {
+        let at = now + Duration::from_millis(ms);
+        let layout = app.layout(at);
+        assert!(
+            whole(layout.title.y) && whole(layout.title.x),
+            "title at {ms} ms"
+        );
+        for rect in layout.blocks.iter().chain(&layout.panels) {
+            assert!(
+                whole(rect.x) && whole(rect.y) && whole(rect.h),
+                "{rect:?} at {ms} ms"
+            );
+        }
+        for (index, block) in app.page().blocks.iter().enumerate() {
+            if let crate::app::Block::Row(row) = block {
+                let parts = app.row_parts(layout.blocks[index], row);
+                assert!(
+                    whole(parts.label.y) && whole(parts.control.y),
+                    "row {index} at {ms} ms"
+                );
+            }
+        }
+    }
+}

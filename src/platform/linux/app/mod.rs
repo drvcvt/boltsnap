@@ -80,6 +80,17 @@ pub fn cli(args: &[String]) -> DynResult<()> {
             for (what, offset) in boltsnap::app::measure::cap_offsets(fonts()) {
                 println!("{what:<12} {offset:+.2} px");
             }
+            // Gate 8, icons against their names, with the real font.
+            let now = Instant::now();
+            let rows = boltsnap::app::measure::icon_rows(
+                fonts(),
+                settings_pages(None, now),
+                (1000.0, 900.0),
+            );
+            match boltsnap::app::measure::icon_gate(&rows) {
+                Ok(worst) => println!("icons        {} rows, {worst}", rows.len()),
+                Err(failure) => return Err(failure.into()),
+            }
             Ok(())
         }
         [] => run(None),

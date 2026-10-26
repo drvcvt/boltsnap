@@ -50,12 +50,13 @@ fn lerp(from: f32, to: f32, t: f32) -> f32 {
     from + (to - from) * t
 }
 
+/// Between two rectangles, on whole pixels (see [`App::column`]).
 fn lerp_rect(from: Rect, to: Rect, t: f32) -> Rect {
     Rect::new(
-        lerp(from.x, to.x, t),
-        lerp(from.y, to.y, t),
-        lerp(from.w, to.w, t),
-        lerp(from.h, to.h, t),
+        lerp(from.x, to.x, t).round(),
+        lerp(from.y, to.y, t).round(),
+        lerp(from.w, to.w, t).round(),
+        lerp(from.h, to.h, t).round(),
     )
 }
 
@@ -132,8 +133,11 @@ impl App {
         (nav_w + (area - w) / 2.0, w)
     }
 
+    /// On whole pixels, like everything that moves the page: text sits on
+    /// whole pixels, and what carries it must move in the same steps.
     pub fn column(&self, now: Instant) -> (f32, f32) {
-        self.column_beside(self.nav_w(now))
+        let (x, w) = self.column_beside(self.nav_w(now));
+        (x.round(), w.round())
     }
 
     /// Point the layout's springs at the window's size: the navigation opens
@@ -165,7 +169,9 @@ impl App {
     /// new page comes in.
     pub fn layout_at(&self, scroll: f32, rise: f32, now: Instant) -> Layout {
         let (x, w) = self.column(now);
-        let top = rise - scroll;
+        // Scroll and rise glide in fractions; the page moves in whole pixels
+        // so its text never shifts against its surfaces.
+        let top = (rise - scroll).round();
         let mut y = GAP_XL;
         let title = Rect::new(x, top + y, w, CTL_H);
         y += CTL_H + GAP_L;
@@ -197,7 +203,7 @@ impl App {
                         y += GAP_XS;
                     }
                     let stacked = self.stacked.get(index).map_or(0.0, |s| s.value(now));
-                    lerp(ROW_H, STACKED_H, stacked.clamp(0.0, 1.0))
+                    lerp(ROW_H, STACKED_H, stacked.clamp(0.0, 1.0)).round()
                 }
             };
             layout.blocks.push(Rect::new(x, top + y, w, h));

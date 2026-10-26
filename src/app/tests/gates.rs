@@ -336,3 +336,55 @@ fn gate_copy_reads_like_a_person_wrote_it() {
         strings.len()
     );
 }
+
+/// Gate 8: every row's icon ink on the middle of its name's capitals, the
+/// icons of a page on one axis, the names on one edge, one `GAP_S` from the
+/// widest icon's ink to the names.
+#[test]
+fn gate_icons_sit_on_the_capitals_in_one_column() {
+    let now = Instant::now();
+    let rows = measure::icon_rows(
+        Fonts::fallback(),
+        pages::pages(&prefs(), None, now),
+        (1000.0, 900.0),
+    );
+    report_icon_rows(&rows);
+    let worst = measure::icon_gate(&rows).unwrap_or_else(|failure| panic!("{failure}"));
+    println!("gate icons: {} rows, {worst}", rows.len());
+}
+
+#[test]
+fn the_ink_measure_sees_a_one_pixel_shift() {
+    use crate::ui::icons::Icon;
+    let middle = |y: f32| {
+        let mut canvas = crate::ui::Canvas::new(40, 40, 2).unwrap();
+        canvas.clear(theme::PANEL);
+        Icon::Folder.draw(&mut canvas, Rect::new(10.0, y, 14.0, 14.0), theme::SUB, 1.0);
+        measure::ink_box(
+            &canvas,
+            Rect::new(0.0, 0.0, 40.0, 40.0),
+            theme::PANEL,
+            theme::SUB,
+        )
+        .unwrap()
+        .middle_y()
+    };
+    let shift = middle(11.0) - middle(10.0);
+    assert!((shift - 1.0).abs() < 0.05, "1 px reads as {shift}");
+}
+
+fn report_icon_rows(rows: &[measure::IconRow]) {
+    for row in rows {
+        println!(
+            "{:<12} {:<34} dy {:+.2} ink {:.2}..{:.2} x {:.2}..{:.2} text {:.2}",
+            row.page,
+            row.label,
+            row.dy,
+            row.icon.top,
+            row.icon.bottom,
+            row.icon.left,
+            row.icon.right,
+            row.text_x
+        );
+    }
+}

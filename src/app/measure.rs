@@ -1,6 +1,7 @@
 //! Measuring what was drawn, for the `/ui` gates: how far the capitals of
-//! every control's text sit from its vertical middle. Lives outside the tests
-//! so the real UI font can be measured too (`boltsnap settings --measure`).
+//! every control's text sit from its vertical middle, and where each row's
+//! icon ink sits against its name (gate 8). Lives outside the tests so the
+//! real UI font can be measured too (`boltsnap settings --measure`).
 
 use std::time::Instant;
 
@@ -44,6 +45,185 @@ pub fn ink(canvas: &Canvas, region: Rect, background: Rgb) -> Option<(f32, f32)>
     let top = first as f32 + (1.0 - top_cov);
     let bottom = last as f32 + bottom_cov;
     Some((top / scale, bottom / scale))
+}
+
+/// The edges of what `foreground` drew over `background` inside `region`,
+/// in logical pixels, partly covered rows and columns counted by coverage.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Ink {
+    pub top: f32,
+    pub bottom: f32,
+    pub left: f32,
+    pub right: f32,
+}
+
+impl Ink {
+    pub fn middle_y(&self) -> f32 {
+        (self.top + self.bottom) / 2.0
+    }
+
+    pub fn middle_x(&self) -> f32 {
+        (self.left + self.right) / 2.0
+    }
+}
+
+pub fn ink_box(canvas: &Canvas, region: Rect, background: Rgb, foreground: Rgb) -> Option<Ink> {
+    let scale = canvas.scale;
+    let (width, height) = (
+        canvas.pixmap.width() as usize,
+        canvas.pixmap.height() as usize,
+    );
+    let data = canvas.pixmap.data();
+    let span = foreground.0 as f32 - background.0 as f32;
+    let x0 = ((region.x * scale).floor().max(0.0) as usize).min(width);
+    let x1 = ((region.right() * scale).ceil().max(0.0) as usize).min(width);
+    let y0 = ((region.y * scale).floor().max(0.0) as usize).min(height);
+    let y1 = ((region.bottom() * scale).ceil().max(0.0) as usize).min(height);
+    let at = |x: usize, y: usize| {
+        ((data[(y * width + x) * 4] as f32 - background.0 as f32) / span).clamp(0.0, 1.0)
+    };
+    let edges = |cover: Vec<(usize, f32)>| -> Option<(f32, f32)> {
+        let lit: Vec<_> = cover.into_iter().filter(|(_, c)| *c > 0.05).collect();
+        let (&(first, a), &(last, b)) = (lit.first()?, lit.last()?);
+        Some((first as f32 + (1.0 - a), last as f32 + b))
+    };
+    let rows = (y0..y1)
+        .map(|y| (y, (x0..x1).map(|x| at(x, y)).fold(0.0, f32::max)))
+        .collect();
+    let columns = (x0..x1)
+        .map(|x| (x, (y0..y1).map(|y| at(x, y)).fold(0.0, f32::max)))
+        .collect();
+    let (top, bottom) = edges(rows)?;
+    let (left, right) = edges(columns)?;
+    Some(Ink {
+        top: top / scale,
+        bottom: bottom / scale,
+        left: left / scale,
+        right: right / scale,
+    })
+}
+
+/// Where a row's icon sits against its name (gate 8).
+#[derive(Clone, Debug)]
+pub struct IconRow {
+    pub page: String,
+    pub label: String,
+    /// Icon ink middle minus capitals middle; the gate is ±0.5.
+    pub dy: f32,
+    pub icon: Ink,
+    /// Where the name is drawn from.
+    pub text_x: f32,
+}
+
+/// Every row of `pages` and every navigation entry, names set in capitals,
+/// drawn at `size` and scale 2.
+pub fn icon_rows(fonts: Fonts, mut pages: Vec<Page>, size: (f32, f32)) -> Vec<IconRow> {
+    for page in &mut pages {
+        page.name = page.name.to_uppercase();
+        for block in &mut page.blocks {
+            if let Block::Row(row) = block {
+                row.label = row.label.to_uppercase();
+            }
+        }
+    }
+    let now = Instant::now();
+    let settled = now + std::time::Duration::from_secs(2);
+    let names: Vec<String> = pages.iter().map(|page| page.name.clone()).collect();
+    let mut app = App::new(fonts, pages, size, now);
+    let mut out = Vec::new();
+    for (index, name) in names.iter().enumerate() {
+        app.show_named(name, now);
+        let mut canvas =
+            Canvas::new(size.0 as u32, size.1 as u32, SCALE).expect("canvas for the measure");
+        app.draw(&mut canvas, settled);
+        let layout = app.layout(settled);
+        for (block, rect) in app.page().blocks.iter().zip(&layout.blocks) {
+            let Block::Row(row) = block else { continue };
+            let parts = app.row_parts(*rect, row);
+            let around = parts.icon.inset(-2.0);
+            let (Some(icon), Some(caps)) = (
+                ink_box(&canvas, around, theme::PANEL, theme::SUB),
+                ink_box(&canvas, parts.label, theme::PANEL, theme::TEXT),
+            ) else {
+                continue;
+            };
+            out.push(IconRow {
+                page: name.clone(),
+                label: row.label.clone(),
+                dy: icon.middle_y() - caps.middle_y(),
+                icon,
+                text_x: parts.label.x,
+            });
+        }
+        // The navigation entry of this page, on its selection surface.
+        let slot = app.nav_rect(index, settled);
+        let around = Rect::new(slot.x, slot.y, theme::GAP_M + theme::ICON + 3.0, slot.h);
+        let text = Rect::new(
+            around.right() + 2.0,
+            slot.y,
+            slot.w - around.w - 2.0,
+            slot.h,
+        );
+        if let (Some(icon), Some(caps)) = (
+            ink_box(&canvas, around, theme::RAISE, theme::TEXT),
+            ink_box(&canvas, text, theme::RAISE, theme::TEXT),
+        ) {
+            out.push(IconRow {
+                page: "navigation".into(),
+                label: name.clone(),
+                dy: icon.middle_y() - caps.middle_y(),
+                icon,
+                text_x: slot.x + theme::GAP_M + theme::ICON + theme::GAP_S,
+            });
+        }
+    }
+    out
+}
+
+/// Gate 8 over `rows`: each icon's ink on its capitals' middle (±0.5), and
+/// per role (all rows of every page, the navigation) the icons on one axis,
+/// the names on one edge, `GAP_S` (±0.5) from the widest icon's ink to the
+/// names. Per role, not per page: a page with only narrow icons must not move
+/// its names. The worst values, or what fails.
+pub fn icon_gate(rows: &[IconRow]) -> Result<String, String> {
+    let spread = |values: &mut dyn Iterator<Item = f32>| {
+        let values: Vec<f32> = values.collect();
+        let max = values.iter().copied().fold(f32::MIN, f32::max);
+        let min = values.iter().copied().fold(f32::MAX, f32::min);
+        (min, max - min)
+    };
+    let (mut dy, mut axis, mut edge, mut gap) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
+    for row in rows {
+        if row.dy.abs() > 0.5 {
+            return Err(format!(
+                "{} {}: icon {:+.2} px off the capitals",
+                row.page, row.label, row.dy
+            ));
+        }
+        dy = dy.max(row.dy.abs());
+    }
+    for group in ["rows", "navigation"] {
+        let rows: Vec<&IconRow> = rows
+            .iter()
+            .filter(|row| (row.page == "navigation") == (group == "navigation"))
+            .collect();
+        let (_, a) = spread(&mut rows.iter().map(|row| row.icon.middle_x()));
+        let (text, e) = spread(&mut rows.iter().map(|row| row.text_x));
+        let widest = rows
+            .iter()
+            .map(|row| row.icon.right)
+            .fold(f32::MIN, f32::max);
+        let g = text - widest - theme::GAP_S;
+        if a > 0.5 || e > 0.5 || g.abs() > 0.5 {
+            return Err(format!(
+                "{group}: icon axis spread {a:.2}, name edge spread {e:.2}, gap off GAP_S by {g:+.2}"
+            ));
+        }
+        (axis, edge, gap) = (axis.max(a), edge.max(e), gap.max(g.abs()));
+    }
+    Ok(format!(
+        "worst icon off the capitals {dy:.2} px, axis spread {axis:.2}, edge spread {edge:.2}, gap off GAP_S {gap:.2}"
+    ))
 }
 
 /// `rect`'s top-to-capitals gap minus its baseline-to-bottom gap.
