@@ -21,7 +21,8 @@ use std::time::Instant;
 pub use fades::Channel;
 pub use layout::{AT_REST, Layout, RowParts};
 pub use preview::{
-    Preview, display_places, replay_bar_rect, replay_step, screen as preview_screen, shelf_cards,
+    Preview, display_places, replay_bar_rect, replay_cells, replay_head_rect, replay_step,
+    screen as preview_screen, shelf_cards,
 };
 pub use writes::{Bind, Encode, Write};
 

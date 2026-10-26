@@ -291,7 +291,8 @@ fn gate_groups_pad_equally_and_siblings_share_an_axis() {
                 }
                 if let Block::Preview(crate::app::Preview::Replay { .. }) = block {
                     let bar = crate::app::replay_bar_rect(*rect);
-                    let pads = [bar.x - rect.x, rect.right() - bar.right(), bar.y - rect.y];
+                    let head = crate::app::replay_head_rect(*rect);
+                    let pads = [bar.x - rect.x, rect.right() - bar.right(), head.y - rect.y];
                     for pad in pads {
                         assert!(
                             (pad - GAP_M).abs() <= 0.5,

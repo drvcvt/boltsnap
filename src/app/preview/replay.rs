@@ -10,24 +10,44 @@ use crate::settings;
 use crate::ui::theme::{self, GAP_M, GAP_S, GLIDE, PANEL_RADIUS, TextStyle};
 use crate::ui::{Canvas, Rect};
 
-/// The bar and the line of times under it.
-const BAR_H: f32 = 10.0;
+/// The line on top (what it holds, at what bitrate), the bar, the times.
+const HEAD_H: f32 = 16.0;
+const BAR_H: f32 = 16.0;
 const LABEL_H: f32 = 14.0;
+/// The bar is cells, one second each up to this many, then each a share.
+const MOST_CELLS: u64 = 60;
+const CELL_GAP: f32 = 2.0;
+/// Below the radius steps: a cell is about 10 px wide.
+const CELL_RADIUS: f32 = 2.0;
+/// Held cells are the text's light, a little softer.
+const HELD: f32 = 0.85;
 /// Round steps for the marks; the smallest that keeps them to `MOST_MARKS`.
 const STEPS: [u64; 8] = [5, 10, 15, 30, 60, 120, 300, 600];
 const MOST_MARKS: u64 = 6;
 /// Room each mark's time needs, so narrow windows show fewer.
 const MARK_ROOM: f32 = 64.0;
 
-/// The preview's height: the bar, a gap, the times, `GAP_M` around.
+/// The preview's height: the line on top, the bar, the times, gaps,
+/// `GAP_M` around.
 pub fn height() -> f32 {
-    2.0 * GAP_M + BAR_H + GAP_S + LABEL_H
+    2.0 * GAP_M + HEAD_H + GAP_S + BAR_H + GAP_S + LABEL_H
+}
+
+/// The line on top inside the block `rect`.
+pub fn head(rect: Rect) -> Rect {
+    let inner = rect.inset(GAP_M);
+    Rect::new(inner.x, inner.y, inner.w, HEAD_H)
 }
 
 /// The bar inside the block `rect`.
 pub fn bar(rect: Rect) -> Rect {
-    let inner = rect.inset(GAP_M);
-    Rect::new(inner.x, inner.y, inner.w, BAR_H)
+    let head = head(rect);
+    Rect::new(head.x, head.bottom() + GAP_S, head.w, BAR_H)
+}
+
+/// How many cells a buffer `length` seconds long is drawn as.
+pub fn cells(length: f32) -> usize {
+    (length.round().max(1.0) as u64).min(MOST_CELLS) as usize
 }
 
 /// Seconds between marks for a buffer `length` long on a bar `width` wide.
@@ -48,9 +68,9 @@ fn time(seconds: u64) -> String {
     }
 }
 
-/// What the bar shows: (length, seconds the memory holds) as the Length and
-/// Memory rows hold them now.
-fn shape(app: &App) -> Option<(f32, f32)> {
+/// What the bar shows: (length, seconds the memory holds, video bitrate in
+/// kbit/s) as the Length and Memory rows hold them now.
+fn shape(app: &App) -> Option<(f32, f32, u32)> {
     let mut bitrate = None;
     let (mut length, mut memory) = (None, None);
     for block in &app.page().blocks {
@@ -71,21 +91,25 @@ fn shape(app: &App) -> Option<(f32, f32)> {
         }
     }
     let (bitrate, length, memory) = (bitrate?, length?, memory?);
-    let held = Settings {
+    let settings = Settings {
         seconds: length as u64,
         memory_mib: memory as usize,
         bitrate_kbps: bitrate,
         ..Settings::default()
-    }
-    .seconds_held();
-    Some((length as f32, held as f32))
+    };
+    Some((
+        length as f32,
+        settings.seconds_held() as f32,
+        settings.video_kbps(),
+    ))
 }
 
 impl App {
     pub(super) fn sync_replay(&mut self, animate: bool, now: Instant) {
-        let Some((length, held)) = shape(self) else {
+        let Some((length, held, kbps)) = shape(self) else {
             return;
         };
+        self.preview.kbps = kbps;
         let animate = animate && !self.reduced_motion;
         for (spring, to) in [
             (&mut self.preview.length, length),
@@ -101,6 +125,7 @@ impl App {
 
     /// The buffer holds `seconds` now, or is not running.
     pub fn set_replay_held(&mut self, seconds: Option<f32>, now: Instant) {
+        self.preview.running = seconds.is_some();
         let to = seconds.unwrap_or(0.0);
         if self.reduced_motion {
             self.preview.held.set(to, now);
@@ -124,44 +149,85 @@ impl App {
         (filled, lost)
     }
 
+    /// The line on top: what the buffer holds now, and its bitrate.
+    pub fn replay_head(&self, now: Instant) -> (String, String) {
+        let held = if self.preview.running {
+            format!(
+                "Holds {}",
+                time(self.preview.held.value(now).round() as u64)
+            )
+        } else {
+            "Off".to_owned()
+        };
+        let mbit = self.preview.kbps as f32 / 1000.0;
+        let rate = if mbit < 10.0 {
+            format!("{mbit:.1}\u{a0}Mbit/s")
+        } else {
+            format!("{mbit:.0}\u{a0}Mbit/s")
+        };
+        (held, rate)
+    }
+
     pub(super) fn draw_replay(&self, canvas: &mut Canvas, rect: Rect, now: Instant) {
         canvas.fill(rect, PANEL_RADIUS, theme::PANEL, 1.0);
+        let fonts = &self.fonts;
+        let head = head(rect);
+        let (held, rate) = self.replay_head(now);
+        let baseline = fonts.baseline(TextStyle::Label, head.y, head.h);
+        fonts.draw(
+            canvas,
+            TextStyle::Label,
+            &held,
+            (head.x, baseline),
+            theme::TEXT,
+            1.0,
+        );
+        let x = (head.right() - fonts.width(TextStyle::Label, &rate)).round();
+        fonts.draw(
+            canvas,
+            TextStyle::Label,
+            &rate,
+            (x, baseline),
+            theme::SUB,
+            1.0,
+        );
+        // Cells from the right, the newest first: held ones light up one by
+        // one as the fill glides, those the memory cannot hold stay dark.
         let bar = bar(rect);
-        let radius = BAR_H / 2.0;
-        canvas.fill(bar, radius, theme::RAISE, 1.0);
-        let (filled, lost) = self.replay_bar(now);
-        if lost > 0.0 {
-            let w = (bar.w * lost).max(BAR_H);
-            canvas.fill(Rect { w, ..bar }, radius, theme::WINDOW, 1.0);
-        }
-        if filled > 0.0 {
-            let w = (bar.w * filled).max(BAR_H);
-            canvas.fill(
-                Rect::new(bar.right() - w, bar.y, w, BAR_H),
-                radius,
-                theme::SELECTED,
-                1.0,
-            );
+        let length = self.preview.length.value(now).max(1.0);
+        let n = cells(length);
+        let per = length / n as f32;
+        let w = (bar.w - (n - 1) as f32 * CELL_GAP) / n as f32;
+        let held_cells = self.preview.held.value(now) / per;
+        let kept_cells = self.preview.holds.value(now) / per;
+        for back in 0..n {
+            let x = bar.right() - (back + 1) as f32 * w - back as f32 * CELL_GAP;
+            let cell = Rect::new(x, bar.y, w, BAR_H);
+            let lit = (held_cells - back as f32).clamp(0.0, 1.0);
+            let color = if back as f32 >= kept_cells.floor() && kept_cells < n as f32 {
+                theme::WINDOW
+            } else {
+                theme::mix(theme::RAISE, theme::TEXT, HELD * lit)
+            };
+            canvas.fill(cell, CELL_RADIUS, color, 1.0);
         }
         // The times: now on the right, back to the length on the left.
-        let length = self.preview.length.value(now).max(1.0);
         let step = step(length, bar.w);
         let line = Rect::new(bar.x, bar.bottom() + GAP_S, bar.w, LABEL_H);
-        let baseline = self.fonts.baseline(TextStyle::Key, line.y, line.h);
-        let label = |canvas: &mut Canvas, text: &str, x: f32| {
-            let w = self.fonts.width(TextStyle::Key, text);
+        let baseline = fonts.baseline(TextStyle::Key, line.y, line.h);
+        let label = |canvas: &mut Canvas, text: &str, x: f32, color| {
+            let w = fonts.width(TextStyle::Key, text);
             let x = x.clamp(line.x, line.right() - w).round();
-            self.fonts
-                .draw(canvas, TextStyle::Key, text, (x, baseline), theme::SUB, 1.0);
+            fonts.draw(canvas, TextStyle::Key, text, (x, baseline), color, 1.0);
         };
-        let now_w = self.fonts.width(TextStyle::Key, "now");
-        label(canvas, "now", line.right() - now_w);
+        let now_w = fonts.width(TextStyle::Key, "now");
+        label(canvas, "now", line.right() - now_w, theme::TEXT);
         let mut back = step;
         while (back as f32) <= length + 0.5 {
             let text = format!("\u{2212}{}", time(back));
-            let w = self.fonts.width(TextStyle::Key, &text);
+            let w = fonts.width(TextStyle::Key, &text);
             let x = line.right() - back as f32 / length * line.w - w / 2.0;
-            label(canvas, &text, x);
+            label(canvas, &text, x, theme::SUB);
             back += step;
         }
     }

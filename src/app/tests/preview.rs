@@ -172,3 +172,21 @@ fn the_replay_bar_marks_round_steps_fills_with_what_it_holds_and_greys_what_cann
     assert!((end - 0.125).abs() < 0.001, "15 s of 2 min: {end}");
     assert!(half > end && half < 0.25, "gliding: {half}");
 }
+
+#[test]
+fn the_replay_head_says_what_it_holds_and_the_bar_is_cells() {
+    use crate::app::replay_cells as cells;
+    assert_eq!(
+        (cells(15.0), cells(30.0), cells(60.0), cells(600.0)),
+        (15, 30, 60, 60)
+    );
+    let now = Instant::now();
+    let mut app = app_on("replay", SIZE, now);
+    // 60 s in 512 MiB: 20 994 kbit/s, as the recorder starts with.
+    assert_eq!(
+        app.replay_head(now),
+        ("Off".into(), "21\u{a0}Mbit/s".into())
+    );
+    app.set_replay_held(Some(15.0), now);
+    assert_eq!(app.replay_head(now + SETTLED).0, "Holds 15\u{a0}s");
+}

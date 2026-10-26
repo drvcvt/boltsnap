@@ -12,7 +12,9 @@ use super::App;
 use crate::ui::{Canvas, Rect};
 
 pub use displays::places as display_places;
-pub use replay::{bar as replay_bar_rect, step as replay_step};
+pub use replay::{
+    bar as replay_bar_rect, cells as replay_cells, head as replay_head_rect, step as replay_step,
+};
 pub use shelf::{screen, shelf_cards};
 
 use super::pages::Screen;
@@ -52,6 +54,9 @@ pub(super) struct State {
     length: Spring,
     holds: Spring,
     held: Spring,
+    /// The buffer runs; its video bitrate, kbit/s.
+    running: bool,
+    kbps: u32,
 }
 
 impl State {
@@ -64,6 +69,8 @@ impl State {
             length: Spring::settled(60.0, now),
             holds: Spring::settled(60.0, now),
             held: Spring::settled(0.0, now),
+            running: false,
+            kbps: 0,
         }
     }
 }
