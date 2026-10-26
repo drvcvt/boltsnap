@@ -42,6 +42,7 @@ pub fn prefs() -> Prefs {
         set_keys: Vec::new(),
         replay_seconds: 60,
         replay_memory_mib: 512,
+        replay_bitrate: None,
         replay_fps: 60,
     }
 }

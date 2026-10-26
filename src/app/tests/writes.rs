@@ -277,3 +277,74 @@ fn a_set_key_offers_a_reset_that_leaves_the_control_where_it_is() {
         0.0
     );
 }
+
+#[test]
+fn replay_length_steps_and_what_the_memory_buys() {
+    let now = Instant::now();
+    let page_with = |change: &dyn Fn(&mut crate::app::pages::Prefs)| {
+        let mut p = prefs();
+        change(&mut p);
+        let mut app = App::new(Fonts::fallback(), pages::pages(&p, None, now), SIZE, now);
+        app.show_named("replay", now);
+        app
+    };
+    let row = |app: &App, label: &str| -> (Vec<String>, Option<String>) {
+        let Block::Row(row) = &app.page().blocks[block(app, label)] else {
+            unreachable!()
+        };
+        let labels = row.control.labels().iter().map(|s| s.to_string()).collect();
+        (labels, row.hint.clone())
+    };
+    let app = page_with(&|_| {});
+    assert_eq!(
+        row(&app, "Length").0,
+        [
+            "15\u{a0}s",
+            "30\u{a0}s",
+            "1\u{a0}min",
+            "2\u{a0}min",
+            "5\u{a0}min",
+            "10\u{a0}min"
+        ]
+    );
+    // 536870912 / 3 · 8 / 61 / 1000 · 0.9 − 128 = 20 994 kbit/s, the rate the
+    // recorder starts with (`gsr … -q 20994`).
+    assert_eq!(
+        row(&app, "Memory").1.as_deref(),
+        Some("Video at about 21\u{a0}Mbit/s")
+    );
+    // A length from the file that is no step stays a choice of its own.
+    let odd = page_with(&|p| p.replay_seconds = 45);
+    assert_eq!(
+        row(&odd, "Length").0.last().map(String::as_str),
+        Some("45\u{a0}s")
+    );
+    // Even the lowest bitrate does not fit ten minutes in 256 MiB.
+    let tight = page_with(&|p| {
+        p.replay_seconds = 600;
+        p.replay_memory_mib = 256;
+    });
+    assert_eq!(
+        row(&tight, "Memory").1.as_deref(),
+        Some("Only about 5\u{a0}min fit, give it more memory")
+    );
+    let fixed = page_with(&|p| p.replay_bitrate = Some(4000));
+    assert_eq!(
+        row(&fixed, "Memory").1.as_deref(),
+        Some("Video at about 4.0\u{a0}Mbit/s")
+    );
+    // Choosing a step writes its seconds.
+    let mut app = page_with(&|_| {});
+    let length = block(&app, "Length");
+    focus(&mut app, "Length", now);
+    key(&mut app, Key::Enter, now);
+    key(&mut app, Key::Down, now);
+    key(&mut app, Key::Enter, now);
+    assert_eq!(
+        app.write(length),
+        Some(Write::Key(
+            "replay.duration_seconds",
+            settings::Value::Int(120)
+        ))
+    );
+}

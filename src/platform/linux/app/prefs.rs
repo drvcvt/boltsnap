@@ -68,6 +68,7 @@ pub fn load() -> Prefs {
             .collect(),
         replay_seconds: replay.seconds,
         replay_memory_mib: replay.memory_mib,
+        replay_bitrate: replay.bitrate_kbps,
         replay_fps: replay.fps,
     }
 }

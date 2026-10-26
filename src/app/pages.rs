@@ -41,6 +41,8 @@ pub struct Prefs {
     pub set_keys: Vec<String>,
     pub replay_seconds: u64,
     pub replay_memory_mib: usize,
+    /// `replay.bitrate_kbps`; unset, the bitrate follows length and memory.
+    pub replay_bitrate: Option<u32>,
     pub replay_fps: u32,
 }
 
@@ -78,6 +80,40 @@ pub struct Notice {
 const FRAME_RATES: [u32; 5] = [30, 60, 120, 144, 240];
 const SHELF_TO_DISK: [Option<u64>; 5] = [None, Some(30), Some(60), Some(300), Some(900)];
 const REPLAY_MEMORY_MIB: [usize; 5] = [256, 512, 1024, 2048, 4096];
+const REPLAY_SECONDS: [u64; 6] = [15, 30, 60, 120, 300, 600];
+
+/// What the memory buys at this length, from the recorder's own formula
+/// (`replay::settings::video_kbps`): the video's bitrate, or, where even the
+/// lowest bitrate does not fit, how much does.
+fn memory_hint(prefs: &Prefs) -> String {
+    use crate::replay::settings::{AUDIO_KBPS, Settings};
+    let settings = Settings {
+        seconds: prefs.replay_seconds,
+        memory_mib: prefs.replay_memory_mib,
+        bitrate_kbps: prefs.replay_bitrate,
+        ..Settings::default()
+    };
+    let kbps = u64::from(settings.video_kbps());
+    let live_bits = prefs.replay_memory_mib as u64 * 1024 * 1024 / 3 * 8;
+    // One second stays spare: eviction drops whole one-second GOPs.
+    let fits = (live_bits / ((kbps + AUDIO_KBPS) * 1000)).saturating_sub(1);
+    if fits < prefs.replay_seconds {
+        let time = if fits < 120 {
+            format!("{fits}\u{a0}s")
+        } else {
+            format!("{}\u{a0}min", fits / 60)
+        };
+        format!("Only about {time} fit, give it more memory")
+    } else {
+        let mbit = kbps as f64 / 1000.0;
+        let rate = if mbit < 10.0 {
+            format!("{mbit:.1}")
+        } else {
+            format!("{mbit:.0}")
+        };
+        format!("Video at about {rate}\u{a0}Mbit/s")
+    }
+}
 
 fn row(
     icon: Icon,
@@ -413,15 +449,19 @@ fn replay(prefs: &Prefs, now: Instant) -> Page {
             Icon::Timer,
             "Length",
             None,
-            (
-                Box::new(Slider::new(prefs.replay_seconds as i64, (5, 600, 5), "s")),
-                key("replay.duration_seconds", int),
+            choose(
+                "replay.duration_seconds",
+                &REPLAY_SECONDS,
+                prefs.replay_seconds,
+                |s| duration(Some(s)),
+                |s| settings::Value::Int(s as i64),
+                now,
             ),
         ),
         row(
             Icon::MemoryStick,
             "Memory",
-            None,
+            Some(&memory_hint(prefs)),
             choose(
                 "replay.memory_mib",
                 &REPLAY_MEMORY_MIB,

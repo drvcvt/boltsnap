@@ -1999,6 +1999,34 @@ Zustand „alle Keys gesetzt“ (Überlauf, Umbruch, Abstände, Achsen, Kontrast
   (`src/replay/settings.rs:37`, füllt den Puffer mit der Länge); mit fester
   `bitrate_kbps` stattdessen „Holds about N s“.
 
+##### S9 im Detail (Gegenprüfung am Code, 26.10.)
+
+Befund: `replay.duration_seconds` 1 bis 600 (`schema.rs:134`), Length ist ein
+Slider 5 bis 600 in 5er Schritten (`pages.rs`). `Settings::video_kbps`
+(`replay/settings.rs:37`) füllt ohne feste Bitrate den Live-Drittel des
+Speichers mit `seconds + 1` Sekunden, 90 %, minus Ton (128 kbit/s), geklemmt
+auf 2 bis 80 Mbit/s. Abweichung vom Plan oben: wegen der unteren Klemme passt
+die Länge nicht immer (10 min bei 256 MiB: 2 Mbit/s erzwungen, rund 336 s
+passen); der Hinweis sagt deshalb normal die Qualität, im Engpass was passt.
+
+Verhalten:
+- Length: Dropdown 15 s, 30 s, 1 min, 2 min, 5 min, 10 min (`choose`, ein
+  anderer Wert aus der Datei bleibt als eigener Eintrag, z. B. 45 s).
+- Hinweis unter Memory, aus denselben Formeln wie der Recorder:
+  `kbps = video_kbps()`, passt = `memory · 2²⁰ / 3 · 8 / ((kbps + 128) · 1000)`
+  Sekunden minus die eine Reserve-Sekunde. Passt die Länge: „Video at about
+  N Mbit/s“ (unter 10 mit einer Nachkommastelle, geschütztes Leerzeichen);
+  sonst „Only about T fit, give it more memory“ (T wie die Dropdown-Einträge:
+  unter 2 min in Sekunden, sonst ganze Minuten).
+- `Prefs::replay_bitrate` (aus `replay.bitrate_kbps`).
+- Der Hinweis folgt sofort: eine Änderung schreibt, der Watch (S6) baut die
+  Seite neu, `update` übernimmt den Hinweis.
+
+Tests: Stufen und eigener Wert aus der Datei; Hinweis 60 s/512 MiB ist
+„Video at about 21 Mbit/s“ (gerechnet 20 994 kbit/s, derselbe Wert, mit
+dem der laufende Replay-Recorder gestartet ist: `-q 20994`); 600 s/256 MiB nennt, was passt; feste Bitrate wird
+genommen; Copy-Gate über die Hinweise.
+
 #### S10 Fehlende Zeilen (U8)
 
 - Recording: Display (Dropdown „Focused display“, je Monitor aus
@@ -2202,6 +2230,7 @@ Vom Nutzer am 24.10. so bestätigt:
 | 4h | umgesetzt 26.10. nach „Phase 4h“: Navigations-Icon fest auf x 16 in 14 px (eingeklappt mittig im 30er Quadrat, ausgeklappt 8 px eingerückt wie oben und unten), Name ab x 38; `PAGE_RISE` und `App::rise` entfernt, `layout_at` ohne Hub. Tests: `navigation_icons_keep_their_place_and_size_while_it_closes` (61 Proben gleich, Quadrat, Icon mittig), `a_new_page_fades_in_where_it_stays`. `/ui`-Skill: Regel „Keine Mini-Wege“ mit O-Ton, ersetzt die Gleit-Ausnahme aus 4g. Icon-Gate mit Outfit grün. Checks: fmt, clippy ohne Warnung, `cargo test` 106 + 374 grün. |
 | 4i | umgesetzt 26.10. nach „Phase 4i“: Segment-Spur ohne Hover und Druck, Fokus-Kontur bleibt. Test `a_segment_track_does_not_light_up_when_pressed`, Gegenprobe mit altem `Look` schlägt an. Checks: fmt, clippy ohne Warnung, `cargo test` 107 + 374 grün. |
 | 5c S8 | umgesetzt 26.10. nach „S8 im Detail“ (Abweichung dort: Knopf im Textbereich statt einem Platz, der das Control verschiebt). `Row::reset`, `Prefs::set_keys` (aus `settings_state().doc`, neu `Doc::keys`), `Target::Reset` (Hover, Druck, Fokus-Kontur, Tab vor dem Control), `RowParts::reset` und `reset_place`, Kanal `Shown` (blendet mit `QUICK`, beim Öffnen sofort), `Effect::Reset` → `Write::Reset(key)` → `Change::Remove`; der Default kommt über S6 zurück. Test `a_set_key_offers_a_reset_that_leaves_the_control_where_it_is` (nur der gesetzte Key, Control-Rechteck gleich, Knopf `GAP_S` davor, Tab-Reihenfolge, Klick liefert `Reset(\"record_fps\")`, Ausblenden halb und am Ende 0). Gates laufen im Zustand „alle Keys gesetzt“, das Überlauf-Gate prüft jetzt auch die Reset-Knöpfe (922 Teile, keiner auf Name oder Control). Render bei 946 und 360 angesehen. Befund am Rand (älter, nicht S8): mit der eingebetteten Ersatzschrift kürzt ein gestapeltes Segment bei 360 px seine Teile („System and…“, „…“); mit Outfit passt es; das Umbruch-Gate prüft Segment-Teile nicht, offen als eigener Punkt. Checks: fmt, clippy ohne Warnung, `cargo test` 108 + 374 grün. |
+| 5c S9 | umgesetzt 26.10. nach „S9 im Detail“ (Abweichung dort: Hinweis nennt im Engpass, was passt, wegen der unteren Bitrate-Klemme). Length als Dropdown 15 s bis 10 min (eigener Wert aus der Datei bleibt Eintrag), `Prefs::replay_bitrate`, Hinweis unter Memory aus `video_kbps` und `AUDIO_KBPS`. Belegt: Standard 60 s/512 MiB ergibt 20 994 kbit/s, gleich dem `-q 20994` des laufenden Recorders; mit den Werten des Nutzers (30 s, 512 MiB) „Video at about 41 Mbit/s“. Gates laufen jetzt auch mit 600 s/256 MiB („Only about 5 min fit, give it more memory“); Copy-Gate-Allowlist um die Einheit „Mbit/s“ ergänzt (134 Strings). Test `replay_length_steps_and_what_the_memory_buys`. Render angesehen. Checks: fmt, clippy ohne Warnung, `cargo test` 109 + 374 grün. |
 | 5a | umgesetzt 26.10. nach „Phase 5a: Öffnen ohne Terminal“: Tray-Eintrag „Settings…“ ganz unten (Prozessstart im Tray-Thread), `assets/linux/boltsnap.desktop` mit Icons 64/128/256 aus `boltsnap.ico`, `.deb`-Assets, Flake-`postInstall`, Release-Tarball, README. Abweichung: `Categories=Graphics;`. Checks: `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test` 75 + 371 grün, `desktop-file-validate` ohne Meldung. Live: Daemon neu gestartet, dbusmenu-`GetLayout` endet auf „Settings…“; `gio launch` der installierten `.desktop`-Datei öffnet das Fenster (Klasse `boltsnap`). Nicht live prüfbar: Klick im Tray. |
 | 5 | geplant, freigegeben 24.10. |
 | 6 (Library) | Skizze im Library-Plan |

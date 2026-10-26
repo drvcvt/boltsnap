@@ -7,14 +7,18 @@ use std::time::{Duration, Instant};
 use super::prefs;
 
 /// The pages in the state with everything showing that only shows
-/// sometimes: a recording runs, the replay buffer runs with old settings,
-/// every key is set in the file (every row has its reset button).
+/// sometimes: a recording runs, the replay buffer runs with old settings
+/// and more length than its memory holds, every key is set in the file
+/// (every row has its reset button).
 fn busy() -> pages::Prefs {
     pages::Prefs {
         recording: true,
         replay_running: true,
         replay_stale: true,
         replay_stalled: true,
+        // Too long for the memory: the hint says how much fits.
+        replay_seconds: 600,
+        replay_memory_mib: 256,
         set_keys: crate::settings::schema::KEYS
             .iter()
             .map(|key| key.path.to_owned())
@@ -362,8 +366,8 @@ fn gate_copy_reads_like_a_person_wrote_it() {
         "cutting-edge",
         "next level",
     ];
-    // Names that keep their capitals mid-sentence.
-    const PROPER: [&str; 4] = ["Boltsnap", "GiB", "MiB", "Off"];
+    // Names and units that keep their capitals mid-sentence.
+    const PROPER: [&str; 5] = ["Boltsnap", "GiB", "MiB", "Mbit/s", "Off"];
     for text in &strings {
         assert!(!text.contains(['!', '\u{2014}', '\u{2013}']), "{text}");
         assert!(!text.ends_with('.'), "a label, not a sentence: {text}");
