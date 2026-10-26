@@ -176,3 +176,42 @@ fn a_locked_notice_turns_every_row_off_and_a_reload_keeps_the_page() {
         assert_eq!(app.write(index), None, "block {index} is off");
     }
 }
+
+#[test]
+fn a_click_on_a_switch_rows_name_switches_and_other_names_do_nothing() {
+    let now = Instant::now();
+    let mut app = app_on("recording", SIZE, now);
+    let name_of = |app: &App, label: &str| {
+        let index = block(app, label);
+        let Block::Row(row) = &app.page().blocks[index] else {
+            unreachable!()
+        };
+        let parts = app.row_parts(app.block_rects(now)[index], row);
+        (index, middle(parts.label))
+    };
+    let (show_frame, at) = name_of(&app, "Show frame");
+    // Hovering the name lights the switch it would flip.
+    app.handle(Input::Move { x: at.0, y: at.1 }, now);
+    assert!(
+        app.fade(
+            crate::app::Target::Control(show_frame),
+            crate::app::Channel::Hover,
+            now + SETTLED
+        ) > 0.99
+    );
+    let effects = press(&mut app, at, now);
+    assert_eq!(changed(&effects), vec![show_frame]);
+    assert_eq!(
+        app.write(show_frame),
+        Some(Write::Key(
+            "record_show_frame",
+            settings::Value::Bool(false)
+        ))
+    );
+    let (_, at) = name_of(&app, "Frame rate");
+    assert!(
+        changed(&press(&mut app, at, now)).is_empty(),
+        "a dropdown's name does nothing"
+    );
+    assert_eq!(app.focus(), None);
+}

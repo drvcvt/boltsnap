@@ -261,7 +261,9 @@ impl App {
             .enumerate()
             .find_map(|(index, block)| match block {
                 Block::Row(row)
-                    if row.enabled && self.row_parts(rects[index], row).control.contains(x, y) =>
+                    if row.enabled
+                        && (self.row_parts(rects[index], row).control.contains(x, y)
+                            || row.control.row_click() && rects[index].contains(x, y)) =>
                 {
                     Some(Target::Control(index))
                 }

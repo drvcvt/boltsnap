@@ -1765,6 +1765,26 @@ und Achsen.
 - Test: Klick auf den Namen von „Show frame“ schreibt den Key, auf den Namen
   von „Frame rate“ fokussiert nur.
 
+##### S4 im Detail (Gegenprüfung am Code, 26.10.)
+
+Abweichung von S4 oben: nur Zeilen mit Schalter werden ganz klickbar (wie das
+Label einer Checkbox). Ein Klick auf den Namen eines Dropdowns oder Sliders
+gäbe nur Fokus, und der ist nach Mausklicks seit S2 unsichtbar: ein Klick ohne
+sichtbare Wirkung wäre schlechter als keiner.
+
+Umsetzung:
+- `Widget::row_toggles(&self) -> bool` (Standard `false`, Schalter `true`) und
+  `Widget::toggle(&mut self, now) -> Outcome` (Schalter: wie `Space`).
+- `App::target_at`: liegt der Zeiger in der Zeile, aber nicht auf dem
+  Control, ist die Zeile Ziel ihres Controls, wenn es `row_toggles`; sonst wie
+  heute nichts. Hover hellt so auch den Schalter auf, wenn der Zeiger auf dem
+  Namen ist (die Fläche zeigt, was ein Klick tut).
+- `App::press`: Ziel-Control, Punkt außerhalb seines Rechtecks → `toggle`,
+  Fokus wie bei einem Klick auf den Schalter.
+- Tests: Klick auf den Namen „Show frame“ schaltet und schreibt den Key; Klick
+  auf den Namen „Frame rate“ ändert nichts und schreibt nichts; Hover auf dem
+  Namen „Show frame“ hellt den Schalter auf.
+
 #### S5 Einheitliche Dropdown-Breite (U9)
 
 - Token `MENU_MIN = 120` (Raster 4): Dropdowns mindestens so breit, Text
@@ -2007,6 +2027,7 @@ Vom Nutzer am 24.10. so bestätigt:
 | 5c S1 | umgesetzt 26.10.: `linux/buffers.rs` (`Buffers`, bis zu drei je Größe, freier zuerst, sonst neu und der älteste geht), genutzt vom Fenster (ersetzt die Logik aus 4f) und vom Shelf-Draw (`shelf/mod.rs` bleibt bei 3681 Zeilen). Test `a_released_buffer_is_reused_before_a_new_one_is_made`. Checks: fmt, clippy ohne Warnung, `cargo test` 95 + 374 grün. Live nicht gemessen (siehe S1 Abnahme: Versuch brach den Desktop des Nutzers aus, abgebrochen); greift im Shelf erst nach einem Daemon-Neustart. |
 | 5c S2 | umgesetzt 26.10. nach „S2 im Detail“ (Abweichung dort begründet: Kontur außen statt innen; `:focus-visible`-Verhalten gleich mit eingebaut). `Canvas::ring`, Token `FOCUS_W = 2`, `widgets::focus_ring`; Fläche hebt nur noch bei Hover; Schalter um die Spur, Slider um den Knopf mit 2 px Abstand, Navigation um die Auswahl; `App::keyed` (Feder `QUICK`): Tab und Pfeile in der Navigation zeigen, ein Klick blendet aus. Gemessen: Kontur auf Gruppe 6,06:1, auf Seitenleiste 6,37:1, gegen das Control 5,38:1 (vorher Fokus 1,11:1). Test `tab_shows_the_outline_and_a_click_hides_it` (Pixel 1 px links des Dropdowns), Render der fünf Arten angesehen. Checks: fmt, clippy ohne Warnung, `cargo test` 96 + 374 grün. |
 | 5c S3 | umgesetzt 26.10. nach „S3 im Detail“. `Fonts::wrap` (Wörter, nach `/`, `-`, `_`, sonst zwischen Zeichen, eine Cursor-Liste je Wort), Banner bis 4 Zeilen (Abstand 20, eine Zeile wie bisher 46 hoch), Namen und Hinweise bis 3 Zeilen (Abstand ab zwei Zeilen 18/16), Zeilenhöhe je Anordnung (`side`, `stacked`), die Feder mischt zwischen beiden. Abweichung, beim Test gefunden: die Anordnung neben dem Control lässt dem Namen mindestens `LABEL_MIN` zum Umbrechen, sonst brach ein zu schmaler Name Buchstabe für Buchstabe und die Zeile sprang beim Stapeln von 46 auf 70 px. Gates: neu `gate_text_wraps_instead_of_being_cut` (238 Zeilen bei 360/480/760/1400, echte Seiten und Fehlerzustand, keine gekürzt; Gegenprobe mit einer Zeile schlägt an „Outline around a recorde...“); Innenabstand misst oben die höhere von Control und erster Textzeile, unten die tiefere; Überlauf 626 Teile, Abstände 0,00, Versalien 0,00, Icons 0,31/0,31/0,00/0,37 (Outfit). Render bei 360 px und Stress-Banner angesehen. Checks: fmt, clippy ohne Warnung, `cargo test` 98 + 374 grün. |
+| 5c S4 | umgesetzt 26.10. nach „S4 im Detail“ (Abweichung: nur Schalter-Zeilen ganz klickbar). `Widget::row_click` (Schalter `true`), `App::target_at` nimmt die ganze Zeile für solche Controls; Klick und Hover laufen über den bestehenden Pfad. Test `a_click_on_a_switch_rows_name_switches_and_other_names_do_nothing` (Hover hellt den Schalter auf, Klick schreibt `record_show_frame`, Klick auf den Namen „Frame rate“ schreibt nichts und fokussiert nichts). Checks: fmt, clippy ohne Warnung, `cargo test` 99 + 374 grün. |
 | 5a | umgesetzt 26.10. nach „Phase 5a: Öffnen ohne Terminal“: Tray-Eintrag „Settings…“ ganz unten (Prozessstart im Tray-Thread), `assets/linux/boltsnap.desktop` mit Icons 64/128/256 aus `boltsnap.ico`, `.deb`-Assets, Flake-`postInstall`, Release-Tarball, README. Abweichung: `Categories=Graphics;`. Checks: `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test` 75 + 371 grün, `desktop-file-validate` ohne Meldung. Live: Daemon neu gestartet, dbusmenu-`GetLayout` endet auf „Settings…“; `gio launch` der installierten `.desktop`-Datei öffnet das Fenster (Klasse `boltsnap`). Nicht live prüfbar: Klick im Tray. |
 | 5 | geplant, freigegeben 24.10. |
 | 6 (Library) | Skizze im Library-Plan |

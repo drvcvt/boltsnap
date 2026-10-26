@@ -114,6 +114,12 @@ pub trait Widget {
         false
     }
 
+    /// A click anywhere on its row is a click on the control, like the
+    /// label of a checkbox (settings plan, 5c S4).
+    fn row_click(&self) -> bool {
+        false
+    }
+
     fn draw(&self, canvas: &mut Canvas, fonts: &Fonts, rect: Rect, look: Look, now: Instant);
 
     fn value(&self) -> Value;

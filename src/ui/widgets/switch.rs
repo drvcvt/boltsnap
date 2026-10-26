@@ -73,6 +73,10 @@ impl Widget for Switch {
         Value::Bool(self.on)
     }
 
+    fn row_click(&self) -> bool {
+        true
+    }
+
     fn press(&mut self, _: Rect, _: (f32, f32), _: u8, _: &Fonts, now: Instant) -> Outcome {
         self.toggle(now)
     }
