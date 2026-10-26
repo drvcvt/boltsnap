@@ -226,7 +226,8 @@ cargo test
 ## Screenshot shelf
 
 On supported Wayland compositors (Hyprland, Sway, Niri), an interactive capture
-appears as a small floating **thumbnail in the bottom-left corner**. The
+appears as a small floating **thumbnail in the bottom-left corner** (or the
+corner set under `[shelf]`, see [Configuration](#configuration)). The
 experimental Windows backend contains the same shelf flow, but it is not
 currently verified. Multiple screenshots stack with the newest one on top.
 
@@ -313,6 +314,19 @@ If an edit leaves the file unparsable while the daemon runs, the daemon keeps
 the last valid settings and says which line is wrong in a notification, once
 per error. A file that is already broken when the daemon starts falls back to
 the defaults.
+
+On Linux the shelf itself can be sized and placed under `[shelf]`; changes
+apply live to the cards already showing:
+
+```toml
+[shelf]
+card_width = 190        # 140 to 380 px; the height follows (190 x 132)
+visible_cards = 5       # 1 to 8; more cards stay cached below
+corner = "bottom-left"  # bottom-right, top-left or top-right
+```
+
+The newest card is on top of the stack in every corner. The Windows backend
+keeps 190 x 132, five cards, bottom left.
 
 Clicking a Linux image or video card opens it in the desktop's default app.
 Right-click copies the media. The **Save** button writes it to the
