@@ -37,6 +37,8 @@ pub fn prefs() -> Prefs {
         replay_autostart: false,
         replay_running: false,
         replay_stalled: false,
+        replay_stale: false,
+        recording: false,
         replay_seconds: 60,
         replay_memory_mib: 512,
         replay_fps: 60,
@@ -477,9 +479,9 @@ fn a_narrow_window_shows_icon_navigation_and_stacks_rows_that_do_not_fit() {
     assert_eq!(parts.control.x, parts.label.x, "under the name");
     // A switch still fits beside its name; the hint wraps instead of
     // being cut, so the row grows.
-    let audio = block(&narrow, "Audio");
-    let rect = narrow.block_rects(now)[audio];
-    let Block::Row(row) = &narrow.page().blocks[audio] else {
+    let show_frame = block(&narrow, "Show frame");
+    let rect = narrow.block_rects(now)[show_frame];
+    let Block::Row(row) = &narrow.page().blocks[show_frame] else {
         unreachable!()
     };
     let parts = narrow.row_parts(rect, row);

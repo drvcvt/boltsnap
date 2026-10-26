@@ -24,11 +24,11 @@ fn tilde(path: &Path) -> String {
 }
 
 pub fn load() -> Prefs {
-    let (replay_running, replay_stalled) = super::save::replay_state();
     let cfg = Config::load();
     let shelf = cfg.shelf_prefs();
     let recording = cfg.recording_prefs();
     let replay = Config::replay_settings().unwrap_or_default();
+    let buffer = super::save::replay_state(replay.seconds, replay.memory_mib);
     Prefs {
         card_width: shelf.card.w,
         visible_cards: shelf.visible as u32,
@@ -57,8 +57,10 @@ pub fn load() -> Prefs {
         disk_to_shelf: recording.disk_add_to_shelf,
         shelf_to_disk_after: cfg.shelf_to_disk_after().map(|after| after.as_secs()),
         replay_autostart: replay.autostart,
-        replay_running,
-        replay_stalled,
+        replay_running: buffer.running,
+        replay_stalled: buffer.stalled,
+        replay_stale: buffer.stale,
+        recording: super::save::recording(),
         replay_seconds: replay.seconds,
         replay_memory_mib: replay.memory_mib,
         replay_fps: replay.fps,

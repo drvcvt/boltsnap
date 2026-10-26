@@ -3,8 +3,8 @@
 use std::time::{Duration, Instant};
 
 use super::{SETTLED, app_on, block, focus, prefs};
-use crate::app::Block;
 use crate::app::pages::{self, Cursor, Notice, Prefs};
+use crate::app::{App, Block};
 use crate::ui::widgets::Value;
 use crate::ui::{Effect, Input};
 
@@ -101,4 +101,90 @@ fn a_new_notice_rebuilds_the_pages_on_the_same_page() {
     app.update(pages::pages(&prefs(), Some(&notice), now), now, idle);
     assert_eq!(app.page().name, "Replay");
     assert!(matches!(app.page().blocks[0], Block::Banner { .. }));
+}
+
+#[test]
+fn a_running_recording_shows_one_note_and_no_row_repeats_it() {
+    let now = Instant::now();
+    let mut app = App::new(
+        crate::ui::text::Fonts::fallback(),
+        with(|p| p.recording = true, now),
+        SIZE,
+        now,
+    );
+    app.show_named("recording", now);
+    let Block::Banner { text, .. } = &app.page().blocks[0] else {
+        panic!("a note on top while recording");
+    };
+    assert!(text.contains("next one"));
+    let idle = app_on("recording", SIZE, now);
+    assert!(
+        !matches!(idle.page().blocks[0], Block::Banner { .. }),
+        "no note otherwise"
+    );
+    for page in pages::pages(&prefs(), None, now) {
+        for block in &page.blocks {
+            if let Block::Row(row) = block {
+                assert!(
+                    !row.hint
+                        .as_deref()
+                        .is_some_and(|h| h.starts_with("Applies")),
+                    "{} repeats a note",
+                    row.label
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn restart_replay_shows_only_for_a_stale_running_buffer() {
+    let now = Instant::now();
+    let has_restart = |prefs: &mut dyn FnMut(&mut Prefs)| {
+        let mut p = super::prefs();
+        prefs(&mut p);
+        pages::pages(&p, None, now)
+            .iter()
+            .flat_map(|page| &page.blocks)
+            .any(|block| matches!(block, Block::Row(row) if row.label == "Restart replay"))
+    };
+    assert!(!has_restart(&mut |_| {}));
+    assert!(
+        !has_restart(&mut |p| p.replay_running = true),
+        "running and current"
+    );
+    assert!(!has_restart(&mut |p| p.replay_stale = true), "not running");
+    assert!(has_restart(&mut |p| {
+        p.replay_running = true;
+        p.replay_stale = true;
+    }));
+    let mut app = App::new(
+        crate::ui::text::Fonts::fallback(),
+        with(
+            |p| {
+                p.replay_running = true;
+                p.replay_stale = true;
+            },
+            now,
+        ),
+        SIZE,
+        now,
+    );
+    app.show_named("replay", now);
+    let restart = block(&app, "Restart replay");
+    let Block::Row(row) = &app.page().blocks[restart] else {
+        unreachable!()
+    };
+    let button = app.row_parts(app.block_rects(now)[restart], row).control;
+    let at = (button.x + button.w / 2.0, button.y + button.h / 2.0);
+    app.handle(
+        Input::Press {
+            x: at.0,
+            y: at.1,
+            clicks: 1,
+        },
+        now,
+    );
+    app.handle(Input::Release, now);
+    assert_eq!(app.write(restart), Some(crate::app::Write::RestartReplay));
 }

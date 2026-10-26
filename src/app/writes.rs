@@ -23,12 +23,15 @@ pub enum Bind {
     Key(&'static str, Encode),
     /// Starts or stops the replay buffer.
     ReplayBuffer,
+    /// Stops the replay buffer and starts it again with the file's settings.
+    ReplayRestart,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Write {
     Key(&'static str, settings::Value),
     Replay(bool),
+    RestartReplay,
 }
 
 impl App {
@@ -81,6 +84,7 @@ impl App {
                 Value::Bool(on) => Some(Write::Replay(on)),
                 _ => None,
             },
+            Bind::ReplayRestart => Some(Write::RestartReplay),
         }
     }
 

@@ -5,6 +5,18 @@
 use std::time::{Duration, Instant};
 
 use super::prefs;
+
+/// The pages in the state with everything showing that only shows
+/// sometimes: a recording runs, the replay buffer runs with old settings.
+fn busy() -> pages::Prefs {
+    pages::Prefs {
+        recording: true,
+        replay_running: true,
+        replay_stale: true,
+        replay_stalled: true,
+        ..prefs()
+    }
+}
 use crate::app::{App, Block, gallery, measure, pages};
 use crate::ui::Rect;
 use crate::ui::text::Fonts;
@@ -20,10 +32,11 @@ fn every_page(size: (f32, f32), now: Instant, mut check: impl FnMut(&App, &str))
         text: format!("config.toml has an error on line 3: {}", gallery::LONG_PATH),
         locked: true,
     };
-    for variant in 0..3 {
+    for variant in 0..4 {
         let pages = match variant {
             0 => pages::pages(&prefs(), None, now),
             1 => pages::pages(&prefs(), Some(&locked), now),
+            2 => pages::pages(&busy(), None, now),
             _ => gallery::pages(now),
         };
         let names: Vec<String> = pages.iter().map(|page| page.name.clone()).collect();
@@ -305,7 +318,8 @@ fn gate_contrast_every_text_on_its_surface() {
 #[test]
 fn gate_copy_reads_like_a_person_wrote_it() {
     let now = Instant::now();
-    let pages = pages::pages(&prefs(), None, now);
+    let mut pages = pages::pages(&prefs(), None, now);
+    pages.extend(pages::pages(&busy(), None, now));
     let mut strings: Vec<String> = Vec::new();
     for page in &pages {
         strings.push(page.name.clone());
@@ -426,14 +440,14 @@ fn gate_text_wraps_instead_of_being_cut() {
     let cut = |line: &str| line.ends_with('\u{2026}') || line.ends_with("...");
     let mut lines = 0;
     for w in WIDTHS {
-        for notice in [None, Some(&notice)] {
-            let names: Vec<String> = pages::pages(&prefs(), notice, now)
+        for (state, notice) in [(prefs(), None), (prefs(), Some(&notice)), (busy(), None)] {
+            let names: Vec<String> = pages::pages(&state, notice, now)
                 .iter()
                 .map(|page| page.name.clone())
                 .collect();
             let mut app = App::new(
                 Fonts::fallback(),
-                pages::pages(&prefs(), notice, now),
+                pages::pages(&state, notice, now),
                 (w, 900.0),
                 now,
             );

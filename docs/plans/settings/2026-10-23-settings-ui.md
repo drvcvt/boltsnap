@@ -1896,7 +1896,7 @@ Laufzeit; der Replay-Status liefert `state`, `session`, `seconds`,
 
 Abweichung von S7 oben, Aufnahme: statt den Hinweis an sechs Zeilen zu hängen
 (wieder Rauschen) steht während einer Aufnahme oben auf der Recording-Seite
-ein Banner „A recording is running. Changes here apply to the next one.“ (Icon
+ein Banner „A recording is running, changes here apply to the next one“ (Icon
 `info`, `SUB`); die festen Zeilenhinweise entfallen. Show frame, Video folder
 und Show saved videos wirken sofort und sind davon nicht betroffen.
 
@@ -1908,8 +1908,8 @@ Replay:
   erfolgreich geschrieben wurde (im Fenster gemerkt je Sitzung; ein Neustart
   hat eine neue Sitzung und ist damit wieder aktuell).
 - Dann steht in der Buffer-Gruppe unter „Replay buffer“ die Zeile **Restart
-  replay** (Icon `rotate-ccw`, Hinweis „Applies your changes. The buffer
-  starts empty.“, Icon-Knopf). Klick: `Write::Restart` = `stop`, dann `start`
+  replay** (Icon `rotate-ccw`, Hinweis „Applies your changes, the buffer
+  starts empty“, Icon-Knopf). Klick: `Write::Restart` = `stop`, dann `start`
   im Schreib-Thread; nie automatisch.
 
 Fenster: ein zweiter Watch-Thread auf `watch_recording()`, der nur bei
@@ -2134,6 +2134,7 @@ Vom Nutzer am 24.10. so bestätigt:
 | 5c S5 | umgesetzt 26.10. nach „S5 im Detail“: `MENU_MIN = 120`, `Dropdown::width` mindestens so breit. Gate `gate_menus_share_a_left_edge`: 16 Dropdowns (Recording und Replay, Fehlerzustand, 760 und 1400 px) je Seite auf einer Kante; Gegenprobe ohne Mindestbreite schlägt an („only 0 dropdowns found“, das Gate verlangt mindestens 8, damit es nicht leer besteht). Render angesehen (Kanten bei 548 px). Checks: fmt, clippy ohne Warnung, `cargo test` 100 + 374 grün. |
 | 5c S6 | umgesetzt 26.10. nach „S6 im Detail“ (Abweichung dort: Werte weiter aus `prefs::load()`, die Watch-Zeile ist Auslöser). `Widget::adopt` für Schalter, Segment, Dropdown, Stepper (gleiten bzw. blenden), Slider und Feld (springen); `App::update` (gleiche Struktur → Werte übernehmen, fokussierte, gezogene und Zeilen mit offenem Schreibauftrag bleiben, übernommene Werte gelten als gemeldet; sonst `reload`); `ipc::watch_settings`, `save::watch` (Thread, neu alle 2 s, wenn der Daemon weg ist); Schreibaufträge tragen (Seite, Block), das Fenster zählt offene je Zeile. Tests (`app/tests/live.rs`, 3): Wert aus dem Tray gleitet und wird nicht zurückgeschrieben; fokussiertes Feld und Zeile mit offenem Auftrag bleiben; neue Notice baut auf derselben Seite neu. Checks: fmt, clippy ohne Warnung, `cargo test` 103 + 374 grün. Live nicht geprüft (bräuchte einen Tray-Klick bei offenem Fenster und einen Screenshot; nach Absprache). |
 | 4g | umgesetzt 26.10. nach „Phase 4g“. Beim Test zusätzlich gefunden: das Icon schwang beim Einklappen erst 17 px nach rechts (x 20 → 37) und dann zurück auf 15, weil zwischen „mittig in der schrumpfenden Fläche“ und „links eingerückt“ gemischt wurde; jetzt zwischen den Ruhelagen 20 und 15, ohne Runden. Name an fester Stelle (x 42). Test `closing_navigation_icons_glide_between_pixels_and_names_stay_put` (61 Proben alle 5 ms: monoton, ≥ 20 verschiedene x, Ruhelagen ganzzahlig). `/ui`-Skill um kurze Wege und Mischen zwischen Ruhelagen ergänzt. Checks: fmt, clippy ohne Warnung, `cargo test` 104 + 374 grün; Icon-Gate mit Outfit unverändert. |
+| 5c S7 | umgesetzt 26.10. nach „S7 im Detail“ (Abweichung dort: während einer Aufnahme ein Banner statt Hinweisen an sechs Zeilen). Feste Hinweise „Applies to the next recording“ und „Applies when replay restarts“ entfernt; Banner „A recording is running, changes here apply to the next one“; Zeile „Restart replay“ (Icon-Knopf, `Write::RestartReplay` = stop, start) nur bei laufendem, veraltetem Puffer. Veraltet: `seconds` oder `budget_bytes` (= `memory_mib · 2²⁰ / 3`, `worker/src/live.rs:108`) passen nicht zur Datei, oder in dieser Sitzung wurde ein Restart-Key geschrieben. Zweiter Watch-Thread auf `watch_recording`, signalisiert nur bei geändertem `state`. Texte ohne Schlusspunkt (Projektregel, vom Copy-Gate gefunden). Gates laufen jetzt auch im Zustand „Aufnahme läuft, Puffer veraltet“: Copy 120 Strings, Überlauf 854 Teile, Umbruch 297 Zeilen, Dropdowns 24. Tests: Banner nur bei Aufnahme und keine Zeile wiederholt ihn; Restart-Zeile nur bei laufend und veraltet, Klick liefert `RestartReplay`. Render beider Zustände angesehen. Checks: fmt, clippy ohne Warnung, `cargo test` 106 + 374 grün. Live nicht geprüft (Aufnahme und Replay-Neustart nach Absprache). |
 | 5a | umgesetzt 26.10. nach „Phase 5a: Öffnen ohne Terminal“: Tray-Eintrag „Settings…“ ganz unten (Prozessstart im Tray-Thread), `assets/linux/boltsnap.desktop` mit Icons 64/128/256 aus `boltsnap.ico`, `.deb`-Assets, Flake-`postInstall`, Release-Tarball, README. Abweichung: `Categories=Graphics;`. Checks: `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test` 75 + 371 grün, `desktop-file-validate` ohne Meldung. Live: Daemon neu gestartet, dbusmenu-`GetLayout` endet auf „Settings…“; `gio launch` der installierten `.desktop`-Datei öffnet das Fenster (Klasse `boltsnap`). Nicht live prüfbar: Klick im Tray. |
 | 5 | geplant, freigegeben 24.10. |
 | 6 (Library) | Skizze im Library-Plan |

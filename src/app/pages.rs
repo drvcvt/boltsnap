@@ -9,7 +9,7 @@ use crate::settings;
 use crate::ui::icons::Icon;
 use crate::ui::theme;
 use crate::ui::widgets::{
-    Dropdown, Part, Segment, Slider, Stepper, Switch, TextField, Value, Widget,
+    Dropdown, IconButton, Part, Segment, Slider, Stepper, Switch, TextField, Value, Widget,
 };
 
 /// The values the pages show, in plain types.
@@ -33,6 +33,10 @@ pub struct Prefs {
     pub replay_running: bool,
     /// Up, but no video is arriving.
     pub replay_stalled: bool,
+    /// Up with other settings than the file has now: a restart applies them.
+    pub replay_stale: bool,
+    /// A recording runs; recording settings apply to the next one.
+    pub recording: bool,
     pub replay_seconds: u64,
     pub replay_memory_mib: usize,
     pub replay_fps: u32,
@@ -269,103 +273,112 @@ fn recording(prefs: &Prefs, now: Instant) -> Page {
     .iter()
     .position(|s| *s == prefs.audio_source)
     .unwrap_or(0);
-    let next = Some("Applies to the next recording");
+    let mut blocks = Vec::new();
+    if prefs.recording {
+        // One note while it matters, instead of a hint under every row.
+        blocks.push(Block::Banner {
+            icon: Icon::Info,
+            text: "A recording is running, changes here apply to the next one".into(),
+            color: theme::SUB,
+        });
+    }
+    blocks.extend([
+        Block::Heading("Video".into()),
+        row(
+            Icon::Gauge,
+            "Frame rate",
+            None,
+            choose("record_fps", &FRAME_RATES, prefs.fps, fps, fps_value, now),
+        ),
+        row(
+            Icon::Monitor,
+            "Both displays",
+            None,
+            segment(
+                "record_both_mode",
+                vec![Part::text("Separate"), Part::text("Combined")],
+                &["separate", "combined"],
+                usize::from(prefs.both_combined),
+                now,
+            ),
+        ),
+        row(
+            Icon::MousePointer2,
+            "Cursor",
+            None,
+            segment(
+                "record_cursor",
+                vec![
+                    Part::text("System"),
+                    Part::text("Mellow"),
+                    Part::text("Quick"),
+                ],
+                &["system", "mellow", "quick"],
+                cursor,
+                now,
+            ),
+        ),
+        row(
+            Icon::SquareDashed,
+            "Show frame",
+            Some("Outline around a recorded region"),
+            switch("record_show_frame", prefs.show_frame, now),
+        ),
+        Block::Heading("Audio".into()),
+        row(
+            Icon::Volume2,
+            "Audio",
+            None,
+            switch("record_audio_enabled", prefs.audio, now),
+        ),
+        row(
+            Icon::Mic,
+            "Source",
+            None,
+            segment(
+                "record_audio_source",
+                vec![
+                    Part::text("System and mic"),
+                    Part::text("Mic"),
+                    Part::text("System"),
+                ],
+                &["system-and-mic", "mic", "system"],
+                source,
+                now,
+            ),
+        ),
+        Block::Heading("Saving".into()),
+        row(
+            Icon::Folder,
+            "Video folder",
+            None,
+            folder("record_dir", &prefs.record_dir),
+        ),
+        row(
+            Icon::HardDriveDownload,
+            "Show saved videos on the shelf",
+            None,
+            switch("record_disk_add_to_shelf", prefs.disk_to_shelf, now),
+        ),
+        row(
+            Icon::Clock,
+            "Keep long shelf saves",
+            Some("From this length they go to the video folder"),
+            choose(
+                "record_shelf_to_disk_after_seconds",
+                &SHELF_TO_DISK,
+                prefs.shelf_to_disk_after,
+                duration,
+                // Zero turns it off (schema).
+                |after| settings::Value::Int(after.map_or(0, |s| s as i64)),
+                now,
+            ),
+        ),
+    ]);
     Page {
         name: "Recording".into(),
         icon: Icon::Video,
-        blocks: vec![
-            Block::Heading("Video".into()),
-            row(
-                Icon::Gauge,
-                "Frame rate",
-                next,
-                choose("record_fps", &FRAME_RATES, prefs.fps, fps, fps_value, now),
-            ),
-            row(
-                Icon::Monitor,
-                "Both displays",
-                None,
-                segment(
-                    "record_both_mode",
-                    vec![Part::text("Separate"), Part::text("Combined")],
-                    &["separate", "combined"],
-                    usize::from(prefs.both_combined),
-                    now,
-                ),
-            ),
-            row(
-                Icon::MousePointer2,
-                "Cursor",
-                None,
-                segment(
-                    "record_cursor",
-                    vec![
-                        Part::text("System"),
-                        Part::text("Mellow"),
-                        Part::text("Quick"),
-                    ],
-                    &["system", "mellow", "quick"],
-                    cursor,
-                    now,
-                ),
-            ),
-            row(
-                Icon::SquareDashed,
-                "Show frame",
-                Some("Outline around a recorded region"),
-                switch("record_show_frame", prefs.show_frame, now),
-            ),
-            Block::Heading("Audio".into()),
-            row(
-                Icon::Volume2,
-                "Audio",
-                next,
-                switch("record_audio_enabled", prefs.audio, now),
-            ),
-            row(
-                Icon::Mic,
-                "Source",
-                None,
-                segment(
-                    "record_audio_source",
-                    vec![
-                        Part::text("System and mic"),
-                        Part::text("Mic"),
-                        Part::text("System"),
-                    ],
-                    &["system-and-mic", "mic", "system"],
-                    source,
-                    now,
-                ),
-            ),
-            Block::Heading("Saving".into()),
-            row(
-                Icon::Folder,
-                "Video folder",
-                None,
-                folder("record_dir", &prefs.record_dir),
-            ),
-            row(
-                Icon::HardDriveDownload,
-                "Show saved videos on the shelf",
-                None,
-                switch("record_disk_add_to_shelf", prefs.disk_to_shelf, now),
-            ),
-            row(
-                Icon::Clock,
-                "Keep long shelf saves",
-                Some("From this length they go to the video folder"),
-                choose(
-                    "record_shelf_to_disk_after_seconds",
-                    &SHELF_TO_DISK,
-                    prefs.shelf_to_disk_after,
-                    duration,
-                    // Zero turns it off (schema).
-                    |after| settings::Value::Int(after.map_or(0, |s| s as i64)),
-                    now,
-                ),
-            ),
-        ],
+        blocks,
     }
 }
 
@@ -374,65 +387,80 @@ fn fps_value(fps: u32) -> settings::Value {
 }
 
 fn replay(prefs: &Prefs, now: Instant) -> Page {
-    let restart = Some("Applies when replay restarts");
+    let mut blocks = vec![
+        Block::Heading("Buffer".into()),
+        row(
+            Icon::RotateCcwClock,
+            "Replay buffer",
+            prefs
+                .replay_stalled
+                .then_some("No video is arriving, turn it off and on"),
+            (
+                Box::new(Switch::new(prefs.replay_running, now)),
+                Bind::ReplayBuffer,
+            ),
+        ),
+        row(
+            Icon::Power,
+            "Start with Boltsnap",
+            None,
+            switch("replay.autostart", prefs.replay_autostart, now),
+        ),
+        row(
+            Icon::Timer,
+            "Length",
+            None,
+            (
+                Box::new(Slider::new(prefs.replay_seconds as i64, (5, 600, 5), "s")),
+                key("replay.duration_seconds", int),
+            ),
+        ),
+        row(
+            Icon::MemoryStick,
+            "Memory",
+            None,
+            choose(
+                "replay.memory_mib",
+                &REPLAY_MEMORY_MIB,
+                prefs.replay_memory_mib,
+                mebibytes,
+                |mib| settings::Value::Int(mib as i64),
+                now,
+            ),
+        ),
+        row(
+            Icon::Gauge,
+            "Frame rate",
+            None,
+            choose(
+                "replay.fps",
+                &FRAME_RATES,
+                prefs.replay_fps,
+                fps,
+                fps_value,
+                now,
+            ),
+        ),
+    ];
+    if prefs.replay_running && prefs.replay_stale {
+        // Right under the buffer it would empty; never on its own.
+        blocks.insert(
+            2,
+            row(
+                Icon::RotateCcw,
+                "Restart replay",
+                Some("Applies your changes, the buffer starts empty"),
+                (
+                    Box::new(IconButton::new(Icon::RotateCcw)),
+                    Bind::ReplayRestart,
+                ),
+            ),
+        );
+    }
     Page {
         name: "Replay".into(),
         icon: Icon::RotateCcwClock,
-        blocks: vec![
-            Block::Heading("Buffer".into()),
-            row(
-                Icon::RotateCcwClock,
-                "Replay buffer",
-                prefs
-                    .replay_stalled
-                    .then_some("No video is arriving, turn it off and on"),
-                (
-                    Box::new(Switch::new(prefs.replay_running, now)),
-                    Bind::ReplayBuffer,
-                ),
-            ),
-            row(
-                Icon::Power,
-                "Start with Boltsnap",
-                None,
-                switch("replay.autostart", prefs.replay_autostart, now),
-            ),
-            row(
-                Icon::Timer,
-                "Length",
-                restart,
-                (
-                    Box::new(Slider::new(prefs.replay_seconds as i64, (5, 600, 5), "s")),
-                    key("replay.duration_seconds", int),
-                ),
-            ),
-            row(
-                Icon::MemoryStick,
-                "Memory",
-                restart,
-                choose(
-                    "replay.memory_mib",
-                    &REPLAY_MEMORY_MIB,
-                    prefs.replay_memory_mib,
-                    mebibytes,
-                    |mib| settings::Value::Int(mib as i64),
-                    now,
-                ),
-            ),
-            row(
-                Icon::Gauge,
-                "Frame rate",
-                restart,
-                choose(
-                    "replay.fps",
-                    &FRAME_RATES,
-                    prefs.replay_fps,
-                    fps,
-                    fps_value,
-                    now,
-                ),
-            ),
-        ],
+        blocks,
     }
 }
 

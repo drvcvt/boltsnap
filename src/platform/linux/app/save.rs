@@ -48,14 +48,43 @@ impl Saver {
     }
 }
 
+/// The replay session in which a key that only a restart applies was
+/// written: that session runs with old settings.
+static STALE_SESSION: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Replay keys the running buffer does not show and `status` cannot tell
+/// apart (length and memory it can).
+const RESTART_ONLY: [&str; 4] = [
+    "replay.fps",
+    "replay.encoder",
+    "replay.output",
+    "replay.bitrate_kbps",
+];
+
+fn replay(command: &str) -> Result<serde_json::Value, String> {
+    super::super::replay::call(&json!({"version": 1, "command": command}))
+}
+
 fn send(write: &Write) -> Result<(), String> {
     match write {
+        Write::RestartReplay => {
+            replay("stop")?;
+            replay("start").map(|_| ())
+        }
         Write::Key(key, value) => {
             let response = call_daemon(Request::SetSettings {
                 patch: vec![((*key).to_owned(), Change::Set(value.clone()))],
             })
             .map_err(|error| format!("Boltsnap is not running: {error}"))?;
             if response.ok {
+                if RESTART_ONLY.contains(key) {
+                    let session = replay("status")
+                        .ok()
+                        .and_then(|status| status["session"].as_str().map(str::to_owned));
+                    if session.is_some() {
+                        *STALE_SESSION.lock().unwrap() = session;
+                    }
+                }
                 Ok(())
             } else {
                 Err(response
@@ -63,10 +92,7 @@ fn send(write: &Write) -> Result<(), String> {
                     .unwrap_or_else(|| format!("{key} was not saved")))
             }
         }
-        Write::Replay(on) => {
-            let command = if *on { "start" } else { "stop" };
-            super::super::replay::call(&json!({"version": 1, "command": command})).map(|_| ())
-        }
+        Write::Replay(on) => replay(if *on { "start" } else { "stop" }).map(|_| ()),
     }
 }
 
@@ -91,17 +117,36 @@ pub(super) fn notice() -> Option<Notice> {
     }
 }
 
-/// Follow the daemon's settings: `changed` gets a signal for every state it
-/// sends, and one when the daemon goes away; then the watch starts again
-/// every 2 s (starting the daemon, like any command).
+/// Follow the daemon: `changed` gets a signal for every settings state it
+/// sends, for every change of the recording state (not its running time),
+/// and when the daemon goes away; then each watch starts again every 2 s
+/// (starting the daemon, like any command).
 pub(super) fn watch(changed: calloop::channel::Sender<()>) {
+    follow(changed.clone(), crate::ipc::watch_settings, |_| true);
+    let mut last = None;
+    follow(changed, crate::ipc::watch_recording, move |line| {
+        let state = serde_json::from_str::<serde_json::Value>(line)
+            .ok()
+            .map(|value| value["state"].clone());
+        let new = state != last;
+        last = state;
+        new
+    });
+}
+
+fn follow(
+    changed: calloop::channel::Sender<()>,
+    connect: fn() -> std::io::Result<std::os::unix::net::UnixStream>,
+    mut tells: impl FnMut(&str) -> bool + Send + 'static,
+) {
     std::thread::spawn(move || {
         loop {
-            if let Ok(stream) = crate::ipc::watch_settings() {
+            if let Ok(stream) = connect() {
                 use std::io::BufRead;
                 for line in std::io::BufReader::new(stream).lines() {
-                    if line.is_err() || changed.send(()).is_err() {
-                        break;
+                    let Ok(line) = line else { break };
+                    if tells(&line) && changed.send(()).is_err() {
+                        return;
                     }
                 }
             }
@@ -113,14 +158,45 @@ pub(super) fn watch(changed: calloop::channel::Sender<()>) {
     });
 }
 
-/// (running, stalled): whether the replay buffer is up, and up without video.
-pub(super) fn replay_state() -> (bool, bool) {
-    match super::super::replay::call(&json!({"version": 1, "command": "status"})) {
-        Ok(status) => match status["state"].as_str() {
-            Some("running" | "starting") => (true, false),
-            Some("stalled") => (true, true),
-            _ => (false, false),
-        },
-        Err(_) => (false, false),
+/// The replay buffer as its control reports it.
+#[derive(Default)]
+pub(super) struct ReplayState {
+    pub running: bool,
+    /// Up, but no video arrives.
+    pub stalled: bool,
+    /// Up with other settings than `seconds` and `memory_mib` say, or after
+    /// a restart-only key was written in this session.
+    pub stale: bool,
+}
+
+pub(super) fn replay_state(seconds: u64, memory_mib: usize) -> ReplayState {
+    let Ok(status) = replay("status") else {
+        return ReplayState::default();
+    };
+    let (running, stalled) = match status["state"].as_str() {
+        Some("running" | "starting") => (true, false),
+        Some("stalled") => (true, true),
+        _ => (false, false),
+    };
+    // The worker keeps a third of the memory for the live buffer
+    // (`replay/worker/src/live.rs`, `budget = memory / 3`).
+    let budget = (memory_mib * 1024 * 1024 / 3) as u64;
+    let session = status["session"].as_str();
+    let stale = running
+        && (status["seconds"].as_u64().is_some_and(|s| s != seconds)
+            || status["budget_bytes"].as_u64().is_some_and(|b| b != budget)
+            || session.is_some() && STALE_SESSION.lock().unwrap().as_deref() == session);
+    ReplayState {
+        running,
+        stalled,
+        stale,
     }
+}
+
+/// Whether a recording runs now.
+pub(super) fn recording() -> bool {
+    crate::ipc::call_daemon(Request::RecordingStatus)
+        .ok()
+        .and_then(|response| response.snapshot)
+        .is_some_and(|snapshot| snapshot.state != crate::protocol::PublicRecordingState::Idle)
 }
