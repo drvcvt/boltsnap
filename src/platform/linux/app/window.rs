@@ -21,10 +21,7 @@ use smithay_client_toolkit::{
             window::{Window, WindowConfigure, WindowDecorations, WindowHandler},
         },
     },
-    shm::{
-        Shm, ShmHandler,
-        slot::{Buffer, SlotPool},
-    },
+    shm::{Shm, ShmHandler, slot::SlotPool},
 };
 use wayland_client::{
     Connection, QueueHandle,
@@ -43,10 +40,8 @@ pub(super) struct Win {
     pub(super) xdg: XdgShell,
     pub(super) shm: Shm,
     pool: SlotPool,
-    /// The buffers the compositor knows, reused as it releases them. A new
-    /// `wl_buffer` every frame is a new texture and a full upload in the
-    /// compositor, whatever the damage says, and that stalls every screen.
-    buffers: Vec<Buffer>,
+    /// The buffers the compositor knows, reused as it releases them.
+    buffers: crate::platform::buffers::Buffers,
     window: Window,
     configured: bool,
     size: (u32, u32),
@@ -88,10 +83,6 @@ fn open_window(compositor: &CompositorState, xdg: &XdgShell, qh: &QueueHandle<Wi
     window
 }
 
-/// Enough for the compositor to hold one on screen and one queued while the
-/// next is drawn.
-const MAX_BUFFERS: usize = 3;
-
 pub(super) struct Parts {
     pub(super) registry: RegistryState,
     pub(super) seats: SeatState,
@@ -120,7 +111,7 @@ impl Win {
             xdg: parts.xdg,
             shm: parts.shm,
             pool,
-            buffers: Vec::new(),
+            buffers: Default::default(),
             window,
             configured: false,
             size: OPEN_SIZE,
@@ -261,32 +252,10 @@ impl Win {
         } else {
             wl_shm::Format::Argb8888
         };
-        let stride = bw as i32 * 4;
-        self.buffers
-            .retain(|buffer| (buffer.height(), buffer.stride()) == (bh as i32, stride));
-        let pool = &mut self.pool;
-        let free = self
-            .buffers
-            .iter()
-            .position(|buffer| buffer.canvas(pool).is_some());
-        let index = match free {
-            Some(index) => index,
-            None => {
-                // Every kept buffer is still with the compositor: one more,
-                // and past `MAX_BUFFERS` the oldest goes once it is released.
-                let Ok((buffer, _)) = pool.create_buffer(bw as i32, bh as i32, stride, format)
-                else {
-                    return;
-                };
-                if self.buffers.len() >= MAX_BUFFERS {
-                    self.buffers.remove(0);
-                }
-                self.buffers.push(buffer);
-                self.buffers.len() - 1
-            }
-        };
-        let buffer = &self.buffers[index];
-        let Some(pixels) = buffer.canvas(pool) else {
+        let Some((buffer, pixels)) =
+            self.buffers
+                .next(&mut self.pool, (bw as i32, bh as i32), format)
+        else {
             return;
         };
         if self.rgba {

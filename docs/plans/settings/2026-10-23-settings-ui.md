@@ -1606,7 +1606,7 @@ Entscheidungen des Nutzers vor dem jeweiligen Schritt: D1 Ohne-Animation-Liste
 (4b-Vorschlag), D2 Spalte bei breitem Fenster (U10), D3 dünne Seiten (U12),
 D4 AccessKit ja/nein (U13). Bis zur Antwort bleibt der heutige Stand.
 
-#### S1 Puffer im Shelf und im Selector (4f-Folge)
+#### S1 Puffer im Shelf (4f-Folge; der Selector macht es schon richtig)
 
 - Erst messen wie in 4f: CPU des Daemons und Commit-Abstände beim Erscheinen
   und Entfernen einer Karte (Karte per `boltsnap full`, Entfernen per
@@ -1620,6 +1620,41 @@ D4 AccessKit ja/nein (U13). Bis zur Antwort bleibt der heutige Stand.
   `shelf/surface.rs` ausgelagert statt die Datei wachsen zu lassen),
   `select_skia/mod.rs`.
 - Macht nicht: Shelf-Zeichnen selbst.
+
+##### S1 im Detail (Gegenprüfung am Code, 26.10.)
+
+Befund:
+- Shelf: `Daemon::draw` (`shelf/mod.rs:1986`) holt jeden Frame einen neuen
+  Puffer (`self.pool.create_buffer`, `:2030`); während Erscheinen und
+  Entfernen läuft das im Bildschirmtakt (Frame-Callback `:2060`).
+- Selector: schon richtig, drei Puffer je Größe, freie werden genutzt
+  (`select_skia/mod.rs:615-640`). Der Verdacht aus 4f-Folge war dort falsch.
+- Popup und Rahmen der Aufnahme (`:2311`, `:2355`): zeichnen nur bei
+  Ereignissen (Timer, Hover), nicht im Takt; bleiben, wie sie sind.
+- `draw_shelf` leert den Puffer zuerst (`shelf/paint.rs:596`), ein
+  wiederverwendeter Puffer zeigt also kein altes Bild.
+
+Umsetzung:
+- `linux/buffers.rs` (neu, linux/ hat dann 11 Dateien): `Buffers` hält bis zu
+  drei `slot::Buffer` einer Größe; `next(pool, w, h, stride, format)` gibt
+  einen freien zurück oder legt einen an (der älteste geht, sobald mehr als
+  drei da sind); andere Größen fallen weg. Tests ohne Compositor sind nicht
+  möglich (ein `SlotPool` braucht `wl_shm`); die Auswahl-Logik als reine
+  Funktion über „frei/belegt, Größe“ wird getestet.
+- Fenster (`app/window.rs`) und Shelf nutzen `Buffers`; im Shelf ersetzt eine
+  Zeile den `create_buffer`-Aufruf, das Feld kommt dazu, beim Abbau der
+  Layer-Fläche gehen die Puffer mit.
+
+Abnahme: Code-Beleg (oben) plus die Messung aus 4f, die denselben
+Mechanismus im Fenster belegt. Eine Live-Messung im Shelf braucht
+Daemon-Neustarts, Screenshots und startet mit `replay.autostart` jedes Mal den
+Replay-Puffer; der erste Versuch (26.10., 16:44) hat den Desktop des Nutzers
+spürbar ausgebremst und wurde abgebrochen (`WAYLAND_DEBUG` kam nicht an, der
+Daemon leitet stderr um). Live nur noch nach Absprache mit dem Nutzer, zu
+einer Zeit, die er nennt: Karte erscheinen lassen, `hyprctl layers` und das
+Gefühl beim Erscheinen.
+
+Macht nicht: Schaden im Shelf nur im geänderten Bereich, Popup, Rahmen.
 
 #### S2 Sichtbarer Fokus (U1)
 
@@ -1897,6 +1932,7 @@ Vom Nutzer am 24.10. so bestätigt:
 | 5a-Fix | 26.10., Meldung des Nutzers „Settings: no such file or directory (2)“ beim Tray-Eintrag. P1, reproduziert: der Daemon (pid 1172494) lief aus dem Binary, das `cargo install` danach ersetzt hatte; `/proc/1172494/exe` zeigte auf `/home/mt/.cargo/bin/boltsnap (deleted)`, `current_exe()` liefert genau das, `spawn` scheitert mit ENOENT. Betraf auch „Start region recording“ im Tray und Kopieren einer Karte in die Zwischenablage (beides startet das eigene Binary). Fix: `paths::own_exe()` nimmt den Pfad ohne „ (deleted)“, wenn dort eine Datei liegt (das neue Build), sonst `current_exe()`; genutzt in `tray.rs`, `shelf/mod.rs` (Region), `clipboard.rs` (2×), `ipc.rs`. Abwägung: das neue Binary startet neben einem alten Daemon; das ist genau das, was ein frisch geöffnetes Fenster auch täte. Test `a_replaced_binary_is_started_from_its_original_path`. Der laufende Daemon hat den alten Code bis zu seinem Neustart. |
 | 4f | 26.10., Meldung des Nutzers: Animationen „droppen die kompletten fps“, gemeint beim Resizen, wenn die Navigation einklappt. Zwei Ursachen, gemessen mit einem nachgestellten Zieh-Resize (`hl.dsp.window.resize`, Breite 900 → 420 → 900 in 4-px-Schritten alle 4 ms, 241 configures): (1) der configure-Handler setzte `frame_pending = false` und zeichnete sofort, also ein kompletter Frame je Zeiger-Event außerhalb des Bildschirmtakts (wie beim Shelf, 8313b18); (2) `SlotPool::create_buffer` erzeugte jeden Frame einen neuen `wl_buffer` (für den Compositor neue Textur und voller Upload, egal welcher Schaden). Fix: configure merkt sich nur Größe und Schaden und zeichnet erst, wenn kein Frame unterwegs ist; bis zu drei Puffer werden wiederverwendet, sind alle beim Compositor, kommt einer dazu und der älteste geht (eine erste Fassung, die dann nur den nächsten Frame anforderte, lief in eine Leerlauf-Schleife: 1529 umsonst gezeichnete Frames in 1,9 s, gemessen und verworfen). Ergebnis: CPU des Fensterprozesses beim Resize 96,4 / 96,2 % eines Kerns (installierter Stand) → 36,8 / 35,9 % (zwei Läufe); Commits im Takt, Median 5,2 ms. Hyprlands eigene CPU ist hier kein Maß, weil jeder `hyprctl`-Aufruf der Simulation selbst Last erzeugt. Kein Unit-Test (braucht einen Compositor); Abnahme ist diese Messung. |
 | 4f-Folge | offen, Verdacht aus 4f, nicht gemessen: der Shelf (`shelf/mod.rs:2030`, Layer-Draw) und der Selector (`select_skia/mod.rs:628`) legen ebenfalls je Zeichnung einen neuen `wl_buffer` über `create_buffer` an; bei Shelf-Animationen hätte der Compositor dieselbe Mehrarbeit. P2 bis gemessen. Messung wie in 4f (CPU des Daemons, Commit-Abstände) beim Erscheinen und Entfernen einer Karte, dann gleicher Fix. |
+| 5c S1 | umgesetzt 26.10.: `linux/buffers.rs` (`Buffers`, bis zu drei je Größe, freier zuerst, sonst neu und der älteste geht), genutzt vom Fenster (ersetzt die Logik aus 4f) und vom Shelf-Draw (`shelf/mod.rs` bleibt bei 3681 Zeilen). Test `a_released_buffer_is_reused_before_a_new_one_is_made`. Checks: fmt, clippy ohne Warnung, `cargo test` 95 + 374 grün. Live nicht gemessen (siehe S1 Abnahme: Versuch brach den Desktop des Nutzers aus, abgebrochen); greift im Shelf erst nach einem Daemon-Neustart. |
 | 5a | umgesetzt 26.10. nach „Phase 5a: Öffnen ohne Terminal“: Tray-Eintrag „Settings…“ ganz unten (Prozessstart im Tray-Thread), `assets/linux/boltsnap.desktop` mit Icons 64/128/256 aus `boltsnap.ico`, `.deb`-Assets, Flake-`postInstall`, Release-Tarball, README. Abweichung: `Categories=Graphics;`. Checks: `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test` 75 + 371 grün, `desktop-file-validate` ohne Meldung. Live: Daemon neu gestartet, dbusmenu-`GetLayout` endet auf „Settings…“; `gio launch` der installierten `.desktop`-Datei öffnet das Fenster (Klasse `boltsnap`). Nicht live prüfbar: Klick im Tray. |
 | 5 | geplant, freigegeben 24.10. |
 | 6 (Library) | Skizze im Library-Plan |

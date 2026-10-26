@@ -79,6 +79,8 @@ pub struct Daemon {
     output_state: OutputState,
     shm: Shm,
     pool: SlotPool,
+    /// The shelf's buffers, kept across frames (`buffers.rs`).
+    buffers: crate::platform::buffers::Buffers,
     compositor: CompositorState,
     layer_shell: LayerShell,
     /// The shelf surface. Recreated when the focused output changes so each
@@ -916,6 +918,7 @@ pub fn run_daemon(save_dir_cli: Option<std::path::PathBuf>) -> DynResult<()> {
         output_state: OutputState::new(&globals, &qh),
         shm,
         pool,
+        buffers: Default::default(),
         compositor,
         layer_shell,
         layer: None,
@@ -2026,15 +2029,12 @@ impl Daemon {
         if size_changed {
             layer.set_size(w, h);
         }
-        let stride = (w * 4) as i32;
-        let (buffer, canvas) = match self.pool.create_buffer(
-            w as i32,
-            h as i32,
-            stride,
-            wayland_client::protocol::wl_shm::Format::Argb8888,
-        ) {
-            Ok(v) => v,
-            Err(_) => return,
+        let format = wayland_client::protocol::wl_shm::Format::Argb8888;
+        let Some((buffer, canvas)) =
+            self.buffers
+                .next(&mut self.pool, (w as i32, h as i32), format)
+        else {
+            return;
         };
 
         crate::shelf::paint::draw_shelf(

@@ -1,4 +1,5 @@
 pub mod app;
+pub(crate) mod buffers;
 pub mod capture;
 pub mod clipboard;
 pub(crate) mod cursor_track;
