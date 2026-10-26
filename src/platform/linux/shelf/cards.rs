@@ -216,6 +216,22 @@ pub(super) fn animated_card_layout(
     }
 }
 
+/// Keeps the layer at `size` while a card leaves: resizing it every frame made
+/// Hyprland rearrange the layer and send a configure that drew again, off the
+/// display's beat. Hanging from the bottom, the stack sits on the buffer's
+/// bottom edge; the rest is transparent.
+pub(super) fn hold_size(mut layout: Layout, (width, height): (u32, u32), top: bool) -> Layout {
+    let shift = height.saturating_sub(layout.height);
+    if !top {
+        for card in &mut layout.thumbs {
+            card.y += shift;
+        }
+    }
+    layout.width = layout.width.max(width);
+    layout.height = layout.height.max(height);
+    layout
+}
+
 /// Store a screenshot PNG for a card. With the client's card thumbnail in
 /// `size` only the PNG header is checked; otherwise the PNG is decoded for the
 /// thumbnail.

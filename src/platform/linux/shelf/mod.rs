@@ -1377,6 +1377,8 @@ impl Daemon {
         self.output_name = name;
         self.shelf_configured = false;
         self.shelf_pending_draw = false;
+        // A callback on the old surface never fires.
+        self.frame_requested = None;
         true
     }
 
@@ -1968,13 +1970,13 @@ impl Daemon {
                 (t.id, t.thumb.width(), t.thumb.height(), collapse)
             })
             .collect();
-        animated_card_layout(
-            &items,
-            cfg,
-            self.shelf_prefs.visible,
-            self.shelf_prefs.corner.is_top(),
-            appear_progress,
-        )
+        let top = self.shelf_prefs.corner.is_top();
+        let layout =
+            animated_card_layout(&items, cfg, self.shelf_prefs.visible, top, appear_progress);
+        if self.active_disappear_count() == 0 {
+            return layout;
+        }
+        cards::hold_size(layout, (self.width, self.height), top)
     }
 
     fn hit_test(&self, x: f64, y: f64) -> Option<Hit> {
@@ -2052,7 +2054,9 @@ impl Daemon {
         if buffer.attach_to(surface).is_err() {
             return;
         }
-        if !self.anims.is_empty() {
+        // One callback in flight: a hover or configure redraw mid-frame must
+        // not add another tick per frame.
+        if !self.anims.is_empty() && self.frame_requested.is_none() {
             surface.frame(qh, surface.clone());
             self.frame_requested = Some(std::time::Instant::now());
         }

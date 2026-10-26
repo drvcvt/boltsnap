@@ -446,6 +446,46 @@ Stand der Fundstellen (Zeilen von heute, `shelf/mod.rs` hat 3890 Zeilen):
 | Re-Render dekodiert 20 große PNGs hintereinander | ein Thread, nacheinander, gleiche Grenzen wie beim Hinzufügen; nur nach einem Größenwechsel |
 | Tests teilen den statischen `CARD_WIDTH` | reine Funktionen bekommen die Größe als Parameter, kein Test schreibt den Static |
 
+### Nebenbei: ruckelndes Entfernen (26.10., Meldung des Nutzers)
+
+Befund am Code: Beim Entfernen schrumpft `animated_layout()` die Höhe in jedem
+Frame, und `draw()` ruft dafür jedes Mal `layer.set_size` (`shelf/mod.rs`,
+`if size_changed`). Hyprland beantwortet jede neue Größe mit einem `configure`,
+und der configure-Handler zeichnet sofort (`should_draw`, Karten vorhanden).
+Diese Zeichnung hat wieder eine neue Höhe, setzt wieder `set_size` und fordert
+einen weiteren Frame-Callback an. So entstehen mehrere Commits und Callbacks
+pro Frame, außerhalb des Monitortakts, und der Compositor ordnet den Layer in
+jedem davon neu an. Beim Erscheinen tritt das nicht auf, weil die Größe dabei
+von Anfang an feststeht. Live nicht reproduziert, weil hier kein Klick-Tool für
+den Schließen-Knopf installiert ist.
+
+Verhalten danach: Solange eine Karte verschwindet, behält der Layer seine
+Größe. Unten verankert rutschen die Karten im Buffer nach unten (Versatz =
+gehaltene Höhe − animierte Höhe), oben verankert rücken sie nach oben, der Rest
+ist transparent. Erst wenn die Karte weg ist, schrumpft der Layer einmal auf
+die Endgröße (`relayout` in `tick_animations`, wie heute). Außerdem ist nur
+noch ein Frame-Callback gleichzeitig angefordert; ein neuer Layer setzt das
+zurück.
+
+Code:
+- `cards.rs`: `hold_size(layout, (w, h), top) -> Layout`, rein, mit Test.
+- `animated_layout()`: bei laufendem Verschwinden `hold_size` mit der
+  aktuellen Layer-Größe. `draw()` und `hit_test()` nutzen beide diese Funktion
+  und bleiben deckungsgleich.
+- `draw()`: `surface.frame` nur, wenn `frame_requested` leer ist;
+  `place_on_output` setzt `frame_requested = None`.
+
+Tests: unten verankert behält das gehaltene Layout die Höhe, und die Karten
+liegen um die Differenz tiefer; oben verankert bleiben die y-Werte gleich; ohne
+Differenz ist das Layout unverändert.
+
+Abnahme: `cargo fmt --check`, clippy, `cargo test`; live schließt der Nutzer
+eine Karte, und `hyprctl layers` zeigt danach die Endgröße.
+
+Was es nicht macht: keine andere Kurve oder Dauer (240 ms, `ease_out_cubic`
+bleiben). Für die 240 ms fängt der transparente Rest oberhalb Klicks ab, die
+der Hit-Test ignoriert. Am Erscheinen ändert sich nichts.
+
 ## 4. Config-Fundament (Phase 1 und 2)
 
 Behebt CF1 bis CF4 und CF6 aus der Config-Review; ohne das wäre das UI ein
@@ -1147,5 +1187,6 @@ Vom Nutzer am 24.10. so bestätigt:
 | 3, Schritt 3 | umgesetzt 26.10.: `Daemon::shelf_prefs` (Start aus derselben `Config::load()` wie die Recording-Prefs); `MAX_VISIBLE_CARDS` entfällt, `visible_cards`, `overflow_card_opacity`, `animated_item_limit` und `animated_card_layout` nehmen `visible`, letztere zusätzlich `top` (Scroll auch bei nicht vollem Shelf). `cards::anchor(Corner)` liefert Anker und Ränder, `place_on_output` nutzt es; `apply_shelf_prefs` macht `relayout`, baut bei neuer Ecke den Layer auf demselben Monitor neu (vorher `forget_drag`, statt `clear_drag` wie geplant, weil danach ohnehin gezeichnet wird) und zeichnet. `refresh_recording_prefs` heißt `refresh_prefs` und wendet beides an. Tests: Viewport mit 1 und 8 Karten à 380×264 (Höhe, Breite, keine Überlappung, Limit), Overflow-Deckkraft mit `visible` 1, oben verankert gleiten die älteren Karten eine Stufe nach unten, unten bleiben sie, Anker aller vier Ecken. `shelf/mod.rs` 3681 Zeilen. Checks: `cargo fmt --check`, `cargo test` 41 + 365 grün, clippy nur noch Dead-Code für `dims`/`rescale` (Schritt 4). |
 | 3, Schritt 4 | umgesetzt 26.10.: `cards::CARD_WIDTH` (`AtomicU32`) mit `use_card_size`/`card_size`, beim Start aus der Config gesetzt; `apply_shelf_prefs` skaliert bei neuer Größe alle Karten im Eventloop (`resize_cards`, Logzeile nur über 8 ms) und gibt sie an `Worker::rerender`. Worker: `Job::Video | Job::Rerender`, geteilte Liste (gleiche `id` ersetzt), nach jeder Nachricht abgearbeitet; Größe beim Rendern über eine übergebene Funktion gelesen, `render` für Bild (`decode_shelf_image` + `make_image_card_thumbnail`) und Video (`extract(path, size)`). `ThumbnailReady` übernimmt nur in aktueller Größe; `add_prepared` ruft `fit_card` (Stufe 1 plus Re-Render für eine Karte alter Größe). `prepare_add` und `prepare_pixels_with` bekommen die Größe, der Client-Thread übergibt `card_size()`; Platzhalter per `RgbaImage::from_pixel`; CLI rendert mit `Config::load().shelf_prefs().card`. Abweichung: `make_card_thumbnail` ist unter Linux nur noch in Tests, Windows und `examples/image_transfer_bench.rs` in Gebrauch und trägt dafür ein kommentiertes `allow(dead_code)` (ein `cfg` hätte das Example gebrochen). Tests: `prepare_add` verwirft einen Client-Thumb in 190×132, wenn 300 gilt; Worker-Test mit kleiner PNG (300×208, fehlende Datei `None`, doppelte `id` einmal); der ignorierte ffmpeg-Test prüft 300×208 und lief einmal grün mit `--ignored`. `shelf/mod.rs` 3677 Zeilen. Checks: `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test` 41 + 366 grün. |
 | 3, Schritt 5 | umgesetzt 26.10.: README (`[shelf]` unter Konfiguration, Ecke im Shelf-Abschnitt), `docs/codebase.md` (`cards.rs`). Live nach Install und Daemon-Neustart (keine Aufnahme lief), echte `config.toml` vorher gesichert: zwei Karten (`boltsnap full`, 2-s-Testvideo per `add_video`), Layer 234×318; `set_settings` `shelf.card_width = 300` → `hyprctl layers` 344×470, Ausschnitt eines Screenshots zeigt beide Karten scharf in 300 px (harte Testbild-Kanten, lesbarer Text); `visible_cards = 1` → 344×252; `corner = "top-right"` → Layer bei x 1552, y 24 auf DP-3 (1920 − 24 − 344); `visible_cards = 2` plus neuer Screenshot → 344×470, neueste Karte oben, Video darunter, die dritte im Cache; Backup zurückkopiert (Handedit über den Watcher) → unten links, 234×460 für drei Karten. Datei am Ende byte-gleich mit der Sicherung, `daemon.log` leer. Abweichungen: kein gespeicherter Screenshot als dritte Karte (eine Bild-Karte behält nach dem Speichern ihre temporäre Datei, der Re-Render-Pfad ist derselbe); Screenshots per `boltsnap full -o` statt `grim` (nicht installiert), das hat nebenbei die Zwischenablage überschrieben. Nicht geprüft: die Gleit-Bewegung oben (braucht den Nutzer), die Logzeile für Stufe 1 über 8 ms kam bei drei Karten nicht. |
+| Entfernen ruckelt | umgesetzt 26.10. nach „Nebenbei: ruckelndes Entfernen“ (Abschnitt 3): `cards::hold_size`, `animated_layout` hält die Layer-Größe, solange eine Karte verschwindet, `draw` fordert nur einen Frame-Callback gleichzeitig an, `place_on_output` setzt ihn zurück. Test `a_leaving_card_keeps_the_layer_size_and_the_stack_on_its_anchored_edge`. Checks: `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test` 41 + 367 grün; installiert, Daemon neu gestartet. Offen: der Nutzer schließt eine Karte und beurteilt die Bewegung (kein Klick-Tool hier) |
 | 4 und 5 | geplant, freigegeben 24.10. |
 | 6 (Library) | Skizze im Library-Plan |

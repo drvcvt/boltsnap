@@ -736,6 +736,42 @@ fn hanging_from_the_top_the_older_cards_slide_down_for_a_new_one() {
 }
 
 #[test]
+fn a_leaving_card_keeps_the_layer_size_and_the_stack_on_its_anchored_edge() {
+    let cfg = LayoutConfig::default();
+    let layout = |collapse, top| {
+        animated_card_layout(
+            &[(2, 190, 132, collapse), (1, 190, 132, 0.0)],
+            &cfg,
+            5,
+            top,
+            None,
+        )
+    };
+    let ys = |layout: &Layout| layout.thumbs.iter().map(|card| card.y).collect::<Vec<_>>();
+    let settled = layout(0.0, false);
+    let size = (settled.width, settled.height);
+
+    let shrunk = layout(0.5, false);
+    let held = cards::hold_size(layout(0.5, false), size, false);
+    assert_eq!((held.width, held.height), size);
+    let shift = size.1 - shrunk.height;
+    assert!(shift > 0);
+    assert_eq!(
+        ys(&held),
+        ys(&shrunk).iter().map(|y| y + shift).collect::<Vec<_>>()
+    );
+    // The older card still rests where it did before.
+    assert_eq!(held.thumbs[1].y, settled.thumbs[1].y);
+
+    let held = cards::hold_size(layout(0.5, true), size, true);
+    assert_eq!((held.width, held.height), size);
+    assert_eq!(ys(&held), ys(&layout(0.5, true)));
+
+    let held = cards::hold_size(layout(0.0, false), size, false);
+    assert_eq!((held.height, ys(&held)), (settled.height, ys(&settled)));
+}
+
+#[test]
 fn each_corner_anchors_the_shelf_24_px_from_both_its_edges() {
     use crate::shelf::layout::Corner;
     assert_eq!(
