@@ -10,8 +10,8 @@ use crate::ui::theme;
 use crate::ui::{Canvas, Rect, icons, paint};
 
 const SVG: &str = include_str!("../../assets/logo/boltsnap-mark.svg");
-/// The mark's view box; Potrace wrote it ten times larger and upside down.
-const VIEW: (f32, f32) = (1952.0, 2304.0);
+/// The mark's view box: 3 by 4 stem widths (`assets/logo/construct.py`).
+const VIEW: (f32, f32) = (360.0, 480.0);
 /// How tall the mark is, and how far it reaches past the window's corner.
 pub const HEIGHT: f32 = 168.0;
 const BLEED: f32 = 28.0;
@@ -71,15 +71,7 @@ fn render(scale: f32) -> Option<Pixmap> {
         (VIEW.1 * unit).ceil() as u32 + 2 * PAD,
     );
     let mut pixmap = Pixmap::new(w, h)?;
-    // Potrace's units: x / 10, and y / 10 counted up from the bottom.
-    let place = Transform::from_row(
-        unit / 10.0,
-        0.0,
-        0.0,
-        -unit / 10.0,
-        PAD as f32,
-        VIEW.1 * unit + PAD as f32,
-    );
+    let place = Transform::from_row(unit, 0.0, 0.0, unit, PAD as f32, PAD as f32);
     for (color, dy) in [
         (theme::SHADE, -1.0),
         (theme::LIP, 1.0),
