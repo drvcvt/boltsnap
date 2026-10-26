@@ -547,3 +547,104 @@ Matroska-Clip fehl (Zeitbasis 1/1000, 19/36/52 ms). Vollbild-Clip: Zeitbasis
 1/61440, Bereichs-Clip 1/15360, beide Rechte 0600. Nicht automatisiert
 getestet: der Budget-Abbruch des Bereichsexports. Offen: Live-Checks oben
 (Release-Build, Install, Neustart nur mit Okay).
+
+## 13. Clip sofort im Shelf (2026-10-27)
+
+**Priorität:** mittel. **Auslöser:** Bereichs-Clip aus dem Selector, beim
+Nutzer am 27.10. mit 30-s-Puffer. **Wirkung:** die Karte erscheint erst, wenn
+der Export fertig ist; „hat schon paar Sekunden gedauert“.
+
+**Beleg (gemessen, nicht reproduziert):** Clip
+`~/.cache/boltsnap/rec/clip-1289081-1793055624508081563-2.mp4`, 4,5 MB,
+29,4 s, 1450×942 aus 1920×1080 bei 60 FPS, `h264_nvenc`. Der Name trägt die
+Zeit des Saves (`live.rs:272`, Nanosekunden), die Datei entstand 44 ms später
+(birth), der letzte Schreibzugriff kam nach **10,81 s** (mtime), Rename nach
+10,95 s (ctime). Also kostet `fsync` hier 0,14 s; die Zeit liegt im
+Bereichsexport:
+- `crop.rs:110` `source_file`: der ganze Puffer als NUT in eine memfd (RAM).
+- `crop.rs:162` `encode`: ffmpeg **dekodiert in Software** (`-i pipe:0`
+  ohne `-hwaccel`, `-threads 2`), croppt auf der CPU, lädt hoch und kodiert
+  mit NVENC; gestartet mit nice 19 (`crop.rs:222`), Export-Thread nice 19 und
+  IO best-effort 7 (`live.rs:285`, `process.rs:12,27`). 1764 Frames 1080p in
+  10,8 s sind ~163 FPS Softwaredekodierung. Während des Saves lief nebenher
+  ein `cargo`-Build (Load 6,9), ebenfalls nice 19: gleicher Rang.
+- Danach erst Antwort an den Daemon (`replay/mod.rs:692`), `ReplayClipReady`,
+  Karte mit Platzhalter (`shelf/mod.rs:2939`), Vorschaubild per eigenem
+  ffmpeg (`thumbnail.rs:117`, nice 19, nacheinander).
+Vollbild-Saves kopieren nur Pakete (`export.rs:131`, kein Dekodieren);
+ihre Dauer ist nicht gemessen.
+
+**Ziel:** Die Karte steht im Moment des Saves da, mit dem richtigen Bild, und
+wird benutzbar, sobald die Datei fertig ist. Unabhängig davon wird der
+Bereichsexport deutlich schneller.
+
+### C0 Messen
+- Daemon: `timing::mark` für Save angenommen, Worker-Antwort, Karte gezeichnet,
+  Vorschaubild ersetzt. Worker-Antwort bekommt `export_ms`, `sync_ms`.
+- Live mit Okay (Daemon-Neustart): je ein Vollbild- und ein Bereichs-Save,
+  Zahlen hier eintragen. Danach entscheidet sich C3.
+
+### C1 Karte sofort (reine Shelf/Daemon-Arbeit, kein Tradeoff am Clip)
+- Der Daemon merkt sich das letzte `freeze`-Vorschaubild je Snapshot (es
+  läuft ohnehin durch ihn, `replay/mod.rs:692`, PNG, höchstens eins, beim
+  nächsten Freeze oder Save verworfen).
+- Bei `save` schickt er **vor** dem Worker-Aufruf `ReplayClipPending { token,
+  output, thumb }`: beim Bereich der gecroppte Ausschnitt dieses Bildes (das
+  letzte Frame des Clips, gleiche Crop-Rechnung wie der Export), beim Vollbild
+  der Platzhalter wie heute.
+- Shelf: neue Karte im Zustand „speichert“: Bild sofort, Erscheinen wie
+  jetzt (`Appear`), dazu ein ruhiger Ladeindikator auf der Karte; Ziehen,
+  Öffnen und Speichern sind gesperrt (Cursor/Hover zeigt es), Schließen
+  nimmt die Karte weg und verwirft den Clip bei Ankunft.
+- `ReplayClipReady` mit demselben `token` macht aus ihr die fertige Karte
+  (Pfad, Dauer), ohne Sprung; das ffmpeg-Vorschaubild (erstes Frame) ersetzt
+  das Bild nur, wenn es keines gab (Vollbild).
+- Fehler: Karte blendet aus, die Fehlermeldung kommt wie heute.
+- Zeitlimit: kommt nach `SAVE_TIMEOUT` nichts, verhält sie sich wie ein Fehler.
+
+### C2 Bereichsexport auf der GPU (NVENC)
+- Mit NVENC dekodiert NVDEC und croppt im Decoder: `-c:v h264_cuvid` (bzw.
+  `hevc_cuvid`/`av1_cuvid` nach Puffer-Codec) `-crop T x B x L x R`,
+  `-hwaccel_output_format cuda`, Frames bleiben auf der GPU bis NVENC; kein
+  `crop`/`format`/`hwupload` auf der CPU. Vorhanden hier: `ffmpeg -decoders`
+  listet `h264_cuvid`, `-h decoder=h264_cuvid` zeigt `-crop`.
+- VAAPI/Vulkan behalten den heutigen Weg (eigener Schritt, falls gewünscht).
+- Fällt der GPU-Weg (Exit ≠ 0, bevor Bytes geschrieben sind), läuft einmal der
+  heutige Softwareweg; das Budget und das Zeitlimit bleiben gleich.
+- **Probe zuerst** (isoliert, mit Okay, ~5 s GPU, Dateien in der memfd bzw.
+  im Scratchpad): synthetischer 30-s-Clip 1080p60, beide Wege, Zeit und
+  `ffprobe` der Ausgabe (Maße, Zeitbasis 1/fps, Frames vollständig).
+
+### C3 Prioritäten (nur nach C0)
+- Ein Save ist eine Nutzeraktion; nice 19 lässt ihn bei Last warten. Kandidat:
+  nice 10 für den Export, IO best-effort 4. Tradeoff: konkurriert stärker mit
+  einem laufenden Spiel. Entscheidung durch den Nutzer nach den Zahlen.
+
+**Bleibt:** `fsync` vor dem Rename (0,14 s gemessen; ohne ihn kann ein Absturz
+kurz nach dem Save einen leeren Clip unter dem fertigen Namen hinterlassen).
+
+**Verworfen:** Crop nur über die SPS-Cropping-Felder ohne Neukodierung
+(sofort, aber die Datei trüge weiter das ganze Bild: der Teil außerhalb des
+Ausschnitts bliebe extrahierbar, und die Datei bliebe so groß wie Vollbild).
+
+**Macht nicht:** Fortschritt in Prozent (der Worker meldet nur das Ende;
+später über `-progress`), Abbrechen eines laufenden Exports, schnellere
+Vollbild-Saves vor C0.
+
+**Betroffene Dateien:** `src/platform/linux/replay/mod.rs` (Freeze-Bild
+merken, `ReplayClipPending`), `src/platform/linux/shelf/mod.rs` und
+`cards.rs` (Zustand „speichert“, Übergang, Sperren), `src/shelf/` (Modell:
+Kartenzustand, Zeichnen des Indikators), `src/platform/linux/timing.rs`
+(Marken), Worker `crop.rs` (C2), `live.rs` (Zeiten in der Antwort),
+`docs/replay.md`, `docs/codebase.md`.
+
+**Reihenfolge:** C0 Marken, C1, C2 nach erfolgreicher Probe, C3 nach den Zahlen.
+
+**Regressionschecks:** Root fmt/clippy/test; Worker fmt, `cargo test`,
+`tests/probe.py`, `tests/live.py` (Bereichsclip: Maße, Raster, vollständig
+dekodierbar, auch auf dem GPU-Weg); Shelf-Tests: Pending-Karte erscheint mit
+Bild, wird fertig ohne Größensprung, Fehler und Schließen während des
+Speicherns, zwei Saves hintereinander. Live (nur mit Okay): Install,
+Daemon-Neustart, Vollbild- und Bereichs-Save, Zeiten aus C0.
+
+**Stand:** geplant, nicht begonnen.
