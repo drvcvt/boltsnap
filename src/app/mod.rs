@@ -34,6 +34,8 @@ pub struct Row {
     pub control: Box<dyn Widget>,
     pub enabled: bool,
     pub bind: Bind,
+    /// Its key is set in the file: the row offers to put it back.
+    pub reset: bool,
 }
 
 /// A page is a list of blocks. Rows that follow each other share one group
@@ -61,6 +63,8 @@ pub enum Target {
     Nav(usize),
     /// A row's control, by block on the current page.
     Control(usize),
+    /// A row's reset button, by block on the current page.
+    Reset(usize),
 }
 
 pub struct App {
@@ -129,6 +133,7 @@ impl App {
         app.resize(size, now);
         app.thumb.set(app.thumb.target(), now);
         app.remember_values();
+        app.sync_resets(false, now);
         app
     }
 
@@ -212,6 +217,7 @@ impl App {
         self.capture = None;
         self.resize(self.size, now);
         self.remember_values();
+        self.sync_resets(false, now);
     }
 
     /// 0 to 1 while the current page fades in.
@@ -245,6 +251,22 @@ impl App {
                 .map(Target::Nav);
         }
         let rects = self.block_rects(now);
+        let resets = self
+            .page()
+            .blocks
+            .iter()
+            .enumerate()
+            .find_map(|(index, block)| match block {
+                Block::Row(row) if row.enabled && row.reset => self
+                    .row_parts(rects[index], row)
+                    .reset
+                    .filter(|rect| rect.contains(x, y))
+                    .map(|_| Target::Reset(index)),
+                _ => None,
+            });
+        if resets.is_some() {
+            return resets;
+        }
         self.page()
             .blocks
             .iter()
@@ -420,6 +442,13 @@ impl App {
                 self.show(index, now);
                 self.set_focus(None, now);
                 Outcome::HANDLED
+            }
+            Some(Target::Reset(block)) => {
+                self.set_focus(Some(Target::Reset(block)), now);
+                Outcome {
+                    effect: Some(Effect::Reset(block)),
+                    ..Outcome::HANDLED
+                }
             }
             Some(Target::Control(block)) => {
                 self.set_focus(Some(Target::Control(block)), now);

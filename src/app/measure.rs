@@ -240,6 +240,7 @@ fn probe_row(label: &str, control: Box<dyn Widget>) -> Block {
         control,
         enabled: true,
         bind: Bind::None,
+        reset: false,
     })
 }
 

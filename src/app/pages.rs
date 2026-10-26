@@ -37,6 +37,8 @@ pub struct Prefs {
     pub replay_stale: bool,
     /// A recording runs; recording settings apply to the next one.
     pub recording: bool,
+    /// The keys `config.toml` sets; their rows offer a reset.
+    pub set_keys: Vec<String>,
     pub replay_seconds: u64,
     pub replay_memory_mib: usize,
     pub replay_fps: u32,
@@ -90,6 +92,7 @@ fn row(
         control,
         enabled: true,
         bind,
+        reset: false,
     })
 }
 
@@ -473,6 +476,13 @@ pub fn pages(prefs: &Prefs, notice: Option<&Notice>, now: Instant) -> Vec<Page> 
         recording(prefs, now),
         replay(prefs, now),
     ];
+    for block in pages.iter_mut().flat_map(|page| &mut page.blocks) {
+        if let Block::Row(row) = block
+            && let Bind::Key(key, _) = &row.bind
+        {
+            row.reset = prefs.set_keys.iter().any(|set| set == key);
+        }
+    }
     if let Some(notice) = notice {
         for page in &mut pages {
             if notice.locked {

@@ -1962,6 +1962,35 @@ nur mit `replay_running && replay_stale`, ihr Knopf liefert
   öffnet und schließt mit `SNAP`. Klick: `Change::Remove`, Wert springt über
   S6 auf den Default.
 
+##### S8 im Detail (Gegenprüfung am Code, 26.10.)
+
+Abweichung von S8 oben (Regel „Keine Mini-Wege“, 4h): kein Platz, der sich
+links vom Control öffnet (das Control spränge 38 px). Der Knopf sitzt im
+Textbereich: neben dem Control rechts an dessen Ende (`GAP_S` vor dem
+Control), gestapelt rechts auf der Namenszeile; die Textbreite ist um
+`CTL_H + GAP_S` kleiner, solange er da ist. Er blendet mit `QUICK` ein und
+aus (Kanal `Shown`), das Control bewegt sich nicht.
+
+Belege: welche Keys in der Datei stehen, liefert `settings_state().doc`
+(`config.rs`, auch der Daemon nutzt es); ein Reset ist `Change::Remove`
+(`settings/write.rs:15`), der Daemon setzt den Default.
+
+Umsetzung:
+- `Prefs::set_keys`; `Row::reset` (der Key steht in der Datei, nur für
+  `Bind::Key`).
+- `Target::Reset(block)`: eigener Hover, Druck, Fokus; Tab-Reihenfolge Name
+  → Reset → Control (Lesereihenfolge links nach rechts).
+- `RowParts::reset: Option<Rect>`; gezeichnet als Icon-Knopf `rotate-ccw`
+  (Fläche wie Controls, Fokus-Kontur aus S2), Deckkraft = `Shown`-Fade; Treffer
+  nur, solange er da ist.
+- Klick, `Space`, `Enter` → `Effect::Reset(block)` → `Write::Reset(key)` →
+  `Change::Remove`; der neue Wert kommt über S6 zurück und gleitet.
+- `update`: `reset` übernehmen, `Shown` blendet; `reload`/neu: sofort.
+
+Tests: Reset nur für Keys in der Datei; Klick liefert `Write::Reset` mit dem
+Key; Tab-Reihenfolge; Control-Rechteck mit und ohne Reset gleich; Gates im
+Zustand „alle Keys gesetzt“ (Überlauf, Umbruch, Abstände, Achsen, Kontrast).
+
 #### S9 Replay-Länge und Qualität (U6, U7)
 
 - Length als Dropdown 15 s, 30 s, 1 min, 2 min, 5 min, 10 min (`choose`, ein
@@ -2172,6 +2201,7 @@ Vom Nutzer am 24.10. so bestätigt:
 | 5c S7 | umgesetzt 26.10. nach „S7 im Detail“ (Abweichung dort: während einer Aufnahme ein Banner statt Hinweisen an sechs Zeilen). Feste Hinweise „Applies to the next recording“ und „Applies when replay restarts“ entfernt; Banner „A recording is running, changes here apply to the next one“; Zeile „Restart replay“ (Icon-Knopf, `Write::RestartReplay` = stop, start) nur bei laufendem, veraltetem Puffer. Veraltet: `seconds` oder `budget_bytes` (= `memory_mib · 2²⁰ / 3`, `worker/src/live.rs:108`) passen nicht zur Datei, oder in dieser Sitzung wurde ein Restart-Key geschrieben. Zweiter Watch-Thread auf `watch_recording`, signalisiert nur bei geändertem `state`. Texte ohne Schlusspunkt (Projektregel, vom Copy-Gate gefunden). Gates laufen jetzt auch im Zustand „Aufnahme läuft, Puffer veraltet“: Copy 120 Strings, Überlauf 854 Teile, Umbruch 297 Zeilen, Dropdowns 24. Tests: Banner nur bei Aufnahme und keine Zeile wiederholt ihn; Restart-Zeile nur bei laufend und veraltet, Klick liefert `RestartReplay`. Render beider Zustände angesehen. Checks: fmt, clippy ohne Warnung, `cargo test` 106 + 374 grün. Live nicht geprüft (Aufnahme und Replay-Neustart nach Absprache). |
 | 4h | umgesetzt 26.10. nach „Phase 4h“: Navigations-Icon fest auf x 16 in 14 px (eingeklappt mittig im 30er Quadrat, ausgeklappt 8 px eingerückt wie oben und unten), Name ab x 38; `PAGE_RISE` und `App::rise` entfernt, `layout_at` ohne Hub. Tests: `navigation_icons_keep_their_place_and_size_while_it_closes` (61 Proben gleich, Quadrat, Icon mittig), `a_new_page_fades_in_where_it_stays`. `/ui`-Skill: Regel „Keine Mini-Wege“ mit O-Ton, ersetzt die Gleit-Ausnahme aus 4g. Icon-Gate mit Outfit grün. Checks: fmt, clippy ohne Warnung, `cargo test` 106 + 374 grün. |
 | 4i | umgesetzt 26.10. nach „Phase 4i“: Segment-Spur ohne Hover und Druck, Fokus-Kontur bleibt. Test `a_segment_track_does_not_light_up_when_pressed`, Gegenprobe mit altem `Look` schlägt an. Checks: fmt, clippy ohne Warnung, `cargo test` 107 + 374 grün. |
+| 5c S8 | umgesetzt 26.10. nach „S8 im Detail“ (Abweichung dort: Knopf im Textbereich statt einem Platz, der das Control verschiebt). `Row::reset`, `Prefs::set_keys` (aus `settings_state().doc`, neu `Doc::keys`), `Target::Reset` (Hover, Druck, Fokus-Kontur, Tab vor dem Control), `RowParts::reset` und `reset_place`, Kanal `Shown` (blendet mit `QUICK`, beim Öffnen sofort), `Effect::Reset` → `Write::Reset(key)` → `Change::Remove`; der Default kommt über S6 zurück. Test `a_set_key_offers_a_reset_that_leaves_the_control_where_it_is` (nur der gesetzte Key, Control-Rechteck gleich, Knopf `GAP_S` davor, Tab-Reihenfolge, Klick liefert `Reset(\"record_fps\")`, Ausblenden halb und am Ende 0). Gates laufen im Zustand „alle Keys gesetzt“, das Überlauf-Gate prüft jetzt auch die Reset-Knöpfe (922 Teile, keiner auf Name oder Control). Render bei 946 und 360 angesehen. Befund am Rand (älter, nicht S8): mit der eingebetteten Ersatzschrift kürzt ein gestapeltes Segment bei 360 px seine Teile („System and…“, „…“); mit Outfit passt es; das Umbruch-Gate prüft Segment-Teile nicht, offen als eigener Punkt. Checks: fmt, clippy ohne Warnung, `cargo test` 108 + 374 grün. |
 | 5a | umgesetzt 26.10. nach „Phase 5a: Öffnen ohne Terminal“: Tray-Eintrag „Settings…“ ganz unten (Prozessstart im Tray-Thread), `assets/linux/boltsnap.desktop` mit Icons 64/128/256 aus `boltsnap.ico`, `.deb`-Assets, Flake-`postInstall`, Release-Tarball, README. Abweichung: `Categories=Graphics;`. Checks: `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test` 75 + 371 grün, `desktop-file-validate` ohne Meldung. Live: Daemon neu gestartet, dbusmenu-`GetLayout` endet auf „Settings…“; `gio launch` der installierten `.desktop`-Datei öffnet das Fenster (Klasse `boltsnap`). Nicht live prüfbar: Klick im Tray. |
 | 5 | geplant, freigegeben 24.10. |
 | 6 (Library) | Skizze im Library-Plan |

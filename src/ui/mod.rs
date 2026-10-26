@@ -78,6 +78,8 @@ pub enum Effect {
     Close,
     /// The value of the row in this block of the current page changed.
     Changed(usize),
+    /// The row in this block asks for its key to go back to the default.
+    Reset(usize),
 }
 
 /// Counts a press as the second of a double click when it comes soon after

@@ -41,6 +41,8 @@ pub struct RowParts {
     pub hints: Vec<String>,
     pub name_pitch: f32,
     pub hint_pitch: f32,
+    /// The reset button, in the text's room so the control stays put.
+    pub reset: Option<Rect>,
 }
 
 /// A row's name and hint, broken into lines for one width.
@@ -76,8 +78,25 @@ impl RowText {
 struct Arrangement {
     text: Rect,
     control: Rect,
+    reset: Option<Rect>,
     lines: RowText,
     height: f32,
+}
+
+/// The room a reset button takes from the text.
+const RESET_ROOM: f32 = CTL_H + GAP_S;
+
+impl RowParts {
+    /// Where the reset button is, or would be: `GAP_S` left of the control
+    /// beside it, at the right end of the name's line over a stacked one.
+    /// Also for a button still fading out after its key went back.
+    pub fn reset_place(&self) -> Rect {
+        if self.control.y >= self.text.bottom() {
+            Rect::new(self.control.right() - CTL_H, self.text.y, CTL_H, CTL_H)
+        } else {
+            Rect::new(self.control.x - GAP_S - CTL_H, self.control.y, CTL_H, CTL_H)
+        }
+    }
 }
 
 /// The page at the current size and scroll, in window coordinates.
@@ -163,17 +182,22 @@ impl App {
         // A control too wide for this row still leaves the name `LABEL_MIN`
         // to wrap in: that arrangement only shows while the row stacks, and
         // a name broken letter by letter would make the row jump first.
-        let text_w = (line.right() - width - GAP_M - x).max(LABEL_MIN);
+        let room = (line.right() - width - GAP_M - x).max(LABEL_MIN);
+        let text_w = if row.reset { room - RESET_ROOM } else { room };
         let lines = self.row_text(row, text_w);
         let height = ROW_H.max(lines.height() + 2.0 * GAP_S);
+        let control = Rect::new(
+            line.right() - width,
+            rect.y + (height - CTL_H) / 2.0,
+            width,
+            CTL_H,
+        );
         Arrangement {
             text: Rect::new(x, rect.y, text_w, height),
-            control: Rect::new(
-                line.right() - width,
-                rect.y + (height - CTL_H) / 2.0,
-                width,
-                CTL_H,
-            ),
+            reset: row
+                .reset
+                .then(|| Rect::new(control.x - GAP_S - CTL_H, control.y, CTL_H, CTL_H)),
+            control,
             lines,
             height,
         }
@@ -184,8 +208,9 @@ impl App {
         let line = inner(rect);
         let x = text_x(line);
         let full = line.right() - x;
-        let lines = self.row_text(row, full);
-        let text = Rect::new(x, rect.y + GAP_S, full, CTL_H.max(lines.height()));
+        let text_w = if row.reset { full - RESET_ROOM } else { full };
+        let lines = self.row_text(row, text_w);
+        let text = Rect::new(x, rect.y + GAP_S, text_w, CTL_H.max(lines.height()));
         let width = if row.control.stretches() {
             full
         } else {
@@ -193,6 +218,10 @@ impl App {
         };
         Arrangement {
             control: Rect::new(line.right() - width, text.bottom() + GAP_S, width, CTL_H),
+            // On the name's line, at the right end.
+            reset: row
+                .reset
+                .then(|| Rect::new(line.right() - CTL_H, text.y, CTL_H, CTL_H)),
             height: text.h + CTL_H + 3.0 * GAP_S,
             text,
             lines,
@@ -375,6 +404,16 @@ impl App {
                 lerp_rect(side.control, stacked.control, t),
             )
         };
+        let reset = match (side.reset, stacked.reset) {
+            (Some(a), Some(b)) if t > 0.0 && t < 1.0 => Some(lerp_rect(a, b, t)),
+            (a, b) => {
+                if t < 0.5 {
+                    a
+                } else {
+                    b
+                }
+            }
+        };
         let lines = if t < 0.5 { side.lines } else { stacked.lines };
         let (name_pitch, hint_pitch) = (lines.name_pitch(), lines.hint_pitch());
         let top = (text.y + (text.h - lines.height()) / 2.0).round();
@@ -397,6 +436,7 @@ impl App {
             hints: lines.hints,
             name_pitch,
             hint_pitch,
+            reset,
         }
     }
 

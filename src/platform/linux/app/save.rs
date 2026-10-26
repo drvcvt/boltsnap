@@ -65,32 +65,39 @@ fn replay(command: &str) -> Result<serde_json::Value, String> {
     super::super::replay::call(&json!({"version": 1, "command": command}))
 }
 
+/// One change to the daemon; its refusal as the reason.
+fn patch(key: &str, change: Change) -> Result<(), String> {
+    let response = call_daemon(Request::SetSettings {
+        patch: vec![(key.to_owned(), change)],
+    })
+    .map_err(|error| format!("Boltsnap is not running: {error}"))?;
+    if response.ok {
+        Ok(())
+    } else {
+        Err(response
+            .error
+            .unwrap_or_else(|| format!("{key} was not saved")))
+    }
+}
+
 fn send(write: &Write) -> Result<(), String> {
     match write {
         Write::RestartReplay => {
             replay("stop")?;
             replay("start").map(|_| ())
         }
+        Write::Reset(key) => patch(key, Change::Remove),
         Write::Key(key, value) => {
-            let response = call_daemon(Request::SetSettings {
-                patch: vec![((*key).to_owned(), Change::Set(value.clone()))],
-            })
-            .map_err(|error| format!("Boltsnap is not running: {error}"))?;
-            if response.ok {
-                if RESTART_ONLY.contains(key) {
-                    let session = replay("status")
-                        .ok()
-                        .and_then(|status| status["session"].as_str().map(str::to_owned));
-                    if session.is_some() {
-                        *STALE_SESSION.lock().unwrap() = session;
-                    }
+            let saved = patch(key, Change::Set(value.clone()));
+            if saved.is_ok() && RESTART_ONLY.contains(key) {
+                let session = replay("status")
+                    .ok()
+                    .and_then(|status| status["session"].as_str().map(str::to_owned));
+                if session.is_some() {
+                    *STALE_SESSION.lock().unwrap() = session;
                 }
-                Ok(())
-            } else {
-                Err(response
-                    .error
-                    .unwrap_or_else(|| format!("{key} was not saved")))
             }
+            saved
         }
         Write::Replay(on) => replay(if *on { "start" } else { "stop" }).map(|_| ()),
     }

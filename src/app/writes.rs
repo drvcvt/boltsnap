@@ -4,7 +4,7 @@
 
 use std::time::{Duration, Instant};
 
-use super::{App, Block, Page, Target};
+use super::{App, Block, Channel, Page, Target};
 use crate::settings;
 use crate::ui::Effect;
 use crate::ui::widgets::Value;
@@ -32,6 +32,8 @@ pub enum Write {
     Key(&'static str, settings::Value),
     Replay(bool),
     RestartReplay,
+    /// The key goes back to its default (out of the file).
+    Reset(&'static str),
 }
 
 impl App {
@@ -88,6 +90,38 @@ impl App {
         }
     }
 
+    /// The reset the row in `block` of the current page asks for.
+    pub fn reset_write(&self, block: usize) -> Option<Write> {
+        let row = self.row(block).filter(|row| row.enabled && row.reset)?;
+        match &row.bind {
+            Bind::Key(key, _) => Some(Write::Reset(key)),
+            _ => None,
+        }
+    }
+
+    /// Point the reset buttons' fades at whether each row has one; `animate`
+    /// false sets them at once (a page or window just shown).
+    pub(super) fn sync_resets(&mut self, animate: bool, now: Instant) {
+        let shown: Vec<(usize, bool)> = self.pages[self.current]
+            .blocks
+            .iter()
+            .enumerate()
+            .filter_map(|(index, block)| match block {
+                Block::Row(row) => Some((index, row.reset)),
+                _ => None,
+            })
+            .collect();
+        for (index, on) in shown {
+            let to = f32::from(u8::from(on));
+            if animate {
+                self.fades.to(Target::Reset(index), Channel::Shown, to, now);
+            } else {
+                self.fades
+                    .set(Target::Reset(index), Channel::Shown, to, now);
+            }
+        }
+    }
+
     /// The window closes: a control being edited commits, and what changed
     /// reports.
     pub fn finish(&mut self, now: Instant) -> Vec<Effect> {
@@ -120,6 +154,7 @@ impl App {
                 old.hint = new.hint;
                 old.enabled = new.enabled;
                 old.bind = new.bind;
+                old.reset = new.reset;
                 let held = Some(Target::Control(index));
                 if page == current && (focus == held || capture == held || busy(page, index)) {
                     continue;
@@ -135,8 +170,9 @@ impl App {
                 }
             }
         }
-        // A hint that came or went changes heights.
+        // A hint or reset button that came or went changes heights.
         self.resize(self.size, now);
+        self.sync_resets(true, now);
     }
 
     /// Fresh pages, after a write was refused or the state changed: the same
@@ -157,6 +193,7 @@ impl App {
         self.stacked.clear();
         self.resize(self.size, now);
         self.remember_values();
+        self.sync_resets(false, now);
         if let Some(at) = self.pointer {
             let target = self.target_at(at, now);
             self.set_hover(target, now);

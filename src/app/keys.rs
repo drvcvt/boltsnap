@@ -10,17 +10,19 @@ use crate::ui::{Effect, Key, Mods};
 
 impl App {
     /// Tab stops in reading order: the current page's navigation entry, then
-    /// every enabled control.
+    /// every enabled row, its reset button (left of the control) first.
     pub fn tab_order(&self) -> Vec<Target> {
         let mut order = vec![Target::Nav(self.current)];
-        order.extend(
-            self.page()
-                .blocks
-                .iter()
-                .enumerate()
-                .filter(|(_, block)| matches!(block, Block::Row(row) if row.enabled))
-                .map(|(index, _)| Target::Control(index)),
-        );
+        for (index, block) in self.page().blocks.iter().enumerate() {
+            if let Block::Row(row) = block
+                && row.enabled
+            {
+                if row.reset {
+                    order.push(Target::Reset(index));
+                }
+                order.push(Target::Control(index));
+            }
+        }
         order
     }
 
@@ -37,7 +39,7 @@ impl App {
         };
         self.keyed.retarget(1.0, QUICK, now);
         let outcome = self.set_focus(Some(order[next]), now);
-        if let Target::Control(block) = order[next] {
+        if let Target::Control(block) | Target::Reset(block) = order[next] {
             let rect = self.layout_at(0.0, now + AT_REST).blocks[block];
             self.scroll
                 .reveal(rect.y - GAP_S, rect.bottom() + GAP_S, self.size.1, now);
@@ -67,6 +69,13 @@ impl App {
                     _ => Outcome::IGNORED,
                 }
             }
+            Some(Target::Reset(block)) => match key {
+                Key::Space | Key::Enter => Outcome {
+                    effect: Some(Effect::Reset(block)),
+                    ..Outcome::HANDLED
+                },
+                _ => Outcome::IGNORED,
+            },
             Some(Target::Nav(_)) => {
                 let to = match key {
                     Key::Up => self.current.checked_sub(1),

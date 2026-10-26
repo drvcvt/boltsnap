@@ -18,6 +18,11 @@ pub enum Value {
 pub struct Doc(pub(super) BTreeMap<&'static str, Value>);
 
 impl Doc {
+    /// The keys the file sets, valid ones only.
+    pub fn keys(&self) -> impl Iterator<Item = &'static str> + '_ {
+        self.0.keys().copied()
+    }
+
     pub fn get(&self, path: &str) -> Option<&Value> {
         self.0.get(path)
     }

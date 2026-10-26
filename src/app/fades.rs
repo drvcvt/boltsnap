@@ -14,6 +14,8 @@ pub enum Channel {
     Focus,
     /// A navigation entry's page is the one shown.
     Current,
+    /// A row's reset button is there.
+    Shown,
 }
 
 #[derive(Default)]
@@ -61,7 +63,7 @@ impl Fades {
     /// and a new page reuses the numbers.
     pub fn forget_controls(&mut self) {
         self.0
-            .retain(|(target, _, _)| !matches!(target, Target::Control(_)));
+            .retain(|(target, _, _)| matches!(target, Target::Nav(_)));
     }
 
     pub fn moving(&self, now: Instant) -> bool {

@@ -39,6 +39,7 @@ pub fn prefs() -> Prefs {
         replay_stalled: false,
         replay_stale: false,
         recording: false,
+        set_keys: Vec::new(),
         replay_seconds: 60,
         replay_memory_mib: 512,
         replay_fps: 60,
@@ -119,6 +120,7 @@ fn tab_runs_through_navigation_and_enabled_controls_in_reading_order() {
         .map(|target| match target {
             Target::Control(block) => *block,
             Target::Nav(_) => panic!("one navigation stop"),
+            Target::Reset(_) => panic!("no key is set in the test prefs"),
         })
         .collect();
     assert!(blocks.windows(2).all(|pair| pair[0] < pair[1]));

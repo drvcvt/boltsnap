@@ -25,6 +25,7 @@ fn row(icon: Icon, label: &str, hint: Option<&str>, control: Box<dyn Widget>) ->
         control,
         enabled: true,
         bind: Bind::None,
+        reset: false,
     })
 }
 

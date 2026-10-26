@@ -61,6 +61,11 @@ pub fn load() -> Prefs {
         replay_stalled: buffer.stalled,
         replay_stale: buffer.stale,
         recording: super::save::recording(),
+        set_keys: crate::config::settings_state()
+            .doc
+            .keys()
+            .map(str::to_owned)
+            .collect(),
         replay_seconds: replay.seconds,
         replay_memory_mib: replay.memory_mib,
         replay_fps: replay.fps,

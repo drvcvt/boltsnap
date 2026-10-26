@@ -7,13 +7,18 @@ use std::time::{Duration, Instant};
 use super::prefs;
 
 /// The pages in the state with everything showing that only shows
-/// sometimes: a recording runs, the replay buffer runs with old settings.
+/// sometimes: a recording runs, the replay buffer runs with old settings,
+/// every key is set in the file (every row has its reset button).
 fn busy() -> pages::Prefs {
     pages::Prefs {
         recording: true,
         replay_running: true,
         replay_stale: true,
         replay_stalled: true,
+        set_keys: crate::settings::schema::KEYS
+            .iter()
+            .map(|key| key.path.to_owned())
+            .collect(),
         ..prefs()
     }
 }
@@ -104,6 +109,15 @@ fn gate_overflow_nothing_leaves_its_group_or_the_window() {
                     "{name} {} has no room at {w}",
                     row.label
                 );
+                if let Some(reset) = parts.reset {
+                    assert!(inside(reset, content), "{name} {} reset at {w}", row.label);
+                    assert!(
+                        !reset.overlaps(parts.control) && !reset.overlaps(parts.label),
+                        "{name} {} reset on top of its row at {w}",
+                        row.label
+                    );
+                    checked += 1;
+                }
             }
         });
     }

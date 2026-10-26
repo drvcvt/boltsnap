@@ -215,3 +215,65 @@ fn a_click_on_a_switch_rows_name_switches_and_other_names_do_nothing() {
     );
     assert_eq!(app.focus(), None);
 }
+
+#[test]
+fn a_set_key_offers_a_reset_that_leaves_the_control_where_it_is() {
+    let now = Instant::now();
+    let mut set = prefs();
+    set.set_keys = vec!["record_fps".into()];
+    let mut app = App::new(Fonts::fallback(), pages::pages(&set, None, now), SIZE, now);
+    app.show_named("recording", now);
+    let plain = app_on("recording", SIZE, now);
+    let fps = block(&app, "Frame rate");
+    let rows: Vec<(usize, bool)> = app
+        .page()
+        .blocks
+        .iter()
+        .enumerate()
+        .filter_map(|(i, b)| match b {
+            Block::Row(row) => Some((i, row.reset)),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        rows.iter().all(|&(i, reset)| reset == (i == fps)),
+        "only the set key"
+    );
+    // The control keeps its place; the button sits left of it.
+    let parts = |app: &App| {
+        let Block::Row(row) = &app.page().blocks[fps] else {
+            unreachable!()
+        };
+        app.row_parts(app.block_rects(now)[fps], row)
+    };
+    let (with, without) = (parts(&app), parts(&plain));
+    assert_eq!(with.control, without.control);
+    let reset = with.reset.expect("a reset button");
+    assert_eq!(reset.right() + crate::ui::theme::GAP_S, with.control.x);
+    // Tab reaches it before the control; Space and a click ask for the reset.
+    let order = app.tab_order();
+    let at = order
+        .iter()
+        .position(|t| *t == crate::app::Target::Reset(fps))
+        .unwrap();
+    assert_eq!(order[at + 1], crate::app::Target::Control(fps));
+    let effects = press(&mut app, middle(reset), now);
+    assert!(effects.contains(&Effect::Reset(fps)));
+    assert_eq!(app.reset_write(fps), Some(Write::Reset("record_fps")));
+    // Back to the default: the button fades out.
+    app.update(pages::pages(&prefs(), None, now), now, |_, _| false);
+    let shown = app.fade(
+        crate::app::Target::Reset(fps),
+        crate::app::Channel::Shown,
+        now + Duration::from_millis(60),
+    );
+    assert!(shown > 0.0 && shown < 1.0, "fading, {shown}");
+    assert_eq!(
+        app.fade(
+            crate::app::Target::Reset(fps),
+            crate::app::Channel::Shown,
+            now + SETTLED
+        ),
+        0.0
+    );
+}

@@ -3,7 +3,10 @@
 use std::time::Instant;
 
 use super::{App, Block, Channel, Target};
-use crate::ui::theme::{self, GAP_S, GAP_XS, NAV_W, PANEL_RADIUS, RADIUS, THUMB_W, TextStyle};
+use crate::ui::icons::Icon;
+use crate::ui::theme::{
+    self, GAP_S, GAP_XS, ICON_ALONE, NAV_W, PANEL_RADIUS, RADIUS, THUMB_W, TextStyle,
+};
 use crate::ui::widgets::{self, Look};
 use crate::ui::{Canvas, Rect};
 
@@ -186,6 +189,28 @@ impl App {
                     enabled: row.enabled,
                 };
                 row.control.draw(canvas, fonts, parts.control, look, now);
+                let reset = Target::Reset(index);
+                let shown = self.fade(reset, Channel::Shown, now);
+                if shown > 0.0 {
+                    let place = parts.reset.unwrap_or_else(|| parts.reset_place());
+                    let look = Look {
+                        hover: self.fade(reset, Channel::Hover, now),
+                        press: self.fade(reset, Channel::Press, now),
+                        focus: self.fade(reset, Channel::Focus, now),
+                        ring: self.fade(reset, Channel::Focus, now) * self.keyed(now),
+                        focused: self.focus == Some(reset),
+                        enabled: row.enabled,
+                    };
+                    canvas.fill(place, RADIUS, look.surface(), shown);
+                    widgets::focus_ring(canvas, place, RADIUS, look.ring * shown);
+                    let x = place.x + (place.w - ICON_ALONE) / 2.0;
+                    Icon::RotateCcw.draw(
+                        canvas,
+                        widgets::icon_box(place, x, ICON_ALONE),
+                        theme::SUB,
+                        shown,
+                    );
+                }
             }
         }
     }

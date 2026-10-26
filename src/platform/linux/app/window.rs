@@ -170,8 +170,12 @@ impl Win {
     fn effect(&mut self, effect: Effect) {
         match effect {
             Effect::Close => self.exit = true,
-            Effect::Changed(block) => {
-                if let (Some(write), Some(saver)) = (self.app.write(block), &self.saver) {
+            Effect::Changed(block) | Effect::Reset(block) => {
+                let write = match effect {
+                    Effect::Reset(_) => self.app.reset_write(block),
+                    _ => self.app.write(block),
+                };
+                if let (Some(write), Some(saver)) = (write, &self.saver) {
                     let tag = (self.app.current(), block);
                     *self.pending.entry(tag).or_default() += 1;
                     saver.send(tag, write);
