@@ -201,3 +201,22 @@ fn navigation_icons_keep_their_place_and_size_while_it_closes() {
     assert_eq!(icon.x - slot.x, slot.right() - icon.right());
     assert_eq!(app.nav_text_x(), 38.0);
 }
+
+#[test]
+fn the_mark_shows_in_the_free_corner_only() {
+    let now = Instant::now();
+    let tall = app_on("recording", (1000.0, 1032.0), now);
+    assert_eq!(tall.mark_alpha(now + SETTLED), 1.0);
+    let place = crate::app::brand::Mark::place(1032.0);
+    let last = tall.nav_slot(tall.pages().len() - 1, now + SETTLED);
+    assert!(
+        place.y >= last.bottom() + crate::ui::theme::GAP_XL,
+        "room under the entries"
+    );
+    // No room under the entries, or no names: it fades away.
+    // At the smallest height (320) it would sit on the last entries.
+    let short = app_on("recording", (1000.0, 320.0), now);
+    assert_eq!(short.mark_alpha(now + SETTLED), 0.0);
+    let narrow = app_on("recording", NARROW, now);
+    assert_eq!(narrow.mark_alpha(now + SETTLED), 0.0);
+}

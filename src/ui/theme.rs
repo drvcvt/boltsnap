@@ -21,6 +21,11 @@ pub const HOVER: Rgb = (0x2E, 0x2E, 0x2E);
 /// marked entry: a step above `HOVER`, so the choice still reads under the
 /// pointer.
 pub const SELECTED: Rgb = (0x3A, 0x3A, 0x3A);
+/// The pressed-in mark in the sidebar: the mark itself, its top edge in
+/// shadow, its bottom edge catching the light from above.
+pub const PRESSED: Rgb = (0x0F, 0x0F, 0x0F);
+pub const SHADE: Rgb = (0x0A, 0x0A, 0x0A);
+pub const LIP: Rgb = (0x22, 0x22, 0x22);
 pub const TEXT: Rgb = (0xEC, 0xEC, 0xEC);
 pub const SUB: Rgb = (0x9A, 0x9A, 0x9A);
 /// Disabled text only.

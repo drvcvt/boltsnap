@@ -1517,6 +1517,35 @@ ausstehende Bewegung zuerst, damit Hover und Klick zusammenpassen. Abnahme:
 dieselbe Sonde, je Bewegung deutlich unter 0,2 ms; Test, dass die Breite
 gleich bleibt und nach Schriftwechsel neu gerechnet wird.
 
+### Phase 4k: Logo in der Seitenleiste, eingeprägt (26.10., Wunsch des Nutzers)
+
+Wunsch: das Boltsnap-Logo unten im freien Platz der Seitenleiste, abgedunkelt
+in die Ecke, „wie reingedrückt“.
+
+Beleg: das finale Logo liegt als Vektor in `.superpowers/…/boltsnap-logo-v10-final.svg`
+(Potrace, zwei Pfade, `viewBox 0 0 1952 2304`, Gruppe `translate(0,2304)
+scale(0.1,-0.1)`); `.superpowers/` ist gitignored, also kommt der Pfad als
+`assets/logo/boltsnap-mark.svg` ins Repo. `icons::parse` liest die
+Pfad-Befehle (relativ, `c`/`l`/`m`/`z`).
+
+Verhalten:
+- Unten links in der Seitenleiste, in die Ecke angeschnitten (ein Teil liegt
+  jenseits der Fensterkante), Höhe 168 px. Eingeprägt: die Form dunkler als
+  die Leiste (`PRESSED` 0x0F auf 0x17; zuerst `WINDOW` 0x12, nach dem Render
+  mit 1,04:1 kaum zu sehen), darüber ein 1-px-Rand noch dunkler (`SHADE`
+  0x0A, Schatten der oberen Kante), darunter ein 1-px-Rand heller (`LIP`
+  0x22, Licht auf der unteren Kante); Licht von oben wie überall. Kein Glow,
+  kein Verlauf. Jeder Pfad wird für sich gefüllt (ein gemeinsamer Pfad mit
+  gerade-ungerade hätte die Überlappung von Punkt und Körper ausgeschnitten).
+- Nur bei offener Navigation (blendet mit den Namen) und wenn die Leiste unter
+  den Einträgen genug Platz hat (mindestens `GAP_XL` Luft); sonst blendet es
+  mit `QUICK` aus. Es wandert nie.
+- Einmal je Größe und Skala in eine Pixmap gerendert, danach nur kopiert.
+
+Tests: das Logo liegt unter dem letzten Eintrag mit Luft, fehlt bei
+geschlossener Navigation und bei zu kleinem Fenster; Kontrast-Gate bleibt
+(Deko, kein Text). Render angesehen.
+
 ### Phase 5a: Öffnen ohne Terminal (vorgezogen 26.10., Wunsch des Nutzers)
 
 Die zwei Wege aus „Öffnen und Fenster“ kommen vor dem Rest von Phase 5, damit
@@ -2359,6 +2388,7 @@ Vom Nutzer am 24.10. so bestätigt:
 | 5c S11 | umgesetzt 26.10. nach „S11 im Detail“: Ordnerfelder mit Knopf `folder-open` rechts im Feld (eigene Hover-Fläche, Text endet `GAP_S` davor), Klick oder `Ctrl+O` → `Effect::Browse`, in der App `Effect::PickFolder(block)`; `linux/app/folder.rs` ruft `FileChooser.OpenFile` mit `directory`, `modal`, `current_folder` (Ablauf wie `capture/portal.rs`, `percent_decode` jetzt geteilt), in einem Thread, Antwort mit (Seite, Block), eine andere Seite verwirft sie; Abbruch (Code 1) ändert nichts; `App::pick` setzt den Text und meldet ihn wie ein bestätigtes Feld. Verfügbarkeit einmal im Hintergrund (`version ≥ 3`), ohne Portal kein Knopf. Test `a_folder_field_asks_for_the_dialog_and_saves_what_it_picks`. Render mit Hover angesehen. Live nicht geprüft (der Dialog wartet auf den Nutzer). Checks: fmt, clippy ohne Warnung, `cargo test` 113 + 374 grün. |
 | 5c S12 | umgesetzt 26.10. nach „S12 im Detail“: vier eigene Symbole `shelf-top-left` … `shelf-bottom-right` im Sprite (39), Corner-Segment nutzt sie statt der Pfeile (die Pfeile bleiben für das Fixture). Karte nach dem ersten Render auf 8 × 5 vergrößert. Test `the_corner_pictograms_put_the_card_in_their_corner`. Render bei Skala 2 angesehen; Icon-Gate mit Outfit unverändert. Checks: fmt, clippy ohne Warnung, `cargo test` 114 + 374 grün. |
 | 4j | umgesetzt 26.10. nach „Phase 4j“: `Fonts::id`, `Dropdown` merkt sich die Inhaltsbreite je Schrift; das Fenster gibt je Frame nur die letzte Zeigerbewegung weiter, andere Eingaben holen sie vorher nach. Sonde (Release, 330 Einträge, Liste offen): je Bewegung 1,67 ms → 96 µs, je Frame 2,09 → 0,58 ms. Test `a_dropdown_measures_once_per_loaded_font`. Checks: fmt, clippy ohne Warnung, `cargo test` 115 + 374 grün. |
+| 4k | umgesetzt 26.10. nach „Phase 4k“: `assets/logo/boltsnap-mark.svg` (die zwei Potrace-Pfade des finalen Logos, Herkunft und Umrechnung im Kommentar), `app/brand.rs` (`Mark`: einmal je Skala in eine Pixmap gerendert, jeder Pfad für sich gefüllt, Schatten oben, Licht unten), Töne `PRESSED`, `SHADE`, `LIP`; Feder `mark_room` (nur mit Platz unter den Einträgen) und mit den Namen ausgeblendet. Beim Render gefunden: ein gemeinsamer Pfad schnitt die Überlappung von Punkt und Körper aus (behoben); die erste Tönung (0x12 auf 0x17) war kaum sichtbar, jetzt 0x0F. Pixel geprüft: Punkt gefüllt, Lücke zur Kerbe, Kanten oben 0x13/unten 0x1E. Tests `the_mark_shows_in_the_free_corner_only`, `both_paths_of_the_mark_parse`. Checks: fmt, clippy ohne Warnung, `cargo test` 117 + 374 grün. |
 | 5a | umgesetzt 26.10. nach „Phase 5a: Öffnen ohne Terminal“: Tray-Eintrag „Settings…“ ganz unten (Prozessstart im Tray-Thread), `assets/linux/boltsnap.desktop` mit Icons 64/128/256 aus `boltsnap.ico`, `.deb`-Assets, Flake-`postInstall`, Release-Tarball, README. Abweichung: `Categories=Graphics;`. Checks: `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test` 75 + 371 grün, `desktop-file-validate` ohne Meldung. Live: Daemon neu gestartet, dbusmenu-`GetLayout` endet auf „Settings…“; `gio launch` der installierten `.desktop`-Datei öffnet das Fenster (Klasse `boltsnap`). Nicht live prüfbar: Klick im Tray. |
 | 5 | geplant, freigegeben 24.10. |
 | 6 (Library) | Skizze im Library-Plan |

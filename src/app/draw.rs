@@ -95,6 +95,12 @@ impl App {
             theme::SIDEBAR,
             1.0,
         );
+        // Pressed into the free corner, under everything else in the sidebar.
+        self.mark.draw(
+            canvas,
+            super::brand::Mark::place(self.size.1),
+            self.mark_alpha(now),
+        );
         let slot = self.nav_rect(0, now);
         let pitch = self.nav_rect(1, now).y - slot.y;
         let selection = Rect {

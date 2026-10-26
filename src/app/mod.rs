@@ -2,6 +2,7 @@
 //! grouped rows on the right. Knows nothing about the windowing system; the
 //! platform feeds it [`Input`] and shows what [`App::draw`] paints.
 
+pub(crate) mod brand;
 mod draw;
 mod fades;
 pub mod gallery;
@@ -92,6 +93,10 @@ pub struct App {
     stacked: Vec<Spring>,
     /// 0 to 1: the scroll thumb, there while the page is longer than the window.
     thumb: Spring,
+    /// The mark in the sidebar's corner, and 0 to 1 for whether there is room
+    /// for it under the entries.
+    mark: brand::Mark,
+    mark_room: Spring,
     /// 1 while focus came from the keyboard, 0 after a click: the focus
     /// outline shows only for the first (like `:focus-visible`).
     keyed: Spring,
@@ -129,6 +134,8 @@ impl App {
             stacked: Vec::new(),
             thumb: Spring::settled(0.0, now),
             keyed: Spring::settled(0.0, now),
+            mark: brand::Mark::default(),
+            mark_room: Spring::settled(0.0, now),
             size,
             scroll: Scroll::new(now),
             focus: None,
@@ -143,6 +150,7 @@ impl App {
         app.fades.set(Target::Nav(0), Channel::Current, 1.0, now);
         app.resize(size, now);
         app.thumb.set(app.thumb.target(), now);
+        app.mark_room.set(app.mark_room.target(), now);
         app.remember_values();
         app.sync_resets(false, now);
         app
@@ -182,6 +190,17 @@ impl App {
         self.scroll.set_max(height - size.1, now);
         let thumb = if self.scroll.max() > 0.0 { 1.0 } else { 0.0 };
         self.thumb.retarget(thumb, QUICK, now);
+        let last = self.nav_slot(self.pages.len().saturating_sub(1), now + AT_REST);
+        let room = brand::Mark::place(size.1).y >= last.bottom() + crate::ui::theme::GAP_XL;
+        self.mark_room
+            .retarget(f32::from(u8::from(room)), QUICK, now);
+    }
+
+    /// 0 to 1: how much the mark in the sidebar shows; with the names, and
+    /// only where the entries leave it room.
+    pub fn mark_alpha(&self, now: Instant) -> f32 {
+        let names = (2.0 * self.nav_open(now) - 1.0).clamp(0.0, 1.0);
+        names * self.mark_room.value(now).clamp(0.0, 1.0)
     }
 
     /// 0 to 1: how much the focus outline shows (see `keyed`).
@@ -485,6 +504,7 @@ impl App {
             || !self.nav_open.done(now)
             || !self.thumb.done(now)
             || !self.keyed.done(now)
+            || !self.mark_room.done(now)
             || self.stacked.iter().any(|spring| !spring.done(now))
             || self.scroll.moving(now)
             || self.fades.moving(now)
