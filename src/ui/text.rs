@@ -61,6 +61,9 @@ pub struct Fonts {
     caps: [f32; 2],
     /// Every glyph is rasterized once per size and offset, not every frame.
     glyphs: RefCell<HashMap<GlyphKey, Option<Coverage>>>,
+    /// A number of its own: what was measured with one `Fonts` can be kept
+    /// until the window loads another.
+    id: u64,
 }
 
 /// How tall `H` is against the scale ab_glyph sizes by (ascent − descent).
@@ -74,12 +77,19 @@ fn cap_ratio(face: &FontVec) -> f32 {
 impl Fonts {
     pub fn new(medium: FontVec, demibold: FontVec) -> Self {
         let caps = [cap_ratio(&medium), cap_ratio(&demibold)];
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         Self {
             medium,
             demibold,
             caps,
             glyphs: RefCell::new(HashMap::new()),
+            id: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         }
+    }
+
+    /// Which loaded font this is (see `id`).
+    pub fn id(&self) -> u64 {
+        self.id
     }
 
     /// The size `style` draws at: the one that makes its capitals exactly

@@ -434,3 +434,19 @@ fn the_corner_pictograms_put_the_card_in_their_corner() {
         assert!(!lit(&canvas, there), "{icon:?} has nothing across");
     }
 }
+
+#[test]
+fn a_dropdown_measures_once_per_loaded_font() {
+    use super::widgets::{Dropdown, Widget};
+    let now = Instant::now();
+    let (one, other) = (Fonts::fallback(), Fonts::fallback());
+    assert_ne!(one.id(), other.id(), "each loaded font has its own number");
+    let menu = Dropdown::new(vec!["Short".into(), "A much longer entry".into()], 0, now);
+    let first = menu.width(&one, 500.0);
+    assert_eq!(menu.width(&one, 500.0), first, "kept");
+    assert_eq!(
+        menu.width(&other, 500.0),
+        first,
+        "measured again, same face"
+    );
+}

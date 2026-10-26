@@ -1500,6 +1500,23 @@ gemeint sind. Fix: die Spur bleibt ruhig (Hover und Druck 0, Fokus-Kontur
 bleibt); Rückmeldung geben der Teil unter dem Zeiger (Text hellt auf, wie
 bisher) und die gleitende Auswahl. Test: Spur-Pixel mit Druck = ohne Druck.
 
+### Phase 4j: Hover über langen Listen (26.10., Meldung des Nutzers)
+
+Meldung: schnelles Hovern über die Font-Liste laggt extrem. Messung (Release,
+Sonde, 330 Einträge, Liste offen, 946 × 1032): je Zeigerbewegung 1,67 ms, je
+Frame 2,09 ms. Ursachen: `Dropdown::width` und `overlay` rechnen bei jedem
+Aufruf die Breite aller 330 Einträge (`content_w`), mehrmals je Ereignis
+(Layout neben/gestapelt, Trefferprüfung, Liste); und jede Zeigerbewegung wird
+sofort verarbeitet, bei einer 1000-Hz-Maus bis zu 1000 je Sekunde.
+
+Fix: (1) `Dropdown` merkt sich die Inhaltsbreite je Schrift (`Fonts::id`, eine
+Nummer je geladener Schrift; neue Schrift, neue Rechnung). (2) Das Fenster
+sammelt Zeigerbewegungen und reicht je Frame nur die letzte weiter; jede
+andere Eingabe (Druck, Loslassen, Rad, Taste, Verlassen) verarbeitet die
+ausstehende Bewegung zuerst, damit Hover und Klick zusammenpassen. Abnahme:
+dieselbe Sonde, je Bewegung deutlich unter 0,2 ms; Test, dass die Breite
+gleich bleibt und nach Schriftwechsel neu gerechnet wird.
+
 ### Phase 5a: Öffnen ohne Terminal (vorgezogen 26.10., Wunsch des Nutzers)
 
 Die zwei Wege aus „Öffnen und Fenster“ kommen vor dem Rest von Phase 5, damit
@@ -2341,6 +2358,7 @@ Vom Nutzer am 24.10. so bestätigt:
 | 5c S10b | umgesetzt 26.10. nach „S10b im Detail“. Dropdown: höchstens 10 Einträge sichtbar, scrollt in sich (`Scroll`, neu `Scroll::jump`, öffnet mit dem gewählten Eintrag in der Mitte), Rad über offener Liste scrollt die Liste (`Widget::overlay_wheel`), Pfeile halten die Markierung sichtbar, Randeinträge mit Clip, Liste so breit wie ihr längster Eintrag (mindestens das Control, höchstens der Platz), geschlossen höchstens `MENU_MAX = 280`; Tippen springt (Groß/klein egal, 1 s Fenster, Leertaste gehört zum Wort, `Widget::text` bekommt die Zeit). `Bind::Choices` (Wert oder `None` = Key entfernen). Seite General (Icon `settings`) mit Font (Icon `type`, „Desktop font“ schreibt `Reset(\"ui_font\")`), Familien einmal im Hintergrund (`fc-list`, 330 Familien), das Fenster lädt seine Schrift neu, wenn `ui_font` sich ändert. Fixture mit 40er-Liste; Copy-Gate zählt Font-Namen nicht. Aufgeräumt: `app/pages.rs` (700 Zeilen) nach `app/pages/` (`mod.rs` 427, `prefs.rs` 85, `rows.rs` 210), dabei ein verirrter Doc-Kommentar über `general` an `pages` zurück. Tests: `a_long_list_shows_ten_scrolls_in_itself_and_jumps_to_what_is_typed`, `the_font_row_offers_the_desktop_font_and_the_installed_families`; Gates: Überlauf 1067 Teile (die offene 40er-Liste bleibt im Fenster), Umbruch 376 Zeilen, Copy 166 Strings. Render der offenen Liste mitten im Scrollen angesehen. Live nicht geprüft (echte Familienliste und Neuladen der Schrift nur im laufenden Fenster). Checks: fmt, clippy ohne Warnung, `cargo test` 112 + 374 grün. |
 | 5c S11 | umgesetzt 26.10. nach „S11 im Detail“: Ordnerfelder mit Knopf `folder-open` rechts im Feld (eigene Hover-Fläche, Text endet `GAP_S` davor), Klick oder `Ctrl+O` → `Effect::Browse`, in der App `Effect::PickFolder(block)`; `linux/app/folder.rs` ruft `FileChooser.OpenFile` mit `directory`, `modal`, `current_folder` (Ablauf wie `capture/portal.rs`, `percent_decode` jetzt geteilt), in einem Thread, Antwort mit (Seite, Block), eine andere Seite verwirft sie; Abbruch (Code 1) ändert nichts; `App::pick` setzt den Text und meldet ihn wie ein bestätigtes Feld. Verfügbarkeit einmal im Hintergrund (`version ≥ 3`), ohne Portal kein Knopf. Test `a_folder_field_asks_for_the_dialog_and_saves_what_it_picks`. Render mit Hover angesehen. Live nicht geprüft (der Dialog wartet auf den Nutzer). Checks: fmt, clippy ohne Warnung, `cargo test` 113 + 374 grün. |
 | 5c S12 | umgesetzt 26.10. nach „S12 im Detail“: vier eigene Symbole `shelf-top-left` … `shelf-bottom-right` im Sprite (39), Corner-Segment nutzt sie statt der Pfeile (die Pfeile bleiben für das Fixture). Karte nach dem ersten Render auf 8 × 5 vergrößert. Test `the_corner_pictograms_put_the_card_in_their_corner`. Render bei Skala 2 angesehen; Icon-Gate mit Outfit unverändert. Checks: fmt, clippy ohne Warnung, `cargo test` 114 + 374 grün. |
+| 4j | umgesetzt 26.10. nach „Phase 4j“: `Fonts::id`, `Dropdown` merkt sich die Inhaltsbreite je Schrift; das Fenster gibt je Frame nur die letzte Zeigerbewegung weiter, andere Eingaben holen sie vorher nach. Sonde (Release, 330 Einträge, Liste offen): je Bewegung 1,67 ms → 96 µs, je Frame 2,09 → 0,58 ms. Test `a_dropdown_measures_once_per_loaded_font`. Checks: fmt, clippy ohne Warnung, `cargo test` 115 + 374 grün. |
 | 5a | umgesetzt 26.10. nach „Phase 5a: Öffnen ohne Terminal“: Tray-Eintrag „Settings…“ ganz unten (Prozessstart im Tray-Thread), `assets/linux/boltsnap.desktop` mit Icons 64/128/256 aus `boltsnap.ico`, `.deb`-Assets, Flake-`postInstall`, Release-Tarball, README. Abweichung: `Categories=Graphics;`. Checks: `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test` 75 + 371 grün, `desktop-file-validate` ohne Meldung. Live: Daemon neu gestartet, dbusmenu-`GetLayout` endet auf „Settings…“; `gio launch` der installierten `.desktop`-Datei öffnet das Fenster (Klasse `boltsnap`). Nicht live prüfbar: Klick im Tray. |
 | 5 | geplant, freigegeben 24.10. |
 | 6 (Library) | Skizze im Library-Plan |

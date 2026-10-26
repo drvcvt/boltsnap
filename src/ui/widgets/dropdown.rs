@@ -30,6 +30,9 @@ pub struct Dropdown {
     /// What was typed to jump, and when the last letter came.
     typed: String,
     typed_at: Option<Instant>,
+    /// The widest entry's width with which `Fonts` (by id): a long list is
+    /// measured once, not on every pointer move.
+    measured: std::cell::Cell<Option<(u64, f32)>>,
 }
 
 impl Dropdown {
@@ -46,6 +49,7 @@ impl Dropdown {
             scroll,
             typed: String::new(),
             typed_at: None,
+            measured: std::cell::Cell::new(None),
         }
     }
 
@@ -111,12 +115,19 @@ impl Dropdown {
 
     /// The widest entry with its padding and check mark.
     fn content_w(&self, fonts: &Fonts) -> f32 {
+        if let Some((id, width)) = self.measured.get()
+            && id == fonts.id()
+        {
+            return width;
+        }
         let widest = self
             .items
             .iter()
             .map(|item| fonts.width(TextStyle::Label, item))
             .fold(0.0, f32::max);
-        (2.0 * GAP_M + widest + GAP_S + ICON + 2.0 * GAP_XS).ceil()
+        let width = (2.0 * GAP_M + widest + GAP_S + ICON + 2.0 * GAP_XS).ceil();
+        self.measured.set(Some((fonts.id(), width)));
+        width
     }
 
     /// Letters came within `TYPING` of each other: a name is being typed.

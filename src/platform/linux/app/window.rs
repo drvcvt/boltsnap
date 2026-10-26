@@ -68,6 +68,8 @@ pub(super) struct Win {
     /// Writes on their way, per (page, block): those rows keep the value
     /// being written until the answer comes.
     pub(super) pending: std::collections::HashMap<super::save::Tag, usize>,
+    /// The pointer's latest move not yet handed to the app.
+    pending_move: Option<(f32, f32)>,
     /// What the pages show on top: a refused write, or why nothing saves.
     pub(super) notice: Option<boltsnap::app::pages::Notice>,
     /// The `ui_font` the window draws with.
@@ -137,6 +139,7 @@ impl Win {
             qh: qh.clone(),
             paste,
             saver: None,
+            pending_move: None,
             pending: Default::default(),
             notice: None,
             font: None,
@@ -149,12 +152,30 @@ impl Win {
         self.window.wl_surface()
     }
 
-    /// Hand `input` to the app, act on what it asks, and redraw.
+    /// Hand `input` to the app, act on what it asks, and redraw. Pointer
+    /// moves are gathered: a fast mouse sends far more than a frame shows,
+    /// so only the last one per frame goes to the app (`flush_move`), and
+    /// any other input lets it through first so hover and click agree.
     pub(super) fn input(&mut self, input: Input) {
+        if let Input::Move { x, y } = input {
+            self.pending_move = Some((x, y));
+            self.changed();
+            return;
+        }
+        self.flush_move();
         for effect in self.app.handle(input, Instant::now()) {
             self.effect(effect);
         }
         self.changed();
+    }
+
+    /// The pointer's last position since the last frame, to the app.
+    fn flush_move(&mut self) {
+        if let Some((x, y)) = self.pending_move.take() {
+            for effect in self.app.handle(Input::Move { x, y }, Instant::now()) {
+                self.effect(effect);
+            }
+        }
     }
 
     /// The connected monitors as (connector, label), as the tray shows them.
@@ -244,6 +265,7 @@ impl Win {
     }
 
     fn draw(&mut self) {
+        self.flush_move();
         let (w, h, scale) = (self.size.0, self.size.1, self.scale);
         let (bw, bh) = (w * scale, h * scale);
         let fits = |canvas: &Option<Canvas>| {
