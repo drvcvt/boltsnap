@@ -22,6 +22,7 @@ mod selector {
 use scene::{Scene, SceneCache};
 
 fn main() {
+    let chrome = render::Chrome::new(boltsnap::ui::text::Fonts::fallback());
     for (w, h) in [(1920, 1080), (2560, 1440), (3840, 2160)] {
         let mut base = tiny_skia::Pixmap::new(w, h).unwrap();
         base.fill(tiny_skia::Color::from_rgba8(73, 120, 181, 255));
@@ -58,7 +59,7 @@ fn main() {
                     let slot = &mut slots[i % 3];
                     let started = std::time::Instant::now();
                     if regional {
-                        cache.update(std::hint::black_box(&base), state);
+                        cache.update(std::hint::black_box(&base), state, &chrome);
                         let damage = cache.damage_since(slot.0);
                         cache.copy_regions(&mut slot.1, &damage);
                         slot.0 = Some(cache.generation());
@@ -70,8 +71,8 @@ fn main() {
                         }
                     } else {
                         let frame = old.reset(std::hint::black_box(&base), state.selection);
-                        scene::paint(frame, &base, &state);
-                        render::pixmap_to_argb8888(frame, &mut slot.1);
+                        scene::paint(frame, &base, &state, &chrome);
+                        render::pixmap_to_argb8888(&frame.pixmap, &mut slot.1);
                         if i >= 5 {
                             total_pixels += w as u64 * h as u64;
                         }
@@ -106,6 +107,7 @@ fn main() {
                 hovered: Some(0),
                 magnifier: None,
             },
+            &chrome,
         );
         cache.frame().save_png(path).unwrap();
     }

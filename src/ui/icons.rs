@@ -20,6 +20,7 @@ pub enum Icon {
     ArrowUpRight,
     Check,
     ChevronDown,
+    Circle,
     Clock,
     Columns2,
     Film,
@@ -42,6 +43,7 @@ pub enum Icon {
     RotateCcwClock,
     Scaling,
     Scan,
+    Scissors,
     Settings,
     ShelfBottomLeft,
     ShelfBottomRight,
@@ -53,16 +55,18 @@ pub enum Icon {
     Type,
     Video,
     Volume2,
+    VolumeX,
 }
 
 impl Icon {
-    pub const ALL: [Icon; 39] = [
+    pub const ALL: [Icon; 42] = [
         Icon::ArrowDownLeft,
         Icon::ArrowDownRight,
         Icon::ArrowUpLeft,
         Icon::ArrowUpRight,
         Icon::Check,
         Icon::ChevronDown,
+        Icon::Circle,
         Icon::Clock,
         Icon::Columns2,
         Icon::Film,
@@ -85,6 +89,7 @@ impl Icon {
         Icon::RotateCcwClock,
         Icon::Scaling,
         Icon::Scan,
+        Icon::Scissors,
         Icon::Settings,
         Icon::ShelfBottomLeft,
         Icon::ShelfBottomRight,
@@ -96,6 +101,7 @@ impl Icon {
         Icon::Type,
         Icon::Video,
         Icon::Volume2,
+        Icon::VolumeX,
     ];
 
     /// The symbol id in the sprite.
@@ -107,6 +113,7 @@ impl Icon {
             Icon::ArrowUpRight => "arrow-up-right",
             Icon::Check => "check",
             Icon::ChevronDown => "chevron-down",
+            Icon::Circle => "circle",
             Icon::Clock => "clock",
             Icon::Columns2 => "columns-2",
             Icon::Film => "film",
@@ -129,6 +136,7 @@ impl Icon {
             Icon::RotateCcwClock => "rotate-ccw-clock",
             Icon::Scaling => "scaling",
             Icon::Scan => "scan",
+            Icon::Scissors => "scissors",
             Icon::Settings => "settings",
             Icon::ShelfBottomLeft => "shelf-bottom-left",
             Icon::ShelfBottomRight => "shelf-bottom-right",
@@ -140,6 +148,7 @@ impl Icon {
             Icon::TriangleAlert => "triangle-alert",
             Icon::Video => "video",
             Icon::Volume2 => "volume-2",
+            Icon::VolumeX => "volume-x",
         }
     }
 
@@ -156,22 +165,42 @@ impl Icon {
         paths[index].as_ref()
     }
 
-    /// Stroke the icon into the square `rect`.
-    pub fn draw(self, canvas: &mut Canvas, rect: Rect, color: Rgb, alpha: f32) {
-        let Some(path) = self.path() else {
-            return;
-        };
-        let size = rect.w.min(rect.h);
-        let k = canvas.scale * size / GRID;
-        // Whole device pixels for the box, so strokes stay crisp.
-        let transform = Transform::from_row(
+    /// Whole device pixels for the box, so strokes stay crisp.
+    fn transform(canvas: &Canvas, rect: Rect) -> Transform {
+        let k = canvas.scale * rect.w.min(rect.h) / GRID;
+        Transform::from_row(
             k,
             0.0,
             0.0,
             k,
             (rect.x * canvas.scale).round(),
             (rect.y * canvas.scale).round(),
+        )
+    }
+
+    /// Fill the icon's outline into the square `rect`, for a closed shape
+    /// that stands for a solid mark (the record dot is a filled `circle`).
+    pub fn fill(self, canvas: &mut Canvas, rect: Rect, color: Rgb, alpha: f32) {
+        let Some(path) = self.path() else {
+            return;
+        };
+        let transform = Self::transform(canvas, rect);
+        canvas.pixmap.fill_path(
+            path,
+            &paint(color, alpha),
+            tiny_skia::FillRule::Winding,
+            transform,
+            None,
         );
+    }
+
+    /// Stroke the icon into the square `rect`.
+    pub fn draw(self, canvas: &mut Canvas, rect: Rect, color: Rgb, alpha: f32) {
+        let Some(path) = self.path() else {
+            return;
+        };
+        let size = rect.w.min(rect.h);
+        let transform = Self::transform(canvas, rect);
         let stroke = Stroke {
             width: STROKE * GRID / size,
             line_cap: LineCap::Round,

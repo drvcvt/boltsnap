@@ -1,287 +1,234 @@
-//! The recording selector's toolbar: layout, drawing, its own icons.
+//! The recording selector's toolbar on the app's design system: Record,
+//! Clip, Frame and Audio in one strip, a 2×2 grid or one column.
 
-use super::*;
+use boltsnap::ui::icons::Icon;
+use boltsnap::ui::text::Fonts;
+use boltsnap::ui::theme::{self, CTL_H, GAP_S, GAP_XS, ICON, RADIUS, Rgb, TextStyle};
+use boltsnap::ui::{Canvas, Rect};
 
-/// Toolbar icons drawn locally, with thick strokes and rounded contours.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Icon {
-    Record,
-    Cut,
-    Crop,
-    Volume,
-    VolumeOff,
+use super::chrome::{Placement, SIDE, place};
+
+pub const LABELS: [&str; 4] = ["Record", "Clip", "Frame", "Audio"];
+pub const RECORD: usize = 0;
+pub const CLIP: usize = 1;
+pub const FRAME: usize = 2;
+pub const AUDIO: usize = 3;
+
+/// Room between the toolbar's edge and its controls, and between controls.
+const PAD: f32 = GAP_XS;
+/// Concentric with the toolbar's corners.
+pub const INNER_RADIUS: f32 = RADIUS - PAD;
+
+/// Each control's width in the face in use, measured once.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Metrics {
+    widths: [f32; 4],
 }
 
-const ICON_STROKE: f32 = 2.4;
-
-fn fill_icon(pm: &mut Pixmap, path: &tiny_skia::Path, rgb: (u8, u8, u8)) {
-    let mut paint = Paint::default();
-    paint.set_color_rgba8(rgb.0, rgb.1, rgb.2, 255);
-    paint.anti_alias = true;
-    pm.fill_path(path, &paint, FillRule::Winding, Transform::identity(), None);
-}
-
-fn stroke_icon(pm: &mut Pixmap, path: &tiny_skia::Path, rgb: (u8, u8, u8)) {
-    let mut paint = Paint::default();
-    paint.set_color_rgba8(rgb.0, rgb.1, rgb.2, 255);
-    paint.anti_alias = true;
-    let stroke = Stroke {
-        width: ICON_STROKE,
-        line_cap: tiny_skia::LineCap::Round,
-        line_join: tiny_skia::LineJoin::Round,
-        ..Default::default()
-    };
-    pm.stroke_path(path, &paint, &stroke, Transform::identity(), None);
-}
-
-/// Draw `icon` in `rgb` with the top-left of its 18 px box at (`x`, `y`).
-fn draw_icon(pm: &mut Pixmap, icon: Icon, x: f64, y: f64, rgb: (u8, u8, u8)) {
-    let (ox, oy) = (x as f32, y as f32);
-    match icon {
-        Icon::Record => {
-            if let Some(path) = circle_path(ox + 9.0, oy + 9.0, 4.5) {
-                fill_icon(pm, &path, rgb);
-            }
-        }
-        // Two blades crossing above two finger rings.
-        Icon::Cut => {
-            let mut pb = PathBuilder::new();
-            pb.move_to(ox + 5.6, oy + 12.0);
-            pb.line_to(ox + 13.5, oy + 2.5);
-            pb.move_to(ox + 12.4, oy + 12.0);
-            pb.line_to(ox + 4.5, oy + 2.5);
-            if let Some(path) = pb.finish() {
-                stroke_icon(pm, &path, rgb);
-            }
-            for cx in [4.5f32, 13.5] {
-                if let Some(path) = circle_path(ox + cx, oy + 13.5, 2.4) {
-                    stroke_icon(pm, &path, rgb);
-                }
-            }
-        }
-        // The four corners of a recording frame.
-        Icon::Crop => {
-            let mut pb = PathBuilder::new();
-            for (cx, cy, sx, sy) in [
-                (2.5f32, 2.5f32, 1.0f32, 1.0f32),
-                (15.5, 2.5, -1.0, 1.0),
-                (15.5, 15.5, -1.0, -1.0),
-                (2.5, 15.5, 1.0, -1.0),
-            ] {
-                pb.move_to(ox + cx, oy + cy + 4.0 * sy);
-                pb.line_to(ox + cx, oy + cy + 2.5 * sy);
-                pb.quad_to(ox + cx, oy + cy, ox + cx + 2.5 * sx, oy + cy);
-                pb.line_to(ox + cx + 4.0 * sx, oy + cy);
-            }
-            if let Some(path) = pb.finish() {
-                stroke_icon(pm, &path, rgb);
-            }
-        }
-        // A speaker, with sound waves or a cross.
-        Icon::Volume | Icon::VolumeOff => {
-            let mut body = PathBuilder::new();
-            body.move_to(ox + 2.5, oy + 6.0);
-            body.line_to(ox + 4.0, oy + 6.0);
-            body.quad_to(ox + 4.5, oy + 6.0, ox + 5.0, oy + 5.5);
-            body.line_to(ox + 8.0, oy + 3.0);
-            body.quad_to(ox + 9.5, oy + 1.8, ox + 9.5, oy + 3.8);
-            body.line_to(ox + 9.5, oy + 14.2);
-            body.quad_to(ox + 9.5, oy + 16.2, ox + 8.0, oy + 15.0);
-            body.line_to(ox + 5.0, oy + 12.5);
-            body.quad_to(ox + 4.5, oy + 12.0, ox + 4.0, oy + 12.0);
-            body.line_to(ox + 2.5, oy + 12.0);
-            body.quad_to(ox + 1.0, oy + 12.0, ox + 1.0, oy + 10.5);
-            body.line_to(ox + 1.0, oy + 7.5);
-            body.quad_to(ox + 1.0, oy + 6.0, ox + 2.5, oy + 6.0);
-            body.close();
-            if let Some(path) = body.finish() {
-                fill_icon(pm, &path, rgb);
-            }
-            let mut pb = PathBuilder::new();
-            if icon == Icon::Volume {
-                pb.move_to(ox + 12.0, oy + 6.8);
-                pb.quad_to(ox + 14.0, oy + 9.0, ox + 12.0, oy + 11.2);
-                pb.move_to(ox + 14.5, oy + 4.5);
-                pb.quad_to(ox + 18.5, oy + 9.0, ox + 14.5, oy + 13.5);
-            } else {
-                pb.move_to(ox + 12.5, oy + 7.0);
-                pb.line_to(ox + 16.0, oy + 10.5);
-                pb.move_to(ox + 16.0, oy + 7.0);
-                pb.line_to(ox + 12.5, oy + 10.5);
-            }
-            if let Some(path) = pb.finish() {
-                stroke_icon(pm, &path, rgb);
-            }
+impl Metrics {
+    pub fn new(fonts: &Fonts) -> Self {
+        Self {
+            widths: LABELS.map(|label| {
+                (SIDE + ICON + GAP_S + fonts.width(TextStyle::Label, label) + SIDE).ceil()
+            }),
         }
     }
 }
 
-pub struct RecordToolbar {
-    pub bounds: (f64, f64, f64, f64),
-    pub controls: [(f64, f64, f64, f64); 4],
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Layout {
+    pub columns: usize,
+    pub placement: Placement,
+    pub bounds: Rect,
+    /// Each control's surface.
+    pub controls: [Rect; 4],
+    /// Each control's target: its surface plus half the gap to a neighbour
+    /// and the padding to the toolbar's edge, so the toolbar has no dead zone.
+    pub hits: [Rect; 4],
 }
 
-// Keep 24 px click targets, but let the 21 px labels fill them. Only a
-// single pixel separates the controls from the surrounding toolbar surface.
-const TB_PAD: f64 = 1.0;
-const TB_GAP: f64 = 4.0;
-pub(super) const TB_CARD_RADIUS: f32 = 9.0;
-// Concentric outer/inner corners keep active fills inside the toolbar contour.
-const TB_CONTROL_RADIUS: f32 = TB_CARD_RADIUS - TB_PAD as f32;
-const TB_TEXT_PAD: f64 = 6.0;
-const TB_LABELS: [&str; 4] = ["REC", "Clip", "Frame", "Audio"];
-
-/// Left inset of a control's label, from the control's own left edge. Every
-/// control carries an icon, as every module on the bar does.
-fn tb_label_x() -> f64 {
-    UI_ICON_PAD + UI_ICON + UI_CONTENT_GAP
-}
-
-/// The mark a control shows; the audio toggle swaps glyph the way the bar's
-/// own microphone and volume modules do.
-fn tb_icon(control: usize, on: bool) -> Icon {
-    match control {
-        0 => Icon::Record,
-        1 => Icon::Cut,
-        2 => Icon::Crop,
-        _ if on => Icon::Volume,
-        _ => Icon::VolumeOff,
+impl Layout {
+    /// The control under `point`.
+    pub fn hit(&self, (x, y): (f32, f32)) -> Option<usize> {
+        self.hits.iter().position(|rect| rect.contains(x, y))
     }
 }
 
-pub fn record_toolbar(
-    sel: (f32, f32, f32, f32),
-    surf_w: u32,
-    surf_h: u32,
-) -> Option<RecordToolbar> {
+/// The toolbar for `sel` inside `area`: one strip if it fits with `GAP_S`
+/// around it, else a 2×2 grid, else a single column; `None` when not even
+/// that fits or the selection is empty.
+pub fn layout(sel: (f32, f32, f32, f32), area: Rect, metrics: &Metrics) -> Option<Layout> {
     let (sx, sy, sw, sh) = sel;
     if ![sx, sy, sw, sh].iter().all(|v| v.is_finite()) || sw < 1.0 || sh < 1.0 {
         return None;
     }
-    // Measured in DemiBold, the widest a label ever gets, so a module keeps its
-    // width when its state changes and the strip never shifts under the cursor.
-    let widths: [f64; 4] = std::array::from_fn(|i| {
-        (tb_label_x() + text_width(TB_LABELS[i], UI_TEXT_PX, true)).ceil() + TB_TEXT_PAD
+    let (columns, widths) = [4usize, 2, 1].into_iter().find_map(|columns| {
+        let mut widths = [0.0f32; 4];
+        for (i, w) in metrics.widths.iter().enumerate() {
+            widths[i % columns] = widths[i % columns].max(*w);
+        }
+        let rows = 4 / columns;
+        let w = widths[..columns].iter().sum::<f32>() + (columns - 1) as f32 * PAD + 2.0 * PAD;
+        let h = rows as f32 * CTL_H + (rows - 1) as f32 * PAD + 2.0 * PAD;
+        (w + 2.0 * GAP_S <= area.w && h + 2.0 * GAP_S <= area.h).then_some((columns, widths))
+    })?;
+    let rows = 4 / columns;
+    let width = widths[..columns].iter().sum::<f32>() + (columns + 1) as f32 * PAD;
+    let height = rows as f32 * CTL_H + (rows + 1) as f32 * PAD;
+    let (x, y, placement) = place(sel, (width, height), area);
+    let bounds = Rect::new(x, y, width, height);
+    let column_x = |c: usize| x + PAD + widths[..c].iter().sum::<f32>() + c as f32 * PAD;
+    let row_y = |r: usize| y + PAD + r as f32 * (CTL_H + PAD);
+    let controls: [Rect; 4] = std::array::from_fn(|i| {
+        let (c, r) = (i % columns, i / columns);
+        Rect::new(column_x(c), row_y(r), widths[c], CTL_H)
     });
-    // One strip if it fits, else a 2×2 grid, else a single column.
-    let (columns, column_widths, column_x, row_y, width, height) =
-        [4usize, 2, 1].into_iter().find_map(|columns| {
-            let rows = 4 / columns;
-            let column_widths: [f64; 4] = std::array::from_fn(|c| {
-                if c < columns {
-                    widths
-                        .iter()
-                        .skip(c)
-                        .step_by(columns)
-                        .copied()
-                        .fold(0.0, f64::max)
-                } else {
-                    0.0
-                }
-            });
-            let mut column_x = [0.0; 4];
-            let mut inner_w = 0.0;
-            for c in 0..columns {
-                if c > 0 {
-                    inner_w += TB_GAP;
-                }
-                column_x[c] = inner_w;
-                inner_w += column_widths[c];
-            }
-            let mut row_y = [0.0; 4];
-            let mut inner_h = 0.0;
-            for (r, y) in row_y.iter_mut().enumerate().take(rows) {
-                if r > 0 {
-                    inner_h += TB_GAP;
-                }
-                *y = inner_h;
-                inner_h += UI_BLOCK_H;
-            }
-            let (width, height) = (inner_w + TB_PAD * 2.0, inner_h + TB_PAD * 2.0);
-            (width + 16.0 <= surf_w as f64 && height + 16.0 <= surf_h as f64).then_some((
-                columns,
-                column_widths,
-                column_x,
-                row_y,
-                width,
-                height,
-            ))
-        })?;
-    let mut x = (sx as f64).clamp(8.0, surf_w as f64 - width - 8.0);
-    let above = sy as f64 - height - 12.0;
-    let below = (sy + sh) as f64 + 12.0;
-    let y = if above >= 8.0 {
-        above
-    } else if below + height <= surf_h as f64 - 8.0 {
-        below
-    } else {
-        x = (sx as f64 + 12.0).clamp(8.0, surf_w as f64 - width - 8.0);
-        sy as f64 + 12.0
-    }
-    .clamp(8.0, surf_h as f64 - height - 8.0);
-    let controls = std::array::from_fn(|i| {
-        (
-            x + TB_PAD + column_x[i % columns],
-            y + TB_PAD + row_y[i / columns],
-            column_widths[i % columns],
-            UI_BLOCK_H,
-        )
+    let hits = std::array::from_fn(|i| {
+        let (c, r) = (i % columns, i / columns);
+        let rect = controls[i];
+        let left = if c == 0 { x } else { rect.x - PAD / 2.0 };
+        let right = if c + 1 == columns {
+            bounds.right()
+        } else {
+            rect.right() + PAD / 2.0
+        };
+        let top = if r == 0 { y } else { rect.y - PAD / 2.0 };
+        let bottom = if r + 1 == rows {
+            bounds.bottom()
+        } else {
+            rect.bottom() + PAD / 2.0
+        };
+        Rect::new(left, top, right - left, bottom - top)
     });
-    Some(RecordToolbar {
-        bounds: (x, y, width, height),
+    Some(Layout {
+        columns,
+        placement,
+        bounds,
         controls,
+        hits,
     })
 }
 
-pub fn draw_record_toolbar(
-    pm: &mut Pixmap,
-    toolbar: &RecordToolbar,
-    states: (bool, bool, bool),
-    hovered: Option<usize>,
-) {
-    let (clip_enabled, frame_enabled, audio_enabled) = states;
-    fill_rounded(pm, toolbar.bounds, TB_CARD_RADIUS, UI_SURFACE);
-    for (i, &(x, y, w, h)) in toolbar.controls.iter().enumerate() {
-        let enabled = i != 1 || clip_enabled;
-        let on = (i == 2 && frame_enabled) || (i == 3 && audio_enabled);
-        // Record keeps a resting fill as the primary action; every module takes
-        // the bar's white hover fill.
-        let fill = match (hovered == Some(i) && enabled, i == 0) {
-            (true, true) => Some(BAR_ACTIVE),
-            (true, false) => Some(BAR_HOVER),
-            (false, true) => Some(BAR_HOVER_SOFT),
-            (false, false) => None,
-        };
-        if let Some(rgba) = fill {
-            fill_rounded(pm, (x, y, w, h), TB_CONTROL_RADIUS, rgba);
+/// How one control looks this frame, each 0 to 1.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ControlLook {
+    pub hover: f32,
+    pub press: f32,
+    /// Frame and Audio: switched on.
+    pub on: f32,
+    /// Clip: a replay buffer is there to clip from.
+    pub enabled: f32,
+}
+
+/// How the toolbar looks this frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Look {
+    pub controls: [ControlLook; 4],
+}
+
+impl Look {
+    /// The look without motion: `hovered`, the toggles' states, Clip there.
+    pub fn at_rest(clip: bool, frame: bool, audio: bool, hovered: Option<usize>) -> Self {
+        let f = |b: bool| f32::from(u8::from(b));
+        Self {
+            controls: std::array::from_fn(|i| ControlLook {
+                hover: f(hovered == Some(i)),
+                press: 0.0,
+                on: f((i == FRAME && frame) || (i == AUDIO && audio)),
+                enabled: f(i != CLIP || clip),
+            }),
         }
-        // Record is the one place with hue. Elsewhere the icon says on or off
-        // the way the bar's own modules do, by going bright or dim, and an
-        // active module sets its label in DemiBold.
-        let (icon_rgb, strong) = match i {
-            0 => (UI_RECORD, true),
-            1 if enabled => (UI_FOREGROUND, false),
-            1 => (UI_FAINT, false),
-            _ if on => (UI_FOREGROUND, true),
-            _ => (UI_DIM, false),
-        };
-        draw_icon(
-            pm,
-            tb_icon(i, on),
-            x + UI_ICON_PAD,
-            y + (h - UI_ICON) / 2.0,
-            icon_rgb,
-        );
-        draw_text_aa(
-            pm,
-            (x + tb_label_x()) as f32,
-            centered_baseline(y, h, UI_TEXT_PX),
-            TB_LABELS[i],
-            UI_TEXT_PX,
-            // A label is always the bar's foreground; only an unavailable
-            // action dims, the way a disabled menu entry does.
-            if enabled { UI_FOREGROUND } else { UI_DIM },
-            strong,
+    }
+}
+
+/// The steps a control's surface climbs on the toolbar: none, then the
+/// app's control, hover and chosen surfaces.
+const LADDER: [Rgb; 4] = [theme::PANEL, theme::RAISE, theme::HOVER, theme::SELECTED];
+
+/// The surface at `step` (0 to 3), between the ladder's colours.
+pub fn ladder(step: f32) -> Rgb {
+    let step = step.clamp(0.0, 3.0);
+    let low = (step.floor() as usize).min(2);
+    theme::mix(LADDER[low], LADDER[low + 1], step - low as f32)
+}
+
+/// A control's step: where it rests (Record on the control surface, a
+/// toggle that is on two steps up, like a segment's chosen part over its
+/// track), one more under the pointer, one more while pressed.
+pub fn step(index: usize, look: &ControlLook) -> f32 {
+    let rest = match index {
+        RECORD => 1.0,
+        CLIP => 0.0,
+        _ => 2.0 * look.on,
+    };
+    rest + (look.hover + look.press) * look.enabled
+}
+
+/// The label's and icon's colour.
+pub fn ink(index: usize, look: &ControlLook) -> Rgb {
+    match index {
+        RECORD => theme::TEXT,
+        CLIP => theme::mix(theme::DIM, theme::TEXT, look.enabled),
+        _ => theme::mix(theme::SUB, theme::TEXT, look.on.max(look.hover)),
+    }
+}
+
+/// The icon box of a control: `SIDE` in, centred on the capitals' middle.
+pub fn icon_rect(control: Rect) -> Rect {
+    Rect::new(
+        control.x + SIDE,
+        control.y + (control.h - ICON) / 2.0,
+        ICON,
+        ICON,
+    )
+}
+
+/// Where a control's label starts.
+pub fn text_x(control: Rect) -> f32 {
+    control.x + SIDE + ICON + GAP_S
+}
+
+/// The toolbar's surface, each control's surface, icon and label.
+pub fn draw(canvas: &mut Canvas, fonts: &Fonts, layout: &Layout, look: &Look) {
+    draw_labelled(canvas, fonts, layout, look, LABELS);
+}
+
+/// [`draw`] with other words, for measuring capitals.
+pub fn draw_labelled(
+    canvas: &mut Canvas,
+    fonts: &Fonts,
+    layout: &Layout,
+    look: &Look,
+    labels: [&str; 4],
+) {
+    canvas.fill(layout.bounds, RADIUS, theme::PANEL, 1.0);
+    for (i, rect) in layout.controls.iter().enumerate() {
+        let control = &look.controls[i];
+        let step = step(i, control);
+        if step > 0.0 {
+            canvas.fill(*rect, INNER_RADIUS, ladder(step), 1.0);
+        }
+        let ink = ink(i, control);
+        let icon = icon_rect(*rect);
+        match i {
+            // The one colour on the toolbar: the primary action's mark.
+            RECORD => Icon::Circle.fill(canvas, icon, theme::ERROR, 1.0),
+            CLIP => Icon::Scissors.draw(canvas, icon, ink, 1.0),
+            FRAME => Icon::SquareDashed.draw(canvas, icon, ink, 1.0),
+            _ => {
+                // Speaker with waves crossfades into the crossed-out one.
+                Icon::Volume2.draw(canvas, icon, ink, control.on);
+                Icon::VolumeX.draw(canvas, icon, ink, 1.0 - control.on);
+            }
+        }
+        let baseline = fonts.baseline(TextStyle::Label, rect.y, rect.h);
+        fonts.draw(
+            canvas,
+            TextStyle::Label,
+            labels[i],
+            (text_x(*rect), baseline),
+            ink,
+            1.0,
         );
     }
 }

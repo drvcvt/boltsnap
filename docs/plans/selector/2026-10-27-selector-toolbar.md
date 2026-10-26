@@ -274,7 +274,7 @@ Pixeln ohne Buffer-Scale (unverändert), ganze Pixel gelten dort.
 
 Offscreen über einen ignorierten Test, der `scene::paint` auf ein Bild rendert
 (`SEL_OUT=dir cargo test --bin boltsnap selector_shots -- --ignored`):
-Streifen bei 1920×1080, 2×2 bei 400×300, Spalte bei 160×240, Auswahl am
+Streifen bei 1920×1080, 2×2 bei 300×300 (Abweichung: die neue Leiste ist schmaler, bei 400×300 passt schon der Streifen), Spalte bei 160×240, Auswahl am
 oberen Rand (Leiste unten) und bildschirmfüllend (Leiste innen).
 
 - Gate 1 Überlauf: Leiste und Hinweis immer in der Fläche (bestehender Test
@@ -298,4 +298,5 @@ oberen Rand (Leiste unten) und bildschirmfüllend (Leiste innen).
 | Richtung | entschieden 27.10., Abschnitt 2 | |
 | Detailplan | 27.10., Abschnitt 4a, Abweichungen freigegeben | |
 | S0 | umgesetzt 27.10.: `selector/render/{mod,toolbar,legacy,tests}.rs` (721/287/301/~490 Zeilen), `select_skia/{mod,input,present}.rs` (611/430/240), `select_skia/shots.rs` (ignorierter `selector_shots`), `windows_pixels_stay_pinned` (Hash `0x34ed7442fdc3e91d` vom Stand vor der Aufteilung), `examples/selector_bench.rs` auf den neuen Pfad | 14 Offscreen-Renders vor/nach der Aufteilung byte-gleich (`cmp`); `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test` 133 + 376 grün (4 ignoriert), `git diff --check`. Kein Windows-Target installiert: keine `cargo check --target x86_64-pc-windows-msvc`, Windows-Code unverändert |
-| S1–S3 | offen | |
+| S1 | umgesetzt 27.10.: `render/chrome.rs` (Rahmen 1 px weiß + 1 px `WINDOW` außen am gerundeten Crop, Griffe 8 × 8 deckend, Badge `PANEL`/`CTL_H`/`Label` mit Ziffern in gleich breiten Zellen, gemeinsame Lage `place`), `render/toolbar.rs` neu (`Metrics`, `layout` mit Treffern ohne Totzone, Leiter `PANEL→RAISE→HOVER→SELECTED`, Lucide-Icons), `render/gates.rs` (Messung auf den Pixeln), `render/chrome_tests.rs`; Windows-Teile (Badge, Rahmen/Griffe mit Stil, Lupe mit Bildschirmplatzierung, alte Schrift) nach `legacy.rs`; `CachedOverlay` zeichnet auf `ui::Canvas`; `select_skia::ui_fonts()` statt `install_ui_font`, `Selector::chrome`; Sprite + `circle`, `scissors`, `volume-x` aus `lucide-static` 1.54.0, `Icon::fill`. Test „Windows-Screenshot gleich Linux“ entfernt (Linux zeichnet jetzt anders), `windows_pixels_stay_pinned` unverändert grün | Gates mit eingebetteter Schrift (`cargo test`) und der des Nutzers (`selector_shots`): Überlauf 35 Lagen auf 5 Bildschirmgrößen im Bildschirm; Versalien schlechtester Versatz 0,03 px (Nutzer 0,01); Icon auf Versalien 0,01 (Nutzer 0,00); Innenrand 4,0/4,0/4,0/4,0 in Streifen, 2×2, Spalte; Icon-Achse je Spalte 0,34, Textkante 0,00, breitestes Icon → Text `GAP_S` + 0,50; Kontrast 6 Textpaare, niedrigstes 5,38:1, Aufnahmepunkt 3,87:1 (Ruhe) / 3,47:1 (Hover); Copy 4 Labels; Gegenprobe 1 px Versatz schlägt an. Renders unter `scratchpad/sel/s1/` angesehen. `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test` 133 + 381 grün (4 ignoriert), `git diff --check`. Kein Windows-Target installiert |
+| S2–S3 | offen | |

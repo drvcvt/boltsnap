@@ -80,13 +80,11 @@ impl Selector {
             }
         };
 
-        let hovered = sel
-            .and_then(|s| render::record_toolbar(s, w, h))
-            .and_then(|t| {
-                t.controls
-                    .iter()
-                    .position(|&rect| contains(rect, self.cursor))
-            });
+        let hovered = sel.and_then(|s| {
+            let area = boltsnap::ui::Rect::new(0.0, 0.0, w as f32, h as f32);
+            render::toolbar::layout(s, area, &self.chrome.toolbar)?
+                .hit((self.cursor.0 as f32, self.cursor.1 as f32))
+        });
         overlay.update(
             base,
             Scene {
@@ -109,6 +107,7 @@ impl Selector {
                 hovered: self.record_mode.then_some(hovered).flatten(),
                 magnifier: (self.alt_held && !self.record_mode).then_some(self.cursor),
             },
+            &self.chrome,
         );
         for view in &mut self.views {
             if view.frame_pending || !view.needs_redraw {

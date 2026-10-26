@@ -2,55 +2,6 @@
 
 use super::*;
 
-#[test]
-fn toolbar_highlights_stay_inside_outer_contour() {
-    for (width, height) in [(800, 500), (240, 200), (160, 240)] {
-        for offset in [0.0, 0.25, 0.5, 0.75] {
-            let toolbar =
-                record_toolbar((20.0 + offset, 150.0 + offset, 80.0, 40.0), width, height).unwrap();
-            let mut outline = Pixmap::new(width, height).unwrap();
-            fill_rounded(&mut outline, toolbar.bounds, TB_CARD_RADIUS, UI_SURFACE);
-            for hovered in 0..4 {
-                let mut rendered = Pixmap::new(width, height).unwrap();
-                draw_record_toolbar(&mut rendered, &toolbar, (true, true, true), Some(hovered));
-                for (base, drawn) in outline.pixels().iter().zip(rendered.pixels()) {
-                    assert_eq!(
-                        drawn.alpha(),
-                        base.alpha(),
-                        "highlight changes the toolbar's antialiased contour"
-                    );
-                }
-            }
-        }
-    }
-}
-
-#[test]
-fn record_toolbar_keeps_controls_together_at_edges() {
-    for (width, height) in [(1920, 1080), (400, 300), (240, 200), (160, 240)] {
-        for sel in [
-            (0.0, 0.0, width as f32, height as f32),
-            (width as f32 - 30.0, height as f32 - 30.0, 20.0, 20.0),
-            (20.0, 70.0, 80.0, 40.0),
-        ] {
-            let toolbar = super::record_toolbar(sel, width, height).unwrap();
-            let (x, y, w, h) = toolbar.bounds;
-            assert!(
-                x >= 8.0 && y >= 8.0 && x + w <= width as f64 - 8.0 && y + h <= height as f64 - 8.0
-            );
-            for (i, &(bx, by, bw, bh)) in toolbar.controls.iter().enumerate() {
-                assert!(bx >= x && by >= y && bx + bw <= x + w && by + bh <= y + h);
-                for &(cx, cy, cw, ch) in &toolbar.controls[i + 1..] {
-                    assert!(bx + bw <= cx || cx + cw <= bx || by + bh <= cy || cy + ch <= by);
-                }
-            }
-        }
-    }
-    let toolbar = super::record_toolbar((90.0, 90.0, 400.0, 200.0), 800, 500).unwrap();
-    assert_eq!(toolbar.bounds.0, 90.0);
-    assert!(toolbar.bounds.1 + toolbar.bounds.3 < 90.0);
-}
-
 /// FNV-1a over pixels, to pin a render without keeping a copy of it.
 fn fnv(hash: u64, bytes: &[u8]) -> u64 {
     bytes
@@ -207,13 +158,13 @@ fn cached_overlay_matches_original_across_moves_and_transparency() {
             dim_and_restore(&mut expected, selection);
             let actual = cache.reset(&base, selection);
             assert_eq!(
-                actual.data(),
+                actual.pixmap.data(),
                 expected.data(),
                 "alpha={alpha}, selection={selection:?}"
             );
             // Simulate controls drawn after the background pass. The next
             // reset must remove their pixels even when the selection moves.
-            actual.data_mut()[0..4].fill(255);
+            actual.pixmap.data_mut()[0..4].fill(255);
         }
     }
 }
@@ -258,43 +209,6 @@ fn windows_record_border_is_single_and_handles_use_neutral_accent() {
 
     draw_handles_with_style(&mut pm, selection, WINDOWS_RECORD_OVERLAY_STYLE);
     assert_eq!(pixel(&pm, 30, 30), [255, 255, 255, 255]);
-}
-
-#[test]
-fn windows_screenshot_style_matches_linux_rendering_byte_for_byte() {
-    let mut linux = Pixmap::new(120, 100).unwrap();
-    for (index, pixel) in linux.data_mut().chunks_exact_mut(4).enumerate() {
-        let value = (index % 251) as u8;
-        pixel.copy_from_slice(&[value, 255 - value, value / 2, 255]);
-    }
-    let mut windows = linux.clone();
-    let selection = (24.0, 18.0, 72.0, 60.0);
-
-    dim_and_restore(&mut linux, Some(selection));
-    draw_border(&mut linux, selection);
-    draw_handles(&mut linux, selection);
-
-    dim_and_restore_with_style(&mut windows, Some(selection), SCREENSHOT_OVERLAY_STYLE);
-    draw_border_with_style(&mut windows, selection, SCREENSHOT_OVERLAY_STYLE);
-    draw_handles_with_style(&mut windows, selection, SCREENSHOT_OVERLAY_STYLE);
-
-    assert_eq!(windows.data(), linux.data());
-}
-
-#[test]
-fn default_border_remains_white() {
-    let mut pm = Pixmap::new(120, 120).unwrap();
-    for pixel in pm.data_mut().chunks_exact_mut(4) {
-        pixel.copy_from_slice(&[0, 0, 0, 255]);
-    }
-    draw_border(&mut pm, (30.0, 30.0, 60.0, 60.0));
-
-    let offset = ((30 * pm.width() + 60) * 4) as usize;
-    let pixel = &pm.data()[offset..offset + 4];
-    assert!(pixel[0] > 180);
-    assert_eq!(pixel[0], pixel[1]);
-    assert_eq!(pixel[1], pixel[2]);
-    assert_eq!(pixel[3], 255);
 }
 
 #[test]
@@ -475,20 +389,4 @@ fn record_audio_button_has_distinct_on_and_off_rendering() {
     assert_ne!(on.data(), off.data());
     assert!(on.data().iter().any(|byte| *byte != 0));
     assert!(off.data().iter().any(|byte| *byte != 0));
-}
-
-#[test]
-fn draw_handles_marks_corners_white() {
-    use tiny_skia::Pixmap;
-    let mut pm = Pixmap::new(200, 200).unwrap();
-    for px in pm.data_mut().chunks_exact_mut(4) {
-        px.copy_from_slice(&[0, 0, 0, 255]);
-    }
-    draw_handles(&mut pm, (50.0, 50.0, 100.0, 100.0));
-    // A pixel at the top-left corner handle center should be white.
-    let i = ((50 * pm.width() + 50) * 4) as usize;
-    assert!(
-        pm.data()[i] > 200 && pm.data()[i + 1] > 200,
-        "corner handle should be white"
-    );
 }

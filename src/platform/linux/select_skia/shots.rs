@@ -61,7 +61,7 @@ fn shots() -> Vec<(&'static str, (u32, u32), Scene)> {
     out.push(("noclip-off", (1920, 1080), off.clone()));
     off.hovered = Some(1);
     out.push(("noclip-hover", (1920, 1080), off));
-    out.push(("grid", (400, 300), scene((60.0, 120.0, 200.0, 120.0), true)));
+    out.push(("grid", (300, 300), scene((40.0, 160.0, 200.0, 100.0), true)));
     out.push((
         "column",
         (160, 240),
@@ -94,12 +94,26 @@ fn shots() -> Vec<(&'static str, (u32, u32), Scene)> {
 fn selector_shots() {
     let out = PathBuf::from(std::env::var_os("SEL_OUT").expect("SEL_OUT=dir"));
     std::fs::create_dir_all(&out).expect("SEL_OUT");
-    super::install_ui_font();
+    let chrome = render::Chrome::new(super::ui_fonts());
     for (name, (w, h), scene) in shots() {
         let base = render::base_pixmap_from_image(&backdrop(w, h), w, h);
         let mut overlay = render::CachedOverlay::new(&base);
         let frame = overlay.reset(&base, scene.selection);
-        paint(frame, &base, &scene);
-        save(frame, &out.join(format!("{name}.png")));
+        paint(frame, &base, &scene, &chrome);
+        save(&frame.pixmap, &out.join(format!("{name}.png")));
+    }
+    // The gates with the user's face.
+    for ((w, h), sel) in [
+        ((1920, 1080), (612.0, 300.0, 760.0, 430.0)),
+        ((300, 300), (40.0, 160.0, 200.0, 100.0)),
+        ((160, 240), (20.0, 180.0, 100.0, 40.0)),
+    ] {
+        for on in [true, false] {
+            let report = crate::selector::render::gates::measure(&chrome.fonts, (w, h), sel, on);
+            match crate::selector::render::gates::check(&report, on) {
+                Ok(line) => println!("gate geometry (user face, {w}x{h}, on {on}): {line}"),
+                Err(error) => panic!("{w}x{h} on {on}: {error}"),
+            }
+        }
     }
 }

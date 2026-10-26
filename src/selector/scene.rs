@@ -1,5 +1,6 @@
 //! Persistent selector frame and bounded damage history, independent of Wayland.
-use super::render;
+use super::render::{self, Chrome, toolbar};
+use boltsnap::ui::{Canvas, Rect};
 use std::collections::VecDeque;
 use tiny_skia::Pixmap;
 
@@ -59,22 +60,34 @@ fn selection(s: &Scene, w: u32, h: u32) -> Option<Region> {
     bounds((x as f64, y as f64, rw as f64, rh as f64), 0.0, w, h)
 }
 
+/// Where floating chrome may go: the monitor under the pointer, or all.
+fn area(s: &Scene, w: u32, h: u32) -> Rect {
+    let (x, y, w, h) = s.chrome_viewport.unwrap_or((0, 0, w, h));
+    Rect::new(x as f32, y as f32, w as f32, h as f32)
+}
+
 fn badge_bounds(
     s: &Scene,
     sel: (f32, f32, f32, f32),
     w: u32,
     h: u32,
-) -> Option<(f64, f64, f64, f64)> {
-    let (x, y, bw, bh) = render::badge_bounds(sel, w, h)?;
-    let Some((vx, vy, vw, vh)) = s.chrome_viewport else {
-        return Some((x, y, bw, bh));
-    };
-    Some((
-        x.clamp(vx as f64, (vx as f64 + vw as f64 - bw).max(vx as f64)),
-        y.clamp(vy as f64, (vy as f64 + vh as f64 - bh).max(vy as f64)),
-        bw,
-        bh,
-    ))
+    chrome: &Chrome,
+) -> Option<Rect> {
+    render::size_badge_rect(&chrome.fonts, sel, area(s, w, h))
+}
+
+fn toolbar(
+    s: &Scene,
+    sel: (f32, f32, f32, f32),
+    w: u32,
+    h: u32,
+    chrome: &Chrome,
+) -> Option<toolbar::Layout> {
+    toolbar::layout(sel, area(s, w, h), &chrome.toolbar)
+}
+
+fn wide(r: Rect) -> (f64, f64, f64, f64) {
+    (r.x as f64, r.y as f64, r.w as f64, r.h as f64)
 }
 
 fn loupe_position(s: &Scene, cursor: (f64, f64), w: u32, h: u32) -> (f64, f64) {
@@ -89,7 +102,7 @@ fn loupe_position(s: &Scene, cursor: (f64, f64), w: u32, h: u32) -> (f64, f64) {
     (lx + x as f64, ly + y as f64)
 }
 
-fn decorations(s: &Scene, w: u32, h: u32) -> Vec<Region> {
+fn decorations(s: &Scene, w: u32, h: u32, chrome: &Chrome) -> Vec<Region> {
     let mut regions = Vec::new();
     let mut add = |r, pad| {
         if let Some(r) = bounds(r, pad, w, h) {
@@ -110,12 +123,12 @@ fn decorations(s: &Scene, w: u32, h: u32) -> Vec<Region> {
             add(r, pad);
         }
         let panel = if s.record {
-            render::record_toolbar(sel, w, h).map(|t| t.bounds)
+            toolbar(s, sel, w, h, chrome).map(|t| t.bounds)
         } else {
-            badge_bounds(s, sel, w, h)
+            badge_bounds(s, sel, w, h, chrome)
         };
         if let Some(r) = panel {
-            add(r, 2.0);
+            add(wide(r), 2.0);
         }
     }
     if let Some(cursor) = s.magnifier {
@@ -152,31 +165,30 @@ fn compact(input: impl IntoIterator<Item = Region>, w: u32, h: u32) -> Vec<Regio
     out
 }
 
-pub fn paint(frame: &mut Pixmap, base: &Pixmap, scene: &Scene) {
+pub fn paint(frame: &mut Canvas, base: &Pixmap, scene: &Scene, chrome: &Chrome) {
     let (w, h) = (base.width(), base.height());
     if let Some(sel) = scene.selection {
-        render::draw_border(frame, sel);
+        render::draw_frame(&mut frame.pixmap, sel);
         if scene.editing {
-            render::draw_handles(frame, sel);
+            render::draw_grips(&mut frame.pixmap, sel);
         }
         if scene.record {
-            if let Some(toolbar) = render::record_toolbar(sel, w, h) {
-                render::draw_record_toolbar(frame, &toolbar, scene.toggles, scene.hovered);
+            if let Some(layout) = toolbar(scene, sel, w, h, chrome) {
+                let (clip, show_frame, audio) = scene.toggles;
+                let look = toolbar::Look::at_rest(clip, show_frame, audio, scene.hovered);
+                toolbar::draw(frame, &chrome.fonts, &layout, &look);
             }
-        } else if scene.chrome_viewport.is_none() {
-            render::draw_badge(frame, sel, w, h);
-        } else {
-            if let Some(bounds) = badge_bounds(scene, sel, w, h) {
-                render::draw_badge_at(frame, sel, bounds);
-            }
+        } else if let Some(rect) = badge_bounds(scene, sel, w, h, chrome) {
+            render::draw_size_badge(frame, &chrome.fonts, sel, rect);
         }
     }
     if let Some(cursor) = scene.magnifier {
-        if scene.chrome_viewport.is_none() {
-            render::draw_magnifier(frame, base, cursor, w, h);
-        } else {
-            render::draw_magnifier_at(frame, base, cursor, loupe_position(scene, cursor, w, h));
-        }
+        render::draw_magnifier_at(
+            &mut frame.pixmap,
+            base,
+            cursor,
+            loupe_position(scene, cursor, w, h),
+        );
     }
 }
 
@@ -196,14 +208,14 @@ impl SceneCache {
             history: VecDeque::new(),
         }
     }
-    pub fn update(&mut self, base: &Pixmap, scene: Scene) -> bool {
+    pub fn update(&mut self, base: &Pixmap, scene: Scene, chrome: &Chrome) -> bool {
         if self.previous.as_ref() == Some(&scene) {
             return false;
         }
         let (w, h) = (base.width(), base.height());
         let regions = if let Some(old) = &self.previous {
-            let mut regions = decorations(old, w, h);
-            regions.extend(decorations(&scene, w, h));
+            let mut regions = decorations(old, w, h, chrome);
+            regions.extend(decorations(&scene, w, h, chrome));
             match (selection(old, w, h), selection(&scene, w, h)) {
                 (Some(a), Some(b)) => {
                     regions.extend(subtract(a, b));
@@ -217,7 +229,7 @@ impl SceneCache {
             vec![(0, 0, w, h)]
         };
         let frame = self.overlay.reset_regions(base, scene.selection, &regions);
-        paint(frame, base, &scene);
+        paint(frame, base, &scene, chrome);
         self.generation += 1;
         self.history.push_back((self.generation, regions));
         if self.history.len() > 8 {
@@ -296,6 +308,10 @@ impl SceneCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn chrome() -> Chrome {
+        Chrome::new(boltsnap::ui::text::Fonts::fallback())
+    }
     #[test]
     fn regional_frames_and_rotating_buffers_match_full_render() {
         for alpha in [0, 127, 255] {
@@ -309,6 +325,7 @@ mod tests {
                     alpha,
                 ]);
             }
+            let chrome = chrome();
             let mut cache = SceneCache::new(&base);
             let mut reference = render::CachedOverlay::new(&base);
             let mut buffers: Vec<_> = (0..3).map(|_| (None, vec![0; 640 * 360 * 4])).collect();
@@ -329,15 +346,15 @@ mod tests {
                     hovered: Some(i % 4),
                     magnifier: (i % 5 == 3).then_some(((seed % 640) as f64, (seed % 360) as f64)),
                 };
-                assert!(cache.update(&base, scene.clone()));
+                assert!(cache.update(&base, scene.clone(), &chrome));
                 let expected = reference.reset(&base, scene.selection);
-                paint(expected, &base, &scene);
+                paint(expected, &base, &scene, &chrome);
                 assert_eq!(
                     cache.frame().data(),
-                    expected.data(),
+                    expected.pixmap.data(),
                     "frame {i}, alpha {alpha}"
                 );
-                assert!(!cache.update(&base, scene));
+                assert!(!cache.update(&base, scene, &chrome));
                 // Coalesce several states while all buffers are unavailable.
                 if i % 7 < 2 {
                     continue;
@@ -351,7 +368,7 @@ mod tests {
                 cache.copy_regions(&mut slot.1, &damage);
                 slot.0 = Some(cache.generation());
                 let mut full = vec![0; slot.1.len()];
-                render::pixmap_to_argb8888(expected, &mut full);
+                render::pixmap_to_argb8888(&expected.pixmap, &mut full);
                 assert_eq!(slot.1, full, "buffer {i}, alpha {alpha}");
             }
         }
@@ -360,6 +377,7 @@ mod tests {
     fn independent_monitor_buffers_match_desktop_through_damage_history() {
         let mut base = Pixmap::new(640, 360).unwrap();
         base.fill(tiny_skia::Color::from_rgba8(17, 61, 203, 255));
+        let chrome = chrome();
         let mut cache = SceneCache::new(&base);
         let views = [(0, 0, 320, 280), (320, 80, 320, 280)];
         let mut slots = views.map(|(_, _, w, h)| (None, vec![0; (w * h * 4) as usize]));
@@ -375,6 +393,7 @@ mod tests {
                     hovered: None,
                     magnifier: (i % 4 == 0).then_some((310., 200.)),
                 },
+                &chrome,
             );
             for (v, &(x, y, w, h)) in views.iter().enumerate() {
                 // One output misses more than the eight-frame damage history.
@@ -408,7 +427,8 @@ mod tests {
             hovered: None,
             magnifier: None,
         };
-        let (x, y, w, h) = badge_bounds(&scene, scene.selection.unwrap(), 640, 360).unwrap();
+        let Rect { x, y, w, h } =
+            badge_bounds(&scene, scene.selection.unwrap(), 640, 360, &chrome()).unwrap();
         assert!(x >= 320. && y >= 80. && x + w <= 640. && y + h <= 360.);
         let (x, y) = loupe_position(&scene, (630., 350.), 640, 360);
         assert!(x >= 320. && y >= 80. && x + 120. <= 640. && y + 120. <= 360.);
@@ -417,6 +437,7 @@ mod tests {
     #[test]
     fn small_drag_does_not_damage_selection_interior() {
         let base = Pixmap::new(3840, 2160).unwrap();
+        let chrome = chrome();
         let mut cache = SceneCache::new(&base);
         let mut scene = Scene {
             chrome_viewport: None,
@@ -427,10 +448,10 @@ mod tests {
             hovered: None,
             magnifier: None,
         };
-        cache.update(&base, scene.clone());
+        cache.update(&base, scene.clone(), &chrome);
         let generation = cache.generation();
         scene.selection.as_mut().unwrap().0 += 1.;
-        cache.update(&base, scene);
+        cache.update(&base, scene, &chrome);
         let area: u64 = cache
             .damage_since(Some(generation))
             .iter()

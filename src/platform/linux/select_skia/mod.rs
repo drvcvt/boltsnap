@@ -1,6 +1,7 @@
 //! Wayland screenshot and recording selector using SCTK layer surfaces and tiny-skia.
 
 use crate::selector::{desktop, edit, render, scene::SceneCache};
+use boltsnap::ui::text::Fonts;
 
 use std::thread;
 
@@ -36,17 +37,16 @@ mod present;
 use input::{Interaction, MIN_SEL, contains};
 use present::OutputView;
 
-/// Draw the overlay's labels in the desktop UI font, the same one the shelf
-/// resolves, so selector and shelf read as one surface set. Idempotent.
-pub fn install_ui_font() {
+/// The desktop UI font at the app's two weights, as the settings window and
+/// the shelf resolve it, so the selector reads as part of the same product.
+pub fn ui_fonts() -> Fonts {
     let _timing = super::timing::Span::new("font");
     let family = crate::config::Config::load().ui_font;
-    // The bar sets its labels in Medium and its active modules in DemiBold.
     let (medium, demibold) = crate::platform::linux::shelf::font::load_ui_font_weights(
         family.as_deref(),
         (500.0, 600.0),
     );
-    render::set_ui_font(medium, demibold);
+    Fonts::new(medium, demibold)
 }
 
 /// Frozen image and the output layout it was captured from. The selector must
@@ -132,7 +132,7 @@ fn run_selector(
     capture_handle: Option<thread::JoinHandle<Result<CapturedDesktop, String>>>,
     replay: Option<super::replay::PreviewTarget>,
 ) -> DynResult<Selector> {
-    let font_handle = thread::spawn(install_ui_font);
+    let font_handle = thread::spawn(ui_fonts);
     let timing = super::timing::Span::new("selector_setup");
 
     let conn = Connection::connect_to_env()?;
@@ -160,6 +160,8 @@ fn run_selector(
         image: None,
         base: None,
         overlay: None,
+        // The embedded face until the desktop's is loaded (before any frame).
+        chrome: render::Chrome::new(Fonts::fallback()),
         surf_w: 0,
         surf_h: 0,
         configured: false,
@@ -251,7 +253,7 @@ fn run_selector(
             })
             .collect::<Result<Vec<_>, &str>>()?
     };
-    font_handle.join().map_err(|_| "font worker panicked")?;
+    sel.chrome = render::Chrome::new(font_handle.join().map_err(|_| "font worker panicked")?);
     for (output, viewport) in outputs {
         let surface = sel.compositor.create_surface(&qh);
         let layer = sel.layer_shell.create_layer_surface(
@@ -353,6 +355,8 @@ struct Selector {
     /// Display base layer, sized to the surface (built on first configure).
     base: Option<tiny_skia::Pixmap>,
     overlay: Option<SceneCache>,
+    /// The face and the toolbar's measured widths.
+    chrome: render::Chrome,
     surf_w: u32,
     surf_h: u32,
     configured: bool,

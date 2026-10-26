@@ -26,7 +26,6 @@ pub(super) enum RecordControlHit {
     Audio,
     Frame,
     Record,
-    Background,
 }
 
 pub(super) fn contains(rect: (f64, f64, f64, f64), point: (f64, f64)) -> bool {
@@ -37,22 +36,20 @@ pub(super) fn record_control_hit(
     sel: (f32, f32, f32, f32),
     surf_w: u32,
     surf_h: u32,
+    chrome: &render::Chrome,
     point: (f64, f64),
 ) -> Option<RecordControlHit> {
-    let toolbar = render::record_toolbar(sel, surf_w, surf_h)?;
-    toolbar
-        .controls
-        .iter()
-        .position(|&rect| contains(rect, point))
-        .map(|i| {
-            [
-                RecordControlHit::Record,
-                RecordControlHit::Clip,
-                RecordControlHit::Frame,
-                RecordControlHit::Audio,
-            ][i]
-        })
-        .or_else(|| contains(toolbar.bounds, point).then_some(RecordControlHit::Background))
+    let area = boltsnap::ui::Rect::new(0.0, 0.0, surf_w as f32, surf_h as f32);
+    let toolbar = render::toolbar::layout(sel, area, &chrome.toolbar)?;
+    let point = (point.0 as f32, point.1 as f32);
+    toolbar.hit(point).map(|i| {
+        [
+            RecordControlHit::Record,
+            RecordControlHit::Clip,
+            RecordControlHit::Frame,
+            RecordControlHit::Audio,
+        ][i]
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -156,8 +153,19 @@ impl PointerHandler for Selector {
                 && let Mode::Editing { rect } = self.mode
             {
                 let sel = (rect.x as f32, rect.y as f32, rect.w as f32, rect.h as f32);
-                redraw |= record_control_hit(sel, self.surf_w, self.surf_h, previous_cursor)
-                    != record_control_hit(sel, self.surf_w, self.surf_h, self.cursor);
+                redraw |= record_control_hit(
+                    sel,
+                    self.surf_w,
+                    self.surf_h,
+                    &self.chrome,
+                    previous_cursor,
+                ) != record_control_hit(
+                    sel,
+                    self.surf_w,
+                    self.surf_h,
+                    &self.chrome,
+                    self.cursor,
+                );
             }
             match ev.kind {
                 PointerEventKind::Press { button, .. } if button == BTN_LEFT => {
@@ -167,7 +175,13 @@ impl PointerHandler for Selector {
                             if self.record_mode {
                                 let sel =
                                     (rect.x as f32, rect.y as f32, rect.w as f32, rect.h as f32);
-                                match record_control_hit(sel, self.surf_w, self.surf_h, (x, y)) {
+                                match record_control_hit(
+                                    sel,
+                                    self.surf_w,
+                                    self.surf_h,
+                                    &self.chrome,
+                                    (x, y),
+                                ) {
                                     Some(RecordControlHit::Clip) => {
                                         if self.frozen.is_some() {
                                             self.result_clip = true;
@@ -204,7 +218,6 @@ impl PointerHandler for Selector {
                                         self.confirm_rect(rect);
                                         return;
                                     }
-                                    Some(RecordControlHit::Background) => return,
                                     None => {}
                                 }
                             }
@@ -405,26 +418,41 @@ mod tests {
     use super::*;
 
     #[test]
-    fn audio_control_hit_does_not_confirm() {
+    fn audio_control_hit_does_not_confirm_and_the_toolbar_has_no_dead_zone() {
+        let chrome = render::Chrome::new(boltsnap::ui::text::Fonts::fallback());
         let sel = (80.0, 80.0, 200.0, 120.0);
-        let toolbar = render::record_toolbar(sel, 400, 300).unwrap();
+        let area = boltsnap::ui::Rect::new(0.0, 0.0, 400.0, 300.0);
+        let toolbar = render::toolbar::layout(sel, area, &chrome.toolbar).unwrap();
+        let hit = |x: f32, y: f32| record_control_hit(sel, 400, 300, &chrome, (x as f64, y as f64));
         let audio = toolbar.controls[3];
-        let center = (audio.0 + audio.2 / 2.0, audio.1 + audio.3 / 2.0);
         assert_eq!(
-            record_control_hit(sel, 400, 300, center),
+            hit(audio.x + audio.w / 2.0, audio.y + audio.h / 2.0),
             Some(RecordControlHit::Audio)
         );
+        // The padding above Record and the gap after it still belong to it.
+        let (record, bounds) = (toolbar.controls[0], toolbar.bounds);
         assert_eq!(
-            record_control_hit(
-                sel,
-                400,
-                300,
-                (
-                    toolbar.bounds.0 + toolbar.bounds.2 / 2.0,
-                    (toolbar.bounds.1 + toolbar.controls[0].1) / 2.0,
-                )
-            ),
-            Some(RecordControlHit::Background)
+            hit(record.x + 2.0, bounds.y),
+            Some(RecordControlHit::Record)
         );
+        assert_eq!(
+            hit(bounds.x, record.y + 2.0),
+            Some(RecordControlHit::Record)
+        );
+        assert_eq!(
+            hit(record.right() + 1.0, record.y + 2.0),
+            Some(RecordControlHit::Record)
+        );
+        // Every point of the toolbar is some control's, none outside it.
+        let mut y = bounds.y;
+        while y < bounds.bottom() {
+            let mut x = bounds.x;
+            while x < bounds.right() {
+                assert!(hit(x, y).is_some(), "dead zone at {x},{y}");
+                x += 0.5;
+            }
+            y += 0.5;
+        }
+        assert_eq!(hit(bounds.x - 1.0, bounds.y), None);
     }
 }
