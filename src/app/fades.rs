@@ -1,5 +1,5 @@
-//! Hover, press and focus of every target, each a `QUICK` spring, so no
-//! state switches hard.
+//! Hover, press and focus of every target, and which navigation entry is
+//! the current page, each a `QUICK` spring, so no state switches hard.
 
 use std::time::Instant;
 
@@ -12,6 +12,8 @@ pub enum Channel {
     Hover,
     Press,
     Focus,
+    /// A navigation entry's page is the one shown.
+    Current,
 }
 
 #[derive(Default)]
@@ -34,6 +36,18 @@ impl Fades {
         // What has faded out completely is the same as never lit.
         self.0
             .retain(|(_, _, spring)| !(spring.done(now) && spring.target() == 0.0));
+    }
+
+    /// At `to` without fading, for the state a window opens with.
+    pub fn set(&mut self, target: Target, channel: Channel, to: f32, now: Instant) {
+        self.to(target, channel, to, now);
+        if let Some((_, _, spring)) = self
+            .0
+            .iter_mut()
+            .find(|(t, c, _)| *t == target && *c == channel)
+        {
+            spring.set(to, now);
+        }
     }
 
     pub fn value(&self, target: Target, channel: Channel, now: Instant) -> f32 {

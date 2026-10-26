@@ -39,11 +39,33 @@ fn advances<'a>(
 pub struct Fonts {
     medium: FontVec,
     demibold: FontVec,
+    /// Capital height per unit of `PxScale`, for each face.
+    caps: [f32; 2],
+}
+
+/// How tall `H` is against the scale ab_glyph sizes by (ascent − descent).
+fn cap_ratio(face: &FontVec) -> f32 {
+    face.outline(face.glyph_id('H'))
+        .map(|outline| outline.bounds.height().abs() / face.height_unscaled())
+        .filter(|ratio| *ratio > 0.0)
+        .unwrap_or(0.7)
 }
 
 impl Fonts {
     pub fn new(medium: FontVec, demibold: FontVec) -> Self {
-        Self { medium, demibold }
+        let caps = [cap_ratio(&medium), cap_ratio(&demibold)];
+        Self {
+            medium,
+            demibold,
+            caps,
+        }
+    }
+
+    /// The size `style` draws at: the one that makes its capitals exactly
+    /// `style.cap()` pixels tall, so with a whole-pixel baseline their top
+    /// and bottom edges fall on pixel rows (a size hint for unhinted faces).
+    pub fn size(&self, style: TextStyle) -> f32 {
+        style.cap() / self.caps[usize::from(style.strong())]
     }
 
     /// The embedded subset, for tests and when no font loads.
@@ -63,7 +85,7 @@ impl Fonts {
     /// Advance width of `text`.
     pub fn width(&self, style: TextStyle, text: &str) -> f32 {
         let face = self.face(style);
-        let scaled = face.as_scaled(PxScale::from(style.px()));
+        let scaled = face.as_scaled(PxScale::from(self.size(style)));
         advances(face, &scaled, text)
             .map(|(_, id, kern)| kern + scaled.h_advance(id))
             .sum()
@@ -72,10 +94,10 @@ impl Fonts {
     /// Height of a capital (an `H` sits on the baseline).
     pub fn cap_height(&self, style: TextStyle) -> f32 {
         let face = self.face(style);
-        let scaled = face.as_scaled(PxScale::from(style.px()));
+        let scaled = face.as_scaled(PxScale::from(self.size(style)));
         face.outline(face.glyph_id('H'))
             .map(|outline| outline.bounds.height().abs() * scaled.v_scale_factor())
-            .unwrap_or(style.px() * 0.7)
+            .unwrap_or(style.cap())
     }
 
     /// The baseline that puts the capitals' middle on the middle of
@@ -152,7 +174,7 @@ impl Fonts {
     /// The x of every caret position in `text`, as (byte index, x).
     pub fn carets(&self, style: TextStyle, text: &str) -> Vec<(usize, f32)> {
         let face = self.face(style);
-        let scaled = face.as_scaled(PxScale::from(style.px()));
+        let scaled = face.as_scaled(PxScale::from(self.size(style)));
         let mut x = 0.0;
         let mut carets = Vec::with_capacity(text.len() + 1);
         for (index, id, kern) in advances(face, &scaled, text) {
@@ -191,7 +213,7 @@ impl Fonts {
         clip: Rect,
     ) {
         let face = self.face(style);
-        let scale = PxScale::from(style.px() * canvas.scale);
+        let scale = PxScale::from(self.size(style) * canvas.scale);
         let scaled = face.as_scaled(scale);
         let width = canvas.pixmap.width() as i32;
         let device = |v: f32| (v * canvas.scale).round() as i32;
@@ -199,8 +221,10 @@ impl Fonts {
         let right = device(clip.right()).min(width);
         let bottom = device(clip.bottom()).min(canvas.pixmap.height() as i32);
         let data = canvas.pixmap.data_mut();
-        let mut caret = x * canvas.scale;
-        let baseline = baseline * canvas.scale;
+        // Start and baseline on whole device pixels: a fractional baseline
+        // smears every horizontal edge over two rows.
+        let mut caret = (x * canvas.scale).round();
+        let baseline = (baseline * canvas.scale).round();
         for (_, id, kern) in advances(face, &scaled, text) {
             caret += kern;
             let glyph = id.with_scale_and_position(scale, point(caret, baseline));

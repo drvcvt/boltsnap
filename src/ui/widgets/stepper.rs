@@ -4,7 +4,7 @@ use super::{Look, Outcome, Value, Widget, icon_box, light, surface};
 use crate::ui::icons::Icon;
 use crate::ui::motion::Spring;
 use crate::ui::text::Fonts;
-use crate::ui::theme::{self, CTL_H, GAP_S, ICON, RADIUS, TextStyle};
+use crate::ui::theme::{self, CTL_H, GAP_S, ICON, QUICK, RADIUS, TextStyle};
 use crate::ui::{Canvas, Key, Mods, Rect};
 
 /// Gap around a button's hover surface, as in a segment (concentric).
@@ -16,21 +16,25 @@ pub struct Stepper {
     value: i64,
     min: i64,
     max: i64,
-    /// `−` and `+`: under the pointer, and held down.
+    /// `−` and `+`: under the pointer, held down, and away from their bound.
     lit: [Spring; 2],
     down: [Spring; 2],
+    live: [Spring; 2],
 }
 
 impl Stepper {
     pub fn new(value: i64, min: i64, max: i64, now: Instant) -> Self {
         let off = Spring::settled(0.0, now);
-        Self {
+        let mut stepper = Self {
             value: value.clamp(min, max),
             min,
             max,
             lit: [off; 2],
             down: [off; 2],
-        }
+            live: [off; 2],
+        };
+        stepper.live = stepper.lives().map(|live| Spring::settled(live, now));
+        stepper
     }
 
     fn value_width(&self, fonts: &Fonts) -> f32 {
@@ -41,11 +45,22 @@ impl Stepper {
             + 2.0 * GAP_S
     }
 
-    fn set(&mut self, value: i64) -> Outcome {
+    fn set(&mut self, value: i64, now: Instant) -> Outcome {
         let value = value.clamp(self.min, self.max);
         let changed = value != self.value;
         self.value = value;
+        let [minus, plus] = self.lives();
+        self.live[0].retarget(minus, QUICK, now);
+        self.live[1].retarget(plus, QUICK, now);
         Outcome::changed_if(changed)
+    }
+
+    /// 1 for a button that still moves the value, 0 at its bound.
+    fn lives(&self) -> [f32; 2] {
+        [
+            f32::from(u8::from(self.value > self.min)),
+            f32::from(u8::from(self.value < self.max)),
+        ]
     }
 
     /// The `−` and `+` squares at both ends.
@@ -74,17 +89,19 @@ impl Widget for Stepper {
             },
         );
         let (minus, plus) = Self::buttons(rect);
-        for (index, button, icon, live) in [
-            (0, minus, Icon::Minus, self.value > self.min),
-            (1, plus, Icon::Plus, self.value < self.max),
-        ] {
-            let live = live && look.enabled;
-            let lit = self.lit[index].value(now);
-            if live && lit > 0.0 {
+        for (index, button, icon) in [(0, minus, Icon::Minus), (1, plus, Icon::Plus)] {
+            // Reaching its bound, a button dims and its hover goes with it.
+            let live = if look.enabled {
+                self.live[index].value(now).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let lit = self.lit[index].value(now) * live;
+            if lit > 0.0 {
                 let fill = theme::mix(theme::HOVER, theme::SELECTED, self.down[index].value(now));
                 canvas.fill(button.inset(INSET), RADIUS - INSET, fill, lit);
             }
-            let color = if live { theme::TEXT } else { theme::DIM };
+            let color = theme::mix(theme::DIM, theme::TEXT, live);
             let x = button.x + (button.w - ICON) / 2.0;
             icon.draw(canvas, icon_box(button, x, ICON), color, 1.0);
         }
@@ -115,7 +132,7 @@ impl Widget for Stepper {
             return Outcome::HANDLED;
         };
         light(&mut self.down, |i| i == index, now);
-        self.set(self.value + by)
+        self.set(self.value + by, now)
     }
 
     fn release(&mut self, now: Instant) {
@@ -132,13 +149,14 @@ impl Widget for Stepper {
         self.lit
             .iter()
             .chain(&self.down)
+            .chain(&self.live)
             .any(|spring| !spring.done(now))
     }
 
-    fn key(&mut self, key: Key, _: Mods, _: &Fonts, _: Instant) -> Outcome {
+    fn key(&mut self, key: Key, _: Mods, _: &Fonts, now: Instant) -> Outcome {
         match key {
-            Key::Left => self.set(self.value - 1),
-            Key::Right => self.set(self.value + 1),
+            Key::Left => self.set(self.value - 1, now),
+            Key::Right => self.set(self.value + 1, now),
             _ => Outcome::IGNORED,
         }
     }

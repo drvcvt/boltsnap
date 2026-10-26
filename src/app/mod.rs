@@ -12,17 +12,19 @@ pub mod pages;
 #[cfg(test)]
 mod gates;
 #[cfg(test)]
+mod shape_tests;
+#[cfg(test)]
 mod tests;
 
 use std::time::Instant;
 
 pub use fades::Channel;
-pub use layout::{Layout, RowParts};
+pub use layout::{AT_REST, Layout, RowParts};
 
 use crate::ui::icons::Icon;
 use crate::ui::motion::{Scroll, Spring};
 use crate::ui::text::Fonts;
-use crate::ui::theme::{GAP_S, GLIDE, PAGE_RISE, Rgb, SNAP};
+use crate::ui::theme::{GAP_S, GLIDE, PAGE_RISE, QUICK, Rgb, SNAP};
 use crate::ui::widgets::{self, Outcome, Widget};
 use crate::ui::{Effect, Input, Key, Mods, Rect};
 
@@ -69,6 +71,12 @@ pub struct App {
     nav: Spring,
     /// 0 to 1 while the current page comes in.
     page_in: Spring,
+    /// 0 with icons only, 1 with names (`layout::reshape`).
+    nav_open: Spring,
+    /// Per block of the current page: 0 beside its name, 1 stacked.
+    stacked: Vec<Spring>,
+    /// 0 to 1: the scroll thumb, there while the page is longer than the window.
+    thumb: Spring,
     size: (f32, f32),
     scroll: Scroll,
     focus: Option<Target>,
@@ -77,7 +85,8 @@ pub struct App {
     capture: Option<Target>,
     hover: Option<Target>,
     fades: fades::Fades,
-    /// Spatial motion off: a page comes in without rising.
+    /// Spatial motion off: a page comes in without rising, the navigation
+    /// and rows change shape at once.
     pub reduced_motion: bool,
 }
 
@@ -89,6 +98,16 @@ impl App {
             current: 0,
             nav: Spring::settled(0.0, now),
             page_in: Spring::settled(1.0, now),
+            nav_open: Spring::settled(
+                if size.0 < crate::ui::theme::NAV_NARROW_BELOW {
+                    0.0
+                } else {
+                    1.0
+                },
+                now,
+            ),
+            stacked: Vec::new(),
+            thumb: Spring::settled(0.0, now),
             size,
             scroll: Scroll::new(now),
             focus: None,
@@ -98,7 +117,9 @@ impl App {
             fades: fades::Fades::default(),
             reduced_motion: false,
         };
+        app.fades.set(Target::Nav(0), Channel::Current, 1.0, now);
         app.resize(size, now);
+        app.thumb.set(app.thumb.target(), now);
         app
     }
 
@@ -127,12 +148,20 @@ impl App {
         Some(self.row(block)?.control.value())
     }
 
-    /// A resize relayouts at once; it is on the no-animation list because it
-    /// follows the compositor.
+    /// The layout follows the window at once (it follows the compositor);
+    /// what crosses a threshold moves on springs (`layout::reshape`).
     pub fn resize(&mut self, size: (f32, f32), now: Instant) {
         self.size = size;
-        let height = self.layout_at(0.0, 0.0).height;
+        self.reshape(now);
+        let height = self.layout_at(0.0, 0.0, now + AT_REST).height;
         self.scroll.set_max(height - size.1, now);
+        let thumb = if self.scroll.max() > 0.0 { 1.0 } else { 0.0 };
+        self.thumb.retarget(thumb, QUICK, now);
+    }
+
+    /// 0 to 1: how much of the scroll thumb shows.
+    pub fn thumb_alpha(&self, now: Instant) -> f32 {
+        self.thumb.value(now).clamp(0.0, 1.0)
     }
 
     /// The page by its navigation name, case-insensitive.
@@ -155,7 +184,13 @@ impl App {
         self.blur(now);
         self.unhover(now);
         self.fades.forget_controls();
+        self.fades
+            .to(Target::Nav(self.current), Channel::Current, 0.0, now);
+        self.fades
+            .to(Target::Nav(index), Channel::Current, 1.0, now);
         self.current = index;
+        // The new page's rows start where they belong.
+        self.stacked.clear();
         self.nav.retarget(index as f32, SNAP, now);
         self.page_in.set(0.0, now);
         self.page_in.retarget(1.0, GLIDE, now);
@@ -198,9 +233,9 @@ impl App {
     }
 
     fn target_at(&self, (x, y): (f32, f32), now: Instant) -> Option<Target> {
-        if x < self.nav_w() {
+        if x < self.nav_w(now) {
             return (0..self.pages.len())
-                .find(|&index| self.nav_slot(index).contains(x, y))
+                .find(|&index| self.nav_slot(index, now).contains(x, y))
                 .map(Target::Nav);
         }
         let rects = self.block_rects(now);
@@ -309,7 +344,7 @@ impl App {
         };
         let outcome = self.set_focus(Some(order[next]), now);
         if let Target::Control(block) = order[next] {
-            let rect = self.layout_at(0.0, 0.0).blocks[block];
+            let rect = self.layout_at(0.0, 0.0, now + AT_REST).blocks[block];
             self.scroll
                 .reveal(rect.y - GAP_S, rect.bottom() + GAP_S, self.size.1, now);
         }
@@ -465,6 +500,9 @@ impl App {
     pub fn animating(&self, now: Instant) -> bool {
         !self.nav.done(now)
             || !self.page_in.done(now)
+            || !self.nav_open.done(now)
+            || !self.thumb.done(now)
+            || self.stacked.iter().any(|spring| !spring.done(now))
             || self.scroll.moving(now)
             || self.fades.moving(now)
             || self.page().blocks.iter().any(|block| match block {

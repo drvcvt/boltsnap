@@ -45,7 +45,8 @@ fn gate_overflow_nothing_leaves_its_group_or_the_window() {
         let size = (w, 900.0);
         every_page(size, now, |app, name| {
             let layout = app.layout(now + SETTLED);
-            let window = Rect::new(app.nav_w(), 0.0, w - app.nav_w(), f32::MAX);
+            let nav_w = app.nav_w(now + SETTLED);
+            let window = Rect::new(nav_w, 0.0, w - nav_w, f32::MAX);
             assert!(inside(layout.title, window), "{name} title at {w}");
             for (index, block) in app.page().blocks.iter().enumerate() {
                 let rect = layout.blocks[index];

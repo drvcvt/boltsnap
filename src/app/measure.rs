@@ -96,7 +96,7 @@ pub fn cap_offsets(fonts: Fonts) -> Vec<(&'static str, f32)> {
     let layout = app.layout(settled);
     let mut out = Vec::new();
     // The navigation entry, text only (the icon sits left of it).
-    let nav = app.nav_rect(0);
+    let nav = app.nav_rect(0, settled);
     let text = Rect::new(nav.x + 40.0, nav.y, nav.w - 40.0, nav.h);
     out.extend(offset(&canvas, text, nav, theme::RAISE).map(|o| ("navigation", o)));
     let banner = layout.blocks[0].inset(theme::GAP_M);

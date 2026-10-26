@@ -86,18 +86,38 @@ impl Segment {
         Outcome::CHANGED
     }
 
-    /// Equal parts when the widest fits that way; otherwise each part gets
-    /// its content plus an equal share of what is left, so a long label
-    /// takes room from short ones before anything is cut.
-    fn part_rects(&self, fonts: &Fonts, rect: Rect) -> Vec<Rect> {
-        let n = self.parts.len() as f32;
+    /// Equal parts, except that a part whose content does not fit its share
+    /// keeps its content plus `GAP_M` on each side and the others share the
+    /// rest. Tighter than that, every part gets its content and an equal
+    /// share of what is left; tighter still, the contents shrink alike. Each
+    /// width changes steadily with `rect.w`, so a resize never jumps.
+    pub(crate) fn part_rects(&self, fonts: &Fonts, rect: Rect) -> Vec<Rect> {
+        let n = self.parts.len();
         let contents: Vec<f32> = self.parts.iter().map(|p| p.content_width(fonts)).collect();
-        let widest = contents.iter().copied().fold(0.0, f32::max);
-        let spare = (rect.w - contents.iter().sum::<f32>()) / n;
-        let widths: Vec<f32> = if rect.w / n >= widest + 2.0 * GAP_M || spare < 0.0 {
-            vec![rect.w / n; self.parts.len()]
-        } else {
+        let floors: Vec<f32> = contents.iter().map(|c| c + 2.0 * GAP_M).collect();
+        let total: f32 = contents.iter().sum();
+        let widths: Vec<f32> = if rect.w >= floors.iter().sum::<f32>() {
+            let mut kept = vec![false; n];
+            loop {
+                let free = rect.w - (0..n).filter(|&i| kept[i]).map(|i| floors[i]).sum::<f32>();
+                let sharing = kept.iter().filter(|k| !**k).count();
+                let share = free / sharing.max(1) as f32;
+                let over: Vec<usize> = (0..n).filter(|&i| !kept[i] && floors[i] > share).collect();
+                if over.is_empty() || sharing == 0 {
+                    break (0..n)
+                        .map(|i| if kept[i] { floors[i] } else { share })
+                        .collect();
+                }
+                for i in over {
+                    kept[i] = true;
+                }
+            }
+        } else if rect.w >= total {
+            let spare = (rect.w - total) / n as f32;
             contents.iter().map(|content| content + spare).collect()
+        } else {
+            let scale = rect.w / total.max(1.0);
+            contents.iter().map(|content| content * scale).collect()
         };
         let mut x = rect.x;
         widths
@@ -112,8 +132,9 @@ impl Segment {
 }
 
 impl Widget for Segment {
-    /// Equal parts if they fit, else each part as wide as its content needs,
-    /// so a row stacks only when even that does not fit.
+    /// Equal parts if they fit, else the room down to each part's content
+    /// with `GAP_M` around it, so a row stacks only when even that does not
+    /// fit.
     fn width(&self, fonts: &Fonts, room: f32) -> f32 {
         let equal = self.part_width(fonts) * self.parts.len() as f32;
         let snug: f32 = self
@@ -121,7 +142,9 @@ impl Widget for Segment {
             .iter()
             .map(|part| (part.content_width(fonts) + 2.0 * GAP_M).ceil())
             .sum();
-        if equal <= room { equal } else { snug }
+        // Between the two the segment takes the room, so its width follows
+        // the window instead of jumping at a threshold.
+        room.clamp(snug.min(equal), equal)
     }
 
     fn stretches(&self) -> bool {
@@ -150,12 +173,16 @@ impl Widget for Segment {
         canvas.fill(chosen, RADIUS - INSET, chosen_fill, 1.0);
         for (index, part) in self.parts.iter().enumerate() {
             let cell = cells[index];
+            // A part brightens as the chosen surface arrives under it.
+            let under = (1.0 - (at - index as f32).abs()).clamp(0.0, 1.0);
             let color = if !look.enabled {
                 theme::DIM
-            } else if index == self.chosen {
-                theme::TEXT
             } else {
-                theme::mix(theme::SUB, theme::TEXT, self.lit[index].value(now))
+                theme::mix(
+                    theme::SUB,
+                    theme::TEXT,
+                    under.max(self.lit[index].value(now)),
+                )
             };
             // A label that still does not fit is cut, never drawn past its part.
             let room = cell.w - 2.0 * GAP_S;

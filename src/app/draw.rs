@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use super::{App, Block, Channel, Target};
 use crate::ui::theme::{
-    self, GAP_S, GAP_XS, ICON, ICON_ALONE, PANEL_RADIUS, RADIUS, THUMB_W, TextStyle,
+    self, GAP_S, GAP_XS, ICON, ICON_ALONE, NAV_W, PANEL_RADIUS, RADIUS, THUMB_W, TextStyle,
 };
 use crate::ui::widgets::{self, Look};
 use crate::ui::{Canvas, Rect};
@@ -16,10 +16,11 @@ impl App {
     pub fn draw(&self, canvas: &mut Canvas, now: Instant) {
         canvas.clear(theme::WINDOW);
         self.draw_page(canvas, now);
+        self.draw_thumb(canvas, now);
         // A new page comes in from the window's colour.
         let alpha = self.page_alpha(now);
         if alpha < 1.0 {
-            let x = self.nav_w();
+            let x = self.nav_w(now);
             canvas.fill(
                 Rect::new(x, 0.0, self.size.0 - x, self.size.1),
                 0.0,
@@ -27,7 +28,6 @@ impl App {
                 1.0 - alpha,
             );
         }
-        self.draw_thumb(canvas, now);
         self.draw_nav(canvas, now);
         if let Some((block, list)) = self.visible_overlay(now) {
             let row = self.row(block).expect("overlay belongs to a row");
@@ -57,13 +57,15 @@ impl App {
         }
     }
 
-    /// Where the page is in its length, on the window's right edge; only
-    /// when it scrolls.
+    /// Where the page is in its length, on the window's right edge; it
+    /// fades in when the page gets longer than the window and out again.
     fn draw_thumb(&self, canvas: &mut Canvas, now: Instant) {
-        let max = self.scroll.max();
-        if max <= 0.0 {
+        let alpha = self.thumb_alpha(now);
+        if alpha <= 0.0 {
             return;
         }
+        // Fading out, a page that fits shows the whole track.
+        let max = self.scroll.max().max(0.0);
         let track = Rect::new(
             self.size.0 - GAP_XS - THUMB_W,
             GAP_XS,
@@ -71,24 +73,30 @@ impl App {
             self.size.1 - 2.0 * GAP_XS,
         );
         let h = (track.h * self.size.1 / (self.size.1 + max)).max(THUMB_MIN);
-        let y = track.y + (track.h - h) * self.scroll.offset(now) / max;
+        let at = if max > 0.0 {
+            self.scroll.offset(now) / max
+        } else {
+            0.0
+        };
+        let y = track.y + (track.h - h) * at;
         canvas.fill(
             Rect::new(track.x, y, THUMB_W, h),
             THUMB_W / 2.0,
             theme::HOVER,
-            1.0,
+            alpha,
         );
     }
 
     fn draw_nav(&self, canvas: &mut Canvas, now: Instant) {
+        let nav_w = self.nav_w(now);
         canvas.fill(
-            Rect::new(0.0, 0.0, self.nav_w(), self.size.1),
+            Rect::new(0.0, 0.0, nav_w, self.size.1),
             0.0,
             theme::SIDEBAR,
             1.0,
         );
-        let slot = self.nav_rect(0);
-        let pitch = self.nav_rect(1).y - slot.y;
+        let slot = self.nav_rect(0, now);
+        let pitch = self.nav_rect(1, now).y - slot.y;
         let selection = Rect {
             y: slot.y + self.nav.value(now) * pitch,
             ..slot
@@ -96,32 +104,45 @@ impl App {
         let focus = self.fade(Target::Nav(self.current), Channel::Focus, now);
         let fill = theme::mix(theme::RAISE, theme::HOVER, focus);
         canvas.fill(selection, RADIUS, fill, 1.0);
+        // Closing, the icon grows to its free-standing size and moves to the
+        // middle; the names fade out in the first half and are cut at the
+        // edge, never shortened while they go.
+        let open = self.nav_open(now);
+        let names = (2.0 * open - 1.0).clamp(0.0, 1.0);
+        let size = ICON_ALONE + (ICON - ICON_ALONE) * open;
+        let full = NAV_W - 2.0 * GAP_S;
         for (index, page) in self.pages.iter().enumerate() {
-            let rect = self.nav_rect(index);
-            let lit = if index == self.current {
-                1.0
-            } else {
-                self.fade(Target::Nav(index), Channel::Hover, now)
-            };
+            let rect = self.nav_rect(index, now);
+            let lit = self
+                .fade(Target::Nav(index), Channel::Current, now)
+                .max(self.fade(Target::Nav(index), Channel::Hover, now));
             let color = theme::mix(theme::SUB, theme::TEXT, lit);
-            if self.narrow() {
-                let x = rect.x + (rect.w - ICON_ALONE) / 2.0;
-                page.icon
-                    .draw(canvas, widgets::icon_box(rect, x, ICON_ALONE), color, 1.0);
+            // Text inset like a control's: (height − capitals) / 2 ≈ 12.
+            let centred = rect.x + (rect.w - size) / 2.0;
+            let x = centred + (rect.x + theme::GAP_M - centred) * open;
+            page.icon
+                .draw(canvas, widgets::icon_box(rect, x, size), color, 1.0);
+            if names <= 0.0 {
                 continue;
             }
-            // Text inset like a control's: (height − capitals) / 2 ≈ 12.
-            let x = rect.x + theme::GAP_M;
-            page.icon
-                .draw(canvas, widgets::icon_box(rect, x, ICON), color, 1.0);
-            let text_x = x + ICON + GAP_S;
-            self.fonts.draw_in(
-                canvas,
+            let text_x = x + size + GAP_S;
+            let name = self.fonts.ellipsize(
                 TextStyle::Label,
                 &page.name,
-                Rect::new(text_x, rect.y, rect.right() - theme::GAP_M - text_x, rect.h),
+                rect.x + full - theme::GAP_M - text_x,
+            );
+            let clip = Rect::new(text_x, rect.y, (rect.right() - text_x).max(0.0), rect.h);
+            self.fonts.draw_clipped(
+                canvas,
+                TextStyle::Label,
+                &name,
+                (
+                    text_x,
+                    self.fonts.baseline(TextStyle::Label, rect.y, rect.h),
+                ),
                 color,
-                1.0,
+                names,
+                clip,
             );
         }
     }

@@ -1,14 +1,17 @@
 //! Where everything goes at a window size: the navigation column, the page's
 //! column of groups, each row's parts. Rows put their control below the name
-//! when both do not fit side by side (settings plan, Phase 4b).
+//! when both do not fit side by side (settings plan, Phase 4b). Crossing a
+//! threshold is a state change: the navigation opens and closes and rows
+//! stack on springs (Phase 4c).
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use super::{App, Block, Row};
 use crate::ui::Rect;
+use crate::ui::motion::Spring;
 use crate::ui::theme::{
-    CONTENT_MAX, CTL_H, GAP_L, GAP_M, GAP_S, GAP_XL, GAP_XS, ICON, LABEL_MIN, NAV_NARROW_BELOW,
-    NAV_NARROW_W, NAV_W, ROW_H,
+    CONTENT_MAX, CTL_H, GAP_L, GAP_M, GAP_S, GAP_XL, GAP_XS, GLIDE, ICON, LABEL_MIN,
+    NAV_NARROW_BELOW, NAV_NARROW_W, NAV_W, ROW_H,
 };
 use crate::ui::widgets::{self, Widget};
 
@@ -39,6 +42,32 @@ pub struct Layout {
     pub height: f32,
 }
 
+/// Far enough ahead that every layout spring is at rest: the slowest,
+/// `GLIDE`, settles within ten of its durations.
+pub const AT_REST: Duration = Duration::from_secs(10);
+
+fn lerp(from: f32, to: f32, t: f32) -> f32 {
+    from + (to - from) * t
+}
+
+fn lerp_rect(from: Rect, to: Rect, t: f32) -> Rect {
+    Rect::new(
+        lerp(from.x, to.x, t),
+        lerp(from.y, to.y, t),
+        lerp(from.w, to.w, t),
+        lerp(from.h, to.h, t),
+    )
+}
+
+/// To `to` on `GLIDE`, or at once.
+fn move_to(spring: &mut Spring, to: f32, animate: bool, now: Instant) {
+    if animate {
+        spring.retarget(to, GLIDE, now);
+    } else {
+        spring.set(to, now);
+    }
+}
+
 /// The row's inner line, `GAP_M` in from the group's sides.
 fn inner(rect: Rect) -> Rect {
     Rect::new(rect.x + GAP_M, rect.y, rect.w - 2.0 * GAP_M, rect.h)
@@ -49,62 +78,93 @@ fn text_x(inner: Rect) -> f32 {
     inner.x + ICON + GAP_S
 }
 
+/// The room for the control beside the name.
+fn room_beside(inner: Rect) -> f32 {
+    inner.right() - text_x(inner) - LABEL_MIN - GAP_M
+}
+
 /// The control's width beside the name, or `None` when it does not fit
 /// there and the row stacks.
 fn beside(row: &Row, fonts: &crate::ui::text::Fonts, inner: Rect) -> Option<f32> {
-    let room = inner.right() - text_x(inner) - LABEL_MIN - GAP_M;
+    let room = room_beside(inner);
     let width = row.control.width(fonts, room);
     (width <= room).then_some(width)
 }
 
 impl App {
+    /// Where the navigation is going: icons only below `NAV_NARROW_BELOW`.
     pub fn narrow(&self) -> bool {
         self.size.0 < NAV_NARROW_BELOW
     }
 
-    pub fn nav_w(&self) -> f32 {
-        if self.narrow() { NAV_NARROW_W } else { NAV_W }
+    /// 0 with icons only, 1 with names.
+    pub fn nav_open(&self, now: Instant) -> f32 {
+        self.nav_open.value(now).clamp(0.0, 1.0)
+    }
+
+    pub fn nav_w(&self, now: Instant) -> f32 {
+        lerp(NAV_NARROW_W, NAV_W, self.nav_open(now))
     }
 
     /// A navigation entry's surface. Entries follow each other with no gap
     /// in their hit areas ([`App::nav_slot`]); the surface sits inside.
-    pub fn nav_rect(&self, index: usize) -> Rect {
-        let slot = self.nav_slot(index);
+    pub fn nav_rect(&self, index: usize, now: Instant) -> Rect {
+        let slot = self.nav_slot(index, now);
         Rect::new(slot.x, slot.y + GAP_XS / 2.0, slot.w, CTL_H)
     }
 
     /// An entry's hit area. The first entry's surface is on the title's line.
-    pub fn nav_slot(&self, index: usize) -> Rect {
+    pub fn nav_slot(&self, index: usize, now: Instant) -> Rect {
         let pitch = CTL_H + GAP_XS;
         Rect::new(
             GAP_S,
             GAP_XL - GAP_XS / 2.0 + index as f32 * pitch,
-            self.nav_w() - 2.0 * GAP_S,
+            self.nav_w(now) - 2.0 * GAP_S,
             pitch,
         )
     }
 
-    /// The page's column: centred right of the navigation, at most
+    /// The page's column right of a navigation `nav_w` wide: centred, at most
     /// `CONTENT_MAX` wide, `GAP_XL` from the edges at least.
-    pub fn column(&self) -> (f32, f32) {
-        let area = self.size.0 - self.nav_w();
+    fn column_beside(&self, nav_w: f32) -> (f32, f32) {
+        let area = self.size.0 - nav_w;
         let w = (area - 2.0 * GAP_XL).clamp(0.0, CONTENT_MAX);
-        (self.nav_w() + (area - w) / 2.0, w)
+        (nav_w + (area - w) / 2.0, w)
     }
 
-    fn row_height(&self, row: &Row, width: f32) -> f32 {
-        let line = inner(Rect::new(0.0, 0.0, width, ROW_H));
-        if beside(row, &self.fonts, line).is_some() {
-            ROW_H
-        } else {
-            STACKED_H
+    pub fn column(&self, now: Instant) -> (f32, f32) {
+        self.column_beside(self.nav_w(now))
+    }
+
+    /// Point the layout's springs at the window's size: the navigation opens
+    /// or closes, each row sits beside its name or stacks. A row new to the
+    /// springs (a page just shown) starts where it belongs.
+    pub(super) fn reshape(&mut self, now: Instant) {
+        let animate = !self.reduced_motion;
+        let open = if self.narrow() { 0.0 } else { 1.0 };
+        move_to(&mut self.nav_open, open, animate, now);
+        let nav_w = if self.narrow() { NAV_NARROW_W } else { NAV_W };
+        let line = inner(Rect::new(0.0, 0.0, self.column_beside(nav_w).1, ROW_H));
+        let stacked: Vec<f32> = self.pages[self.current]
+            .blocks
+            .iter()
+            .map(|block| match block {
+                Block::Row(row) if beside(row, &self.fonts, line).is_none() => 1.0,
+                _ => 0.0,
+            })
+            .collect();
+        for (index, to) in stacked.into_iter().enumerate() {
+            match self.stacked.get_mut(index) {
+                Some(spring) => move_to(spring, to, animate, now),
+                None => self.stacked.push(Spring::settled(to, now)),
+            }
         }
     }
 
     /// The layout `scroll` pixels down the page, `rise` pixels lower while a
     /// new page comes in.
-    pub fn layout_at(&self, scroll: f32, rise: f32) -> Layout {
-        let (x, w) = self.column();
+    pub fn layout_at(&self, scroll: f32, rise: f32, now: Instant) -> Layout {
+        let (x, w) = self.column(now);
         let top = rise - scroll;
         let mut y = GAP_XL;
         let title = Rect::new(x, top + y, w, CTL_H);
@@ -131,12 +191,13 @@ impl App {
             let h = match block {
                 Block::Heading(_) => LINE,
                 Block::Banner { .. } => ROW_H,
-                Block::Row(row) => {
+                Block::Row(_) => {
                     if panel.is_none() {
                         panel = Some(y);
                         y += GAP_XS;
                     }
-                    self.row_height(row, w)
+                    let stacked = self.stacked.get(index).map_or(0.0, |s| s.value(now));
+                    lerp(ROW_H, STACKED_H, stacked.clamp(0.0, 1.0))
                 }
             };
             layout.blocks.push(Rect::new(x, top + y, w, h));
@@ -152,43 +213,50 @@ impl App {
     }
 
     pub fn layout(&self, now: Instant) -> Layout {
-        self.layout_at(self.scroll.offset(now), self.rise(now))
+        self.layout_at(self.scroll.offset(now), self.rise(now), now)
     }
 
     pub fn block_rects(&self, now: Instant) -> Vec<Rect> {
         self.layout(now).blocks
     }
 
+    /// A row's parts. How far it has stacked is in its height, which the
+    /// layout takes between `ROW_H` and `STACKED_H` from the row's spring.
     pub fn row_parts(&self, rect: Rect, row: &Row) -> RowParts {
         let line = inner(rect);
         let text_x = text_x(line);
-        let (label_block, control) = match beside(row, &self.fonts, line) {
-            Some(width) => {
-                let control = Rect::new(
-                    line.right() - width,
-                    rect.y + (rect.h - CTL_H) / 2.0,
-                    width,
-                    CTL_H,
-                );
-                let label = Rect::new(
-                    text_x,
-                    rect.y,
-                    (control.x - GAP_M - text_x).max(0.0),
-                    rect.h,
-                );
-                (label, control)
-            }
-            None => {
-                let label = Rect::new(text_x, rect.y + GAP_S, line.right() - text_x, CTL_H);
-                let full = line.right() - text_x;
-                let width = if row.control.stretches() {
-                    full
-                } else {
-                    row.control.width(&self.fonts, full).min(full)
-                };
-                let control = Rect::new(line.right() - width, label.bottom() + GAP_S, width, CTL_H);
-                (label, control)
-            }
+        let side = {
+            let width = row.control.width(&self.fonts, room_beside(line));
+            let control = Rect::new(
+                line.right() - width,
+                rect.y + (ROW_H - CTL_H) / 2.0,
+                width,
+                CTL_H,
+            );
+            let label = Rect::new(text_x, rect.y, (control.x - GAP_M - text_x).max(0.0), ROW_H);
+            (label, control)
+        };
+        let stacked = {
+            let label = Rect::new(text_x, rect.y + GAP_S, line.right() - text_x, CTL_H);
+            let full = line.right() - text_x;
+            let width = if row.control.stretches() {
+                full
+            } else {
+                row.control.width(&self.fonts, full).min(full)
+            };
+            let control = Rect::new(line.right() - width, label.bottom() + GAP_S, width, CTL_H);
+            (label, control)
+        };
+        let t = ((rect.h - ROW_H) / (STACKED_H - ROW_H)).clamp(0.0, 1.0);
+        let (label_block, control) = if t == 0.0 {
+            side
+        } else if t == 1.0 {
+            stacked
+        } else {
+            (
+                lerp_rect(side.0, stacked.0, t),
+                lerp_rect(side.1, stacked.1, t),
+            )
         };
         let (label, hint) = if row.hint.is_some() {
             let y = label_block.y + (label_block.h - LINE - HINT_LINE) / 2.0;
@@ -208,8 +276,8 @@ impl App {
     }
 
     /// Where lists may open: the page area, off the navigation.
-    pub(super) fn bounds(&self) -> Rect {
-        let x = self.nav_w();
+    pub(super) fn bounds(&self, now: Instant) -> Rect {
+        let x = self.nav_w(now);
         Rect::new(x, 0.0, self.size.0 - x, self.size.1).inset(GAP_S)
     }
 
@@ -238,7 +306,7 @@ impl App {
                     let anchor = self.row_parts(rects[index], row).control;
                     let list = row
                         .control
-                        .overlay(anchor, self.bounds(), &self.fonts, now)?;
+                        .overlay(anchor, self.bounds(now), &self.fonts, now)?;
                     Some((index, list))
                 }
                 _ => None,

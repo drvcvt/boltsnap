@@ -166,6 +166,9 @@ impl Widget for TextField {
             |index: usize| inner.x + fonts.width(TextStyle::Label, &self.text[..index]) - shift;
         let line = Rect::new(inner.x, rect.y + (rect.h - CARET_H) / 2.0, inner.w, CARET_H);
         let range = self.selection();
+        // Focus fades the editing state in: the whole text, the selection and
+        // the caret over the shortened text at rest.
+        let editing = look.focus.clamp(0.0, 1.0);
         if look.focused && !range.is_empty() {
             let (left, right) = (
                 x_of(range.start).max(inner.x),
@@ -175,40 +178,44 @@ impl Widget for TextField {
                 Rect::new(left, line.y, right - left, line.h),
                 0.0,
                 theme::SELECTED,
-                1.0,
+                editing,
             );
         }
         let baseline = fonts.baseline(TextStyle::Label, rect.y, rect.h);
-        if !look.focused {
-            // At rest a long path shows its start and its end.
-            let text = fonts.ellipsize_middle(TextStyle::Label, &self.text, inner.w);
+        // At rest a long path shows its start and its end.
+        let rest = fonts.ellipsize_middle(TextStyle::Label, &self.text, inner.w);
+        let same = shift == 0.0 && rest == self.text;
+        let rest_alpha = if same { 0.0 } else { 1.0 - editing };
+        if rest_alpha > 0.0 {
             fonts.draw(
                 canvas,
                 TextStyle::Label,
-                &text,
+                &rest,
                 (inner.x, baseline),
                 look.text(),
-                1.0,
+                rest_alpha,
             );
-            return;
         }
-        fonts.draw_clipped(
-            canvas,
-            TextStyle::Label,
-            &self.text,
-            (inner.x - shift, baseline),
-            look.text(),
-            1.0,
-            inner,
-        );
-        if look.focused {
+        let full_alpha = if same { 1.0 } else { editing };
+        if full_alpha > 0.0 {
+            fonts.draw_clipped(
+                canvas,
+                TextStyle::Label,
+                &self.text,
+                (inner.x - shift, baseline),
+                look.text(),
+                full_alpha,
+                inner,
+            );
+        }
+        if editing > 0.0 {
             // One device pixel wide, on a whole pixel.
             let x = (x_of(self.caret) * canvas.scale).round() / canvas.scale;
             canvas.fill(
                 Rect::new(x, line.y, 1.0 / canvas.scale, line.h),
                 0.0,
                 theme::TEXT,
-                1.0,
+                editing,
             );
         }
     }

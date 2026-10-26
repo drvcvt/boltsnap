@@ -11,7 +11,7 @@ use crate::ui::{Canvas, Effect, Input, Key, Mods};
 
 const SIZE: (f32, f32) = (760.0, 520.0);
 /// Long enough for every spring in the window to have settled.
-const SETTLED: Duration = Duration::from_secs(1);
+pub const SETTLED: Duration = Duration::from_secs(1);
 
 pub fn prefs() -> Prefs {
     Prefs {
@@ -35,7 +35,7 @@ pub fn prefs() -> Prefs {
     }
 }
 
-fn app_on(page: &str, size: (f32, f32), now: Instant) -> App {
+pub fn app_on(page: &str, size: (f32, f32), now: Instant) -> App {
     let mut app = App::new(Fonts::fallback(), pages::pages(&prefs(), now), size, now);
     assert!(app.show_named(page, now), "{page}");
     app
@@ -46,7 +46,7 @@ fn app(page: &str, now: Instant) -> App {
 }
 
 /// The first enabled row named `label`.
-fn block(app: &App, label: &str) -> usize {
+pub fn block(app: &App, label: &str) -> usize {
     app.page()
         .blocks
         .iter()
@@ -447,8 +447,8 @@ fn a_narrow_window_shows_icon_navigation_and_stacks_rows_that_do_not_fit() {
     let now = Instant::now();
     let wide = app_on("recording", (1000.0, 520.0), now);
     let narrow = app_on("recording", (360.0, 520.0), now);
-    assert_eq!(wide.nav_w(), NAV_W);
-    assert_eq!(narrow.nav_w(), NAV_NARROW_W);
+    assert_eq!(wide.nav_w(now), NAV_W);
+    assert_eq!(narrow.nav_w(now), NAV_NARROW_W);
     let source = block(&narrow, "Source");
     assert_eq!(wide.block_rects(now)[source].h, ROW_H);
     let rect = narrow.block_rects(now)[source];

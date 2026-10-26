@@ -31,29 +31,41 @@ pub const ERROR: Rgb = (0xE5, 0x48, 0x4D);
 pub const ACCENT: Rgb = TEXT;
 pub const ON_ACCENT: Rgb = WINDOW;
 
-/// The type scale. Hierarchy within a step comes from weight and colour.
+/// The type scale, as capital heights in whole pixels: each style draws at
+/// the size that makes its capitals exactly that tall in the face in use
+/// (`Fonts::size`), so they sit on the pixel grid. With Outfit that is about
+/// 20, 14.3, 12.9 and 11.4 px. Hierarchy within a step comes from weight and
+/// colour.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TextStyle {
-    /// Page title, 18/600.
+    /// Page title, 600.
     Title,
-    /// Row names and control text, 13/500.
+    /// Row names and control text, 500.
     Label,
-    /// Group headings, 13/600.
+    /// Group headings, 600.
     Heading,
-    /// A row's hint line, 12/500.
+    /// A row's hint line, 500.
     Hint,
-    /// Small values and key hints, 11/500.
+    /// Small values and key hints, 500.
     Key,
 }
 
 impl TextStyle {
-    pub const fn px(self) -> f32 {
+    /// Capital height in px. Even for the styles centred in `CTL_H` (30), so
+    /// `(30 − cap) / 2` is a whole pixel and centring stays exact.
+    pub const fn cap(self) -> f32 {
         match self {
-            TextStyle::Title => 18.0,
-            TextStyle::Label | TextStyle::Heading => 13.0,
-            TextStyle::Hint => 12.0,
-            TextStyle::Key => 11.0,
+            TextStyle::Title => 14.0,
+            TextStyle::Label | TextStyle::Heading => 10.0,
+            TextStyle::Hint => 9.0,
+            TextStyle::Key => 8.0,
         }
+    }
+
+    /// The nominal size, for rules stated in font sizes (an icon beside text
+    /// is never taller than this).
+    pub const fn px(self) -> f32 {
+        self.cap() / 0.7
     }
 
     /// Drawn with the 600 face.
@@ -90,7 +102,7 @@ pub const PANEL_RADIUS: f32 = 12.0;
 pub const ROW_H: f32 = CTL_H + 2.0 * GAP_S;
 /// Icon box next to `Label` text: never larger than the text, so the
 /// navigation uses it too.
-pub const ICON: f32 = 13.0;
+pub const ICON: f32 = 14.0;
 /// A standalone icon: on an icon-only button and in the narrow navigation.
 pub const ICON_ALONE: f32 = 16.0;
 pub const NAV_W: f32 = 200.0;
