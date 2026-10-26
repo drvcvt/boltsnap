@@ -59,6 +59,18 @@ pub fn prefs() -> Prefs {
         replay_stale: false,
         recording: false,
         set_keys: Vec::new(),
+        ui_font: None,
+        fonts: Some(
+            [
+                "DejaVu Sans",
+                "Geist",
+                "Noto Sans",
+                "Noto Sans Mono",
+                "Outfit",
+            ]
+            .map(String::from)
+            .to_vec(),
+        ),
         replay_seconds: 60,
         replay_memory_mib: 512,
         replay_bitrate: None,

@@ -174,6 +174,11 @@ impl Scroll {
         }
     }
 
+    /// Stand at `to` at once, for what opens already scrolled to its place.
+    pub fn jump(&mut self, to: f32, now: Instant) {
+        self.offset.set(to.clamp(0.0, self.max), now);
+    }
+
     /// Glide so `top..bottom` (content coordinates) is inside a viewport of
     /// `height`.
     pub fn reveal(&mut self, top: f32, bottom: f32, height: f32, now: Instant) {

@@ -421,3 +421,43 @@ fn display_and_codec_offer_what_this_machine_has() {
     p.codec = "hevc".into();
     assert_eq!(labels(&rows(&p), "Codec"), ["Auto", "hevc"]);
 }
+
+#[test]
+fn the_font_row_offers_the_desktop_font_and_the_installed_families() {
+    let now = Instant::now();
+    let mut app = app_on("general", SIZE, now);
+    let font = block(&app, "Font");
+    let Block::Row(row) = &app.page().blocks[font] else {
+        unreachable!()
+    };
+    assert_eq!(
+        row.control.labels(),
+        [
+            "Desktop font",
+            "DejaVu Sans",
+            "Geist",
+            "Noto Sans",
+            "Noto Sans Mono",
+            "Outfit"
+        ]
+    );
+    focus(&mut app, "Font", now);
+    key(&mut app, Key::Enter, now);
+    key(&mut app, Key::End, now);
+    key(&mut app, Key::Enter, now);
+    assert_eq!(
+        app.write(font),
+        Some(Write::Key(
+            "ui_font",
+            settings::Value::Text("Outfit".into())
+        ))
+    );
+    key(&mut app, Key::Enter, now);
+    key(&mut app, Key::Home, now);
+    key(&mut app, Key::Enter, now);
+    assert_eq!(
+        app.write(font),
+        Some(Write::Reset("ui_font")),
+        "the desktop's font: the key goes"
+    );
+}

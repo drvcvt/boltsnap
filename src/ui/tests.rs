@@ -349,3 +349,57 @@ fn a_segment_track_does_not_light_up_when_pressed() {
         draw(rest)
     );
 }
+
+#[test]
+fn a_long_list_shows_ten_scrolls_in_itself_and_jumps_to_what_is_typed() {
+    use super::widgets::{Dropdown, Value, Widget};
+    use super::{Key, Mods};
+    let fonts = Fonts::fallback();
+    let now = Instant::now();
+    let items: Vec<String> = (1..=40).map(|n| format!("Family number {n}")).collect();
+    let mut menu = Dropdown::new(items, 20, now);
+    let anchor = Rect::new(100.0, 100.0, 160.0, 30.0);
+    let bounds = Rect::new(0.0, 0.0, 800.0, 2000.0);
+    let key = |menu: &mut Dropdown, key: Key, at: Instant| {
+        menu.key(key, Mods::default(), &fonts, at);
+    };
+    key(&mut menu, Key::Enter, now);
+    let list = menu.overlay(anchor, bounds, &fonts, now).unwrap();
+    assert_eq!(
+        list.h,
+        10.0 * theme::CTL_H + 2.0 * theme::GAP_XS,
+        "ten entries"
+    );
+    assert!(list.w > anchor.w, "as wide as its longest entry");
+    // The wheel scrolls the list, not the page.
+    assert!(menu.overlay_wheel(1, 0.0, now));
+    // End marks the last entry and scrolls it into view.
+    key(&mut menu, Key::End, now);
+    let later = now + Duration::from_secs(1);
+    let last = Rect::new(list.x + 10.0, list.bottom() - 10.0, 1.0, 1.0);
+    assert!(menu.overlay_press(list, (last.x, last.y), later).changed);
+    assert_eq!(menu.value(), Value::Choice(39));
+    // Typing jumps; a space within the word belongs to it.
+    let t = later + Duration::from_secs(1);
+    key(&mut menu, Key::Enter, t);
+    menu.text("family", t);
+    key(&mut menu, Key::Space, t + Duration::from_millis(100));
+    menu.text("number 3", t + Duration::from_millis(200));
+    key(&mut menu, Key::Enter, t + Duration::from_millis(300));
+    assert_eq!(
+        menu.value(),
+        Value::Choice(2),
+        "first from the marked one on: number 3"
+    );
+    // After a pause a new word starts.
+    let t = t + Duration::from_secs(2);
+    key(&mut menu, Key::Enter, t);
+    menu.text("f", t);
+    menu.text("x", t + Duration::from_secs(2));
+    key(&mut menu, Key::Escape, t + Duration::from_secs(2));
+    assert_eq!(
+        menu.value(),
+        Value::Choice(2),
+        "nothing starts with x; Escape keeps it"
+    );
+}

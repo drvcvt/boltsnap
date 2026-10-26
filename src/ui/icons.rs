@@ -42,15 +42,17 @@ pub enum Icon {
     RotateCcwClock,
     Scaling,
     Scan,
+    Settings,
     SquareDashed,
     Timer,
     TriangleAlert,
+    Type,
     Video,
     Volume2,
 }
 
 impl Icon {
-    pub const ALL: [Icon; 33] = [
+    pub const ALL: [Icon; 35] = [
         Icon::ArrowDownLeft,
         Icon::ArrowDownRight,
         Icon::ArrowUpLeft,
@@ -79,9 +81,11 @@ impl Icon {
         Icon::RotateCcwClock,
         Icon::Scaling,
         Icon::Scan,
+        Icon::Settings,
         Icon::SquareDashed,
         Icon::Timer,
         Icon::TriangleAlert,
+        Icon::Type,
         Icon::Video,
         Icon::Volume2,
     ];
@@ -117,6 +121,8 @@ impl Icon {
             Icon::RotateCcwClock => "rotate-ccw-clock",
             Icon::Scaling => "scaling",
             Icon::Scan => "scan",
+            Icon::Settings => "settings",
+            Icon::Type => "type",
             Icon::SquareDashed => "square-dashed",
             Icon::Timer => "timer",
             Icon::TriangleAlert => "triangle-alert",

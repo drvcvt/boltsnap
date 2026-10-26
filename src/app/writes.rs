@@ -21,6 +21,11 @@ pub enum Bind {
     None,
     /// A key of `config.toml`.
     Key(&'static str, Encode),
+    /// A dropdown over values of a key; `None` is the default (the key goes).
+    Choices {
+        key: &'static str,
+        values: Vec<Option<settings::Value>>,
+    },
     /// Starts or stops the replay buffer.
     ReplayBuffer,
     /// Stops the replay buffer and starts it again with the file's settings.
@@ -82,6 +87,13 @@ impl App {
         match &row.bind {
             Bind::None => None,
             Bind::Key(key, encode) => Some(Write::Key(key, encode(&row.control.value())?)),
+            Bind::Choices { key, values } => match row.control.value() {
+                Value::Choice(index) => match values.get(index)?.clone() {
+                    Some(value) => Some(Write::Key(key, value)),
+                    None => Some(Write::Reset(key)),
+                },
+                _ => None,
+            },
             Bind::ReplayBuffer => match row.control.value() {
                 Value::Bool(on) => Some(Write::Replay(on)),
                 _ => None,
@@ -94,7 +106,7 @@ impl App {
     pub fn reset_write(&self, block: usize) -> Option<Write> {
         let row = self.row(block).filter(|row| row.enabled && row.reset)?;
         match &row.bind {
-            Bind::Key(key, _) => Some(Write::Reset(key)),
+            Bind::Key(key, _) | Bind::Choices { key, .. } => Some(Write::Reset(key)),
             _ => None,
         }
     }

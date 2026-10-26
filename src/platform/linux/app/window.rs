@@ -70,6 +70,8 @@ pub(super) struct Win {
     pub(super) pending: std::collections::HashMap<super::save::Tag, usize>,
     /// What the pages show on top: a refused write, or why nothing saves.
     pub(super) notice: Option<boltsnap::app::pages::Notice>,
+    /// The `ui_font` the window draws with.
+    pub(super) font: Option<String>,
     pub(super) exit: bool,
 }
 
@@ -135,6 +137,7 @@ impl Win {
             saver: None,
             pending: Default::default(),
             notice: None,
+            font: None,
             exit: false,
         })
     }

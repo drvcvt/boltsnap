@@ -109,9 +109,11 @@ fn settings_pages(
 
 /// The UI face the selector and the recording controls use.
 fn fonts() -> Fonts {
-    let family = crate::config::Config::load().ui_font;
-    let (medium, demibold) =
-        super::shelf::font::load_ui_font_weights(family.as_deref(), (500.0, 600.0));
+    fonts_of(crate::config::Config::load().ui_font.as_deref())
+}
+
+fn fonts_of(family: Option<&str>) -> Fonts {
+    let (medium, demibold) = super::shelf::font::load_ui_font_weights(family, (500.0, 600.0));
     Fonts::new(medium, demibold)
 }
 
@@ -180,6 +182,7 @@ fn run(page: Option<&str>) -> DynResult<()> {
     let (done_tx, done_rx) = calloop::channel::channel();
     win.saver = Some(save::Saver::spawn(done_tx));
     win.notice = notice;
+    win.font = crate::config::Config::load().ui_font;
     handle
         .insert_source(done_rx, |event, _, win: &mut Win| {
             if let calloop::channel::Event::Msg((tag, result)) = event {
@@ -189,6 +192,7 @@ fn run(page: Option<&str>) -> DynResult<()> {
         .map_err(|error| format!("save source: {error}"))?;
     let (watch_tx, watch_rx) = calloop::channel::channel();
     save::probe_codecs(watch_tx.clone());
+    save::probe_fonts(watch_tx.clone());
     save::watch(watch_tx);
     handle
         .insert_source(watch_rx, |event, _, win: &mut Win| {
@@ -257,6 +261,12 @@ impl Win {
         // A refused write keeps its message until the next success.
         if !(notice.is_none() && self.notice.as_ref().is_some_and(|n| !n.locked)) {
             self.notice = notice;
+        }
+        // A new `ui_font` shows here too, not only in the shelf.
+        let family = crate::config::Config::load().ui_font;
+        if family != self.font {
+            self.app.fonts = fonts_of(family.as_deref());
+            self.font = family;
         }
         let now = Instant::now();
         let pending = &self.pending;

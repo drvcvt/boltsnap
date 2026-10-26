@@ -347,7 +347,10 @@ fn gate_copy_reads_like_a_person_wrote_it() {
                 Block::Row(row) => {
                     strings.push(row.label.clone());
                     strings.extend(row.hint.clone());
-                    strings.extend(row.control.labels().iter().map(|s| s.to_string()));
+                    // Font families are names, not copy.
+                    if row.label != "Font" {
+                        strings.extend(row.control.labels().iter().map(|s| s.to_string()));
+                    }
                 }
             }
         }

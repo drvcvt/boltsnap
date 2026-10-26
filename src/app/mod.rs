@@ -375,7 +375,12 @@ impl App {
                 Outcome::HANDLED
             }
             Input::Wheel { notches, pixels } => {
-                if self.open_overlay(now).is_none() {
+                if let Some((block, _)) = self.open_overlay(now) {
+                    // An open list scrolls itself; the page stays.
+                    if let Some(control) = self.control(block) {
+                        control.overlay_wheel(notches, pixels, now);
+                    }
+                } else {
                     self.scroll.wheel(notches, pixels, now);
                     // The page moves under a still pointer.
                     if let Some(at) = self.pointer {
@@ -389,7 +394,7 @@ impl App {
             Input::Text(text) | Input::Pasted(text) => match self.focus {
                 Some(Target::Control(block)) => self
                     .control(block)
-                    .map_or(Outcome::IGNORED, |control| control.text(&text)),
+                    .map_or(Outcome::IGNORED, |control| control.text(&text, now)),
                 _ => Outcome::IGNORED,
             },
         };

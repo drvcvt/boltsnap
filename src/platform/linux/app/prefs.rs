@@ -51,6 +51,8 @@ pub fn load(displays: Vec<(String, String)>) -> Prefs {
         displays,
         codec: cfg.record_codec.clone().unwrap_or_else(|| "auto".into()),
         codecs: super::save::codecs(),
+        ui_font: cfg.ui_font.clone().filter(|font| !font.is_empty()),
+        fonts: super::save::fonts(),
         fps: cfg.record_profile().unwrap_or_default().fps(),
         cursor: match recording.cursor {
             RecordCursor::System => Cursor::System,

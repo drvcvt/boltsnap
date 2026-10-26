@@ -90,6 +90,19 @@ fn controls(now: Instant) -> Vec<Block> {
             Box::new(Stepper::new(5, 1, 8, now)),
         ),
         row(Icon::Monitor, "Display", None, list()),
+        // A long list: it scrolls in itself and stays in the window.
+        row(
+            Icon::Type,
+            "Font",
+            None,
+            Box::new(Dropdown::new(
+                (1..=40)
+                    .map(|n| format!("Family number {n} with a long name"))
+                    .collect(),
+                20,
+                now,
+            )),
+        ),
         row(
             Icon::Folder,
             COMPOUND,

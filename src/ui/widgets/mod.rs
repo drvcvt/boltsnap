@@ -162,7 +162,7 @@ pub trait Widget {
         Outcome::IGNORED
     }
 
-    fn text(&mut self, _text: &str) -> Outcome {
+    fn text(&mut self, _text: &str, _now: Instant) -> Outcome {
         Outcome::IGNORED
     }
 
@@ -190,6 +190,11 @@ pub trait Widget {
 
     /// The pointer moved while the overlay is open.
     fn overlay_hover(&mut self, _list: Rect, _at: (f32, f32), _now: Instant) {}
+
+    /// The wheel turned over the open overlay; `true` if it scrolled it.
+    fn overlay_wheel(&mut self, _notches: i32, _pixels: f32, _now: Instant) -> bool {
+        false
+    }
 
     /// A press while the overlay is open; `list` is where it is drawn.
     fn overlay_press(&mut self, _list: Rect, _at: (f32, f32), _now: Instant) -> Outcome {

@@ -4,93 +4,21 @@
 
 use std::time::Instant;
 
-use super::{Bind, Block, Encode, Page, Row};
+mod prefs;
+mod rows;
+
+pub use prefs::{AudioSource, Corner, Cursor, Display, Notice, Prefs};
+
+use rows::{
+    choose, choose_text, codec_entries, display_entries, duration, folder, fps, fps_value, int,
+    key, mebibytes, row, segment, switch,
+};
+
+use super::{Bind, Block, Page};
 use crate::settings;
 use crate::ui::icons::Icon;
 use crate::ui::theme;
-use crate::ui::widgets::{
-    Dropdown, IconButton, Part, Segment, Slider, Stepper, Switch, TextField, Value, Widget,
-};
-
-/// The values the pages show, in plain types.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Prefs {
-    pub card_width: u32,
-    pub visible_cards: u32,
-    pub corner: Corner,
-    pub save_dir: String,
-    pub both_combined: bool,
-    pub display: Display,
-    /// The connected monitors: (connector, label as people know it).
-    pub displays: Vec<(String, String)>,
-    /// `record_codec`, `auto` when unset.
-    pub codec: String,
-    /// What gpu-screen-recorder can encode here (`--info`), once known.
-    pub codecs: Option<Vec<String>>,
-    pub fps: u32,
-    pub cursor: Cursor,
-    pub show_frame: bool,
-    pub audio: bool,
-    pub audio_source: AudioSource,
-    pub record_dir: String,
-    pub disk_to_shelf: bool,
-    pub shelf_to_disk_after: Option<u64>,
-    pub replay_autostart: bool,
-    /// The buffer is capturing, starting, or up but stalled.
-    pub replay_running: bool,
-    /// Up, but no video is arriving.
-    pub replay_stalled: bool,
-    /// Up with other settings than the file has now: a restart applies them.
-    pub replay_stale: bool,
-    /// A recording runs; recording settings apply to the next one.
-    pub recording: bool,
-    /// The keys `config.toml` sets; their rows offer a reset.
-    pub set_keys: Vec<String>,
-    pub replay_seconds: u64,
-    pub replay_memory_mib: usize,
-    /// `replay.bitrate_kbps`; unset, the bitrate follows length and memory.
-    pub replay_bitrate: Option<u32>,
-    pub replay_fps: u32,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Corner {
-    TopLeft,
-    TopRight,
-    BottomLeft,
-    BottomRight,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Cursor {
-    System,
-    Mellow,
-    Quick,
-}
-
-/// Where a fullscreen recording goes: `record_default_target`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Display {
-    Focused,
-    Output(String),
-    Both,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AudioSource {
-    SystemAndMic,
-    Mic,
-    System,
-}
-
-/// Shown on top of every page: why a write failed, or why nothing can be
-/// written right now.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Notice {
-    pub text: String,
-    /// The rows are off: no daemon, or a `config.toml` that does not parse.
-    pub locked: bool,
-}
+use crate::ui::widgets::{Dropdown, IconButton, Part, Slider, Stepper, Switch};
 
 const FRAME_RATES: [u32; 5] = [30, 60, 120, 144, 240];
 const SHELF_TO_DISK: [Option<u64>; 5] = [None, Some(30), Some(60), Some(300), Some(900)];
@@ -128,199 +56,6 @@ fn memory_hint(prefs: &Prefs) -> String {
         };
         format!("Video at about {rate}\u{a0}Mbit/s")
     }
-}
-
-fn row(
-    icon: Icon,
-    label: &str,
-    hint: Option<&str>,
-    (control, bind): (Box<dyn Widget>, Bind),
-) -> Block {
-    Block::Row(Row {
-        icon,
-        label: label.to_owned(),
-        hint: hint.map(str::to_owned),
-        control,
-        enabled: true,
-        bind,
-        reset: false,
-    })
-}
-
-fn key(key: &'static str, encode: impl Fn(&Value) -> Option<settings::Value> + 'static) -> Bind {
-    Bind::Key(key, Box::new(encode) as Encode)
-}
-
-fn int(value: &Value) -> Option<settings::Value> {
-    match value {
-        Value::Int(n) => Some(settings::Value::Int(*n)),
-        _ => None,
-    }
-}
-
-fn boolean(value: &Value) -> Option<settings::Value> {
-    match value {
-        Value::Bool(on) => Some(settings::Value::Bool(*on)),
-        _ => None,
-    }
-}
-
-fn text(value: &Value) -> Option<settings::Value> {
-    match value {
-        Value::Text(text) => Some(settings::Value::Text(text.clone())),
-        _ => None,
-    }
-}
-
-/// A part of a segment as one of the key's words, in part order.
-fn word(words: &'static [&'static str]) -> impl Fn(&Value) -> Option<settings::Value> {
-    move |value| match value {
-        Value::Choice(index) => words
-            .get(*index)
-            .map(|w| settings::Value::Text((*w).into())),
-        _ => None,
-    }
-}
-
-/// A dropdown over `choices`, with the value in effect added when it is
-/// none of them, so the page never shows a value that is not the real one.
-/// It writes `to(choice)` to `name`.
-fn choose<T: PartialEq + Copy + 'static>(
-    name: &'static str,
-    choices: &[T],
-    current: T,
-    label: impl Fn(T) -> String,
-    to: fn(T) -> settings::Value,
-    now: Instant,
-) -> (Box<dyn Widget>, Bind) {
-    let mut values = choices.to_vec();
-    if !values.contains(&current) {
-        values.push(current);
-    }
-    let chosen = values.iter().position(|v| *v == current).unwrap_or(0);
-    let dropdown = Dropdown::new(values.iter().copied().map(label).collect(), chosen, now);
-    let bind = key(name, move |value| match value {
-        Value::Choice(index) => values.get(*index).copied().map(to),
-        _ => None,
-    });
-    (Box::new(dropdown), bind)
-}
-
-/// A dropdown over (value, label) entries writing the chosen value as text;
-/// `current` not among them is added under its own name, so the page never
-/// shows a value that is not the real one.
-fn choose_text(
-    name: &'static str,
-    mut entries: Vec<(String, String)>,
-    current: &str,
-    now: Instant,
-) -> (Box<dyn Widget>, Bind) {
-    if !entries.iter().any(|(value, _)| value == current) {
-        entries.push((current.to_owned(), current.to_owned()));
-    }
-    let chosen = entries
-        .iter()
-        .position(|(value, _)| value == current)
-        .unwrap_or(0);
-    let labels = entries.iter().map(|(_, label)| label.clone()).collect();
-    let values: Vec<String> = entries.into_iter().map(|(value, _)| value).collect();
-    let bind = key(name, move |value| match value {
-        Value::Choice(index) => values.get(*index).cloned().map(settings::Value::Text),
-        _ => None,
-    });
-    (Box::new(Dropdown::new(labels, chosen, now)), bind)
-}
-
-/// Focused display, each connected monitor, a configured one that is not
-/// connected, both: as the tray offers them.
-fn display_entries(prefs: &Prefs) -> (Vec<(String, String)>, String) {
-    let mut entries = vec![("focused".to_owned(), "Focused display".to_owned())];
-    entries.extend(
-        prefs
-            .displays
-            .iter()
-            .map(|(name, label)| (format!("output:{name}"), label.clone())),
-    );
-    if let Display::Output(name) = &prefs.display
-        && !prefs
-            .displays
-            .iter()
-            .any(|(connected, _)| connected == name)
-    {
-        entries.push((format!("output:{name}"), format!("{name} (disconnected)")));
-    }
-    entries.push(("both".to_owned(), "Both displays".to_owned()));
-    let current = match &prefs.display {
-        Display::Focused => "focused".to_owned(),
-        Display::Both => "both".to_owned(),
-        Display::Output(name) => format!("output:{name}"),
-    };
-    (entries, current)
-}
-
-/// Auto, then what gpu-screen-recorder can encode here as `record_codec`
-/// takes it (`gsr::choose`): HDR and 10-bit variants it refuses stay out.
-fn codec_entries(prefs: &Prefs) -> Vec<(String, String)> {
-    let mut entries = vec![("auto".to_owned(), "Auto".to_owned())];
-    let label = |base: &str| match base {
-        "h264" => Some("H.264"),
-        "hevc" => Some("HEVC"),
-        "av1" => Some("AV1"),
-        _ => None,
-    };
-    for codec in prefs.codecs.iter().flatten() {
-        let entry = if codec == "h264_software" {
-            Some(("libx264".to_owned(), "H.264 on the CPU".to_owned()))
-        } else if let Some(base) = codec.strip_suffix("_vulkan") {
-            label(base).map(|label| (codec.clone(), format!("{label} via Vulkan")))
-        } else {
-            label(codec).map(|label| (codec.clone(), label.to_owned()))
-        };
-        entries.extend(entry);
-    }
-    entries
-}
-
-fn fps(fps: u32) -> String {
-    format!("{fps}\u{a0}fps")
-}
-
-fn duration(seconds: Option<u64>) -> String {
-    match seconds {
-        None => "Off".into(),
-        Some(s) if s.is_multiple_of(60) => format!("{}\u{a0}min", s / 60),
-        Some(s) => format!("{s}\u{a0}s"),
-    }
-}
-
-fn mebibytes(mib: usize) -> String {
-    if mib.is_multiple_of(1024) {
-        format!("{}\u{a0}GiB", mib / 1024)
-    } else {
-        format!("{mib}\u{a0}MiB")
-    }
-}
-
-fn switch(name: &'static str, on: bool, now: Instant) -> (Box<dyn Widget>, Bind) {
-    (Box::new(Switch::new(on, now)), key(name, boolean))
-}
-
-/// A segment over `words`, one part each, writing the chosen word.
-fn segment(
-    name: &'static str,
-    parts: Vec<Part>,
-    words: &'static [&'static str],
-    chosen: usize,
-    now: Instant,
-) -> (Box<dyn Widget>, Bind) {
-    (
-        Box::new(Segment::new(parts, chosen, now)),
-        key(name, word(words)),
-    )
-}
-
-fn folder(name: &'static str, path: &str) -> (Box<dyn Widget>, Bind) {
-    (Box::new(TextField::new(path)), key(name, text))
 }
 
 fn shelf(prefs: &Prefs, now: Instant) -> Page {
@@ -522,10 +257,6 @@ fn recording(prefs: &Prefs, now: Instant) -> Page {
     }
 }
 
-fn fps_value(fps: u32) -> settings::Value {
-    settings::Value::Int(fps.into())
-}
-
 fn replay(prefs: &Prefs, now: Instant) -> Page {
     let mut blocks = vec![
         Block::Heading("Buffer".into()),
@@ -608,6 +339,54 @@ fn replay(prefs: &Prefs, now: Instant) -> Page {
     }
 }
 
+/// The face the shelf, the selector, the recording controls and this window
+/// use: the desktop's, or an installed family.
+fn general(prefs: &Prefs, now: Instant) -> Page {
+    let mut entries: Vec<(Option<String>, String)> = vec![(None, "Desktop font".into())];
+    entries.extend(
+        prefs
+            .fonts
+            .iter()
+            .flatten()
+            .map(|family| (Some(family.clone()), family.clone())),
+    );
+    if let Some(font) = &prefs.ui_font
+        && !entries
+            .iter()
+            .any(|(value, _)| value.as_ref() == Some(font))
+    {
+        entries.push((Some(font.clone()), font.clone()));
+    }
+    let chosen = entries
+        .iter()
+        .position(|(value, _)| *value == prefs.ui_font)
+        .unwrap_or(0);
+    let labels = entries.iter().map(|(_, label)| label.clone()).collect();
+    let values = entries
+        .into_iter()
+        .map(|(value, _)| value.map(settings::Value::Text))
+        .collect();
+    Page {
+        name: "General".into(),
+        icon: Icon::Settings,
+        blocks: vec![
+            Block::Heading("Look".into()),
+            row(
+                Icon::Type,
+                "Font",
+                Some("For the shelf, the selector and this window"),
+                (
+                    Box::new(Dropdown::new(labels, chosen, now)),
+                    Bind::Choices {
+                        key: "ui_font",
+                        values,
+                    },
+                ),
+            ),
+        ],
+    }
+}
+
 /// The pages, each opening with `notice` when there is one; a locked notice
 /// turns every row off.
 pub fn pages(prefs: &Prefs, notice: Option<&Notice>, now: Instant) -> Vec<Page> {
@@ -616,10 +395,11 @@ pub fn pages(prefs: &Prefs, notice: Option<&Notice>, now: Instant) -> Vec<Page> 
         screenshots(prefs),
         recording(prefs, now),
         replay(prefs, now),
+        general(prefs, now),
     ];
     for block in pages.iter_mut().flat_map(|page| &mut page.blocks) {
         if let Block::Row(row) = block
-            && let Bind::Key(key, _) = &row.bind
+            && let Bind::Key(key, _) | Bind::Choices { key, .. } = &row.bind
         {
             row.reset = prefs.set_keys.iter().any(|set| set == key);
         }

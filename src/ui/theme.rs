@@ -116,6 +116,9 @@ pub const CONTENT_MAX: f32 = 680.0;
 pub const LABEL_MIN: f32 = 120.0;
 /// The narrowest a dropdown is, so the short ones of a page line up.
 pub const MENU_MIN: f32 = 120.0;
+/// The widest a closed dropdown gets; a longer entry shows in full in the
+/// open list.
+pub const MENU_MAX: f32 = 280.0;
 /// The scroll thumb.
 pub const THUMB_W: f32 = 4.0;
 /// Icon stroke in logical pixels at any icon size.

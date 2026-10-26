@@ -184,6 +184,37 @@ pub(super) fn probe_codecs(changed: calloop::channel::Sender<()>) {
     });
 }
 
+static FONTS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+
+/// The installed font families, once [`probe_fonts`] has listed them.
+pub(super) fn fonts() -> Option<Vec<String>> {
+    FONTS.get().cloned()
+}
+
+/// List the families with fontconfig (`fc-list : family`, about 10 ms here)
+/// off the window's loop: the first name of each line, sorted, once each.
+pub(super) fn probe_fonts(changed: calloop::channel::Sender<()>) {
+    std::thread::spawn(move || {
+        let Ok(output) = std::process::Command::new("fc-list")
+            .args([":", "family"])
+            .output()
+        else {
+            return;
+        };
+        let mut families: Vec<String> = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(|line| line.split(',').next())
+            .map(str::trim)
+            .filter(|family| !family.is_empty())
+            .map(str::to_owned)
+            .collect();
+        families.sort_by_key(|family| family.to_lowercase());
+        families.dedup();
+        let _ = FONTS.set(families);
+        let _ = changed.send(());
+    });
+}
+
 /// The replay buffer as its control reports it.
 #[derive(Default)]
 pub(super) struct ReplayState {

@@ -298,7 +298,7 @@ impl Widget for TextField {
         Outcome::HANDLED
     }
 
-    fn text(&mut self, text: &str) -> Outcome {
+    fn text(&mut self, text: &str, _: Instant) -> Outcome {
         self.insert(text)
     }
 

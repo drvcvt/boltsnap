@@ -2071,6 +2071,37 @@ höchstens 10 Einträge hoch, scrollt in sich (Rad, Pfeile, Markierung bleibt
 sichtbar), Tippen springt zum ersten passenden Eintrag; das Fenster lädt
 seine Schrift neu, wenn `ui_font` sich ändert.
 
+S10b im Detail (Gegenprüfung am Code, 26.10.):
+- Befund: die Liste zeichnet alle Einträge untereinander
+  (`dropdown.rs:169`), so breit wie das Control; das Rad ignoriert die App
+  bei offener Liste; Tippen geht nur an Textfelder (`Widget::text` ohne Zeit).
+  `fc-list : family` liefert hier 1877 Zeilen, 330 Familien (erster Name vor
+  dem Komma). Ein leerer `ui_font` wird `Some("")` (`config.rs:214`), also
+  ist „Desktop font“ das Entfernen des Keys, nicht ein leerer Wert.
+- Dropdown: höchstens 10 Einträge sichtbar, die Liste scrollt in sich
+  (Feder wie die Seite, `Scroll`), Rad über der Liste scrollt sie, Pfeile
+  ziehen die Markierung mit und halten sie sichtbar, Einträge am Rand werden
+  abgeschnitten (Text mit Clip, Haken nur ganz sichtbar). Die Liste ist so
+  breit wie ihr breitester Eintrag, mindestens wie das Control, höchstens wie
+  der Platz. Tippen springt zum ersten Eintrag, der mit dem Getippten
+  beginnt (Groß/klein egal, was innerhalb 1 s folgt, gehört dazu); bei
+  geschlossener Liste öffnet Tippen sie.
+- Closed-Control höchstens `MENU_MAX = 280` breit, längere Namen dort mit
+  „…“ (der volle Name steht in der Liste).
+- `Bind::Choices { key, values }`: je Eintrag ein Wert oder `None` für „zurück
+  zum Default“ (`Write::Reset`).
+- Seite General (Icon `settings`) mit Font (Icon `type`): „Desktop font“,
+  dann die Familien; der Wert aus der Datei, wenn er keine Familie ist,
+  bleibt als Eintrag. Familien einmal im Hintergrund (`fc-list`), dann
+  Neuaufbau. Ändert sich `ui_font`, lädt das Fenster seine Schrift neu
+  (`Fonts` neu, Layout neu).
+- Copy-Gate: Font-Namen sind Namen, nicht Text, und zählen nicht.
+- Fixture: ein Dropdown mit 40 Einträgen für Überlauf und Scrollen.
+- Tests: höchstens 10 sichtbar; Rad scrollt, Ende hält; `End` zeigt den
+  letzten; Tippen „no“ markiert den ersten „No…“-Eintrag, nach 1 s beginnt
+  ein neues Wort; „Desktop font“ schreibt `Reset("ui_font")`, eine Familie
+  ihren Namen; Liste breiter als das Control, aber im Fenster.
+
 Tests S10a: Display-Einträge mit zwei Monitoren und einem abgesteckten,
 Kodierung `output:DP-1`; Codec-Einträge aus einer Info-Liste (HDR fällt
 weg, `h264_software` → `libx264`); eigener Wert bleibt; Gates und
@@ -2269,6 +2300,7 @@ Vom Nutzer am 24.10. so bestätigt:
 | 5c S8 | umgesetzt 26.10. nach „S8 im Detail“ (Abweichung dort: Knopf im Textbereich statt einem Platz, der das Control verschiebt). `Row::reset`, `Prefs::set_keys` (aus `settings_state().doc`, neu `Doc::keys`), `Target::Reset` (Hover, Druck, Fokus-Kontur, Tab vor dem Control), `RowParts::reset` und `reset_place`, Kanal `Shown` (blendet mit `QUICK`, beim Öffnen sofort), `Effect::Reset` → `Write::Reset(key)` → `Change::Remove`; der Default kommt über S6 zurück. Test `a_set_key_offers_a_reset_that_leaves_the_control_where_it_is` (nur der gesetzte Key, Control-Rechteck gleich, Knopf `GAP_S` davor, Tab-Reihenfolge, Klick liefert `Reset(\"record_fps\")`, Ausblenden halb und am Ende 0). Gates laufen im Zustand „alle Keys gesetzt“, das Überlauf-Gate prüft jetzt auch die Reset-Knöpfe (922 Teile, keiner auf Name oder Control). Render bei 946 und 360 angesehen. Befund am Rand (älter, nicht S8): mit der eingebetteten Ersatzschrift kürzt ein gestapeltes Segment bei 360 px seine Teile („System and…“, „…“); mit Outfit passt es; das Umbruch-Gate prüft Segment-Teile nicht, offen als eigener Punkt. Checks: fmt, clippy ohne Warnung, `cargo test` 108 + 374 grün. |
 | 5c S9 | umgesetzt 26.10. nach „S9 im Detail“ (Abweichung dort: Hinweis nennt im Engpass, was passt, wegen der unteren Bitrate-Klemme). Length als Dropdown 15 s bis 10 min (eigener Wert aus der Datei bleibt Eintrag), `Prefs::replay_bitrate`, Hinweis unter Memory aus `video_kbps` und `AUDIO_KBPS`. Belegt: Standard 60 s/512 MiB ergibt 20 994 kbit/s, gleich dem `-q 20994` des laufenden Recorders; mit den Werten des Nutzers (30 s, 512 MiB) „Video at about 41 Mbit/s“. Gates laufen jetzt auch mit 600 s/256 MiB („Only about 5 min fit, give it more memory“); Copy-Gate-Allowlist um die Einheit „Mbit/s“ ergänzt (134 Strings). Test `replay_length_steps_and_what_the_memory_buys`. Render angesehen. Checks: fmt, clippy ohne Warnung, `cargo test` 109 + 374 grün. |
 | 5c S10a | umgesetzt 26.10. nach „S10 im Detail“: Zeilen Display (Focused display, jeder Monitor aus dem `OutputState` des Fensters mit `tray::output_label`, jetzt geteilt, abgesteckter als „(disconnected)“, Both displays; schreibt `focused`/`both`/`output:<name>`) und Codec (Auto, H.264, „H.264 on the CPU“ = `libx264`, HEVC, AV1, „… via Vulkan“; HDR/10-Bit fallen weg; `gsr --info` einmal im Hintergrund, `save::probe_codecs`); `choose_text` für Text-Werte; Monitor-Ereignisse bauen neu; Icons `columns-2`, `film` ins Sprite (33). Abweichung: die Zeile „Both displays“ (Separate/Combined) heißt jetzt „Both displays as“, weil das Display-Dropdown selbst eine Option „Both displays“ hat. Copy-Allowlist um „CPU“ und „Vulkan“ (158 Strings). Test `display_and_codec_offer_what_this_machine_has`. Gates: Überlauf 1002 Teile, Umbruch 337 Zeilen, Dropdowns 30. Render angesehen. Live nicht geprüft (echte Monitor- und Codec-Liste nur im laufenden Fenster). Checks: fmt, clippy ohne Warnung, `cargo test` 110 + 374 grün. |
+| 5c S10b | umgesetzt 26.10. nach „S10b im Detail“. Dropdown: höchstens 10 Einträge sichtbar, scrollt in sich (`Scroll`, neu `Scroll::jump`, öffnet mit dem gewählten Eintrag in der Mitte), Rad über offener Liste scrollt die Liste (`Widget::overlay_wheel`), Pfeile halten die Markierung sichtbar, Randeinträge mit Clip, Liste so breit wie ihr längster Eintrag (mindestens das Control, höchstens der Platz), geschlossen höchstens `MENU_MAX = 280`; Tippen springt (Groß/klein egal, 1 s Fenster, Leertaste gehört zum Wort, `Widget::text` bekommt die Zeit). `Bind::Choices` (Wert oder `None` = Key entfernen). Seite General (Icon `settings`) mit Font (Icon `type`, „Desktop font“ schreibt `Reset(\"ui_font\")`), Familien einmal im Hintergrund (`fc-list`, 330 Familien), das Fenster lädt seine Schrift neu, wenn `ui_font` sich ändert. Fixture mit 40er-Liste; Copy-Gate zählt Font-Namen nicht. Aufgeräumt: `app/pages.rs` (700 Zeilen) nach `app/pages/` (`mod.rs` 427, `prefs.rs` 85, `rows.rs` 210), dabei ein verirrter Doc-Kommentar über `general` an `pages` zurück. Tests: `a_long_list_shows_ten_scrolls_in_itself_and_jumps_to_what_is_typed`, `the_font_row_offers_the_desktop_font_and_the_installed_families`; Gates: Überlauf 1067 Teile (die offene 40er-Liste bleibt im Fenster), Umbruch 376 Zeilen, Copy 166 Strings. Render der offenen Liste mitten im Scrollen angesehen. Live nicht geprüft (echte Familienliste und Neuladen der Schrift nur im laufenden Fenster). Checks: fmt, clippy ohne Warnung, `cargo test` 112 + 374 grün. |
 | 5a | umgesetzt 26.10. nach „Phase 5a: Öffnen ohne Terminal“: Tray-Eintrag „Settings…“ ganz unten (Prozessstart im Tray-Thread), `assets/linux/boltsnap.desktop` mit Icons 64/128/256 aus `boltsnap.ico`, `.deb`-Assets, Flake-`postInstall`, Release-Tarball, README. Abweichung: `Categories=Graphics;`. Checks: `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test` 75 + 371 grün, `desktop-file-validate` ohne Meldung. Live: Daemon neu gestartet, dbusmenu-`GetLayout` endet auf „Settings…“; `gio launch` der installierten `.desktop`-Datei öffnet das Fenster (Klasse `boltsnap`). Nicht live prüfbar: Klick im Tray. |
 | 5 | geplant, freigegeben 24.10. |
 | 6 (Library) | Skizze im Library-Plan |
