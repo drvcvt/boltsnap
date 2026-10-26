@@ -180,26 +180,24 @@ fn the_page_moves_in_whole_pixels_while_it_scrolls_rises_and_reshapes() {
 }
 
 #[test]
-fn closing_navigation_icons_glide_between_pixels_and_names_stay_put() {
+fn navigation_icons_keep_their_place_and_size_while_it_closes() {
     let now = Instant::now();
     let mut app = app_on("recording", WIDE, now);
-    let text_x = app.nav_text_x();
-    assert_eq!(app.nav_icon(0, now).x, 20.0, "open, on a whole pixel");
-    app.resize(NARROW, now);
-    let mut xs: Vec<f32> = (0..=60)
-        .map(|step| app.nav_icon(0, now + Duration::from_millis(5 * step)).x)
-        .collect();
-    assert!(
-        xs.windows(2).all(|pair| pair[1] <= pair[0]),
-        "one way: {xs:?}"
-    );
+    let open = app.nav_icon(0, now);
     assert_eq!(
-        app.nav_icon(0, now + SETTLED).x,
-        15.0,
-        "closed, on a whole pixel"
+        (open.x, open.w),
+        (16.0, 14.0),
+        "8 px in, as above and below"
     );
-    xs.dedup();
-    assert!(xs.len() >= 20, "glides, not {} steps", xs.len());
-    assert_eq!(app.nav_text_x(), text_x);
-    assert_eq!(text_x, text_x.round());
+    app.resize(NARROW, now);
+    for step in 0..=60 {
+        let icon = app.nav_icon(0, now + Duration::from_millis(5 * step));
+        assert_eq!((icon.x, icon.w), (open.x, open.w), "at {} ms", 5 * step);
+    }
+    // Closed, the entry is a square with the icon in its middle.
+    let slot = app.nav_rect(0, now + SETTLED);
+    assert_eq!((slot.w, slot.h), (30.0, 30.0));
+    let icon = app.nav_icon(0, now + SETTLED);
+    assert_eq!(icon.x - slot.x, slot.right() - icon.right());
+    assert_eq!(app.nav_text_x(), 38.0);
 }

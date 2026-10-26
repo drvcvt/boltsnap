@@ -173,7 +173,7 @@ pub fn icon_rows(fonts: Fonts, mut pages: Vec<Page>, size: (f32, f32)) -> Vec<Ic
                 label: name.clone(),
                 dy: icon.middle_y() - caps.middle_y(),
                 icon,
-                text_x: slot.x + theme::GAP_M + theme::ICON + theme::GAP_S,
+                text_x: app.nav_text_x(),
             });
         }
     }

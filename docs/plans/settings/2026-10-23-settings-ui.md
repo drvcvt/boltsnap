@@ -1465,6 +1465,30 @@ alle 5 ms über das Einklappen mindestens 20 verschiedene Icon-x, monoton,
 Name-x konstant und ganzzahlig. `/ui`-Skill: Ergänzung „kurze Wege nicht auf
 ganze Pixel runden, nur Text“.
 
+### Phase 4h: Nichts wandert ein paar Pixel (26.10., Wunsch des Nutzers)
+
+Meldung: auch gleitend wirken die rund 4 px, die die Navigations-Icons beim
+Einklappen wandern, auf der Kurvenlänge unsauber („stottert“); sie sollen so
+ausgerichtet sein, dass sie sich gar nicht bewegen müssen. Regel des Nutzers
+für die Zukunft: für ein paar Pixel keine Bewegung, weder animiert noch
+sprunghaft.
+
+Lösung ohne Regelbruch: eingeklappt ist die Fläche 30 × 30 (`NAV_NARROW_W`
+46 − 2 · `GAP_S`), quadratisch wie ein Icon-Knopf, das 14-px-Icon mittig, 8 px
+vom Rand; ausgeklappt sitzt das Icon ebenfalls 8 px eingerückt, gleich seinem
+Abstand oben und unten ((`CTL_H` − `ICON`) / 2). Das Icon steht in beiden
+Zuständen auf x 16 in 14 px, der Name ab x 38 (`GAP_S` hinter dem Icon)
+blendet nur aus. Die Größe 16 eingeklappt entfällt (sonst wandern die Kanten).
+
+Gleiche Regel, angewandt: der Hub von 6 px beim Einblenden einer Seite
+(`PAGE_RISE`) entfällt, die Seite blendet nur. Bleiben: Schalter-Knopf (16 px,
+die Bedeutung des Controls), Auswahlflächen (ein Eintrag weit und mehr),
+Stapeln (Dutzende Pixel), Scroll.
+
+Tests: Icon-x und -Größe der Navigation sind über das ganze Einklappen gleich;
+Seite ohne Hub (der bisherige Test „fades in and rises“ wird zu „fades in“).
+Icon-Gate der Navigation: Abstand Icon → Name = `GAP_S`.
+
 ### Phase 5a: Öffnen ohne Terminal (vorgezogen 26.10., Wunsch des Nutzers)
 
 Die zwei Wege aus „Öffnen und Fenster“ kommen vor dem Rest von Phase 5, damit
@@ -2135,6 +2159,7 @@ Vom Nutzer am 24.10. so bestätigt:
 | 5c S6 | umgesetzt 26.10. nach „S6 im Detail“ (Abweichung dort: Werte weiter aus `prefs::load()`, die Watch-Zeile ist Auslöser). `Widget::adopt` für Schalter, Segment, Dropdown, Stepper (gleiten bzw. blenden), Slider und Feld (springen); `App::update` (gleiche Struktur → Werte übernehmen, fokussierte, gezogene und Zeilen mit offenem Schreibauftrag bleiben, übernommene Werte gelten als gemeldet; sonst `reload`); `ipc::watch_settings`, `save::watch` (Thread, neu alle 2 s, wenn der Daemon weg ist); Schreibaufträge tragen (Seite, Block), das Fenster zählt offene je Zeile. Tests (`app/tests/live.rs`, 3): Wert aus dem Tray gleitet und wird nicht zurückgeschrieben; fokussiertes Feld und Zeile mit offenem Auftrag bleiben; neue Notice baut auf derselben Seite neu. Checks: fmt, clippy ohne Warnung, `cargo test` 103 + 374 grün. Live nicht geprüft (bräuchte einen Tray-Klick bei offenem Fenster und einen Screenshot; nach Absprache). |
 | 4g | umgesetzt 26.10. nach „Phase 4g“. Beim Test zusätzlich gefunden: das Icon schwang beim Einklappen erst 17 px nach rechts (x 20 → 37) und dann zurück auf 15, weil zwischen „mittig in der schrumpfenden Fläche“ und „links eingerückt“ gemischt wurde; jetzt zwischen den Ruhelagen 20 und 15, ohne Runden. Name an fester Stelle (x 42). Test `closing_navigation_icons_glide_between_pixels_and_names_stay_put` (61 Proben alle 5 ms: monoton, ≥ 20 verschiedene x, Ruhelagen ganzzahlig). `/ui`-Skill um kurze Wege und Mischen zwischen Ruhelagen ergänzt. Checks: fmt, clippy ohne Warnung, `cargo test` 104 + 374 grün; Icon-Gate mit Outfit unverändert. |
 | 5c S7 | umgesetzt 26.10. nach „S7 im Detail“ (Abweichung dort: während einer Aufnahme ein Banner statt Hinweisen an sechs Zeilen). Feste Hinweise „Applies to the next recording“ und „Applies when replay restarts“ entfernt; Banner „A recording is running, changes here apply to the next one“; Zeile „Restart replay“ (Icon-Knopf, `Write::RestartReplay` = stop, start) nur bei laufendem, veraltetem Puffer. Veraltet: `seconds` oder `budget_bytes` (= `memory_mib · 2²⁰ / 3`, `worker/src/live.rs:108`) passen nicht zur Datei, oder in dieser Sitzung wurde ein Restart-Key geschrieben. Zweiter Watch-Thread auf `watch_recording`, signalisiert nur bei geändertem `state`. Texte ohne Schlusspunkt (Projektregel, vom Copy-Gate gefunden). Gates laufen jetzt auch im Zustand „Aufnahme läuft, Puffer veraltet“: Copy 120 Strings, Überlauf 854 Teile, Umbruch 297 Zeilen, Dropdowns 24. Tests: Banner nur bei Aufnahme und keine Zeile wiederholt ihn; Restart-Zeile nur bei laufend und veraltet, Klick liefert `RestartReplay`. Render beider Zustände angesehen. Checks: fmt, clippy ohne Warnung, `cargo test` 106 + 374 grün. Live nicht geprüft (Aufnahme und Replay-Neustart nach Absprache). |
+| 4h | umgesetzt 26.10. nach „Phase 4h“: Navigations-Icon fest auf x 16 in 14 px (eingeklappt mittig im 30er Quadrat, ausgeklappt 8 px eingerückt wie oben und unten), Name ab x 38; `PAGE_RISE` und `App::rise` entfernt, `layout_at` ohne Hub. Tests: `navigation_icons_keep_their_place_and_size_while_it_closes` (61 Proben gleich, Quadrat, Icon mittig), `a_new_page_fades_in_where_it_stays`. `/ui`-Skill: Regel „Keine Mini-Wege“ mit O-Ton, ersetzt die Gleit-Ausnahme aus 4g. Icon-Gate mit Outfit grün. Checks: fmt, clippy ohne Warnung, `cargo test` 106 + 374 grün. |
 | 5a | umgesetzt 26.10. nach „Phase 5a: Öffnen ohne Terminal“: Tray-Eintrag „Settings…“ ganz unten (Prozessstart im Tray-Thread), `assets/linux/boltsnap.desktop` mit Icons 64/128/256 aus `boltsnap.ico`, `.deb`-Assets, Flake-`postInstall`, Release-Tarball, README. Abweichung: `Categories=Graphics;`. Checks: `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test` 75 + 371 grün, `desktop-file-validate` ohne Meldung. Live: Daemon neu gestartet, dbusmenu-`GetLayout` endet auf „Settings…“; `gio launch` der installierten `.desktop`-Datei öffnet das Fenster (Klasse `boltsnap`). Nicht live prüfbar: Klick im Tray. |
 | 5 | geplant, freigegeben 24.10. |
 | 6 (Library) | Skizze im Library-Plan |

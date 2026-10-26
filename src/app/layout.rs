@@ -11,7 +11,7 @@ use crate::ui::Rect;
 use crate::ui::motion::Spring;
 use crate::ui::theme::TextStyle;
 use crate::ui::theme::{
-    CONTENT_MAX, CTL_H, GAP_L, GAP_M, GAP_S, GAP_XL, GAP_XS, GLIDE, ICON, ICON_ALONE, LABEL_MIN,
+    CONTENT_MAX, CTL_H, GAP_L, GAP_M, GAP_S, GAP_XL, GAP_XS, GLIDE, ICON, LABEL_MIN,
     NAV_NARROW_BELOW, NAV_NARROW_W, NAV_W, ROW_H,
 };
 use crate::ui::widgets::{self, Widget};
@@ -213,26 +213,19 @@ impl App {
         lerp(NAV_NARROW_W, NAV_W, self.nav_open(now))
     }
 
-    /// A navigation entry's icon. Closing, it grows to its free-standing size
-    /// and moves to the middle, between pixels while it goes (a 5 px way in
-    /// whole pixels would be 5 steps); at rest it sits on whole pixels.
+    /// A navigation entry's icon, at one place in both states (settings
+    /// plan, 4h): closed, the entry is a `CTL_H` square with the icon in its
+    /// middle; open, the icon keeps that inset, the same as above and below
+    /// it. Only the name comes and goes.
     pub fn nav_icon(&self, index: usize, now: Instant) -> Rect {
-        let open = self.nav_open(now);
-        let rect = self.nav_rect(index, now);
-        // Between its two places at rest: in the middle of the closed
-        // entry, and inset like a control's text in the open one. Mixing
-        // with the middle of the entry as it shrinks would swing it right
-        // first.
-        let closed = GAP_S + (NAV_NARROW_W - 2.0 * GAP_S - ICON_ALONE) / 2.0;
-        let x = lerp(closed, rect.x + GAP_M, open);
-        widgets::icon_box(rect, x, lerp(ICON_ALONE, ICON, open))
+        let inset = (CTL_H - ICON) / 2.0;
+        widgets::icon_box(self.nav_rect(index, now), GAP_S + inset, ICON)
     }
 
-    /// Where navigation names start: their place in the open navigation, on
-    /// a whole pixel. A closing navigation fades and cuts them there instead
-    /// of sliding them.
+    /// Where navigation names start, `GAP_S` after the icon; a closing
+    /// navigation fades and cuts them there.
     pub fn nav_text_x(&self) -> f32 {
-        GAP_S + GAP_M + ICON + GAP_S
+        GAP_S + (CTL_H - ICON) / 2.0 + ICON + GAP_S
     }
 
     /// A navigation entry's surface. Entries follow each other with no gap
@@ -293,13 +286,12 @@ impl App {
         }
     }
 
-    /// The layout `scroll` pixels down the page, `rise` pixels lower while a
-    /// new page comes in.
-    pub fn layout_at(&self, scroll: f32, rise: f32, now: Instant) -> Layout {
+    /// The layout `scroll` pixels down the page.
+    pub fn layout_at(&self, scroll: f32, now: Instant) -> Layout {
         let (x, w) = self.column(now);
-        // Scroll and rise glide in fractions; the page moves in whole pixels
-        // so its text never shifts against its surfaces.
-        let top = (rise - scroll).round();
+        // Scroll glides in fractions; the page moves in whole pixels so its
+        // text never shifts against its surfaces.
+        let top = (-scroll).round();
         let mut y = GAP_XL;
         let title = Rect::new(x, top + y, w, CTL_H);
         y += CTL_H + GAP_L;
@@ -349,7 +341,7 @@ impl App {
     }
 
     pub fn layout(&self, now: Instant) -> Layout {
-        self.layout_at(self.scroll.offset(now), self.rise(now), now)
+        self.layout_at(self.scroll.offset(now), now)
     }
 
     pub fn block_rects(&self, now: Instant) -> Vec<Rect> {

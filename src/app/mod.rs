@@ -23,7 +23,7 @@ pub use writes::{Bind, Encode, Write};
 use crate::ui::icons::Icon;
 use crate::ui::motion::{Scroll, Spring};
 use crate::ui::text::Fonts;
-use crate::ui::theme::{GLIDE, PAGE_RISE, QUICK, Rgb, SNAP};
+use crate::ui::theme::{GLIDE, QUICK, Rgb, SNAP};
 use crate::ui::widgets::{self, Outcome, Widget};
 use crate::ui::{Effect, Input, Rect};
 
@@ -91,8 +91,7 @@ pub struct App {
     /// Per block of the current page: the value its row last reported.
     sent: Vec<Option<widgets::Value>>,
     sent_at: Option<Instant>,
-    /// Spatial motion off: a page comes in without rising, the navigation
-    /// and rows change shape at once.
+    /// Spatial motion off: the navigation and rows change shape at once.
     pub reduced_motion: bool,
 }
 
@@ -163,7 +162,7 @@ impl App {
     pub fn resize(&mut self, size: (f32, f32), now: Instant) {
         self.size = size;
         self.reshape(now);
-        let height = self.layout_at(0.0, 0.0, now + AT_REST).height;
+        let height = self.layout_at(0.0, now + AT_REST).height;
         self.scroll.set_max(height - size.1, now);
         let thumb = if self.scroll.max() > 0.0 { 1.0 } else { 0.0 };
         self.thumb.retarget(thumb, QUICK, now);
@@ -213,15 +212,6 @@ impl App {
         self.capture = None;
         self.resize(self.size, now);
         self.remember_values();
-    }
-
-    /// How far below its place the page is while it comes in.
-    fn rise(&self, now: Instant) -> f32 {
-        if self.reduced_motion {
-            0.0
-        } else {
-            PAGE_RISE * (1.0 - self.page_in.value(now))
-        }
     }
 
     /// 0 to 1 while the current page fades in.

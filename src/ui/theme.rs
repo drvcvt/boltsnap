@@ -130,7 +130,5 @@ pub const QUICK: Token = Token { duration: 0.15 };
 pub const SNAP: Token = Token { duration: 0.20 };
 /// Wheel scroll, scrolling to the focused control, a page coming in.
 pub const GLIDE: Token = Token { duration: 0.30 };
-/// How far a new page rises while it fades in.
-pub const PAGE_RISE: f32 = 6.0;
 /// One mouse-wheel notch.
 pub const WHEEL_STEP: f32 = 48.0;

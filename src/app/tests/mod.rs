@@ -10,7 +10,7 @@ use super::pages::{AudioSource, Corner, Cursor, Prefs};
 use super::{App, Block, Channel, Target, gallery, pages};
 use crate::ui::text::Fonts;
 use crate::ui::theme::{
-    CTL_H, GAP_XL, GAP_XS, NAV_NARROW_W, NAV_W, PAGE_RISE, QUICK, ROW_H, TextStyle, WHEEL_STEP,
+    CTL_H, GAP_XL, GAP_XS, NAV_NARROW_W, NAV_W, QUICK, ROW_H, TextStyle, WHEEL_STEP,
 };
 use crate::ui::widgets::Value;
 use crate::ui::{Canvas, Effect, Input, Key, Mods};
@@ -410,19 +410,15 @@ fn keys_switch_pages_and_close_the_window() {
 }
 
 #[test]
-fn a_new_page_fades_in_and_rises_unless_motion_is_reduced() {
+fn a_new_page_fades_in_where_it_stays() {
     let now = Instant::now();
     let mut app = app("shelf", now);
     let settled_title = app.layout(now + SETTLED).title;
     ctrl(&mut app, Key::Char('3'), now);
     assert_eq!(app.page_alpha(now), 0.0);
-    assert_eq!(app.layout(now).title.y, settled_title.y + PAGE_RISE);
+    // No rise of a few pixels: it would only make the fade less clean.
+    assert_eq!(app.layout(now).title.y, settled_title.y);
     assert_eq!(app.page_alpha(now + SETTLED), 1.0);
-    assert_eq!(app.layout(now + SETTLED).title.y, settled_title.y);
-    app.reduced_motion = true;
-    ctrl(&mut app, Key::Char('1'), now);
-    assert_eq!(app.page_alpha(now), 0.0, "the fade stays");
-    assert_eq!(app.layout(now).title.y, settled_title.y, "no rise");
 }
 
 #[test]

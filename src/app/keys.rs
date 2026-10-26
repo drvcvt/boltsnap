@@ -38,7 +38,7 @@ impl App {
         self.keyed.retarget(1.0, QUICK, now);
         let outcome = self.set_focus(Some(order[next]), now);
         if let Target::Control(block) = order[next] {
-            let rect = self.layout_at(0.0, 0.0, now + AT_REST).blocks[block];
+            let rect = self.layout_at(0.0, now + AT_REST).blocks[block];
             self.scroll
                 .reveal(rect.y - GAP_S, rect.bottom() + GAP_S, self.size.1, now);
         }
