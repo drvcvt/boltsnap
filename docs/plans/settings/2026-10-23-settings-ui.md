@@ -1062,6 +1062,190 @@ Shelf). Damit gibt es pro Phase einen echten Screenshot und Tests messen
 Geometrie (gleicher Rand, gleiche Höhen, Icon ≤ Text, keine Überlappung)
 statt nach Augenmaß.
 
+### Phase 4 im Detail (Gegenprüfung am Code, 26.10.)
+
+#### Befund
+
+| Was | Beleg |
+| --- | --- |
+| SCTK ist 0.19.2, `default = ["calloop", "xkbcommon"]` | `Cargo.lock`, `smithay-client-toolkit-0.19.2/Cargo.toml` |
+| Fenster: `Window::set_app_id`, `set_title`, `set_min_size`, `request_decoration_mode`, `WindowHandler::{configure, request_close}`, `WindowConfigure::new_size` als `(Option<NonZeroU32>, …)` | `src/shell/xdg/window/mod.rs:71, 207–277` |
+| Aktivierung: `ActivationState::request_token(qh, RequestData)`, Antwort in `ActivationHandler::new_token`, dann `activate(surface, token)` | `src/activation.rs:18, 64–111` |
+| Tastatur mit Wiederholung über calloop: `SeatState::get_keyboard_with_repeat(qh, seat, None, loop_handle, callback)`; `KeyEvent { keysym, utf8 }`, `Modifiers { ctrl, shift, … }` | `src/seat/keyboard/repeat.rs:58`, `keyboard/mod.rs:242, 266` |
+| Mausrad: `PointerEventKind::Axis { vertical: AxisScroll { absolute, discrete, stop }, source }`; Touchpad liefert `discrete = 0` | `src/seat/pointer/mod.rs:51, 109` |
+| Scale: `CompositorHandler::scale_factor_changed(…, new_factor: i32)` | `src/compositor.rs:26` |
+| Cursor: `ThemedPointer` + `CursorIcon`, so wie Shelf und Selector | `linux/shelf/mod.rs:35, 3358`, `linux/select_skia/mod.rs:22` |
+| Text auf `tiny_skia::Pixmap`: ab_glyph-Outline, Deckung src-over; Breite über `h_advance` | `selector/render.rs:417, 446` |
+| UI-Font: `load_ui_font_weights(family, (500, 600))` liegt in der Binär-Crate; Fallback `fallback_popup_font` (eingebettetes DejaVu-Subset) ebenso | `linux/shelf/font.rs:52`, `shelf/font.rs:3`, `assets/fonts/dejavu-badge.ttf` |
+| Farben und Maße der Controls (V9): `#121212`, `#222222`, `#ECECEC`, `#969696`, `#6A6A6A`, Rand 16, Control 30, Titel 15, Label 13, Key 11 | `shelf/paint/controls.rs:7–22` |
+| Lucide liegt lokal: `lucide-static` 1.54.0 (ISC), 2134 SVGs, nur `path`, `circle`, `rect`, `line`, `polyline`, `polygon`, `ellipse`, Bögen (`a`) häufig | `~/projects/stepi/node_modules/lucide-static/icons/` |
+| tiny-skia 0.11 `PathBuilder` kennt keine Bögen | `move_to`, `line_to`, `quad_to`, `cubic_to`, `close`, `push_circle`, `push_oval` |
+| Hyprland: `misc:focus_on_activate = false` (Default), also macht eine Aktivierung das Fenster vermutlich nur „urgent“ | `hyprctl getoption misc:focus_on_activate`, 26.10. |
+| Hyprland-Lua fokussiert ein Fenster per `hyprctl eval 'hl.dispatch(hl.dsp.focus({ window = "address:…" }))'`; ein unbekanntes Fenster gibt eine Warnung, falsche Argumente einen Fehler | live geprüft am schon aktiven Fenster, 26.10. |
+| `src/platform/linux/` hat 10 Dateien, `src/` 6 Ordner-Module plus `lib.rs`/`main.rs`; `src/shelf/paint.rs` hat 1197 Zeilen und wächst nicht | `ls`, `wc -l` |
+
+#### Abweichungen vom Plan oben
+
+1. **Raise-Weg erst nach der Probe.** Da `focus_on_activate` aus ist, prüft
+   die Probe zwei Wege: (a) Aktivierung mit Token ohne Serial, (b)
+   „Neu-Mappen“: das laufende Fenster baut sein `xdg_toplevel` neu auf,
+   und Hyprland fokussiert neue Fenster. Gewinnt (a), bleibt es dabei. Sonst
+   (b), weil das ohne Compositor-eigenen Code auskommt; das Fenster landet
+   dann auf dem aktuellen Workspace. Die Notification „already open“ bleibt
+   der letzte Ausweg. Hyprland-Dispatch per `hyprctl eval` nutzt die Probe nur
+   als Messwerkzeug, nicht im Produkt.
+2. **Kein `fallback_frame` in Phase 4.** Hyprland, Sway und KDE bieten
+   `xdg-decoration`; hier gibt es keinen Compositor ohne, also wäre das
+   ungetesteter Code. Das Fenster fordert Server-Deko an; ohne Server-Deko
+   erscheint es ohne Rahmen. Bleibt offen für Phase 5.
+3. **Single-Instance (`single.rs`) kommt in Phase 4**, nicht erst in 5, weil
+   sie direkt an der Probe hängt.
+4. **Die Lib braucht ihren eigenen Fallback-Font:** `src/ui/text.rs` bettet
+   dasselbe `assets/fonts/dejavu-badge.ttf` per `include_bytes!` ein (die
+   Binär-Crate-Funktion ist aus der Lib nicht erreichbar). Echte Fonts kommen
+   über `Fonts::new(medium, demibold)` von der Plattform.
+5. **Icons:** neben `path` liest der Parser die anderen sechs Lucide-Elemente
+   (je eine Zeile auf `PathBuilder`). Bögen werden nach SVG-Anhang F.6 in
+   höchstens 90°-Kubikstücke zerlegt.
+
+#### Verhalten der Testseite
+
+`boltsnap settings` öffnet in Phase 4 ein Fenster „Boltsnap“ (App-ID
+`boltsnap`, 760×520, Minimum 560×400) mit Navigation links (zwei Einträge:
+Widgets, Text) und rechts einer Galerie: je Widget eine Zeile mit Icon, Name,
+Hinweis und dem Control, dazu je eine deaktivierte Variante. Werte ändern sich
+nur im Fenster, nichts geht an den Daemon oder die Datei. `Esc`, `Ctrl+W`,
+`Ctrl+Q` und das Fenster-X schließen.
+`boltsnap settings --render <page> <out.png> [--scale N]` zeichnet dieselbe
+Seite ohne Fenster. Unter Windows: Fehler „settings are not available on
+Windows“.
+
+Zustände je Widget: normal, Hover, Fokus, gedrückt/aktiv, deaktiviert.
+Hover heißt eine Stufe heller (`#2A2A2A`) mit 90 ms Übergang; Fokus heißt
+dieselbe Fläche plus hellerer Text, kein Ring. Deaktiviert ist Text
+`#6A6A6A`, keine Hover-Reaktion. Was ausblendet (Dropdown-Liste), nimmt keine
+Eingaben mehr an. Ein Zeiger-Verlassen (auch durch Fokusverlust des
+Fensters) löscht den Hover.
+
+| Widget | Maus | Tastatur | Animiert |
+| --- | --- | --- | --- |
+| Schalter | Klick schaltet | `Space`/`Enter` | Knopf gleitet 140 ms |
+| Segment | Klick auf Teil | `←/→` | Auswahlfläche gleitet 140 ms |
+| Dropdown | Klick öffnet, Klick auf Eintrag wählt, Klick daneben schließt | `Enter`/`Space` öffnet, `↑/↓`, `Enter` wählt, `Esc` schließt | Liste blendet 90 ms ein, öffnet nach oben, wenn unten kein Platz ist |
+| Slider | Klick springt, Ziehen folgt, Wert rechts | `←/→` ein Schritt, `Home/End` | Knopf folgt direkt (Ziehen ist direkte Manipulation) |
+| Stepper | `−`/`+`, Grenzen deaktivieren den Knopf | `←/→` | keine |
+| Textfeld | Klick setzt Cursor, Ziehen wählt aus, Doppelklick ein Wort | Zeichen, `←/→` (`Shift` wählt, `Ctrl` wortweise), `Home/End`, `Backspace`/`Delete` (`Ctrl` wortweise), `Ctrl+A/C/X/V`, `Enter` bestätigt | Cursor blinkt nicht (kein Dauer-Redraw) |
+| Icon-Button | Klick | `Space`/`Enter` | Hover |
+| Banner | – | – | – |
+
+Navigation: Auswahlfläche gleitet 180 ms (Minimum-Jerk) zum gewählten
+Eintrag, `↑/↓` wenn sie Fokus hat, `Ctrl+1`/`Ctrl+2`. `Tab`/`Shift+Tab`
+läuft durch Navigation und alle aktiven Controls der Seite; ein fokussiertes
+Control unterhalb des sichtbaren Bereichs scrollt in Sicht.
+Scroll: Mausrad-Rastung = 48 px Ziel, gleitet 160 ms aus absoluter Zeit,
+weitere Rastungen verschieben das Ziel mit Übernahme der Geschwindigkeit;
+Touchpad (`discrete == 0`) folgt pixelgenau. Reduced Motion: keins (kein
+Signal unter Wayland); die Wege sind kurz.
+
+#### Code
+
+Lib (`src/lib.rs` bekommt `pub mod ui; pub mod app;`), keine Wayland-Typen:
+
+- `src/ui/mod.rs`: `Rect`, `Input` (Zeiger, Rad, Taste, Text), `Key`,
+  `Effect` (`Copy(String)`, `Paste`, `Close`, `Redraw`), `Canvas`
+  (Pixmap + Scale).
+- `src/ui/theme.rs`: Farben, Schriftskala (`Title 15/600`, `Label 13/500`,
+  `Hint 12/500`, `Key 11/500`), Abstände (4, 8, 12, 16, 24), `CTL_H 30`,
+  `RADIUS 9`, `ROW_H 44`, Icon 13/16, Strich 1,5, Dauern.
+- `src/ui/text.rs`: `Fonts`, `measure`, `draw` (Baseline auf
+  Versalien-Mitte einer Box, wie `cap_baseline` in `controls.rs:73`),
+  `ellipsize`, Cursor-Positionen für das Textfeld.
+- `src/ui/icons.rs`: SVG-Parser (Elemente, `d`-Befehle samt Bögen), Registry
+  `Icon::Name` → eingebettete SVG aus `assets/icons/ui/`, `draw(icon, rect,
+  color)` mit Strich 1,5 px in Zielgröße.
+- `src/ui/motion.rs`: `Tween` (Minimum-Jerk `10u³ − 15u⁴ + 6u⁵`, Start,
+  Ziel, Dauer, `retarget` mit Geschwindigkeitsübernahme), `ScrollState`.
+- `src/ui/widgets/`: `mod.rs`, `switch.rs`, `segment.rs`, `dropdown.rs`,
+  `slider.rs`, `stepper.rs`, `text_field.rs`, `button.rs` (Icon-Button und
+  Banner). 8 Dateien.
+- `src/ui/tests.rs`.
+- `src/app/mod.rs`: `App` mit Navigation, Seiten, Fokus, Scroll;
+  `handle(Input) -> Vec<Effect>`, `draw(&mut Canvas)`, `animating()`.
+- `src/app/gallery.rs`: die zwei Testseiten.
+- `assets/icons/ui/`: die genutzten Lucide-SVGs, unverändert kopiert, plus
+  `LICENSE` (ISC).
+
+Plattform:
+
+- `src/platform/linux/app/mod.rs`: `run(page)` mit calloop-Loop,
+  `render(page, out, scale)` offscreen.
+- `src/platform/linux/app/window.rs`: SCTK-Registry, `Window`,
+  `SlotPool`, Buffer-Scale, Frame-Callbacks nur, solange
+  `App::animating()`.
+- `src/platform/linux/app/input.rs`: Pointer, Tastatur mit Wiederholung,
+  Rad → `Input`; Cursor über `ThemedPointer`; `Effect::Copy/Paste` über
+  `wl-clipboard-rs`.
+- `src/platform/linux/app/single.rs`: `flock` auf `<runtime>/app.lock`,
+  `<runtime>/app.sock` nimmt „raise <page>“ an; Weg je nach Probe.
+- `src/main.rs`: Befehl `settings`; `platform/mod.rs` und
+  `platform/windows` liefern die Windows-Meldung.
+
+#### Schritte
+
+1. **Probe** (`examples/activation_probe.rs`, wird danach entfernt):
+   öffnet ein kleines Fenster (App-ID `boltsnap-probe`), liest Befehle von
+   stdin: `activate` (Token ohne Serial anfordern, eigenes Surface
+   aktivieren), `remap` (Toplevel neu aufbauen), `quit`. Ein Skript merkt
+   sich das aktive Fenster, fokussiert es vor jedem Befehl zurück
+   (`hyprctl eval`), schickt den Befehl und liest danach
+   `hyprctl activewindow -j` und `urgent` aus `hyprctl clients -j`. Am Ende
+   fokussiert es das ursprüngliche Fenster wieder. Dauer etwa 3 s.
+   Ergebnis und Entscheidung kommen in den Stand (Abschnitt 10).
+2. **UI-Grundlage:** `theme`, `text`, `icons`, `motion`, Assets. Tests:
+   jede Registry-Icon-Datei parst; Bogen-Endpunkt trifft das Ziel (±0,01);
+   `measure` gleich Summe der Advances; `ellipsize` passt in die Breite und
+   endet auf „…“; Minimum-Jerk bei 0/0,5/1 = 0/0,5/1, Retarget ohne Sprung
+   in Position und Geschwindigkeit.
+3. **Widgets, App, Galerie, Offscreen-Render:** Tests messen am gezeichneten
+   Layout: jede Control-Höhe 30, Zeilen 44, Rand 16 an allen Seiten der
+   Seite, Icon-Box ≤ Label-Größe und auf Versalien-Mitte, keine zwei
+   Rechtecke überlappen, Tab-Reihenfolge = Lesereihenfolge; je Widget die
+   Tastatur- und Maus-Abläufe aus der Tabelle als Eingabe-Folgen. Danach
+   `boltsnap settings --render widgets` im Dark Theme ansehen.
+4. **Fenster und Single-Instance:** `linux/app/`, Befehl `settings`.
+   Live: Fenster öffnen, Screenshot per `boltsnap full --no-copy -o`
+   (Zwischenablage bleibt), zweiter Aufruf öffnet kein zweites Fenster und
+   holt das erste nach vorne (Weg aus Schritt 1), `Esc` schließt.
+5. **Doku:** `docs/codebase.md` (neue Ordner), Stand im Plan. README erst in
+   Phase 5 (der Befehl hat dann echte Seiten).
+
+#### Abnahme
+
+`cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung,
+`cargo test`, `git diff --check`; Offscreen-Render angesehen; Probe-Ergebnis
+im Plan; live die Punkte aus Schritt 4. Durch den Nutzer: Hover flackert
+nicht, Tastatur erreicht alles, Scroll gleitet.
+
+#### Was Phase 4 nicht macht
+
+- Keine echten Settings-Seiten, kein IPC zum Daemon, kein Tray-Eintrag,
+  kein Ordner-Dialog (alles Phase 5).
+- Kein `fallback_frame` (siehe Abweichung 2), kein Fractional Scaling.
+- Kein Cursor-Blinken, keine Tooltips, kein Rechtsklick-Menü im Textfeld,
+  keine IME (`text-input`), keine Primärauswahl.
+- Keine Library-Seiten (Phase 6).
+
+#### Was kaputtgehen kann
+
+| Risiko | Gegenmaßnahme |
+| --- | --- |
+| Probe stört den Nutzer (Fenster erscheint, Fokus wandert) | etwa 3 s, Fokus wird danach zurückgegeben |
+| Keine der beiden Raise-Varianten fokussiert | Notification „Boltsnap is already open“, kein zweites Fenster |
+| Eigene Font-Metriken setzen Text optisch zu tief | Baseline über Versalhöhe (`cap_baseline`), Test misst die Icon-Mitte gegen die Versalien-Mitte |
+| Bogen-Umrechnung verzerrt Icons | Endpunkt-Test plus Render der Icons im Offscreen-Bild |
+| `src/` bekommt zwei neue Ordner | `src/` hat 6, danach 8; jede neue Datei unter 500 Zeilen |
+| Tastatur-Wiederholung mit calloop-Version | dieselbe calloop 0.13 wie SCTK (`Cargo.toml`-Kommentar), Build zeigt es |
+
 ## 6. Reihenfolge
 
 Jede Phase ist ein eigener Commit (oder wenige), baut, testet und lässt den
@@ -1188,5 +1372,7 @@ Vom Nutzer am 24.10. so bestätigt:
 | 3, Schritt 4 | umgesetzt 26.10.: `cards::CARD_WIDTH` (`AtomicU32`) mit `use_card_size`/`card_size`, beim Start aus der Config gesetzt; `apply_shelf_prefs` skaliert bei neuer Größe alle Karten im Eventloop (`resize_cards`, Logzeile nur über 8 ms) und gibt sie an `Worker::rerender`. Worker: `Job::Video | Job::Rerender`, geteilte Liste (gleiche `id` ersetzt), nach jeder Nachricht abgearbeitet; Größe beim Rendern über eine übergebene Funktion gelesen, `render` für Bild (`decode_shelf_image` + `make_image_card_thumbnail`) und Video (`extract(path, size)`). `ThumbnailReady` übernimmt nur in aktueller Größe; `add_prepared` ruft `fit_card` (Stufe 1 plus Re-Render für eine Karte alter Größe). `prepare_add` und `prepare_pixels_with` bekommen die Größe, der Client-Thread übergibt `card_size()`; Platzhalter per `RgbaImage::from_pixel`; CLI rendert mit `Config::load().shelf_prefs().card`. Abweichung: `make_card_thumbnail` ist unter Linux nur noch in Tests, Windows und `examples/image_transfer_bench.rs` in Gebrauch und trägt dafür ein kommentiertes `allow(dead_code)` (ein `cfg` hätte das Example gebrochen). Tests: `prepare_add` verwirft einen Client-Thumb in 190×132, wenn 300 gilt; Worker-Test mit kleiner PNG (300×208, fehlende Datei `None`, doppelte `id` einmal); der ignorierte ffmpeg-Test prüft 300×208 und lief einmal grün mit `--ignored`. `shelf/mod.rs` 3677 Zeilen. Checks: `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test` 41 + 366 grün. |
 | 3, Schritt 5 | umgesetzt 26.10.: README (`[shelf]` unter Konfiguration, Ecke im Shelf-Abschnitt), `docs/codebase.md` (`cards.rs`). Live nach Install und Daemon-Neustart (keine Aufnahme lief), echte `config.toml` vorher gesichert: zwei Karten (`boltsnap full`, 2-s-Testvideo per `add_video`), Layer 234×318; `set_settings` `shelf.card_width = 300` → `hyprctl layers` 344×470, Ausschnitt eines Screenshots zeigt beide Karten scharf in 300 px (harte Testbild-Kanten, lesbarer Text); `visible_cards = 1` → 344×252; `corner = "top-right"` → Layer bei x 1552, y 24 auf DP-3 (1920 − 24 − 344); `visible_cards = 2` plus neuer Screenshot → 344×470, neueste Karte oben, Video darunter, die dritte im Cache; Backup zurückkopiert (Handedit über den Watcher) → unten links, 234×460 für drei Karten. Datei am Ende byte-gleich mit der Sicherung, `daemon.log` leer. Abweichungen: kein gespeicherter Screenshot als dritte Karte (eine Bild-Karte behält nach dem Speichern ihre temporäre Datei, der Re-Render-Pfad ist derselbe); Screenshots per `boltsnap full -o` statt `grim` (nicht installiert), das hat nebenbei die Zwischenablage überschrieben. Nicht geprüft: die Gleit-Bewegung oben (braucht den Nutzer), die Logzeile für Stufe 1 über 8 ms kam bei drei Karten nicht. |
 | Entfernen ruckelt | umgesetzt 26.10. nach „Nebenbei: ruckelndes Entfernen“ (Abschnitt 3): `cards::hold_size`, `animated_layout` hält die Layer-Größe, solange eine Karte verschwindet, `draw` fordert nur einen Frame-Callback gleichzeitig an, `place_on_output` setzt ihn zurück. Test `a_leaving_card_keeps_the_layer_size_and_the_stack_on_its_anchored_edge`. Checks: `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test` 41 + 367 grün; installiert, Daemon neu gestartet. Offen: der Nutzer schließt eine Karte und beurteilt die Bewegung (kein Klick-Tool hier) |
-| 4 und 5 | geplant, freigegeben 24.10. |
+| 4 | ausgeplant 26.10. („Phase 4 im Detail“, Abschnitt 5), in Arbeit |
+| 4, Schritt 1 | Probe gelaufen 26.10. (`examples/activation_probe.rs`, danach entfernt; Skript fokussiert vor jedem Versuch das vorher aktive Fenster `termo` zurück und am Ende wieder): `xdg_activation_v1` ist da; Token ohne Serial plus `activate` → aktiv bleibt `termo`, kein Fokus. Neu-Mappen (neues `xdg_toplevel`, altes verworfen) → aktiv ist `boltsnap-probe`. `urgent` steht nicht in `hyprctl clients -j`, ließ sich also nicht messen. **Entscheidung: Weg (b), Neu-Mappen.** |
+| 5 | geplant, freigegeben 24.10. |
 | 6 (Library) | Skizze im Library-Plan |
