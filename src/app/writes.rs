@@ -163,6 +163,8 @@ impl App {
             return;
         }
         let (current, focus, capture) = (self.current, self.focus, self.capture);
+        // The row the shelf preview's edge sets while it is dragged.
+        let dragged = self.dragged_row();
         for (page, (old, new)) in self.pages.iter_mut().zip(pages).enumerate() {
             for (index, pair) in old.blocks.iter_mut().zip(new.blocks).enumerate() {
                 let (old, new) = match pair {
@@ -177,7 +179,12 @@ impl App {
                 old.bind = new.bind;
                 old.reset = new.reset;
                 let held = Some(Target::Control(index));
-                if page == current && (focus == held || capture == held || busy(page, index)) {
+                if page == current
+                    && (focus == held
+                        || capture == held
+                        || dragged == Some(index)
+                        || busy(page, index))
+                {
                     continue;
                 }
                 let value = new.control.value();

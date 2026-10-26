@@ -3,6 +3,7 @@
 //! recording takes (P2), the replay buffer on a timeline (P3); with the
 //! newest screenshots where there are some (5e).
 
+mod dims;
 mod displays;
 mod replay;
 mod shelf;
@@ -13,6 +14,7 @@ use std::time::Instant;
 use super::App;
 use crate::ui::{Canvas, Rect};
 
+pub use dims::{Measure, measure as shelf_measure_of};
 pub use displays::{
     caption_place as display_caption_place, every_caption as display_lines,
     name_places as display_name_places, places as display_places,
@@ -20,7 +22,7 @@ pub use displays::{
 pub use replay::{
     bar as replay_bar_rect, cells as replay_cells, head as replay_head_rect, step as replay_step,
 };
-pub use shelf::{screen, shelf_cards};
+pub use shelf::{BACKDROP_DARK, screen, shelf_cards};
 
 use super::pages::Screen;
 use crate::ui::motion::Spring;
@@ -62,6 +64,9 @@ pub(super) struct State {
     /// The newest screenshots, and 0 to 1 while they come in.
     shots: shots::Shots,
     shots_in: Spring,
+    /// 0 to 1: the front card's measure shows; the edge being dragged.
+    dims: Spring,
+    drag: Option<dims::Drag>,
     /// The replay buffer's length, what its memory holds, what it holds now.
     length: Spring,
     holds: Spring,
@@ -81,6 +86,8 @@ impl State {
             captions: Vec::new(),
             shots: shots::Shots::default(),
             shots_in: Spring::settled(0.0, now),
+            dims: Spring::settled(0.0, now),
+            drag: None,
             length: Spring::settled(60.0, now),
             holds: Spring::settled(60.0, now),
             held: Spring::settled(0.0, now),
@@ -104,6 +111,7 @@ impl App {
             || self.displays_moving(now)
             || self.replay_moving(now)
             || !self.preview.shots_in.done(now)
+            || !self.preview.dims.done(now)
     }
 
     /// The save folder's newest screenshots arrived: the previews show them,

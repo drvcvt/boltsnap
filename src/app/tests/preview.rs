@@ -330,3 +330,141 @@ fn a_whole_screen_is_told_from_an_area_and_pictures_fit_and_cover() {
         Rect::new(10.0, -40.0, 640.0, 480.0)
     );
 }
+
+fn shelf_rect(app: &App, now: Instant) -> Rect {
+    let index = app
+        .page()
+        .blocks
+        .iter()
+        .position(|block| matches!(block, Block::Preview(Preview::Shelf)))
+        .expect("a shelf preview");
+    app.layout(now).blocks[index]
+}
+
+#[test]
+fn the_front_card_measures_190_by_132_beside_it_and_follows_the_slider() {
+    let now = Instant::now();
+    let mut app = app_on("shelf", SIZE, now);
+    assert_eq!(app.measure_shown(now), 1.0, "room in the corner's margin");
+    assert_eq!(
+        app.shelf_measure_text(),
+        Some(("190\u{a0}px".into(), "132\u{a0}px".into()))
+    );
+    let rect = shelf_rect(&app, now);
+    let card = app.preview_cards(rect, now)[0].0;
+    let m = app.shelf_measure(rect, now).unwrap();
+    // Bottom left: the height line right of the card, the width line in the
+    // margin under it, the numbers in a column past the height line.
+    assert_eq!(m.height_line.x, card.right().round() + 8.0);
+    assert_eq!(
+        (m.height_line.y, m.height_line.bottom()),
+        (card.y.round(), card.bottom().round())
+    );
+    let screen = crate::app::preview_screen(rect);
+    assert!(m.width_line.y > card.bottom() + 2.0 && m.width_line.y + 9.0 <= screen.bottom());
+    assert_eq!(m.label_x, m.height_line.right() + 4.0);
+    focus(&mut app, "Card size", now);
+    key(&mut app, Key::Right, now);
+    assert_eq!(
+        app.shelf_measure_text(),
+        Some(("200\u{a0}px".into(), "139\u{a0}px".into()))
+    );
+    // A narrow window leaves no room in the margin: the measure is not there.
+    let narrow = app_on("shelf", (360.0, 800.0), now);
+    assert_eq!(narrow.measure_shown(now), 0.0);
+}
+
+#[test]
+fn dragging_the_cards_edge_sets_card_size_in_steps_and_writes_like_the_slider() {
+    use crate::app::{Target, Write};
+    use crate::ui::{Effect, Input};
+    let now = Instant::now();
+    let mut app = app_on("shelf", SIZE, now);
+    let row = super::block(&app, "Card size");
+    let block = app
+        .page()
+        .blocks
+        .iter()
+        .position(|b| matches!(b, Block::Preview(Preview::Shelf)))
+        .unwrap();
+    let edge = app.shelf_measure(shelf_rect(&app, now), now).unwrap().edge;
+    let (x, y) = (edge.x + edge.w / 2.0, edge.y + edge.h / 2.0);
+    app.handle(Input::Move { x, y }, now);
+    let target = Target::Preview(block);
+    let hover = app.fade(
+        target,
+        crate::app::Channel::Hover,
+        now + Duration::from_millis(60),
+    );
+    assert!(hover > 0.0, "the edge lights the measure");
+    app.handle(Input::Press { x, y, clicks: 1 }, now);
+    // 30 px at 656 / 1920 is 88 shelf pixels: 278, the slider makes it 280.
+    let at = now + Duration::from_millis(10);
+    let effects = app.handle(Input::Move { x: x + 30.0, y }, at);
+    assert_eq!(effects, vec![Effect::Changed(row)]);
+    assert_eq!(
+        app.write(row),
+        Some(Write::Key(
+            "shelf.card_width",
+            crate::settings::Value::Int(280)
+        ))
+    );
+    // Within the throttle nothing more goes out; the daemon's older value
+    // does not pull the row back while it is dragged.
+    let at = at + Duration::from_millis(20);
+    assert!(app.handle(Input::Move { x: x + 40.0, y }, at).is_empty());
+    let pages = crate::app::pages::pages(&super::prefs(), None, at);
+    app.update(pages, at, |_, _| false);
+    assert_eq!(app.value(row), Some(crate::ui::widgets::Value::Int(310)));
+    // Letting go sends the last value.
+    let effects = app.handle(Input::Release, at + Duration::from_millis(5));
+    assert_eq!(effects, vec![Effect::Changed(row)]);
+    assert_eq!(
+        app.write(row),
+        Some(Write::Key(
+            "shelf.card_width",
+            crate::settings::Value::Int(310)
+        ))
+    );
+}
+
+#[test]
+fn the_cards_show_the_newest_screenshots_on_the_darkened_screen() {
+    use crate::app::shots::Shots;
+    use crate::ui::picture::Picture;
+    let now = Instant::now();
+    let mut app = app_on("shelf", SIZE, now);
+    let solid = |(w, h): (u32, u32), rgb: [u8; 3]| {
+        Picture::from_rgba(w, h, [rgb[0], rgb[1], rgb[2], 255].repeat((w * h) as usize)).unwrap()
+    };
+    app.set_shots(
+        Shots {
+            screen: Some(solid((1920, 1080), [255, 255, 255])),
+            cards: vec![solid((384, 267), [220, 30, 30])],
+        },
+        now,
+    );
+    let later = now + SETTLED;
+    let mut canvas = crate::ui::Canvas::new(SIZE.0 as u32, SIZE.1 as u32, 1).unwrap();
+    app.draw(&mut canvas, later);
+    let pixel = |x: f32, y: f32| {
+        let i = ((y as u32 * SIZE.0 as u32 + x as u32) * 4) as usize;
+        let d = canvas.pixmap.data();
+        (d[i], d[i + 1], d[i + 2])
+    };
+    let rect = shelf_rect(&app, later);
+    let cards = app.preview_cards(rect, later);
+    let middle = |r: Rect| (r.x + r.w / 2.0, r.y + r.h / 2.0);
+    let (x, y) = middle(cards[0].0);
+    assert_eq!(pixel(x, y), (220, 30, 30), "the newest on the front card");
+    let (x, y) = middle(cards[1].0);
+    assert_eq!(
+        pixel(x, y),
+        crate::ui::theme::SELECTED,
+        "no picture: a plain card"
+    );
+    // The white screen behind, 65 % of the way to WINDOW: 0.35 · 255 + 0.65 · 18.
+    let screen = crate::app::preview_screen(rect);
+    let (r, _, _) = pixel(screen.x + screen.w / 2.0, screen.y + 20.0);
+    assert!((r as i32 - 101).abs() <= 2, "{r}");
+}

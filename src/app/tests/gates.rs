@@ -320,6 +320,20 @@ fn gate_groups_pad_equally_and_siblings_share_an_axis() {
                 }
                 if let Block::Preview(crate::app::Preview::Shelf) = block {
                     let screen = crate::app::preview_screen(*rect);
+                    // The measure stays on the screen where it shows.
+                    if app.measure_shown(now + SETTLED) > 0.0 {
+                        let m = app
+                            .shelf_measure(*rect, now + SETTLED)
+                            .expect("a front card");
+                        for part in [m.width_line, m.height_line, m.edge] {
+                            assert!(inside(part, screen), "{name} measure off the screen at {w}");
+                        }
+                        assert!(
+                            m.width_line.y + 9.0 <= screen.bottom()
+                                && m.width_line.y - 4.0 >= screen.y,
+                            "{name} width number off the screen at {w}"
+                        );
+                    }
                     let pads = [
                         screen.x - rect.x,
                         rect.right() - screen.right(),
@@ -377,6 +391,13 @@ fn gate_contrast_every_text_on_its_surface() {
         ("sub on control", SUB, RAISE),
         ("sub on hover", SUB, HOVER),
         ("accent text", ON_ACCENT, ACCENT),
+        // The shelf preview's numbers over the brightest screenshot there
+        // can be, darkened behind the cards.
+        (
+            "measure on a white screenshot",
+            TEXT,
+            mix((255, 255, 255), WINDOW, crate::app::BACKDROP_DARK),
+        ),
     ];
     let mut lowest = f64::MAX;
     for (what, fg, bg) in pairs {

@@ -71,6 +71,7 @@ impl App {
                     _ => Outcome::IGNORED,
                 }
             }
+            Some(Target::Preview(_)) => Outcome::IGNORED,
             Some(Target::Reset(block)) => match key {
                 Key::Space | Key::Enter => Outcome {
                     effect: Some(Effect::Reset(block)),

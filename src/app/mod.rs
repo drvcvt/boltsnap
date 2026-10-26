@@ -21,9 +21,9 @@ use std::time::Instant;
 pub use fades::Channel;
 pub use layout::{AT_REST, Layout, RowParts};
 pub use preview::{
-    Preview, display_caption_place, display_lines, display_name_places, display_places,
-    replay_bar_rect, replay_cells, replay_head_rect, replay_step, screen as preview_screen,
-    shelf_cards, shots,
+    BACKDROP_DARK, Measure, Preview, display_caption_place, display_lines, display_name_places,
+    display_places, replay_bar_rect, replay_cells, replay_head_rect, replay_step,
+    screen as preview_screen, shelf_cards, shelf_measure_of, shots,
 };
 pub use writes::{Bind, Encode, Write};
 
@@ -74,6 +74,9 @@ pub enum Target {
     Control(usize),
     /// A row's reset button, by block on the current page.
     Reset(usize),
+    /// The edge of the front card in a shelf preview, by block: dragged, it
+    /// sets "Card size".
+    Preview(usize),
 }
 
 /// A control's [`Effect::Browse`] as the row's [`Effect::PickFolder`].
@@ -206,6 +209,7 @@ impl App {
         let room = brand::Mark::place(size.1).y >= last.bottom() + crate::ui::theme::GAP_XL;
         self.mark_room
             .retarget(f32::from(u8::from(room)), QUICK, now);
+        self.sync_dims(true, now);
     }
 
     /// 0 to 1: how much the mark in the sidebar shows; with the names, and
@@ -294,6 +298,9 @@ impl App {
                 .map(Target::Nav);
         }
         let rects = self.block_rects(now);
+        if let Some(edge) = self.edge_at((x, y), &rects, now) {
+            return Some(edge);
+        }
         let resets = self
             .page()
             .blocks
@@ -411,6 +418,7 @@ impl App {
             Input::Release => {
                 if let Some(target) = self.capture.take() {
                     self.fades.to(target, Channel::Press, 0.0, now);
+                    self.drop_edge();
                     if let Target::Control(block) = target
                         && let Some(control) = self.control(block)
                     {
@@ -448,6 +456,9 @@ impl App {
 
     fn moved(&mut self, at: (f32, f32), now: Instant) -> Outcome {
         self.pointer = Some(at);
+        if let Some(Target::Preview(_)) = self.capture {
+            self.drag_edge(at.0, now);
+        }
         if let Some(Target::Control(block)) = self.capture
             && let Some(rect) = self.control_rect(block, now)
         {
@@ -491,6 +502,11 @@ impl App {
             Some(Target::Nav(index)) => {
                 self.show(index, now);
                 self.set_focus(None, now);
+                Outcome::HANDLED
+            }
+            Some(Target::Preview(block)) => {
+                self.set_focus(None, now);
+                self.grab_edge(block, at.0, now);
                 Outcome::HANDLED
             }
             Some(Target::Reset(block)) => {

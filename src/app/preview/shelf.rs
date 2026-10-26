@@ -1,27 +1,33 @@
-//! P1: the shelf on a screen, to scale, following the page's controls.
+//! P1/V4: the shelf on a screen, to scale, following the page's controls;
+//! the newest screenshot of a whole screen behind it, darkened so the cards
+//! stand in front, and the newest others on the cards (settings plan, 5e).
 
 use std::time::Instant;
 
 use super::super::{App, Bind, Block};
 use super::Preview;
+use super::shots::cover;
 use crate::ui::motion::Spring;
 use crate::ui::theme::{self, GAP_M, GLIDE, PANEL_RADIUS, QUICK, SNAP};
 use crate::ui::widgets::Value;
 use crate::ui::{Canvas, Rect};
 
 /// The screen the shelf preview scales from.
-const SCREEN: (f32, f32) = (1920.0, 1080.0);
+pub(super) const SCREEN: (f32, f32) = (1920.0, 1080.0);
 /// The shelf's own geometry: from both edges of its corner
 /// (`linux/shelf/cards.rs` `EDGE_MARGIN`), its padding and the gap between
 /// cards (`shelf/layout.rs` `LayoutConfig`), a card's shape and corners
 /// (`shelf/thumbnail.rs` `CardSize::DEFAULT`, `shelf/paint.rs` `CARD_RADIUS`).
-const EDGE: f32 = 24.0;
-const PAD: f32 = 22.0;
+pub(super) const EDGE: f32 = 24.0;
+pub(super) const PAD: f32 = 22.0;
 const GAP: f32 = 10.0;
-const CARD: (f32, f32) = (190.0, 132.0);
+pub(super) const CARD: (f32, f32) = (190.0, 132.0);
 const CARD_RADIUS: f32 = 10.0;
 /// The most cards the shelf shows (`shelf.visible_cards`, schema).
 pub const MOST: usize = 8;
+/// How far the screenshot behind the cards goes towards `WINDOW`: enough
+/// that `TEXT` on a white screen keeps 4.5:1 (it needs 62.5 %).
+pub const BACKDROP_DARK: f32 = 0.65;
 
 /// The shelf preview's height for a column `width` wide.
 pub fn height(width: f32) -> f32 {
@@ -96,9 +102,9 @@ impl Card {
 /// page's controls hold them now, before they are saved.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct ShelfShape {
-    corner: usize,
-    width: f32,
-    count: usize,
+    pub(super) corner: usize,
+    pub(super) width: f32,
+    pub(super) count: usize,
 }
 
 impl App {
@@ -172,15 +178,16 @@ impl App {
             }
         }
         self.preview.shape = Some(shape);
+        self.sync_dims(animate, now);
     }
 
     pub(super) fn shelf_moving(&self, now: Instant) -> bool {
         self.preview.cards.iter().any(|card| card.moving(now))
     }
 
-    /// The shelf preview's cards right now, in window coordinates inside the
-    /// preview block `rect`, with how much each shows.
-    pub fn preview_cards(&self, rect: Rect, now: Instant) -> Vec<(Rect, f32)> {
+    /// Every slot's card right now, in window coordinates inside the
+    /// preview block `rect`, with how much it shows (0 for a hidden one).
+    pub(super) fn card_slots(&self, rect: Rect, now: Instant) -> Vec<(Rect, f32)> {
         let screen = screen(rect);
         let scale = screen.w / SCREEN.0;
         self.preview
@@ -195,6 +202,14 @@ impl App {
                 );
                 (r, card.shown.value(now).clamp(0.0, 1.0))
             })
+            .collect()
+    }
+
+    /// The shelf preview's cards right now, in window coordinates inside the
+    /// preview block `rect`, with how much each shows.
+    pub fn preview_cards(&self, rect: Rect, now: Instant) -> Vec<(Rect, f32)> {
+        self.card_slots(rect, now)
+            .into_iter()
             .filter(|(_, shown)| *shown > 0.0)
             .collect()
     }
@@ -204,17 +219,36 @@ impl App {
         let screen = screen(rect);
         // Inside a group whose padding equals its radius: the next step down.
         canvas.fill(screen, theme::RADIUS, theme::WINDOW, 1.0);
+        let pictures = self.preview.shots_in.value(now).clamp(0.0, 1.0);
+        if let Some(backdrop) = &self.preview.shots.screen {
+            let place = cover(backdrop.size(), screen);
+            canvas.picture(backdrop, place, screen, theme::RADIUS, pictures);
+            canvas.fill(
+                screen,
+                theme::RADIUS,
+                theme::WINDOW,
+                BACKDROP_DARK * pictures,
+            );
+        }
         let radius = CARD_RADIUS * screen.w / SCREEN.0;
-        for (card, shown) in self.preview_cards(rect, now) {
+        let slots = self.card_slots(rect, now);
+        for (index, (card, shown)) in slots.into_iter().enumerate() {
             // What runs past the screen's edge is cut there.
             let x = card.x.max(screen.x);
             let y = card.y.max(screen.y);
             let right = card.right().min(screen.right());
             let bottom = card.bottom().min(screen.bottom());
-            if right > x && bottom > y {
-                let visible = Rect::new(x, y, right - x, bottom - y);
-                canvas.fill(visible, radius, theme::SELECTED, shown);
+            if shown <= 0.0 || right <= x || bottom <= y {
+                continue;
+            }
+            let visible = Rect::new(x, y, right - x, bottom - y);
+            canvas.fill(visible, radius, theme::SELECTED, shown);
+            // Newest first from the corner out: a card keeps its picture
+            // when the count changes.
+            if let Some(picture) = self.preview.shots.cards.get(index) {
+                canvas.picture(picture, card, visible, radius, shown * pictures);
             }
         }
+        self.draw_dims(canvas, rect, now);
     }
 }
