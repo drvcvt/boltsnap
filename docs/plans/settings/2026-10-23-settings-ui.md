@@ -1595,6 +1595,168 @@ gewollt), drei linke Achsen (Gruppenkante, Icon, Name) wie in Systemeinstellunge
 Umsetzung nach Wahl des Nutzers; je Punkt eigener Commit, Gates und Renders
 danach.
 
+### Phase 5c: Umsetzung des Reviews U1 bis U13 und der offenen Phase-5-Teile
+
+Freigegeben zum Planen am 26.10. Belege für jede genutzte Schnittstelle stehen
+beim Schritt. Jeder Schritt ist ein Commit mit `cargo fmt --check`, clippy,
+`cargo test`, den Gates und einem Render; live wo angegeben (Tasten über
+`hl.dsp.send_shortcut`, Config vorher sichern und byte-gleich zurück).
+
+Entscheidungen des Nutzers vor dem jeweiligen Schritt: D1 Ohne-Animation-Liste
+(4b-Vorschlag), D2 Spalte bei breitem Fenster (U10), D3 dünne Seiten (U12),
+D4 AccessKit ja/nein (U13). Bis zur Antwort bleibt der heutige Stand.
+
+#### S1 Puffer im Shelf und im Selector (4f-Folge)
+
+- Erst messen wie in 4f: CPU des Daemons und Commit-Abstände beim Erscheinen
+  und Entfernen einer Karte (Karte per `boltsnap full`, Entfernen per
+  Socket-Befehl), Selector beim Ziehen eines Bereichs nicht skriptbar, dort nur
+  Code-Beleg.
+- Befund bestätigt: wie im Fenster bis zu drei `Buffer` je Größe behalten und
+  reihum nutzen (`slot::Buffer::canvas` liefert `None`, solange der Compositor
+  ihn hält, sctk 0.19.2 `shm/slot.rs:424`); Schaden nur im geänderten Bereich
+  ist dort ein eigener Schritt, nicht Teil von S1.
+- Dateien: `shelf/mod.rs` (über dem Limit, nur der Puffer-Teil wird in
+  `shelf/surface.rs` ausgelagert statt die Datei wachsen zu lassen),
+  `select_skia/mod.rs`.
+- Macht nicht: Shelf-Zeichnen selbst.
+
+#### S2 Sichtbarer Fokus (U1)
+
+- Fokussiertes Control: 2-px-Kontur in `SUB` innen auf seiner Fläche, Radius
+  konzentrisch (`RADIUS − 1`), Stärke = Fokus-Fade (`QUICK`); Navigation
+  genauso auf der Auswahlfläche. Hover und Druck bleiben Flächen-Helligkeit.
+- Segment: Kontur um das ganze Segment; Slider: um den Knopf-Halo; Stepper:
+  um das ganze Control.
+- Gate: Kontrast Kontur gegen `RAISE` ≥ 3:1 (5,38:1) neu in `gate_contrast`.
+- Dateien: `widgets/mod.rs` (`focus_ring`), alle Widgets, `draw.rs`.
+
+#### S3 Umbruch statt Kürzen (U2, U3)
+
+- `text.rs`: `wrap(style, text, width) -> Vec<String>` (Wortgrenzen, in Pfaden
+  auch nach `/`, notfalls mitten im Wort), mit Tests.
+- Banner: bis 4 Zeilen, Höhe = Zeilen × `LINE` + 2 · `GAP_M`, Icon auf der
+  ersten Zeile; erst danach „…“.
+- Zeilen: Name und Hinweis brechen um, wenn sie neben dem Control nicht
+  passen und die Zeile schon gestapelt ist oder der Name unter `LABEL_MIN`
+  fiele; Zeilenhöhe aus der Zeilenzahl, weiter Federn beim Stapeln (die Höhe
+  geht in `lerp`, gerundet).
+- Gates: bei 360 px kein „…“ in Namen, Hinweisen, Bannern der echten Seiten;
+  Fixture-Pfad bleibt mittig gekürzt im Textfeld (das ist ein Feld, kein
+  Text).
+- Dateien: `text.rs`, `layout.rs` (Höhen je Block), `draw.rs`,
+  `widgets/button.rs` (`draw_banner`), `tests/gates.rs`.
+- Risiko: Höhen hängen nun am Text; `reshape` muss mit der Zielbreite
+  rechnen (wie heute), Tests für Zeilenhöhen bei 360 und 1000.
+
+#### S4 Ganze Zeile klickbar (U5)
+
+- `target_at`: die Zeile (ohne Hinweis-Unterkante) zählt als Ziel ihres
+  Controls. Klick auf Name/Icon: Schalter schaltet, alle anderen bekommen
+  Fokus (Dropdown öffnet nicht, Slider springt nicht). Hover über der Zeile
+  hellt den Namen auf (`SUB` → `TEXT` beim Icon, `QUICK`).
+- Test: Klick auf den Namen von „Show frame“ schreibt den Key, auf den Namen
+  von „Frame rate“ fokussiert nur.
+
+#### S5 Einheitliche Dropdown-Breite (U9)
+
+- Token `MENU_MIN = 120` (Raster 4): Dropdowns mindestens so breit, Text
+  links, Chevron rechts wie heute. Segmente und Felder unverändert.
+- Gate: linke Kanten aller Dropdowns einer Seite gleich, wenn ihr Inhalt
+  passt.
+
+#### S6 Live-Werte: `SettingsWatch` und `Widget::set` (Voraussetzung für S7, S8)
+
+- `ipc.rs`: `watch_settings()` wie `watch_recording()` (`ipc.rs:187`); ein
+  Thread liest Zeilen (`state_line`, `shelf/settings.rs:117`) und schickt den
+  Stand über einen calloop-Kanal.
+- `Widget::set(value, now)`: Schalter, Segment, Dropdown, Stepper gleiten mit
+  ihren Federn zum neuen Wert, Slider und Feld springen (Ohne-Animation D1);
+  ein Feld mit Fokus und ein gezogener Slider behalten den Wert des Nutzers.
+- Fenster: neue Seiten aus dem Stand bauen; gleiche Struktur → Werte per
+  `set`, sonst `reload`. Ersetzt das bisherige `prefs::load()` aus der Datei
+  durch den Stand des Daemons.
+- Tests: Tray-Änderung bei offenem Fenster kommt an; gezogener Slider wird
+  nicht überschrieben.
+
+#### S7 Hinweise nur wenn sie stimmen, „Restart replay“ (U4)
+
+- `watch_recording()` im Fenster; „Applies to the next recording“ nur bei
+  laufender Aufnahme, an allen Recording-Zeilen mit `NextRecording`
+  (Schema `Applies`).
+- Replay: kein Hinweis je Zeile. Läuft der Puffer und wurde ein
+  `ReplayRestart`-Key geändert, erscheint unter der Gruppe eine Zeile
+  „Changes apply after a restart“ mit Knopf **Restart replay** (`Write::Restart`
+  = `stop`, dann `start` im Schreib-Thread); verwirft den Puffer, deshalb nie
+  automatisch.
+
+#### S8 Zurücksetzen je Zeile
+
+- Steht der Key in der Datei (`State::doc`), zeigt die Zeile links vom
+  Control einen Icon-Knopf `rotate-ccw` (quadratisch `CTL_H`); sein Platz
+  öffnet und schließt mit `SNAP`. Klick: `Change::Remove`, Wert springt über
+  S6 auf den Default.
+
+#### S9 Replay-Länge und Qualität (U6, U7)
+
+- Length als Dropdown 15 s, 30 s, 1 min, 2 min, 5 min, 10 min (`choose`, ein
+  anderer Wert aus der Datei bleibt als Eintrag).
+- Unter Memory: „Video at about N Mbit/s“ aus `replay::settings::video_kbps()`
+  (`src/replay/settings.rs:37`, füllt den Puffer mit der Länge); mit fester
+  `bitrate_kbps` stattdessen „Holds about N s“.
+
+#### S10 Fehlende Zeilen (U8)
+
+- Recording: Display (Dropdown „Focused display“, je Monitor aus
+  `OutputState::info` (`name`, `description`, sctk `output.rs:175`), „Both
+  displays“, ein konfigurierter, abgesteckter als „… (disconnected)“, Logik
+  wie `tray::default_targets`); Codec (Auto + `gsr::info().codecs`,
+  `gsr.rs:74`, im Hintergrund, 0,5 s).
+- Neue Seite General: Font (`fc-list : family`, gibt hier 1877 Familien,
+  Dropdown mit Suche durch Tippen, „Desktop font“ zuerst).
+- Dropdown mit vielen Einträgen: Liste scrollt in sich (Rad, Pfeile),
+  höchstens 10 sichtbar.
+
+#### S11 Ordner-Dialog
+
+- Icon-Knopf `folder-open` neben den Ordnerfeldern;
+  `org.freedesktop.portal.FileChooser.OpenFile` mit `directory: true`
+  (Portal-Version 4 hier, gtk-Backend), Ablauf wie `capture/portal.rs`
+  (Request-Signal abonnieren, dann rufen); Ergebnis-URI → Pfad mit `~`.
+  Kein Portal: Knopf aus, Feld bleibt.
+
+#### S12 Ecken-Piktogramme (U11)
+
+- Vier Sprite-Symbole: Bildschirmrahmen 16 × 12 mit gefülltem Punkt in der
+  Ecke, Strich wie Lucide (`STROKE`), eigene `<symbol>` in `lucide.svg` mit
+  Kommentar zur Herkunft. Test: rendert als Icon (Tinte im Rahmen).
+
+#### S13 Spalte und dünne Seiten (U10, U12), nach D2 und D3
+
+#### S14 AccessKit (U13), nach D4
+
+- Eigene Phase mit Probe zuerst: `accesskit_unix` 0.22.1 (zbus 5.5 mit
+  `async-io`, Boltsnap hat zbus 5.17) im Fenster, Baum aus Seiten/Zeilen,
+  Aktionen Fokus/Klick; Probe mit `accerciser` oder Orca. Kosten: rund
+  20 Crates mehr (atspi, async-executor …).
+
+#### Reihenfolge (Vorschlag)
+
+1. S1, weil es das ganze System betrifft und der Fix aus 4f fertig vorliegt.
+2. S2, S3, S4, S5: Sichtbarkeit und Ausrichtung, unabhängig voneinander,
+   S3 vor S5 (Breiten hängen an Umbruch).
+3. S6, dann S7 und S8: brauchen beide die Live-Werte.
+4. S9, S10, S11: neue Inhalte auf dem fertigen Fundament.
+5. S12 Feinschliff, S13 und S14 nach den Entscheidungen.
+
+Abhängigkeiten: S7, S8 brauchen S6; S5 nach S3; S10 braucht die scrollende
+Liste (in S10 selbst); S11 braucht S3 nicht.
+
+Was kaputtgehen kann: S3 ändert alle Höhen (Gates und Tests decken
+Überlauf, Abstände, Achsen); S6 ersetzt die Wertquelle (Test: gleiche Werte
+wie `prefs::load()` für eine Beispiel-Datei); S1 fasst den Daemon an (Shelf
+zeigt, Karten erscheinen und verschwinden, live geprüft).
+
 ## 6. Reihenfolge
 
 Jede Phase ist ein eigener Commit (oder wenige), baut, testet und lässt den
