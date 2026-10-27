@@ -126,3 +126,4 @@ mit Test. A8 `cfg_attr(windows, allow(dead_code))` an `ShelfPrefs`, `look`,
 kompiliert). A9 `linux/shelf/tests/{mod,focus}.rs`, 10 Dateien und ein Ordner,
 `mod.rs` 3477 Zeilen. Checks: fmt, clippy ohne Warnung, `cargo test` 155 +
 395 grün.
+Danach aufgeteilt: [Shelf-Split](../shelf/2026-10-27-shelf-split.md).
