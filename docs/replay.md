@@ -2,8 +2,9 @@
 
 The replay service continuously captures one display and system output audio.
 It keeps encoded packets in memory. Full-display exports copy these packets to
-MP4 without re-encoding. Region exports decode and crop on the CPU, then
-use the selected hardware encoder. The buffer continues during export.
+MP4 without re-encoding. Region exports with NVENC decode and crop in NVDEC
+and stay on the GPU; with VAAPI or Vulkan they decode and crop on the CPU,
+then use the selected hardware encoder. The buffer continues during export.
 
 ## Controls
 
@@ -181,8 +182,13 @@ run.
 
 The native fullscreen run above is limited live evidence. Interactive region
 export, gaming frame times, long-running real-time stability, monitor changes
-and AMD/Intel drivers still need validation. The GPU-only crop
-prototype failed a pixel comparison on padded video surfaces and is not enabled.
+and AMD/Intel drivers still need validation. The Vulkan crop prototype
+(Vulkan decode, `crop`, `scale_vulkan`) failed a pixel comparison on padded
+video surfaces and is not enabled. The NVDEC crop (`h264_cuvid -crop`, also
+HEVC and AV1) is bit-exact to the CPU crop on the same surfaces and at every
+edge (`tests/probe.py --cuvid`) and is used with NVENC on even edges; when it
+fails before writing, the export runs once more on the CPU. On a synthetic
+30 s 1080p60 buffer it took 2.9 s instead of 8.3 s.
 No claim of imperceptible capture overhead follows from the synthetic tests.
 See [benchmark results](replay-benchmarks.md) and the
 [worker instructions](../src/platform/linux/replay/worker/README.md).

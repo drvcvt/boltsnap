@@ -122,8 +122,10 @@ later gets a library of saved files
 - libway GPU capture is a library capability, not an integrated Boltsnap
   recording backend. Screenshots use CPU buffers; recording uses external
   recorders. See [libway integration](libway.md).
-- GPU-only replay crop is Unavailable for release use: its recorded pixel
-  comparison failed. CPU crop plus the selected encoder remains active.
+- Replay region export crops in NVDEC with NVENC (Integrated, automated
+  green: `probe.py --cuvid`, `live.py --encoder h264_nvenc`; not yet live
+  accepted from the selector). The Vulkan crop path stays Unavailable: its
+  pixel comparison failed. VAAPI/Vulkan encoders crop on the CPU.
 - gsr stdout-before-exit saving is Integrated (`cf243b5`) and was measured once
   live: 145 ms from Save to card for a 14 s 120 FPS recording, previously
   0.33-0.40 s. Direct libway RGB canvas remains planned and unimplemented. See

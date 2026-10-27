@@ -71,14 +71,16 @@ python3 src/platform/linux/replay/worker/tests/probe.py \
 ```sh
 python3 src/platform/linux/replay/worker/tests/live.py \
   --worker src/platform/linux/replay/worker/target/release/boltsnap-replay-worker
-# Optional hardware export test:
+# Optional hardware export test (h264_nvenc crops in NVDEC):
 python3 src/platform/linux/replay/worker/tests/live.py \
   --worker src/platform/linux/replay/worker/target/release/boltsnap-replay-worker \
-  --encoder h264_vulkan
+  --encoder h264_nvenc
 ```
 
 The live test exercises frozen selection, last-frame preview pixels, cropped and
-full exports, system-tone audio, stale IDs and concurrent status/ingest. libx264
+full exports (the region clip's last frame against the frozen frame, PSNR
+above 30 dB, which a U/V swap fails), system-tone audio, stale IDs and
+concurrent status/ingest. libx264
 is used only for the default synthetic fixture and CPU export test.
 
 The finite test generates synthetic video and audio. It checks complete decoding,
@@ -90,6 +92,8 @@ Artifacts remain in the printed temporary directory.
 and performs a hardware encode. It is a capability gate, not a required test
 on machines without Vulkan. The local FFmpeg 8.1.2 crop path currently fails
 the pixel comparison for a padded H.264 fixture; it is not approved for use.
+`--cuvid` checks that NVDEC's decoder crop, which NVENC region exports use,
+is bit-exact to the CPU crop, including against the padded bottom edge.
 
 ```sh
 python3 src/platform/linux/replay/worker/tests/soak.py \

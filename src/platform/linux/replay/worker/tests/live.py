@@ -38,7 +38,8 @@ def main():
     wrapper.write_text(f"""#!/usr/bin/env python3
 import os, sys, time
 from pathlib import Path
-if '-vf' in sys.argv and sys.argv[sys.argv.index('-vf') + 1].startswith('crop='):
+# The software path crops in a filter, NVENC's in the cuvid decoder.
+if '-crop' in sys.argv or '-vf' in sys.argv and sys.argv[sys.argv.index('-vf') + 1].startswith('crop='):
     assert '-re' not in sys.argv and '-readrate' not in sys.argv, 'export must not be paced'
     Path({str(started)!r}).touch()
     deadline = time.monotonic() + 10
@@ -108,6 +109,15 @@ os.execv({shutil.which('ffmpeg')!r}, ['ffmpeg'] + sys.argv[1:])
             print(f"crop: {cropped['duration_us'] / 1_000_000:.2f}s video in {export_seconds:.3f}s", flush=True)
         assert cropped["ok"], cropped
         assert cropped["duration_us"] == frozen["duration_us"], (frozen, cropped)
+        # The clip ends on the frozen frame, cut where asked and in the right
+        # colours: an odd cuvid crop swaps U and V (12.8 dB, replay plan §13).
+        frames = int(json.loads(run(["ffprobe", "-v", "error", "-count_frames", "-select_streams", "v:0",
+            "-show_entries", "stream=nb_read_frames", "-of", "json", cropped["path"]]).stdout)["streams"][0]["nb_read_frames"])
+        compared = run(["ffmpeg", "-hide_banner", "-nostdin", "-i", directory / "preview.png", "-i", cropped["path"],
+            "-filter_complex", f"[0:v]crop=320:180:64:48,format=yuv420p[a];[1:v]select=eq(n\\,{frames - 1}),format=yuv420p[b];[a][b]psnr",
+            "-f", "null", "-"]).stderr.decode()
+        psnr = float(compared.rsplit("average:", 1)[1].split()[0])
+        assert psnr > 30, compared[-400:]
         assert not call("save", snapshot=frozen["snapshot"])["ok"]
         latest = call("freeze")
         assert latest["ok"], latest
@@ -125,7 +135,7 @@ os.execv({shutil.which('ffmpeg')!r}, ['ffmpeg'] + sys.argv[1:])
             assert any(s["codec_type"] == "audio" for s in streams)
             assert path.endswith(".mp4"), path
             assert_frame_grid(path, 60)
-        (directory / "report.json").write_text(json.dumps({"frozen": frozen, "cropped": cropped, "full": full, "crop_export_seconds": export_seconds}, indent=2))
+        (directory / "report.json").write_text(json.dumps({"frozen": frozen, "cropped": cropped, "full": full, "crop_export_seconds": export_seconds, "crop_psnr": psnr}, indent=2))
         assert call("stop")["ok"]
         worker.wait(timeout=5)
         print("passed: live buffer, frozen crop, concurrent status, export limit, stale snapshot, full clip, audio, decode, exact frame times")

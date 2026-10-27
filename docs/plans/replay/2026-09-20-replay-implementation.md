@@ -667,7 +667,7 @@ Bild, wird fertig ohne Größensprung, Fehler und Schließen während des
 Speicherns, zwei Saves hintereinander. Live (nur mit Okay): Install,
 Daemon-Neustart, Vollbild- und Bereichs-Save, Zeiten aus C0.
 
-**Stand:** C2-Probe gemessen (oben). C0 Marken gebaut (27.10.): der Worker
+**Stand:** C2-Probe gemessen (oben), C0 und C2 gebaut. C0 Marken gebaut (27.10.): der Worker
 antwortet mit `export_ms` (Export bis nach dem Rename) und `sync_ms`
 (`export.rs` `sync`, auch im Crop-Weg); der Daemon schreibt mit
 `BOLTSNAP_TIMINGS` `replay_save_accepted`, `replay_worker_answered`,
@@ -676,8 +676,28 @@ erst nach dem Zeichnen kommt, `replay/mod.rs`); das Vorschaubild jeder
 Videokarte als Span `video_thumbnail` (`thumbnail.rs`). Abweichung vom Plan:
 keine Marke in `shelf/mod.rs` (über dem Limit, darf nicht wachsen), die
 Ack-Marke trägt dieselbe Aussage. Root fmt/clippy/test grün, Worker
-`cargo test` und `tests/live.py` grün. Offen: die Live-Zahlen (Neustart mit
-`BOLTSNAP_TIMINGS=1`, nur mit Okay), dann C1.
+`cargo test` und `tests/live.py` grün.
+
+C2 gebaut (27.10.): `crop.rs` `Cut::Decoder` (`gpu_crop`, `nvdec_edges`)
+mit NVENC und H.264/HEVC/AV1-Puffer, nur bei geraden Kanten; scheitert er,
+bevor die Ausgabe Bytes hat, läuft einmal der Softwareweg (Meldung im
+Worker-Log). Belege, alle mit dem frischen Debug-Worker:
+- Frühere Warnung geprüft: der gescheiterte GPU-Crop war der Vulkan-Weg
+  (`replay-benchmarks.md`, gepaddete 640×368-Fläche). Der cuvid-Crop ist
+  gegen den CPU-Crop **bitgenau** (0 abweichende Bytes) in 7 Fällen: 640×360
+  (Fläche 368) mit Ausschnitt mittig, bis Unterkante, bis rechte Kante, fast
+  voll; 1920×1080 (Fläche 1088) mit dem gemessenen Ausschnitt, voll, untere
+  Hälfte. Dauerhaft als `tests/probe.py --cuvid` (3 Fälle), grün.
+- `tests/live.py --encoder h264_nvenc` grün, das ffmpeg-argv nachweislich
+  `-c:v h264_cuvid -crop 48x132x64x256`; neue Prüfung im Test: letztes Bild
+  des Bereichsclips gegen das Freeze-Bild, 45,8 dB (U/V-Tausch: 12,8 dB).
+- Fallback: mit einem ffmpeg-Wrapper, der `-crop` scheitern lässt, grün,
+  Log „GPU crop failed (crop encoder failed), cropping in software“,
+  45,9 dB.
+- `live.py` mit libx264 (Softwareweg) und `probe.py` ohne Flag grün; Worker
+  `cargo test` 27 grün (neu: `nvdec_crops_only_on_even_edges_inside_the_video`).
+Offen: Live-Zahlen von C0 und ein echter Bereichs-Save (Install und
+Daemon-Neustart, nur mit Okay), dann C1.
 
 ## 14. Lag mit laufendem Replay: Beweise behalten (2026-10-27)
 

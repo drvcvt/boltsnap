@@ -49,6 +49,7 @@ def main():
     parser = argparse.ArgumentParser(description="Synthetic replay transport and remux checks")
     parser.add_argument("--worker", type=Path, required=True)
     parser.add_argument("--vulkan", action="store_true")
+    parser.add_argument("--cuvid", action="store_true")
     args = parser.parse_args()
     worker = str(args.worker.resolve())
     directory = Path(tempfile.mkdtemp(prefix="boltsnap-replay-test."))
@@ -148,10 +149,22 @@ def main():
         assert (video["width"], video["height"]) == (320, 180)
         assert [p["data_hash"] for p in audio_packets(cropped)] == saved_hashes
 
+    if args.cuvid:
+        # The NVENC region export crops in NVDEC (`crop.rs` `Cut::Decoder`):
+        # every frame bit-exact to the CPU crop, also against the padded
+        # 640x368 surface (the bottom edge) and at the right edge.
+        for x, y, w, h in [(64, 48, 320, 180), (0, 180, 640, 180), (320, 0, 320, 360)]:
+            edges = f"{y}x{360 - y - h}x{x}x{640 - x - w}"
+            raw_args = ["-map", "0:v", "-pix_fmt", "nv12", "-f", "hash", "-hash", "sha256", "-"]
+            cpu_hash = ffmpeg("-i", clip, "-vf", f"crop={w}:{h}:{x}:{y}", *raw_args).stdout
+            gpu_hash = ffmpeg("-hwaccel", "cuda", "-c:v", "h264_cuvid", "-crop", edges, "-i", clip, *raw_args).stdout
+            assert cpu_hash == gpu_hash, (edges, cpu_hash, gpu_hash)
+
     (directory / "report.json").write_text(json.dumps({"normal": report, "between_keys": shortened, "pressure": pressure,
-                                                    "vulkan_tested": args.vulkan}, indent=2))
+                                                    "vulkan_tested": args.vulkan, "cuvid_tested": args.cuvid}, indent=2))
     print("passed: decode, frame identity, audio identity, time window, memory pressure, no overwrite, rejected B-frames, stream input, exact frame times"
-          + (", Vulkan crop identity and encode" if args.vulkan else ""))
+          + (", Vulkan crop identity and encode" if args.vulkan else "")
+          + (", cuvid crop identity" if args.cuvid else ""))
 
 
 if __name__ == "__main__":
