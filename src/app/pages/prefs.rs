@@ -6,6 +6,11 @@ pub struct Prefs {
     pub card_width: u32,
     pub visible_cards: u32,
     pub corner: Corner,
+    /// `shelf.card_opacity`, percent.
+    pub card_opacity: u32,
+    pub solid_on_hover: bool,
+    pub card_shadow: bool,
+    pub card_animations: bool,
     pub save_dir: String,
     pub both_combined: bool,
     pub display: Display,

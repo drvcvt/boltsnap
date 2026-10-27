@@ -24,6 +24,10 @@ pub fn prefs() -> Prefs {
     Prefs {
         card_width: 190,
         visible_cards: 5,
+        card_opacity: 80,
+        solid_on_hover: true,
+        card_shadow: true,
+        card_animations: true,
         corner: Corner::BottomLeft,
         save_dir: "~/Pictures/boltsnap".into(),
         both_combined: false,
@@ -169,7 +173,7 @@ fn tab_runs_through_navigation_and_enabled_controls_in_reading_order() {
             Target::Control(block) => *block,
             Target::Nav(_) => panic!("one navigation stop"),
             Target::Reset(_) => panic!("no key is set in the test prefs"),
-            Target::Preview(_) => panic!("a preview is no tab stop"),
+            Target::Preview(_) | Target::Card(..) => panic!("a preview is no tab stop"),
         })
         .collect();
     assert!(blocks.windows(2).all(|pair| pair[0] < pair[1]));

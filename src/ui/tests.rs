@@ -406,6 +406,7 @@ fn a_long_list_shows_ten_scrolls_in_itself_and_jumps_to_what_is_typed() {
 
 #[test]
 fn the_corner_pictograms_put_the_card_in_their_corner() {
+    // 48 px: two pixels per grid unit.
     let draw = |icon: Icon| {
         let mut canvas = Canvas::new(48, 48, 1).unwrap();
         canvas.clear(theme::PANEL);
@@ -417,21 +418,48 @@ fn the_corner_pictograms_put_the_card_in_their_corner() {
         );
         canvas
     };
-    // The card's middle in grid units, scaled to 48 px: (8, 9) and (16, 15).
-    let lit = |canvas: &Canvas, (x, y): (f32, f32)| {
-        let (x, y) = ((x * 2.0) as usize, (y * 2.0) as usize);
-        // Any ink on the card's outline near its middle row.
-        (0..12).any(|dx| canvas.pixmap.data()[(y * 48 + x - 6 + dx) * 4] > 0x60)
+    let inked = |canvas: &Canvas, x: usize, y: usize| canvas.pixmap.data()[(y * 48 + x) * 4] > 0x60;
+    // The angle's bend: its arc's centre (5, 7) less r/√2 on both axes.
+    let bend = |right: bool, bottom: bool| {
+        let px = |unit: f32| (2.0 * (unit - 2.0 * std::f32::consts::FRAC_1_SQRT_2)) as usize;
+        let (x, y) = (px(5.0), px(7.0));
+        (
+            if right { 47 - x } else { x },
+            if bottom { 47 - y } else { y },
+        )
     };
-    for (icon, here, there) in [
-        (Icon::ShelfTopLeft, (8.0, 7.0), (16.0, 17.0)),
-        (Icon::ShelfTopRight, (16.0, 7.0), (8.0, 17.0)),
-        (Icon::ShelfBottomLeft, (8.0, 17.0), (16.0, 7.0)),
-        (Icon::ShelfBottomRight, (16.0, 17.0), (8.0, 7.0)),
+    for (icon, right, bottom) in [
+        (Icon::ShelfTopLeft, false, false),
+        (Icon::ShelfTopRight, true, false),
+        (Icon::ShelfBottomLeft, false, true),
+        (Icon::ShelfBottomRight, true, true),
     ] {
         let canvas = draw(icon);
-        assert!(lit(&canvas, here), "{icon:?} has its card there");
-        assert!(!lit(&canvas, there), "{icon:?} has nothing across");
+        let (x, y) = bend(right, bottom);
+        assert!(inked(&canvas, x, y), "{icon:?} bends in its corner");
+        for (other_x, other_y) in [bend(!right, bottom), bend(right, !bottom)] {
+            assert!(
+                !inked(&canvas, other_x, other_y),
+                "{icon:?} has no angle there"
+            );
+        }
+        // The ink sits in the middle like Lucide's 20 × 16 frames: 2..22 × 4..20.
+        let ink: Vec<(usize, usize)> = (0..48)
+            .flat_map(|y| (0..48).map(move |x| (x, y)))
+            .filter(|&(x, y)| inked(&canvas, x, y))
+            .collect();
+        let span = |pick: fn(&(usize, usize)) -> usize| {
+            let (lo, hi) = (
+                ink.iter().map(pick).min().unwrap(),
+                ink.iter().map(pick).max().unwrap(),
+            );
+            (lo + hi + 1) as f32 / 2.0
+        };
+        assert!(
+            (span(|p| p.0) - 24.0).abs() <= 1.0,
+            "{icon:?} centred across"
+        );
+        assert!((span(|p| p.1) - 24.0).abs() <= 1.0, "{icon:?} centred down");
     }
 }
 

@@ -1,69 +1,143 @@
-//! The shelf preview follows the controls, to the shelf's own scale
-//! (settings plan, 5d P1).
+//! The previews follow the controls (settings plan, 5d); the shelf's is
+//! the shelf itself to try out (5g V6).
 
 use std::time::{Duration, Instant};
 
 use super::{SETTLED, app_on, focus, key};
-use crate::app::{App, Block, Preview, shelf_cards};
-use crate::ui::{Key, Rect};
+use crate::app::{App, Block, Preview};
+use crate::ui::{Input, Key, Rect};
 
 const SIZE: (f32, f32) = (1000.0, 800.0);
 
-fn cards(app: &App, now: Instant) -> Vec<(Rect, f32)> {
+fn shelf_rect(app: &App, now: Instant) -> Rect {
     let index = app
         .page()
         .blocks
         .iter()
         .position(|block| matches!(block, Block::Preview(Preview::Shelf)))
         .expect("a shelf preview");
-    app.preview_cards(app.layout(now).blocks[index], now)
+    app.layout(now).blocks[index]
+}
+
+/// The cards now, newest first, with their close buttons.
+fn cards(app: &App, now: Instant) -> Vec<(u64, Rect, Rect)> {
+    app.play_cards(shelf_rect(app, now), now)
+}
+
+fn middle(rect: Rect) -> (f32, f32) {
+    (rect.x + rect.w / 2.0, rect.y + rect.h / 2.0)
 }
 
 #[test]
-fn the_cards_sit_where_the_shelf_puts_them() {
-    // 24 from the screen's edges, 22 inside the shelf, 10 between cards.
-    let bottom_left = shelf_cards(2, 190.0, 2);
+fn two_cards_rest_in_the_corner_at_their_real_size() {
+    let now = Instant::now();
+    let app = app_on("shelf", SIZE, now);
+    let rect = shelf_rect(&app, now);
+    // Two default cards, 10 between them, 24 from the edges.
+    assert_eq!(rect.h, 24.0 + 132.0 + 10.0 + 132.0 + 24.0);
+    let cards = cards(&app, now);
+    assert_eq!(cards.len(), 2, "two cards, though five are shown");
+    // Bottom left, the newest on top as on the shelf.
+    let (newest, oldest) = (cards[0].1, cards[1].1);
     assert_eq!(
-        bottom_left[0],
-        Rect::new(46.0, 1080.0 - 46.0 - 132.0, 190.0, 132.0)
+        oldest,
+        Rect::new(rect.x + 24.0, rect.bottom() - 24.0 - 132.0, 190.0, 132.0)
     );
-    assert_eq!(bottom_left[1].y, bottom_left[0].y - 142.0);
-    let top_right = shelf_cards(1, 380.0, 1);
+    assert_eq!(newest, Rect::new(oldest.x, oldest.y - 142.0, 190.0, 132.0));
+    // The X sits in the top right, 7 in, 15 across, as on the shelf.
     assert_eq!(
-        top_right[0],
-        Rect::new(1920.0 - 46.0 - 380.0, 46.0, 380.0, 264.0)
+        cards[0].2,
+        Rect::new(newest.right() - 22.0, newest.y + 7.0, 15.0, 15.0)
     );
 }
 
 #[test]
-fn a_new_corner_glides_the_cards_there_and_a_new_card_fades_in_in_place() {
+fn a_new_corner_glides_the_cards_there() {
     let now = Instant::now();
     let mut app = app_on("shelf", SIZE, now);
-    let start = cards(&app, now);
-    assert_eq!(start.len(), 5, "as many as Cards shown");
-    // Bottom left to bottom right: halfway they are between the two.
+    let rect = shelf_rect(&app, now);
+    let start = cards(&app, now)[1].1;
     focus(&mut app, "Corner", now);
     key(&mut app, Key::Right, now);
-    let mid = cards(&app, now + Duration::from_millis(120));
-    let end = cards(&app, now + SETTLED);
-    assert!(
-        mid[0].0.x > start[0].0.x && mid[0].0.x < end[0].0.x,
-        "gliding"
-    );
-    assert!(end[0].0.x > start[0].0.x + 100.0, "on the right");
-    // One more card: it fades in where it belongs, the others stay put.
-    let later = now + SETTLED;
-    focus(&mut app, "Cards shown", later);
-    key(&mut app, Key::Right, later);
-    let fading = cards(&app, later + Duration::from_millis(60));
-    assert_eq!(fading.len(), 6);
-    assert!(
-        fading[5].1 > 0.0 && fading[5].1 < 1.0,
-        "the new card fades in"
-    );
-    for (before, after) in end.iter().zip(&fading) {
-        assert_eq!(before.0, after.0, "the others do not move");
+    let mid = cards(&app, now + Duration::from_millis(120))[1].1;
+    let end = cards(&app, now + SETTLED)[1].1;
+    assert!(mid.x > start.x && mid.x < end.x, "gliding");
+    assert_eq!(end.right(), rect.right() - 24.0, "on the right");
+    assert_eq!(end.y, start.y, "still at the bottom");
+}
+
+#[test]
+fn one_card_shown_folds_the_second_away() {
+    let now = Instant::now();
+    let mut app = app_on("shelf", SIZE, now);
+    focus(&mut app, "Cards shown", now);
+    for _ in 0..4 {
+        key(&mut app, Key::Left, now);
     }
+    let folding = cards(&app, now + Duration::from_millis(60));
+    assert_eq!(folding.len(), 2);
+    assert!(folding[1].1.h < 132.0, "folding");
+    let rest = cards(&app, now + SETTLED);
+    assert_eq!(rest.len(), 1);
+    let rect = shelf_rect(&app, now);
+    assert_eq!(
+        rest[0].1.bottom(),
+        rect.bottom() - 24.0,
+        "down in the corner"
+    );
+}
+
+#[test]
+fn the_x_dismisses_a_card_and_a_new_one_arrives_on_top() {
+    let now = Instant::now();
+    let mut app = app_on("shelf", SIZE, now);
+    let before = cards(&app, now);
+    let (gone, kept) = (before[1].0, before[0].0);
+    let (x, y) = middle(before[1].2);
+    app.handle(Input::Move { x, y }, now);
+    app.handle(Input::Press { x, y, clicks: 1 }, now);
+    app.handle(Input::Release, now);
+    // First the old one leaves, the other closes up; then the new one
+    // arrives.
+    let leaving = cards(&app, now + Duration::from_millis(100));
+    assert_eq!(leaving.len(), 1, "leaving, not a card");
+    assert_eq!(leaving[0].0, kept);
+    let arriving = cards(&app, now + Duration::from_millis(300));
+    assert_eq!(arriving.len(), 2);
+    let after = cards(&app, now + SETTLED);
+    assert_eq!(after.len(), 2);
+    assert_eq!(after[1].0, kept, "the other card moved down a place");
+    assert!(after[0].0 != gone && after[0].0 != kept, "a new one on top");
+    assert_eq!(after[0].1, before[0].1);
+    assert_eq!(after[1].1, before[1].1);
+    // A click on the card, not its X, keeps it.
+    let later = now + SETTLED;
+    let (x, y) = (after[1].1.x + 20.0, after[1].1.y + 60.0);
+    app.handle(Input::Press { x, y, clicks: 1 }, later);
+    app.handle(Input::Release, later);
+    assert_eq!(cards(&app, later + SETTLED), after);
+}
+
+#[test]
+fn without_animations_a_card_goes_and_comes_at_once() {
+    let now = Instant::now();
+    let mut app = app_on("shelf", SIZE, now);
+    focus(&mut app, "Animations", now);
+    key(&mut app, Key::Space, now);
+    // After the page has scrolled to the row.
+    let now = now + SETTLED;
+    let before = cards(&app, now);
+    let (x, y) = middle(before[0].2);
+    app.handle(Input::Press { x, y, clicks: 1 }, now);
+    let after = cards(&app, now);
+    assert_eq!(after.len(), 2);
+    assert_eq!(after[1].0, before[1].0);
+    assert!(after[0].0 != before[0].0, "a new one at once");
+    assert_eq!(
+        cards(&app, now + Duration::from_millis(60)),
+        after,
+        "nothing moves"
+    );
 }
 
 fn displays(app: &App, now: Instant) -> (Vec<(Rect, f32)>, f32) {
@@ -308,95 +382,48 @@ fn three_monitors_in_a_row_and_two_stacked_keep_their_names_apart() {
     assert!(!names[0].overlaps(names[1]) && names[0].w == names[1].w);
 }
 
-fn shelf_rect(app: &App, now: Instant) -> Rect {
-    let index = app
-        .page()
-        .blocks
-        .iter()
-        .position(|block| matches!(block, Block::Preview(Preview::Shelf)))
-        .expect("a shelf preview");
-    app.layout(now).blocks[index]
-}
-
 #[test]
 fn the_front_card_measures_190_by_132_beside_it_and_follows_the_slider() {
     let now = Instant::now();
     let mut app = app_on("shelf", SIZE, now);
-    assert_eq!(app.measure_shown(now), 1.0, "room past the stack");
+    assert_eq!(app.measure_shown(now), 1.0, "room beside the card");
     assert_eq!(
-        app.shelf_measure_text(),
-        Some(("190\u{a0}px".into(), "132\u{a0}px".into()))
+        app.shelf_measure_text().as_deref(),
+        Some("190\u{a0}×\u{a0}132\u{a0}px")
     );
     let rect = shelf_rect(&app, now);
-    let cards = app.preview_cards(rect, now);
-    let (front, last) = (cards[0].0, cards[cards.len() - 1].0);
+    let front = cards(&app, now)[1].1;
+    assert_eq!(app.front_card(rect, now), Some(front));
     let m = app.shelf_measure(rect, now).unwrap();
-    // Bottom left: the height line right of the front card, its number right
-    // of it on the card's middle; the width line over the top card, its
-    // number centred over it.
-    assert_eq!(m.height_line.x, front.right().round() + 8.0);
+    // Bottom left: the line right of the card in the corner, its number
+    // right of it on the card's middle.
+    assert_eq!(m.height_line.x, front.right() + 8.0);
     assert_eq!(
         (m.height_line.y, m.height_line.bottom()),
-        (front.y.round(), front.bottom().round())
+        (front.y, front.bottom())
     );
-    assert_eq!(m.height_chip.x, m.height_line.right() + 4.0);
-    let middle = |r: crate::ui::Rect| r.y + r.h / 2.0;
-    assert!((middle(m.height_chip) - middle(m.height_line)).abs() <= 0.5);
-    assert_eq!(m.width_line.y, last.y.round() - 9.0);
-    assert_eq!(m.width_chip.bottom(), m.width_line.y - 4.0);
-    let centre = |r: crate::ui::Rect| r.x + r.w / 2.0;
-    assert!((centre(m.width_chip) - centre(m.width_line)).abs() <= 0.5);
-    assert_eq!(m.width_chip.h, 16.0);
+    assert_eq!(m.chip.x, m.height_line.right() + 4.0);
+    assert!((middle(m.chip).1 - middle(m.height_line).1).abs() <= 0.5);
+    assert_eq!(m.chip.h, 16.0);
     focus(&mut app, "Card size", now);
     key(&mut app, Key::Right, now);
     assert_eq!(
-        app.shelf_measure_text(),
-        Some(("200\u{a0}px".into(), "139\u{a0}px".into()))
+        app.shelf_measure_text().as_deref(),
+        Some("200\u{a0}×\u{a0}139\u{a0}px")
     );
-    // A phone-wide window still has room past five cards.
-    let narrow = app_on("shelf", (360.0, 800.0), now);
-    assert_eq!(narrow.measure_shown(now), 1.0);
-}
-
-#[test]
-fn the_width_line_moves_with_the_end_of_the_stack_and_leaves_a_full_screen() {
-    let now = Instant::now();
-    let mut app = app_on("shelf", SIZE, now);
-    let rect = shelf_rect(&app, now);
-    let before = app.shelf_measure(rect, now).unwrap().width_line.y;
-    focus(&mut app, "Cards shown", now);
-    key(&mut app, Key::Right, now);
-    let mid = app
-        .shelf_measure(rect, now + Duration::from_millis(60))
-        .unwrap()
-        .width_line
-        .y;
-    let after = app.shelf_measure(rect, now + SETTLED).unwrap().width_line.y;
-    let last = app.preview_cards(rect, now + SETTLED);
-    assert_eq!(
-        after,
-        last[last.len() - 1].0.y.round() - 9.0,
-        "past the new top card"
-    );
-    assert!(
-        after < mid && mid < before,
-        "it glides there: {before} {mid} {after}"
-    );
-    // Eight big cards fill the screen: no room past them, the measure goes.
-    for _ in 0..3 {
-        key(&mut app, Key::Right, now + SETTLED);
-    }
-    focus(&mut app, "Card size", now + SETTLED);
+    // The biggest cards leave no room beside them in a narrow window.
+    let mut narrow = app_on("shelf", (360.0, 800.0), now);
+    focus(&mut narrow, "Card size", now);
     for _ in 0..20 {
-        key(&mut app, Key::Right, now + SETTLED);
+        key(&mut narrow, Key::Right, now);
     }
-    assert_eq!(app.measure_shown(now + SETTLED + SETTLED), 0.0);
+    assert_eq!(narrow.measure_shown(now + SETTLED), 0.0);
 }
 
 #[test]
 fn dragging_the_cards_edge_sets_card_size_in_steps_and_writes_like_the_slider() {
     use crate::app::{Target, Write};
-    use crate::ui::{Effect, Input};
+    use crate::ui::Effect;
     let now = Instant::now();
     let mut app = app_on("shelf", SIZE, now);
     let row = super::block(&app, "Card size");
@@ -407,7 +434,7 @@ fn dragging_the_cards_edge_sets_card_size_in_steps_and_writes_like_the_slider() 
         .position(|b| matches!(b, Block::Preview(Preview::Shelf)))
         .unwrap();
     let edge = app.shelf_measure(shelf_rect(&app, now), now).unwrap().edge;
-    let (x, y) = (edge.x + edge.w / 2.0, edge.y + edge.h / 2.0);
+    let (x, y) = middle(edge);
     app.handle(Input::Move { x, y }, now);
     let target = Target::Preview(block);
     let hover = app.fade(
@@ -417,15 +444,15 @@ fn dragging_the_cards_edge_sets_card_size_in_steps_and_writes_like_the_slider() 
     );
     assert!(hover > 0.0, "the edge lights the measure");
     app.handle(Input::Press { x, y, clicks: 1 }, now);
-    // 30 px at 656 / 1920 is 88 shelf pixels: 278, the slider makes it 280.
+    // The preview is to scale: 28 px wider is 218, the slider makes it 220.
     let at = now + Duration::from_millis(10);
-    let effects = app.handle(Input::Move { x: x + 30.0, y }, at);
+    let effects = app.handle(Input::Move { x: x + 28.0, y }, at);
     assert_eq!(effects, vec![Effect::Changed(row)]);
     assert_eq!(
         app.write(row),
         Some(Write::Key(
             "shelf.card_width",
-            crate::settings::Value::Int(280)
+            crate::settings::Value::Int(220)
         ))
     );
     // Within the throttle nothing more goes out; the daemon's older value
@@ -434,7 +461,7 @@ fn dragging_the_cards_edge_sets_card_size_in_steps_and_writes_like_the_slider() 
     assert!(app.handle(Input::Move { x: x + 40.0, y }, at).is_empty());
     let pages = crate::app::pages::pages(&super::prefs(), None, at);
     app.update(pages, at, |_, _| false);
-    assert_eq!(app.value(row), Some(crate::ui::widgets::Value::Int(310)));
+    assert_eq!(app.value(row), Some(crate::ui::widgets::Value::Int(230)));
     // Letting go sends the last value.
     let effects = app.handle(Input::Release, at + Duration::from_millis(5));
     assert_eq!(effects, vec![Effect::Changed(row)]);
@@ -442,35 +469,59 @@ fn dragging_the_cards_edge_sets_card_size_in_steps_and_writes_like_the_slider() 
         app.write(row),
         Some(Write::Key(
             "shelf.card_width",
-            crate::settings::Value::Int(310)
+            crate::settings::Value::Int(230)
         ))
     );
 }
 
 #[test]
-fn the_shelf_preview_is_surfaces_only_and_reads_no_pictures() {
+fn the_cards_are_the_shelfs_own_painting_with_the_look_of_the_page() {
+    use crate::ui::theme::{PANEL, SELECTED, mix};
     let now = Instant::now();
-    let app = app_on("shelf", SIZE, now);
-    let later = now + SETTLED;
-    let mut canvas = crate::ui::Canvas::new(SIZE.0 as u32, SIZE.1 as u32, 1).unwrap();
-    app.draw(&mut canvas, later);
-    let pixel = |x: f32, y: f32| {
+    let mut app = app_on("shelf", SIZE, now);
+    let draw = |app: &App, at: Instant| {
+        let mut canvas = crate::ui::Canvas::new(SIZE.0 as u32, SIZE.1 as u32, 1).unwrap();
+        app.draw(&mut canvas, at);
+        canvas
+    };
+    let pixel = |canvas: &crate::ui::Canvas, (x, y): (f32, f32)| {
         let i = ((y as u32 * SIZE.0 as u32 + x as u32) * 4) as usize;
         let d = canvas.pixmap.data();
         (d[i], d[i + 1], d[i + 2])
     };
-    let rect = shelf_rect(&app, later);
-    let middle = |r: Rect| (r.x + r.w / 2.0, r.y + r.h / 2.0);
-    for (card, _) in app.preview_cards(rect, later) {
-        let (x, y) = middle(card);
-        assert_eq!(
-            pixel(x, y),
-            crate::ui::theme::SELECTED,
-            "a card is a surface"
-        );
-    }
-    // The plain screen behind them, away from the cards and the measure.
-    let screen = crate::app::preview_screen(rect);
-    let (x, y) = (screen.x + screen.w / 2.0, screen.y + 20.0);
-    assert_eq!(pixel(x, y), crate::ui::theme::WINDOW);
+    let close = |a: (u8, u8, u8), b: (u8, u8, u8)| {
+        [(a.0, b.0), (a.1, b.1), (a.2, b.2)]
+            .iter()
+            .all(|(x, y)| x.abs_diff(*y) <= 1)
+    };
+    let rect = shelf_rect(&app, now);
+    let card = cards(&app, now)[1].1;
+    // Left of the picture, on the card's middle row.
+    let on_card = (card.x + 20.0, card.y + card.h / 2.0);
+    // 80 % of a placeholder over the block, as the shelf over a desktop.
+    let rest = pixel(&draw(&app, now + SETTLED), on_card);
+    assert!(close(rest, mix(PANEL, SELECTED, 0.8)), "{rest:?}");
+    // Hovered it turns solid.
+    app.handle(
+        Input::Move {
+            x: on_card.0,
+            y: on_card.1,
+        },
+        now,
+    );
+    assert_eq!(pixel(&draw(&app, now + SETTLED), on_card), SELECTED);
+    // Without "Solid on hover" it stays as it is.
+    focus(&mut app, "Solid on hover", now);
+    key(&mut app, Key::Space, now);
+    app.handle(
+        Input::Move {
+            x: on_card.0,
+            y: on_card.1,
+        },
+        now,
+    );
+    assert!(close(pixel(&draw(&app, now + SETTLED), on_card), rest));
+    // Away from the cards and the measure, the plain block.
+    let empty = (rect.right() - 40.0, rect.y + 40.0);
+    assert_eq!(pixel(&draw(&app, now + SETTLED), empty), PANEL);
 }

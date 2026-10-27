@@ -40,6 +40,9 @@ impl Slider {
     }
 
     fn label(&self, value: i64) -> String {
+        if self.unit == "%" {
+            return format!("{value}%");
+        }
         // A no-break space keeps number and unit together.
         format!("{value}\u{a0}{}", self.unit)
             .trim_end_matches('\u{a0}')

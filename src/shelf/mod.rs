@@ -1,9 +1,10 @@
 pub mod font;
-pub mod layout;
 pub mod model;
 pub mod paint;
 pub mod recording;
 pub mod thumbnail;
+
+pub use boltsnap::shelf_card::layout;
 
 use crate::DynResult;
 
@@ -53,6 +54,7 @@ pub fn debug_render(output: &std::path::Path) -> DynResult<()> {
         &config,
         &[],
         None,
+        boltsnap::shelf_card::CardLook::default(),
     );
 
     let background = 64_u32;

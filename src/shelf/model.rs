@@ -2,11 +2,7 @@ use std::path::PathBuf;
 
 use image::RgbaImage;
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum CardKind {
-    Image,
-    Video,
-}
+pub use boltsnap::shelf_card::CardKind;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum FileLifetime {

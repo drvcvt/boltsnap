@@ -89,20 +89,42 @@ impl Default for RecordingPrefs {
     }
 }
 
-/// `[shelf]`: how big the cards are, how many show, and where.
+/// `[shelf]`: how big the cards are, how many show, where, and how they
+/// look and move.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ShelfPrefs {
     pub card: crate::shelf::thumbnail::CardSize,
     pub visible: usize,
     pub corner: crate::shelf::layout::Corner,
+    /// A card at rest, in percent (30 to 100, the schema's range).
+    pub opacity: u8,
+    pub solid_on_hover: bool,
+    pub shadow: bool,
+    /// Cards scale and fade as they come and go.
+    pub animations: bool,
 }
 
 impl Default for ShelfPrefs {
     fn default() -> Self {
+        let look = boltsnap::shelf_card::CardLook::default();
         Self {
             card: crate::shelf::thumbnail::CardSize::DEFAULT,
             visible: 5,
             corner: crate::shelf::layout::Corner::default(),
+            opacity: (look.opacity * 100.0).round() as u8,
+            solid_on_hover: look.solid_on_hover,
+            shadow: look.shadow,
+            animations: true,
+        }
+    }
+}
+
+impl ShelfPrefs {
+    pub fn look(&self) -> boltsnap::shelf_card::CardLook {
+        boltsnap::shelf_card::CardLook {
+            opacity: f32::from(self.opacity) / 100.0,
+            solid_on_hover: self.solid_on_hover,
+            shadow: self.shadow,
         }
     }
 }
@@ -131,6 +153,10 @@ pub struct Config {
     shelf_card_width: Option<i64>,
     shelf_visible_cards: Option<i64>,
     shelf_corner: Option<String>,
+    shelf_card_opacity: Option<i64>,
+    shelf_solid_on_hover: Option<bool>,
+    shelf_card_shadow: Option<bool>,
+    shelf_animations: Option<bool>,
     issues: Vec<settings::Issue>,
 }
 
@@ -230,6 +256,10 @@ impl Config {
             shelf_card_width: doc.int("shelf.card_width"),
             shelf_visible_cards: doc.int("shelf.visible_cards"),
             shelf_corner: text("shelf.corner"),
+            shelf_card_opacity: doc.int("shelf.card_opacity"),
+            shelf_solid_on_hover: doc.bool("shelf.solid_on_hover"),
+            shelf_card_shadow: doc.bool("shelf.card_shadow"),
+            shelf_animations: doc.bool("shelf.animations"),
             issues,
         }
     }
@@ -274,6 +304,12 @@ impl Config {
                 .as_deref()
                 .and_then(crate::shelf::layout::Corner::parse)
                 .unwrap_or(defaults.corner),
+            opacity: self
+                .shelf_card_opacity
+                .map_or(defaults.opacity, |percent| percent as u8),
+            solid_on_hover: self.shelf_solid_on_hover.unwrap_or(defaults.solid_on_hover),
+            shadow: self.shelf_card_shadow.unwrap_or(defaults.shadow),
+            animations: self.shelf_animations.unwrap_or(defaults.animations),
         }
     }
 

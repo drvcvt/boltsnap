@@ -29,7 +29,7 @@ fn busy() -> pages::Prefs {
 use crate::app::{App, Block, gallery, measure, pages};
 use crate::ui::Rect;
 use crate::ui::text::Fonts;
-use crate::ui::theme::{self, GAP_M, ICON, Rgb, TextStyle};
+use crate::ui::theme::{self, GAP_M, GAP_XL, ICON, Rgb, TextStyle};
 
 const WIDTHS: [f32; 4] = [360.0, 480.0, 760.0, 1400.0];
 const SETTLED: Duration = Duration::from_secs(2);
@@ -319,35 +319,26 @@ fn gate_groups_pad_equally_and_siblings_share_an_axis() {
                     }
                 }
                 if let Block::Preview(crate::app::Preview::Shelf) = block {
-                    let screen = crate::app::preview_screen(*rect);
-                    // The measure stays on the screen where it shows.
+                    // The measure stays in the block where it shows.
                     if app.measure_shown(now + SETTLED) > 0.0 {
                         let m = app
                             .shelf_measure(*rect, now + SETTLED)
                             .expect("a front card");
-                        for part in [
-                            m.width_line,
-                            m.height_line,
-                            m.width_chip,
-                            m.height_chip,
-                            m.edge,
-                        ] {
+                        for part in [m.height_line, m.chip, m.edge] {
                             assert!(
-                                inside(part, screen),
-                                "{name} measure off the screen at {w}: {part:?} in {screen:?}"
+                                inside(part, *rect),
+                                "{name} measure off the block at {w}: {part:?} in {rect:?}"
                             );
                         }
                     }
-                    let pads = [
-                        screen.x - rect.x,
-                        rect.right() - screen.right(),
-                        screen.y - rect.y,
-                        rect.bottom() - screen.bottom(),
-                    ];
+                    // The card in the corner rests `GAP_XL` from both its
+                    // edges (the test prefs: bottom left).
+                    let front = app.front_card(*rect, now + SETTLED).expect("a front card");
+                    let pads = [front.x - rect.x, rect.bottom() - front.bottom()];
                     for pad in pads {
-                        worst_pad = worst_pad.max((pad - GAP_M).abs());
+                        worst_pad = worst_pad.max((pad - GAP_XL).abs());
                         assert!(
-                            (pad - GAP_M).abs() <= 1.0,
+                            (pad - GAP_XL).abs() <= 0.5,
                             "{name} preview pad {pads:?} at {w}"
                         );
                     }

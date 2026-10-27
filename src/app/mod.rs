@@ -21,9 +21,8 @@ use std::time::Instant;
 pub use fades::Channel;
 pub use layout::{AT_REST, Layout, RowParts};
 pub use preview::{
-    Measure, Preview, display_caption_place, display_lines, display_name_places, display_places,
-    replay_bar_rect, replay_cells, replay_head_rect, replay_step, screen as preview_screen,
-    shelf_cards, shelf_measure_of,
+    Measure, Preview, card_height, display_caption_place, display_lines, display_name_places,
+    display_places, replay_bar_rect, replay_cells, replay_head_rect, replay_step, shelf_measure_of,
 };
 pub use writes::{Bind, Encode, Write};
 
@@ -77,6 +76,9 @@ pub enum Target {
     /// The edge of the front card in a shelf preview, by block: dragged, it
     /// sets "Card size".
     Preview(usize),
+    /// A card in a shelf preview, by block and card: hovered as on the
+    /// shelf, its X dismisses it.
+    Card(usize, u64),
 }
 
 /// A control's [`Effect::Browse`] as the row's [`Effect::PickFolder`].
@@ -301,6 +303,9 @@ impl App {
         if let Some(edge) = self.edge_at((x, y), &rects, now) {
             return Some(edge);
         }
+        if let Some(card) = self.card_at((x, y), &rects, now) {
+            return Some(card);
+        }
         let resets = self
             .page()
             .blocks
@@ -504,9 +509,14 @@ impl App {
                 self.set_focus(None, now);
                 Outcome::HANDLED
             }
-            Some(Target::Preview(block)) => {
+            Some(Target::Preview(_)) => {
                 self.set_focus(None, now);
-                self.grab_edge(block, at.0, now);
+                self.grab_edge(at.0);
+                Outcome::HANDLED
+            }
+            Some(Target::Card(block, id)) => {
+                self.set_focus(None, now);
+                self.press_card(block, id, at, now);
                 Outcome::HANDLED
             }
             Some(Target::Reset(block)) => {

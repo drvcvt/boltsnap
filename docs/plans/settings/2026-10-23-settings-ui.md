@@ -2683,6 +2683,120 @@ nachher.
 **Macht nicht:** das echte Shelf-Overlay (`src/shelf/paint.rs`, eigener
 Zeichencode), den Windows-Selector, Icons.
 
+### Phase 5g V6: Shelf-Spielwiese, Kartenlook, Ecken-Symbole (27.10., Wunsch des Nutzers)
+
+Meldung: „die icons hier gefallen mir noch nicht so sehr und beim
+settingsmenu das Shelf preview ist immer noch so leer und hat sich immer
+noch nicht seine daseinsberechtigung verdient. vielleicht einfach 2 cards,
+du kannst die card so wegklicken mit dem x wie bei normalen cards, es kommt
+dann immer oben eine platzhalterkarte nach damit du so testen kannst und
+dann moechte ich das man noch einstellbar macht ob die karten eine
+animation haben und die transparenz und ob es auch on hover durchsichtig
+bleibt oder nicht und all dieser kram [...] oder card schatten“.
+
+Ersetzt V4 (Bildschirm im Maßstab) und V4b (Maß mit Breitenlinie hinter dem
+Stapel). Die Viertel-Klick-Idee aus den Mockups M1/M2 entfällt.
+
+#### Verhalten
+
+1. **Vorschau = zwei echte Karten in Originalgröße (1:1).** Kein
+   Bildschirm im Maßstab mehr. Die Karten malt derselbe Code wie das
+   Shelf-Overlay (Radius, Schatten, Transparenz, Hover-Knopf, Animation),
+   damit die Vorschau nie vom echten Shelf abweicht.
+   - Fläche `PANEL`, Höhe fest `GAP_XL + 132 + 10 + 132 + GAP_XL = 322`
+     (zwei Karten in Standardgröße, `GAP_XL` ≥ Schattenrand 16 + 3).
+     Größere Karten laufen über den fernen Rand hinaus und werden dort
+     abgeschnitten wie am Bildschirmrand; kleinere lassen Luft.
+   - Die Karten stehen in der gewählten Ecke der Fläche, `GAP_XL` von
+     beiden Kanten; „Corner“ ändern lässt sie dorthin gleiten (`GLIDE`).
+   - „Cards shown“ 1 → eine Karte, sonst zwei.
+   - Hover auf einer Karte: wie im Shelf (deckend, wenn „Solid on hover“
+     an ist), X oben rechts (`close_cell`). Den Speichern-Knopf zeigt die
+     Vorschau nicht, er hätte hier nichts zu tun (keine Fake-Controls).
+   - Klick auf X: die Karte geht mit der Shelf-Animation (240 ms,
+     ease-out-cubic, schrumpft und blendet aus, die Lücke schließt sich),
+     und an der Stelle, an der das Shelf neue Karten einsetzt (neueste
+     zuerst, an der Ecke), kommt eine Platzhalterkarte nach (150 ms, 0,88 →
+     1 und einblenden). „Animations“ aus oder Reduced Motion: sofort.
+   - Platzhalter: Fläche `SELECTED` mit Lucide `image` mittig in `SUB`,
+     kein Bild des Nutzers, keine erfundenen Inhalte.
+   - Maß: Höhenlinie neben der Innenkante der vorderen Karte wie bisher,
+     eine Zahlenfläche „190 × 132 px“ an ihrer Mitte; die Breitenlinie hinter
+     dem Stapel entfällt (bei 1:1 kein Platz dort). Kante ziehen bleibt.
+2. **Neue Einstellungen**, Überschrift „Look“ unter „Cards“, alle `Live`:
+
+   | Zeile | Key | Control | Standard | Heute |
+   | --- | --- | --- | --- | --- |
+   | Opacity | `shelf.card_opacity` | Slider 30–100 %, Schritt 5 | 80 | fest `CARD_OPACITY` 0,8 |
+   | Solid on hover | `shelf.solid_on_hover` | Schalter | an | fest an |
+   | Shadow | `shelf.card_shadow` | Schalter | an | fest an |
+   | Animations | `shelf.animations` | Schalter | an | fest an |
+
+   Das Shelf-Overlay liest sie über `ShelfPrefs`; ohne Eintrag in der Datei
+   bleibt alles wie heute. Animations aus: Karten kommen und gehen ohne
+   Skalieren und Blenden, die Lücke schließt sofort.
+3. **Ecken-Symbole (ersetzt S12):** Variante G aus
+   `scratchpad/shelf2/corner-icons.png`: Ecke als Winkel plus Karte, im
+   Lucide-Raster (24, Strich 2, runde Enden). Winkel `M3 11V7a2 2 0 0 1
+   2-2h4`, Karte `rect 14 × 10 rx 2` bei (7, 9); Abstand Winkel → Karte 4
+   auf beiden Achsen, Karte 7 : 5 ≈ Shelf-Karte 190 : 132. Tinte genau
+   2…22 × 4…20, also mittig wie Lucides Rahmen `rect 20 × 16` bei (2, 4);
+   die anderen Ecken gespiegelt um 12, Tintenbox bleibt gleich.
+
+#### Code
+
+- **A Umbau ohne Verhalten:** das Zeichnen der Karten wandert in die Lib,
+  damit das Fenster (Lib) es nutzen kann: `src/shelf/card.rs` (neu, per
+  `#[path]` in `lib.rs` als `shelf_card`) mit `draw_shelf`, Schatten, Blit,
+  Hover-Knöpfen, Glyphen und den Animations-Konstanten (Dauern,
+  `ANIM_SCALE_MIN`, `ease_out_cubic` aus `linux/shelf/mod.rs`);
+  `shelf/layout.rs` ebenso in die Lib (`shelf_layout`, im Binary
+  re-exportiert). `draw_shelf` bekommt statt `&ShelfModel` die Bilder je
+  Id, `CardKind` zieht mit um. `paint.rs` (1197 Zeilen, über der Grenze)
+  fällt damit unter 1000; `linux/shelf/mod.rs` (3681, über der Grenze)
+  wächst nicht: die Animationsteile gehen nach `linux/shelf/anim.rs`
+  (12. Datei im Ordner, an der Grenze).
+- **B Einstellungen:** `settings/schema.rs` vier Keys, `config.rs`
+  `ShelfPrefs` (`look: CardLook`), `card.rs` `CardLook { opacity,
+  solid_on_hover, shadow }` statt `CARD_OPACITY`, `anim.rs` überspringt die
+  Animation bei `animations = false`. Windows: `draw_shelf_opaque` bleibt
+  (deckend), Backend unberührt.
+- **C Vorschau:** `app/preview/shelf.rs` neu: zwei Plätze mit Id,
+  Animationen mit Startzeit wie im Shelf, Ecke als Feder; Malen über
+  `shelf_card::draw_shelf` in eine `Pixmap` (Geometrie × ganzzahlige
+  Skala) und `Canvas::draw_pixels` (neu, schmal). `dims.rs` auf Höhenlinie
+  plus eine Fläche; Treffer für X und Karte in `edge_at`/`target_at`.
+  `pages/mod.rs` Überschrift „Look“ mit vier Zeilen (Icons `blend`,
+  `mouse-pointer-2`, `copy`, `move` aus Lucide 1.54, falls nicht im Sprite).
+- **D Symbole:** vier `<symbol>` im Sprite ersetzt, Test in `ui/tests.rs`
+  auf die neue Tinte.
+
+#### Motion
+
+| Wechsel | Token |
+| --- | --- |
+| Ecke wechseln | `GLIDE` |
+| Hover deckend, X einblenden | `QUICK` |
+| Karte geht, Lücke schließt, Platzhalter kommt | Shelf-Timing 240/150 ms ease-out-cubic, auf der „Ohne Spring“-Liste: die Vorschau muss die echte Animation zeigen |
+| Größe, Anzahl | `SNAP` wie bisher |
+
+Reduced Motion: alles sofort.
+
+#### Abnahme
+
+Tests: X-Klick nimmt die Karte und setzt eine neue an die Ecke (mit und
+ohne Animation); Opacity ändert das Alpha der Kartenpixel; Solid on hover
+aus hält das Alpha beim Hover; Shadow aus lässt außerhalb der Karte keine
+Pixel; neue Keys parsen, fehlen, klemmen; Symbol-Tinte mittig (± 0,5).
+Gates der App (Überlauf 360 und Desktop, Padding, Kontrast, Icons,
+Versalien). `cargo fmt --check`, `cargo clippy --all-targets`, `cargo
+test`, `cargo check --target x86_64-pc-windows-msvc` falls installiert.
+Screenshot der Shelf-Seite (Ruhe, Hover, mitten in der Animation).
+
+**Macht nicht:** Speichern, Ziehen oder Öffnen von Karten in der Vorschau,
+echte Screenshots, weitere Animationsarten als an/aus, eigene Radien je
+Karte, Hyprlands eigene Layer-Animation, Windows.
+
 ## 6. Reihenfolge
 
 Jede Phase ist ein eigener Commit (oder wenige), baut, testet und lässt den
@@ -2853,3 +2967,4 @@ Vom Nutzer am 24.10. so bestätigt:
 | 5 | geplant, freigegeben 24.10. |
 | 6 (Library) | Skizze im Library-Plan |
 | 5f | umgesetzt 27.10. nach „Phase 5f“ (zusammen mit Selector S4/S5, `docs/plans/selector/2026-10-27-selector-toolbar.md`): `ui::push_squircle`, `squircle_shape`, `SQUIRCLE_SCALE` 1,8408964, `SQUIRCLE_TOLERANCE` 0,025; `rounded_rect` (also `Canvas::fill`, `Canvas::picture`) und `Canvas::ring` nutzen sie, `push_rounded` nur noch für Lucide-`rect`. Abweichung: Polarform statt (cos^(2/n), sin^(2/n)), siehe Abschnitt. Gemessen: 45°-Punkt gleich dem Kreis ± 0,05 px bei r = 2, 4, 5, 9, 12, 16; Pille r = h/2 ergibt n = 2,0000, Punkte ± 0,03 px auf dem Kreis; r = 6/7,5/9 in 20 px Höhe geklemmt mit 2 < n < 4, 45°-Punkt ± 0,05; Sehnenfehler gegen die dichte Kurve 0,023 (r 4, 61 Punkte je Fläche), 0,024 (r 12, 93), 0,020 (r 40, 181), alle < 0,025; gerade Kanten pixelgleich zur eckigen Füllung. Gefunden und behoben (Zoom 4×, Skript für über zwei Reihen verschmierte gerade Kanten, Lauf ≥ 30 px): Segment-Teile lagen bei geteiltem Rest auf Bruchteilen (gewählte Fläche „Mic“ mit verschmierter linker Kante bei Skala 2), jetzt Grenzen gerundet, Summe gleich; Karten der Shelf-Vorschau lagen auf Bruchteilen (skaliert), jetzt Kanten gerundet. Danach keine verschmierte Flächenkante auf Shelf, Screenshots, Recording, Replay, General bei 760@2 und 360 (Treffer nur noch Lucide-Striche und Schrift). Gates unverändert grün: Padding 12 px (Abweichung 0,00), Achse 0,00; Kontrast 13 Paare, niedrigstes 4,83:1; Icons 24 Zeilen, Mitte 0,32, Achse 0,31, Kante 0,00, Abstand 0,37 (`--measure` Outfit: 26 Zeilen 0,31/0,31/0,00/0,37); Versalien 0,00 px je Control (eingebettet und Outfit); Überlauf 1067 Teile; Umbruch 376 Zeilen; Copy 170 Strings. Renders vorher/nachher in `scratchpad/s5/{before,after}/` (Shelf, Recording, General bei 760@2 und 360, dazu Screenshots und Replay nachher), Vergleich `scratchpad/s5/z-compare.png`. Checks: fmt, clippy ohne Warnung, `cargo test` 137 + 391 grün, `git diff --check`. |
+| 5g V6 | umgesetzt 27.10. nach „Phase 5g V6“, zwei Abweichungen: (1) die neue Karte kommt erst, wenn die alte weg ist (240 ms, dann 150 ms): gleichzeitig ließ die Shelf-Logik (`overflow_card_opacity`) die übrige Karte aus- und am Ende hart wieder einblenden, im Render bei 90 ms gesehen; (2) `--render` kann `--move X,Y`, `--click X,Y`, `--after MS`, für die Zustands-Screenshots. A: `src/shelf_card/` (Lib: `layout.rs` per `git mv` mit `animated_card_layout`, `animated_item_limit`, `overflow_card_opacity`, `hold_size`; `paint.rs` mit `Frame`, `draw_shelf(…, picture)`, Skala für Radius, Schatten, Striche; `CardKind`, `CardLook`, `APPEAR_MS`/`DISMISS_MS`, `appear`/`dismiss`), `shelf/paint.rs` 1197 → 501 Zeilen, `linux/shelf/anim.rs` (aus `mod.rs`, 3681 → 3494). B: Keys `shelf.card_opacity` (30–100), `shelf.solid_on_hover`, `shelf.card_shadow`, `shelf.animations`, `ShelfPrefs::look()`; Animations aus: kein Appear, Dismiss entfernt sofort. C: `app/preview/shelf.rs` (`Play`: zwei Platzhalter, Federn für Breite `SNAP`, Ecke `GLIDE`, zweite Karte `SNAP`; Malen über den Shelf-Painter in eine Pixmap, Maske auf den Block; Hover je Karte als Differenzbild mit `QUICK`), `dims.rs` (Höhenlinie plus „190 × 132 px“ am ruhenden Eckplatz), `Target::Card`, Überschrift „Look“ mit `blend`, `square-mouse-pointer`, `squares-unite`, `orbit`; Slider zeigt „80%“ ohne Leerzeichen. D: Ecken-Symbole G. Tests neu: `two_cards_rest_in_the_corner_at_their_real_size`, `a_new_corner_glides_the_cards_there`, `one_card_shown_folds_the_second_away`, `the_x_dismisses_a_card_and_a_new_one_arrives_on_top`, `without_animations_a_card_goes_and_comes_at_once`, `the_cards_are_the_shelfs_own_painting_with_the_look_of_the_page`, `the_look_sets_opacity_hover_and_shadow`, `the_preview_leaves_the_save_button_out`, Ecken-Symbol-Test mit Tinten-Mitte (± 1 px bei 48 px). Checks: `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test` 146 + 381 grün, Gates (Kontrast min. 4,83:1, Icons 0,31 px, Padding 0,00, Überlauf 1227 Teile bei 360–1400 px), `settings --measure` mit echter Schrift. Renders Ruhe, Hover, Dismiss-Folge, 2×, 360 px angesehen. Nicht geprüft: `cargo check --target x86_64-pc-windows-msvc` (Ziel nicht installiert; `draw_shelf_opaque` behält Signatur), live im Daemon (Installation und Neustart beim Nutzer). |

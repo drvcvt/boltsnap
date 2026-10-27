@@ -1,4 +1,7 @@
-use super::cards::{decode_shelf_image, prepare_pixels_with};
+use super::cards::{
+    animated_card_layout, animated_item_limit, decode_shelf_image, overflow_card_opacity,
+    prepare_pixels_with,
+};
 use super::*;
 use crate::shelf::thumbnail::CardSize;
 

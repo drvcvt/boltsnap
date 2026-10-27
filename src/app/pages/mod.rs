@@ -103,6 +103,34 @@ fn shelf(prefs: &Prefs, now: Instant) -> Page {
                     now,
                 ),
             ),
+            Block::Heading("Look".into()),
+            row(
+                Icon::Blend,
+                "Opacity",
+                None,
+                (
+                    Box::new(Slider::new(prefs.card_opacity.into(), (30, 100, 5), "%")),
+                    key("shelf.card_opacity", int),
+                ),
+            ),
+            row(
+                Icon::SquareMousePointer,
+                "Solid on hover",
+                None,
+                switch("shelf.solid_on_hover", prefs.solid_on_hover, now),
+            ),
+            row(
+                Icon::SquaresUnite,
+                "Shadow",
+                None,
+                switch("shelf.card_shadow", prefs.card_shadow, now),
+            ),
+            row(
+                Icon::Orbit,
+                "Animations",
+                Some("Cards scale and fade as they come and go"),
+                switch("shelf.animations", prefs.card_animations, now),
+            ),
         ],
     }
 }

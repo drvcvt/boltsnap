@@ -137,6 +137,112 @@ pub fn save_cell(r: &ThumbRect, cfg: &LayoutConfig) -> (u32, u32, u32, u32) {
     (r.x + cfg.pad_icon, r.y + cfg.pad_icon, cfg.icon, cfg.icon)
 }
 
+pub fn overflow_card_opacity(
+    position: usize,
+    visible: usize,
+    appear_progress: Option<f32>,
+    disappear_progresses: &[f32],
+) -> Option<f32> {
+    let mut overflow = position.checked_sub(visible)?;
+    if overflow == 0
+        && let Some(progress) = appear_progress
+    {
+        return Some(1.0 - progress.clamp(0.0, 1.0));
+    }
+    overflow = overflow.saturating_sub(usize::from(appear_progress.is_some()));
+    disappear_progresses
+        .get(overflow)
+        .map(|progress| progress.clamp(0.0, 1.0))
+}
+
+pub fn animated_item_limit(
+    model_len: usize,
+    visible: usize,
+    appearing: bool,
+    disappearing: usize,
+) -> usize {
+    model_len.min(visible + usize::from(appearing) + disappearing)
+}
+
+/// `top`: the shelf hangs from a top corner and grows downward, so the older
+/// cards slide down to make room for a new one even while the shelf is not
+/// full. Hanging from the bottom, it grows upward and they stay put.
+pub fn animated_card_layout(
+    items: &[(u64, u32, u32, f32)],
+    cfg: &LayoutConfig,
+    visible: usize,
+    top: bool,
+    appear_progress: Option<f32>,
+) -> Layout {
+    if items.is_empty() {
+        return Layout::compute(&[], cfg);
+    }
+    let scroll = appear_progress
+        .filter(|_| top || items.len() > visible)
+        .map(|progress| {
+            ((items[0].2 + cfg.gap) as f32 * (1.0 - progress.clamp(0.0, 1.0))).round() as u32
+        });
+    let widest = items
+        .iter()
+        .take(visible)
+        .map(|(_, w, ..)| *w)
+        .max()
+        .unwrap_or(0);
+    let mut thumbs = Vec::with_capacity(items.len());
+    let mut y = cfg.pad;
+    for (i, (id, w, h, collapse)) in items.iter().enumerate() {
+        if i > 0 {
+            let gap_collapse = collapse.max(if i == 1 { items[0].3 } else { 0.0 });
+            y += (cfg.gap as f32 * (1.0 - gap_collapse)).round() as u32;
+        }
+        let height = (*h as f32 * (1.0 - collapse)).round() as u32;
+        thumbs.push(ThumbRect {
+            id: *id,
+            x: cfg.pad,
+            y: if i > 0 {
+                y.saturating_sub(scroll.unwrap_or(0))
+            } else {
+                y
+            },
+            w: *w,
+            h: height,
+        });
+        y += height;
+    }
+    let height = if items.len() > visible {
+        cfg.pad * 2
+            + items
+                .iter()
+                .take(visible)
+                .map(|(_, _, h, _)| *h)
+                .sum::<u32>()
+            + cfg.gap * (visible as u32 - 1)
+    } else {
+        y + cfg.pad
+    };
+    Layout {
+        width: cfg.pad * 2 + widest,
+        height,
+        thumbs,
+    }
+}
+
+/// Keeps the layer at `size` while a card leaves: resizing it every frame made
+/// Hyprland rearrange the layer and send a configure that drew again, off the
+/// display's beat. Hanging from the bottom, the stack sits on the buffer's
+/// bottom edge; the rest is transparent.
+pub fn hold_size(mut layout: Layout, (width, height): (u32, u32), top: bool) -> Layout {
+    let shift = height.saturating_sub(layout.height);
+    if !top {
+        for card in &mut layout.thumbs {
+            card.y += shift;
+        }
+    }
+    layout.width = layout.width.max(width);
+    layout.height = layout.height.max(height);
+    layout
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

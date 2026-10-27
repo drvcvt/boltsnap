@@ -486,6 +486,37 @@ fn shelf_prefs_read_the_shelf_table_and_fall_back_per_key() {
     assert_eq!((prefs.visible, prefs.corner), (8, Corner::TopRight));
     assert!(set.issues.is_empty());
 
+    // The look: unset is today's shelf, each key on its own.
+    let look = super::ShelfPrefs::default();
+    assert_eq!(
+        (
+            look.opacity,
+            look.solid_on_hover,
+            look.shadow,
+            look.animations
+        ),
+        (80, true, true, true)
+    );
+    assert_eq!(look.look(), boltsnap::shelf_card::CardLook::default());
+    let set = Config::parse(
+        "[shelf]\ncard_opacity = 55\nsolid_on_hover = false\ncard_shadow = false\nanimations = false\n",
+    );
+    let prefs = set.shelf_prefs();
+    assert_eq!(
+        (
+            prefs.opacity,
+            prefs.solid_on_hover,
+            prefs.shadow,
+            prefs.animations
+        ),
+        (55, false, false, false)
+    );
+    assert_eq!(prefs.look().opacity, 0.55);
+    assert!(set.issues.is_empty());
+    let low = Config::parse("[shelf]\ncard_opacity = 20\n");
+    assert_eq!(low.shelf_prefs().opacity, 80);
+    assert_eq!(low.issues.len(), 1);
+
     let invalid =
         Config::parse("[shelf]\ncard_width = 400\nvisible_cards = 0\ncorner = \"left\"\n");
     assert_eq!(invalid.shelf_prefs(), super::ShelfPrefs::default());

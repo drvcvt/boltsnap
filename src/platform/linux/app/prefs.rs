@@ -44,6 +44,10 @@ pub fn load(displays: Vec<Screen>) -> Prefs {
     Prefs {
         card_width: shelf.card.w,
         visible_cards: shelf.visible as u32,
+        card_opacity: shelf.opacity.into(),
+        solid_on_hover: shelf.solid_on_hover,
+        card_shadow: shelf.shadow,
+        card_animations: shelf.animations,
         corner: match shelf.corner {
             layout::Corner::TopLeft => Corner::TopLeft,
             layout::Corner::TopRight => Corner::TopRight,

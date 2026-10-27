@@ -158,7 +158,7 @@ fn every_bound_row_writes_a_value_its_key_accepts() {
         // Nothing has changed yet, so nothing went out.
         assert!(changed(&app.finish(now)).is_empty());
     }
-    assert_eq!(checked, 19, "every row but the replay buffer has a key");
+    assert_eq!(checked, 23, "every row but the replay buffer has a key");
 }
 
 #[test]

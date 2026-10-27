@@ -21,7 +21,7 @@ pub use displays::{
 pub use replay::{
     bar as replay_bar_rect, cells as replay_cells, head as replay_head_rect, step as replay_step,
 };
-pub use shelf::{screen, shelf_cards};
+pub use shelf::card_height;
 
 use super::pages::Screen;
 use crate::ui::motion::Spring;
@@ -52,8 +52,7 @@ impl Preview {
 
 /// Everything the previews move.
 pub(super) struct State {
-    cards: Vec<shelf::Card>,
-    shape: Option<shelf::ShelfShape>,
+    play: shelf::Play,
     /// Per monitor how lit it is, and the bridge of a combined clip.
     lit: Vec<Spring>,
     bridge: Spring,
@@ -62,8 +61,6 @@ pub(super) struct State {
     /// 0 to 1: the front card's measure shows; the edge being dragged.
     dims: Spring,
     drag: Option<dims::Drag>,
-    /// Where the stack ends on the reference screen: the width line's place.
-    far: Spring,
     /// The replay buffer's length, what its memory holds, what it holds now.
     length: Spring,
     holds: Spring,
@@ -76,14 +73,12 @@ pub(super) struct State {
 impl State {
     pub(super) fn new(now: Instant) -> State {
         State {
-            cards: Vec::new(),
-            shape: None,
+            play: shelf::Play::new(now),
             lit: Vec::new(),
             bridge: Spring::settled(0.0, now),
             captions: Vec::new(),
             dims: Spring::settled(0.0, now),
             drag: None,
-            far: Spring::settled(0.0, now),
             length: Spring::settled(60.0, now),
             holds: Spring::settled(60.0, now),
             held: Spring::settled(0.0, now),

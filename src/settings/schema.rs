@@ -130,6 +130,10 @@ pub const KEYS: &[Key] = &[
         Choice(&["bottom-left", "bottom-right", "top-left", "top-right"]),
         Live,
     ),
+    key("shelf.card_opacity", Int { min: 30, max: 100 }, Live),
+    key("shelf.solid_on_hover", Bool, Live),
+    key("shelf.card_shadow", Bool, Live),
+    key("shelf.animations", Bool, Live),
     strict(
         "replay.duration_seconds",
         Int { min: 1, max: 600 },

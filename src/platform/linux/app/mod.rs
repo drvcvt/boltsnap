@@ -27,6 +27,7 @@ use crate::DynResult;
 use window::{OPEN_SIZE as SIZE, Parts, Win};
 const USAGE: &str = "usage: boltsnap settings [PAGE]\n       \
      boltsnap settings --render PAGE OUT.png [--scale N] [--size WxH] [--fixture]\n       \
+                                [--move X,Y] [--click X,Y] [--after MS]\n       \
      boltsnap settings --measure";
 
 /// How `--render` draws.
@@ -34,6 +35,11 @@ struct Render {
     scale: u32,
     size: (u32, u32),
     fixture: bool,
+    /// The pointer moves there, then presses and lets go there, once the
+    /// page has come in; drawn `after` ms later (states to look at).
+    hover: Option<(f32, f32)>,
+    click: Option<(f32, f32)>,
+    after: u64,
 }
 
 fn render_options(mut rest: &[String]) -> DynResult<Render> {
@@ -41,11 +47,29 @@ fn render_options(mut rest: &[String]) -> DynResult<Render> {
         scale: 1,
         size: SIZE,
         fixture: false,
+        hover: None,
+        click: None,
+        after: 2000,
+    };
+    let point = |value: &str| {
+        value
+            .split_once(',')
+            .and_then(|(x, y)| Some((x.parse().ok()?, y.parse().ok()?)))
+            .ok_or("--move and --click take X,Y")
     };
     while let Some((flag, more)) = rest.split_first() {
         rest = more;
         match flag.as_str() {
             "--fixture" => render.fixture = true,
+            "--move" | "--click" | "--after" => {
+                let (value, more) = rest.split_first().ok_or(USAGE)?;
+                rest = more;
+                match flag.as_str() {
+                    "--move" => render.hover = Some(point(value)?),
+                    "--click" => render.click = Some(point(value)?),
+                    _ => render.after = value.parse().map_err(|_| "--after takes ms")?,
+                }
+            }
             "--scale" | "--size" => {
                 let (value, more) = rest.split_first().ok_or(USAGE)?;
                 rest = more;
@@ -132,7 +156,17 @@ fn render(page: &str, out: &Path, render: Render) -> DynResult<()> {
         return Err(format!("no page named '{page}'").into());
     }
     // The page has come in; nothing is moving.
-    let settled = now + std::time::Duration::from_secs(2);
+    let mut settled = now + std::time::Duration::from_secs(2);
+    if let Some((x, y)) = render.hover.or(render.click) {
+        app.handle(Input::Move { x, y }, settled);
+    }
+    if let Some((x, y)) = render.click {
+        app.handle(Input::Press { x, y, clicks: 1 }, settled);
+        app.handle(Input::Release, settled);
+    }
+    if render.hover.is_some() || render.click.is_some() {
+        settled += std::time::Duration::from_millis(render.after);
+    }
     let mut canvas = Canvas::new(w, h, render.scale).ok_or("empty canvas")?;
     app.draw(&mut canvas, settled);
     canvas
