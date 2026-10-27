@@ -1,6 +1,7 @@
 //! The Boltsnap mark pressed into the sidebar's free corner (settings plan,
-//! 4k): a shade darker than the sidebar, a darker rim along its top edge and
-//! a lighter one along its bottom, as if light from above fell into it.
+//! 4k; whole and on the navigation icons' inset since 27.10.): a shade
+//! darker than the sidebar, a darker rim along its top edge and a lighter one
+//! along its bottom, as if light from above fell into it.
 
 use std::cell::RefCell;
 
@@ -12,9 +13,11 @@ use crate::ui::{Canvas, Rect, icons, paint};
 const SVG: &str = include_str!("../../assets/logo/boltsnap-mark.svg");
 /// The mark's view box: 3 by 4 stem widths (`assets/logo/construct.py`).
 const VIEW: (f32, f32) = (360.0, 480.0);
-/// How tall the mark is, and how far it reaches past the window's corner.
+/// How tall the mark is, and how far it stays from the window's left and
+/// bottom edges: where the navigation icons start (`App::nav_icon`), so the
+/// mark lines up with them.
 pub const HEIGHT: f32 = 168.0;
-const BLEED: f32 = 28.0;
+const INSET: f32 = theme::GAP_S + (theme::CTL_H - theme::ICON) / 2.0;
 /// Room around the drawing for the 1 px rims.
 const PAD: u32 = 2;
 
@@ -25,11 +28,11 @@ pub struct Mark {
 }
 
 impl Mark {
-    /// Where the mark sits in a window `height` tall: its corner cut off by
-    /// the window's left and bottom edges.
+    /// Where the mark sits in a window `height` tall: whole, `INSET` from
+    /// the left and bottom edges.
     pub fn place(height: f32) -> Rect {
         let width = HEIGHT * VIEW.0 / VIEW.1;
-        Rect::new(-BLEED, height - HEIGHT + BLEED, width, HEIGHT)
+        Rect::new(INSET, height - HEIGHT - INSET, width, HEIGHT)
     }
 
     pub fn draw(&self, canvas: &mut Canvas, at: Rect, alpha: f32) {

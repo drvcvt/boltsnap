@@ -208,6 +208,10 @@ fn the_mark_shows_in_the_free_corner_only() {
     let tall = app_on("recording", (1000.0, 1032.0), now);
     assert_eq!(tall.mark_alpha(now + SETTLED), 1.0);
     let place = crate::app::brand::Mark::place(1032.0);
+    // Whole, on the navigation icons' inset from the left and the bottom.
+    let icon = tall.nav_icon(0, now + SETTLED);
+    assert_eq!(place.x, icon.x);
+    assert_eq!(1032.0 - place.bottom(), icon.x);
     let last = tall.nav_slot(tall.pages().len() - 1, now + SETTLED);
     assert!(
         place.y >= last.bottom() + crate::ui::theme::GAP_XL,
