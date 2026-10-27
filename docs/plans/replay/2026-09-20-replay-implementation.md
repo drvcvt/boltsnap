@@ -648,3 +648,46 @@ Speicherns, zwei Saves hintereinander. Live (nur mit Okay): Install,
 Daemon-Neustart, Vollbild- und Bereichs-Save, Zeiten aus C0.
 
 **Stand:** geplant, nicht begonnen.
+
+## 14. Lag mit laufendem Replay: Beweise behalten (2026-10-27)
+
+Meldung: „ich hatte gerade die krassesten lags jemals und es lag am
+replaybuffer [...] als ich restartet habe wars dann fine“.
+
+Befund (lesend, 14:45): Daemon seit 14:30:22, Replay-Neustart durch den
+Nutzer 14:44:52. Neue Session normal (gsr 25 % eines Kerns, Worker 180 MB
+RSS bei 179 MB Budget, GPU 30 %, Encoder 21 %). `/proc/pressure` über 5 min
+(enthält die Lag-Zeit): CPU some 0,97 %, Speicher 0,01 %, IO 0,07 %; also
+kein CPU-, Speicher- oder IO-Engpass, eher GPU/Compositor. Einzige Spur:
+`daemon.log` 14:44:41 vom Worker „[nut] Multiple keyframes with same PTS“
+(gsr lieferte Frames mit gleichem Zeitstempel). Cursor-Tracker nur
+Positionen (`libway` `cursor_positions`), keine Schleife. Das gsr-Log der
+Lag-Session hat der Neustart überschrieben (`capture_log` schneidet ab),
+und seine Zeilen haben keine Zeit; Ursache deshalb **nicht belegt**.
+
+Soll (nur Beweise, kein Eingriff in Capture oder Encoder):
+- `replay-capture.log` beim Start nach `replay-capture.log.old`, die
+  vorige Session bleibt lesbar.
+- gsr-stderr über eine Pipe, die der Daemon in einem Thread leert: jede
+  Zeile mit Ortszeit davor ins Log. Der Thread liest bis EOF, auch wenn das
+  Schreiben scheitert (gsr blockiert nie auf stderr, bekommt kein EPIPE).
+- Aus „update fps: N“: drei Meldungen in Folge unter 90 % der Ziel-FPS →
+  eine Zeile im `daemon.log` „replay capture slowed to N of F fps“ mit Zeit;
+  drei gute in Folge → „back at N fps“.
+- Worker-stderr ebenso mit Zeit ins `daemon.log`.
+
+Abnahme: Tests für die FPS-Erkennung (Einbruch, Erholung, einzelne
+Ausreißer melden nichts) und das Zeilenformat; live: nach Replay-Neustart
+liegt `.old` daneben, Zeilen tragen Zeiten.
+
+Macht nicht: die Lag-Ursache beheben (unbekannt), FPS oder Encoder ändern.
+Nächster Schritt nach dem nächsten Lag: `replay-capture.log(.old)` und
+`daemon.log` lesen.
+
+Stand 27.10.: umgesetzt (`linux/replay/capture_log.rs`: `open` mit `.old`,
+`follow` mit Ortszeit je Zeile, `Pace` für „slowed to / back at“; gsr- und
+Worker-stderr über Pipes). SIGPIPE ist kein Risiko: gsr und Worker sterben
+mit dem Daemon ohnehin (`PR_SET_PDEATHSIG`). Tests
+`a_slowdown_and_the_recovery_are_told_once_and_a_single_dip_is_not`,
+`every_line_gets_the_time_and_the_old_log_stays`; fmt, clippy, `cargo test`
+149 + 386 grün. Live: nach dem Daemon-Neustart offen.

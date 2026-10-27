@@ -1,4 +1,5 @@
 use std::io::Write;
+mod capture_log;
 mod monitor;
 pub(crate) mod process;
 mod socket;
@@ -287,15 +288,6 @@ fn session_in_use(name: &str) -> bool {
     socket_call(name, &json!({"version":1,"command":"status"}))
         .is_ok_and(|(status, _)| in_use(&status))
 }
-/// Where GPU Screen Recorder's diagnostics go. Inheriting the daemon's stderr
-/// sends them to `/dev/null`, and then a capture that stops mid-session leaves
-/// nothing to look at. One file, truncated per start, so it cannot grow.
-fn capture_log() -> Stdio {
-    std::fs::File::create(crate::paths::cache_dir().join("replay-capture.log"))
-        .map(Stdio::from)
-        .unwrap_or_else(|_| Stdio::null())
-}
-
 /// Above `/proc/sys/fs/pipe-max-size` (1 MiB by default) the call fails and
 /// the pipe keeps its size.
 const CAPTURE_PIPE_BYTES: libc::c_int = 1024 * 1024;
@@ -486,7 +478,9 @@ fn start_capture(settings: Settings, cancel: &AtomicBool) -> Result<Session, Str
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(capture_log());
+        // Through `capture_log`: inheriting the daemon's stderr would send
+        // GPU Screen Recorder's diagnostics to `/dev/null`.
+        .stderr(Stdio::piped());
     let cursor = crate::config::Config::load().recording_prefs().cursor;
     let smooth = smooth_cursor(&mut command, cursor, &monitor.name)?;
     if cancel.load(Ordering::Relaxed) {
@@ -496,6 +490,15 @@ fn start_capture(settings: Settings, cancel: &AtomicBool) -> Result<Session, Str
         .map_err(|e| format!("GPU Screen Recorder unavailable: {e}"))?;
     // gsr holds its own copy of the feed now.
     let cursor = smooth.map(|(tracker, _feeds)| tracker);
+    // One session's log in `replay-capture.log`, the one before in `.old`,
+    // each line with its time.
+    if let Some(stderr) = capture.stderr.take() {
+        let fps = Some(settings.fps);
+        match capture_log::open(&crate::paths::cache_dir()) {
+            Some(log) => capture_log::follow(stderr, log, fps),
+            None => capture_log::follow(stderr, std::io::sink(), fps),
+        }
+    }
     let input = capture.stdout.take().ok_or("capture pipe missing")?;
     // 64 KiB holds a few ms of video; a keyframe alone is larger. Room for
     // ~100 ms keeps a worker held up by a busy CPU from stalling gsr's encoder.
@@ -521,11 +524,17 @@ fn start_capture(settings: Settings, cancel: &AtomicBool) -> Result<Session, Str
             .arg(&encoder)
             .stdin(Stdio::from(input))
             .stdout(Stdio::null())
-            .stderr(Stdio::inherit()),
+            .stderr(Stdio::piped()),
         None,
     );
     let worker = match child {
-        Ok(worker) => worker,
+        Ok(mut worker) => {
+            // Into the daemon's log, with the time.
+            if let Some(stderr) = worker.stderr.take() {
+                capture_log::follow(stderr, std::io::stderr(), None);
+            }
+            worker
+        }
         Err(e) => {
             process::terminate(&mut capture);
             return Err(format!("start replay worker: {e}"));
