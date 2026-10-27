@@ -2971,6 +2971,61 @@ jeder Editor gleich, nichts kann den Daemon über den Socket umschreiben);
 
 **Entschieden 27.10. (Nutzer): (a) nur öffnen.** Die Entkopplung bleibt.
 
+### Phase 5i: Last des Replay-Buffers, Fenster neuer als der Daemon (27.10., Meldung des Nutzers)
+
+Meldung: (Bild „unknown setting shelf.open_with“) „hab das hier bekommen als
+ich open with eddy auswaehlen wollte und maybe wäre so eine kleine
+leistungseinschaetzung bei den replay settings unten damit man nicht alles
+hochballert und sich wundert woher die auslastung kommt“.
+
+#### Befund
+
+- Die Meldung: das Fenster (neues Binary) schreibt über den Daemon, der
+  noch das alte Binary mit dem alten Schema hat und den Key ablehnt
+  (`settings::load` „unknown setting“). Ein Daemon-Neustart behebt es; die
+  Meldung sagt das nicht.
+- Last: ein einziger Messpunkt hier (60 fps, 1920 × 1080, NVENC, 41 Mbit/s):
+  gsr 24 % eines Kerns, `gsr-kms-server` 1 %, Worker 0,4 %; RSS gsr 210 MB,
+  Worker 204 MB. Eine Hochrechnung für andere Einstellungen wäre geraten
+  (keine Messreihe, und schwere Messläufe auf diesem Rechner sind tabu).
+  Die Prozesse sind ohne Daemon-Hilfe zu finden: die Session heißt
+  `worker-<Daemon-PID>-…` (`replay status`), gsr und Worker sind Kinder
+  dieser PID (`/proc/<pid>/stat` Feld 4), `gsr-kms-server` ein Kind von gsr.
+
+#### Verhalten
+
+1. **Unten auf der Replay-Seite** ein Block „Load“ (Vorschau-Art, `PANEL`,
+   eine Zeile): läuft der Buffer, die gemessene Last, einmal je Sekunde
+   neu: „25 % of one core, 410 MB“ (CPU: gsr mit seinen Kindern und Worker
+   über die letzte Sekunde, in Prozent eines Kerns; Speicher: Summe RSS).
+   Links „Now“ in `SUB`, rechts die Zahlen in `TEXT`, `tabular`. Ist er aus:
+   „Off“ und rechts nichts. Laufen ältere Einstellungen als die Seite zeigt
+   (`replay_stale`), steht darunter in `SUB`: „Before your changes“.
+   Zahlen gleiten nicht (Ohne-Animation-Liste: Messwerte springen ehrlich).
+2. **Fenster neuer als der Daemon:** lehnt der Daemon einen Key ab, den das
+   Fenster kennt („unknown setting X“ und X im eigenen Schema), sagt der
+   Banner „Boltsnap is older than this window. Restart it to save this“.
+
+#### Code
+
+- `linux/app/load.rs` (neu): Prozesse aus `/proc`, CPU aus `utime + stime`
+  (Feld 14, 15) über die Zeit, RSS aus `statm` × Seitengröße; reine
+  Rechenfunktionen getestet mit festen `/proc`-Zeilen.
+- `linux/app/save.rs::poll_replay`: schickt `(held, load)`.
+- `app/preview/replay.rs` bzw. neu `preview/load.rs`: `Preview::Load`,
+  `App::set_replay_load`; `pages/mod.rs` hängt den Block ans Ende der
+  Replay-Seite.
+- `linux/app/save.rs` (Fehlertext) für Punkt 2.
+
+#### Abnahme
+
+Tests: CPU aus zwei `/proc/stat`-Ständen, Kindersuche, Text bei an, aus und
+veraltet; Banner-Text bei „unknown setting“ eines bekannten Keys. Gates der
+App. Render der Replay-Seite.
+
+**Macht nicht:** GPU- oder Encoder-Last (nur NVIDIA abfragbar, und dann für
+die ganze Karte), Schätzwerte für nicht laufende Einstellungen.
+
 ## 6. Reihenfolge
 
 Jede Phase ist ein eigener Commit (oder wenige), baut, testet und lässt den
@@ -3146,3 +3201,4 @@ Vom Nutzer am 24.10. so bestätigt:
 | 5g V6c | Fix 27.10. (Meldung mit Aufnahme `boltsnap-final-3573342-1.mp4`: „die animation wenn man die obere card im preview wegclickt ist tot broken“): das Platzhalterbild kam aus der Größe der ersten Karte im Layout; geht die obere, ist das die schrumpfende, und jede Karte bekam ihr gestauchtes Bild (die untere wurde von oben her leer, dann sprang sie zurück). Jetzt aus der Kartengröße (`Placed::card`). Test `the_card_left_behind_keeps_its_picture_while_the_top_one_goes`, schlägt mit dem alten Code an (21 statt 52 bei 30 ms). Checks: fmt, clippy, `cargo test` grün, Render-Folge 30–260 ms. |
 | 5g V7 | umgesetzt 27.10. nach „V7 Zwei Monitore als ein Clip“: `displays.rs` `joins` statt `seams` (Fuge plus `BODY_RADIUS` in beide Gehäuse in `RAISE`, über die gemeinsame Höhe bzw. Breite), Bildschirme danach obendrauf, also mit Rahmen und Ecken. Test `one_clip_joins_the_monitors_bodies_and_keeps_their_screens_whole` (Fuge Panel bei zwei Clips, `RAISE` bei einem, Innenrahmen bleibt, keine Kerbe oben und unten); `display_shots` (ignoriert) für die Bilder. Checks: fmt, clippy, `cargo test` grün, Render beider Zustände in 2× angesehen. |
 | 5h | umgesetzt 27.10. nach „Phase 5h“, Entscheidung (a) nur öffnen. Abweichungen: (1) Segment „Alt held / Always“ statt „With Alt“ (Copy-Gate: Title Case); (2) die Lupe ist nicht im Scene-Test, `Selector::magnifier_on` braucht Wayland-Objekte, getestet ist das Lesen der Config; (3) beim Bauen gefunden und behoben: ein Reset oder Entfernen eines Replay-Keys (auch der Reset-Knopf bei Frame rate) markierte die laufende Session nicht als veraltet, „Restart replay“ kam nicht (`linux/app/save.rs::send`); (4) `open_media_card` mit `media_open_command` aus `linux/shelf/mod.rs` nach `cards.rs` (`mod.rs` 3494 → 3479). Neu: Keys `copy_to_clipboard`, `selector_magnifier`, `shelf.open_with`; `EDITORS` (eddy, Satty, swappy, GIMP, Krita, Pinta), fehlender Editor → `xdg-open` und einmal eine Meldung; Replay-Zeilen Display („Like recordings“ entfernt den Key), Bitrate (Auto, 10–80 Mbit/s), Encoder (ohne CPU) unter „Video“; Icons `clipboard-copy`, `zoom-in`, `app-window`, `activity`, `cpu`; `rows::choices`. Tests `a_wayland_shelf_capture_copies_by_the_config_unless_a_flag_says`, `copy_magnifier_and_open_with_read_with_their_defaults`, `an_image_card_opens_with_the_chosen_editor_and_a_video_with_the_default_app`, `like_recordings_and_auto_remove_their_replay_key_and_a_monitor_sets_it`, Zählung der schreibenden Zeilen 26. Checks: fmt, clippy ohne Warnung, `cargo test` 151 + 389 grün; Gates: Kontrast min. 4,83:1, Copy 242 Texte, Icons 0,32 px, Padding 0,00, Überlauf 1467 Teile bei 360–1400 px; `settings --measure` 36 Zeilen 0,31 px. Renders Screenshots (760, 360, offenes Dropdown) und Replay angesehen. Live offen (Daemon-Neustart für „Open with“). |
+| 5i | umgesetzt 27.10. nach „Phase 5i“, Abweichung: der Block bekommt die Überschrift „Load“ (wie jede Gruppe) und bricht in schmalen Spalten die Zahlen in eine zweite Zeile (Höhe aus der breitesten Form, springt nicht). `linux/app/load.rs` (`Meter`, Prozesse aus `/proc` über die Session-PID, CPU aus `utime + stime`, RSS aus `statm`), `poll_replay` schickt `(held, load)`, `preview/load.rs` (`Preview::Load { stale }`, `ReplayLoad`, „Off, nothing in use“ / „In use now“ / „Before your changes“), `save.rs::refusal` („Boltsnap is older than this window. Restart it to save this“). Tests: `/proc/stat` mit Klammern im Namen, Prozessbaum (gsr, kms-Helfer, Worker, kein fremdes Kind), Texte, Refusal; ignoriert `replay_load_now` gegen den laufenden Buffer: 36 % eines Kerns, 424 MB (`ps`: RSS 210 + 203 + 1,7 MB). Checks: fmt, clippy, `cargo test` 152 + 392 grün, Gates (Kontrast 4,83:1, Copy 242, Padding 0,00, Überlauf 1467). Render nur „Off“ (der Poll läuft nur im Fenster); live offen. |

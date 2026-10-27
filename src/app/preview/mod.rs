@@ -5,6 +5,7 @@
 
 mod dims;
 mod displays;
+mod load;
 mod replay;
 mod shelf;
 
@@ -18,6 +19,7 @@ pub use displays::{
     caption_place as display_caption_place, every_caption as display_lines,
     name_places as display_name_places, places as display_places,
 };
+pub use load::ReplayLoad;
 pub use replay::{
     bar as replay_bar_rect, cells as replay_cells, head as replay_head_rect, step as replay_step,
 };
@@ -37,6 +39,11 @@ pub enum Preview {
     Replay {
         bitrate_kbps: Option<u32>,
     },
+    /// What the running replay buffer costs, measured; `stale`: it runs
+    /// with the settings from before the page's changes.
+    Load {
+        stale: bool,
+    },
 }
 
 impl Preview {
@@ -46,6 +53,7 @@ impl Preview {
             Preview::Shelf => shelf::height(width),
             Preview::Displays(screens) => displays::height(fonts, width, screens),
             Preview::Replay { .. } => replay::height(),
+            Preview::Load { .. } => load::height(fonts, width),
         }
     }
 }
@@ -68,6 +76,8 @@ pub(super) struct State {
     /// The buffer runs; its video bitrate, kbit/s.
     running: bool,
     kbps: u32,
+    /// What the running buffer costs, as last measured.
+    load: Option<ReplayLoad>,
 }
 
 impl State {
@@ -84,6 +94,7 @@ impl State {
             held: Spring::settled(0.0, now),
             running: false,
             kbps: 0,
+            load: None,
         }
     }
 }
@@ -115,6 +126,7 @@ impl App {
             Preview::Shelf => self.draw_shelf(canvas, rect, now),
             Preview::Displays(_) => self.draw_displays(canvas, rect, now),
             Preview::Replay { .. } => self.draw_replay(canvas, rect, now),
+            Preview::Load { stale } => self.draw_load(canvas, rect, *stale),
         }
     }
 }

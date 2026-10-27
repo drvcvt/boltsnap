@@ -438,6 +438,11 @@ fn replay(prefs: &Prefs, now: Instant) -> Page {
             ),
         ),
     ];
+    // At the bottom: what it costs, measured.
+    blocks.push(Block::Heading("Load".into()));
+    blocks.push(Block::Preview(super::Preview::Load {
+        stale: prefs.replay_running && prefs.replay_stale,
+    }));
     if prefs.replay_running && prefs.replay_stale {
         // Right under the buffer it would empty; never on its own.
         let buffer = blocks

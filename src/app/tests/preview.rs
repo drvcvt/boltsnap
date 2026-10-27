@@ -663,3 +663,35 @@ fn display_shots() {
     key(&mut app, Key::Right, now + SETTLED);
     save(&app, now + SETTLED + SETTLED, "displays-one.png");
 }
+
+#[test]
+fn the_replay_load_says_off_in_use_and_before_your_changes() {
+    use crate::app::ReplayLoad;
+    let now = Instant::now();
+    let mut app = app_on("replay", SIZE, now);
+    assert!(
+        app.page()
+            .blocks
+            .last()
+            .is_some_and(|block| matches!(block, Block::Preview(Preview::Load { .. }))),
+        "at the bottom of the page"
+    );
+    assert_eq!(app.replay_load_text(false).0, "Off, nothing in use");
+    let load = |cpu| ReplayLoad {
+        cpu_percent: cpu,
+        memory_bytes: 414_000_000,
+    };
+    app.set_replay_load(Some(load(None)));
+    assert_eq!(
+        app.replay_load_text(false),
+        ("In use now".into(), "414\u{a0}MB".into())
+    );
+    app.set_replay_load(Some(load(Some(24.6))));
+    assert_eq!(
+        app.replay_load_text(true),
+        (
+            "Before your changes".into(),
+            "25% of one core, 414\u{a0}MB".into()
+        )
+    );
+}

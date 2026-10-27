@@ -74,9 +74,23 @@ fn patch(key: &str, change: Change) -> Result<(), String> {
     if response.ok {
         Ok(())
     } else {
-        Err(response
-            .error
-            .unwrap_or_else(|| format!("{key} was not saved")))
+        Err(refusal(
+            key,
+            response
+                .error
+                .unwrap_or_else(|| format!("{key} was not saved")),
+        ))
+    }
+}
+
+/// The daemon's refusal as the banner says it: a key this window knows but
+/// the daemon does not means the running Boltsnap is an older build.
+fn refusal(key: &str, error: String) -> String {
+    if error == format!("unknown setting {key}") && boltsnap::settings::schema::find(key).is_some()
+    {
+        "Boltsnap is older than this window. Restart it to save this".into()
+    } else {
+        error
     }
 }
 
@@ -223,14 +237,25 @@ pub(super) fn probe_fonts(changed: calloop::channel::Sender<()>) {
 /// How many seconds the replay buffer holds, once a second, for the bar on
 /// the replay page; `None` while it does not run. Asks the control socket
 /// directly (`replay::status_quiet`), so it never starts the daemon.
-pub(super) fn poll_replay(held: calloop::channel::Sender<Option<f32>>) {
+/// Once a second: what the replay buffer holds, and what it costs
+/// (`load.rs`), both `None` while it is off.
+pub(super) fn poll_replay(
+    held: calloop::channel::Sender<(Option<f32>, Option<boltsnap::app::ReplayLoad>)>,
+) {
     std::thread::spawn(move || {
+        let mut meter = super::load::Meter::new();
         loop {
-            let seconds = super::super::replay::status_quiet()
-                .filter(|status| matches!(status["state"].as_str(), Some("running" | "stalled")))
+            let status = super::super::replay::status_quiet()
+                .filter(|status| matches!(status["state"].as_str(), Some("running" | "stalled")));
+            let seconds = status
+                .as_ref()
                 .and_then(|status| status["duration_us"].as_u64())
                 .map(|us| us as f32 / 1e6);
-            if held.send(seconds).is_err() {
+            let load = status
+                .as_ref()
+                .and_then(|status| status["session"].as_str())
+                .and_then(|session| meter.sample(session));
+            if held.send((seconds, load)).is_err() {
                 return;
             }
             std::thread::sleep(std::time::Duration::from_secs(1));
@@ -279,4 +304,21 @@ pub(super) fn recording() -> bool {
         .ok()
         .and_then(|response| response.snapshot)
         .is_some_and(|snapshot| snapshot.state != crate::protocol::PublicRecordingState::Idle)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_key_only_an_older_daemon_lacks_asks_for_a_restart() {
+        assert_eq!(
+            super::refusal("shelf.open_with", "unknown setting shelf.open_with".into()),
+            "Boltsnap is older than this window. Restart it to save this"
+        );
+        // A key neither knows, and other refusals, stay as they are.
+        assert_eq!(
+            super::refusal("nope", "unknown setting nope".into()),
+            "unknown setting nope"
+        );
+        assert_eq!(super::refusal("save_dir", "disk full".into()), "disk full");
+    }
 }

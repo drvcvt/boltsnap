@@ -3,6 +3,7 @@
 
 mod folder;
 mod input;
+mod load;
 mod prefs;
 mod save;
 mod single;
@@ -233,8 +234,9 @@ fn run(page: Option<&str>) -> DynResult<()> {
     save::poll_replay(held_tx);
     handle
         .insert_source(held_rx, |event, _, win: &mut Win| {
-            if let calloop::channel::Event::Msg(seconds) = event {
+            if let calloop::channel::Event::Msg((seconds, load)) = event {
                 win.app.set_replay_held(seconds, Instant::now());
+                win.app.set_replay_load(load);
                 win.changed();
             }
         })
