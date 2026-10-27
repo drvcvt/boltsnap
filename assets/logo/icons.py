@@ -1,9 +1,10 @@
 """Boltsnap's icons from the mark (construct.py), every measure from its
 module s:
 
-- Variant A, the tray and the app icon: the mark in `#ececec` with a `#121212`
-  outline s/8 wide outside it, so it reads on dark and light bars. Recording
-  colours the mark's own dot red, a pause amber.
+- The tray: the mark in `#ececec` without an outline, like the other icons
+  in a bar. Recording colours the mark's own dot red, a pause amber.
+- Variant A, the app icon: the same mark with a `#121212` outline s/8 wide
+  outside it, so it reads on any launcher ground.
 - The dark variant for light surfaces: the mark in `#121212`, a white outline.
 - Tray sizes are fitted to the pixel grid: s is a whole number of pixels and
   the mark's left and top edges sit on whole pixels, so the stem, its foot and
@@ -34,20 +35,19 @@ WIDTH, HEIGHT = 2 * c.R, 2 * c.R + c.S  # the mark: 3 s by 4 s
 
 
 def fit(size):
-    """(s in pixels, left, top) for the mark in a `size` square: the largest
-    whole s whose mark (4 s high) and outline (s/8 each side) fit, the outline
-    allowed to run up to 3/4 px past the edge (at 16 to 24 px it is under a
-    pixel wide, and the mark then fills the height like other tray icons);
-    left and top on whole pixels, as close to centred as they get."""
-    s = int((size + 1.5) / (HEIGHT / c.S + 2 * OUTLINE / c.S))
+    """(s in pixels, left, top) for the tray mark in a `size` square: the
+    largest whole s whose mark (4 s high) fits, left and top on whole pixels,
+    as close to centred as they get."""
+    s = int(size / (HEIGHT / c.S))
     left = (size - 3 * s) // 2
     top = (size - 4 * s) // 2
     return s, left, top
 
 
 def svg(size, fill, stroke, dot=None, placement=None):
-    """The mark in a `size` square; `placement` (s, left, top) in pixels, or
-    the mark and outline 7/8 of the side high, centred."""
+    """The mark in a `size` square, outlined in `stroke` unless it is `None`;
+    `placement` (s, left, top) in pixels, or the mark and outline 7/8 of the
+    side high, centred."""
     body, spot = c.mark()
     if placement is None:
         s = size * 7 / 8 / (HEIGHT / c.S + 2 * OUTLINE / c.S)
@@ -55,7 +55,11 @@ def svg(size, fill, stroke, dot=None, placement=None):
     else:
         s, left, top = placement
     k = s / c.S
-    paint = f'stroke="{stroke}" stroke-width="{2 * OUTLINE}" stroke-linejoin="round" paint-order="stroke"'
+    paint = (
+        f'stroke="{stroke}" stroke-width="{2 * OUTLINE}" stroke-linejoin="round" paint-order="stroke"'
+        if stroke
+        else ""
+    )
     return (
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{size}" height="{size}" viewBox="0 0 {size} {size}">'
         f'<g transform="translate({left} {top}) scale({k})">'
@@ -94,7 +98,7 @@ def main():
     tray.mkdir(exist_ok=True)
     for size in TRAY_SIZES:
         for state, dot in DOTS.items():
-            png(svg(size, INK, DARK, dot, fit(size)), size, tray / f"{state}-{size}.png")
+            png(svg(size, INK, None, dot, fit(size)), size, tray / f"{state}-{size}.png")
     for size in APP_SIZES:
         png(svg(size, INK, DARK), size, ROOT / f"assets/linux/boltsnap-{size}.png")
 

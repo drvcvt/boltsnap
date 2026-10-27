@@ -737,9 +737,9 @@ mod tests {
         (16, 4.0, 2.0, 0.0),
         (20, 5.0, 2.0, 0.0),
         (24, 6.0, 3.0, 0.0),
-        (32, 7.0, 5.0, 2.0),
-        (48, 11.0, 7.0, 2.0),
-        (64, 15.0, 9.0, 2.0),
+        (32, 8.0, 4.0, 0.0),
+        (48, 12.0, 6.0, 0.0),
+        (64, 16.0, 8.0, 0.0),
     ];
 
     /// (alpha, red, green, blue) at a point of the mark, in modules from its
@@ -771,26 +771,24 @@ mod tests {
             assert_eq!(tray_px(icon, DOT)[1..], [0xec, 0xec, 0xec], "the dot");
             // The moat between the bowl and the dot stays open.
             let moat = (DOT.0 - 0.7, DOT.1 - 0.7);
-            assert!(tray_px(icon, moat)[1] < 0x80, "{}: moat", icon.width);
+            assert!(tray_px(icon, moat)[0] < 0x80, "{}: moat", icon.width);
         }
     }
 
     #[test]
-    fn small_tray_icons_have_their_stem_on_whole_pixels() {
-        for icon in tray_icons_for(PublicRecordingState::Idle)
-            .iter()
-            .filter(|icon| icon.width <= 24)
-        {
+    fn tray_icons_have_their_stem_on_whole_pixels() {
+        for icon in &tray_icons_for(PublicRecordingState::Idle) {
             let (_, s, left, _) = TRAY_FIT.iter().find(|f| f.0 == icon.width).unwrap();
             let y = (icon.height / 2) as usize;
             let column = |x: f32| {
                 let at = (y * icon.width as usize + x as usize) * 4;
-                icon.data[at + 1]
+                icon.data[at]
             };
-            // Its first and last columns are full ink, none half.
-            assert_eq!(column(*left), 0xec, "{}: left edge", icon.width);
-            assert_eq!(column(left + s - 1.0), 0xec, "{}: right edge", icon.width);
-            assert!(column(left - 1.0) < 0x40, "{}: outside left", icon.width);
+            // Its first and last columns are fully covered, the one beside
+            // it empty: no column half.
+            assert_eq!(column(*left), 255, "{}: left edge", icon.width);
+            assert_eq!(column(left + s - 1.0), 255, "{}: right edge", icon.width);
+            assert_eq!(column(left - 1.0), 0, "{}: outside left", icon.width);
         }
     }
 
