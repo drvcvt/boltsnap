@@ -11,7 +11,7 @@ use the selected hardware encoder. The buffer continues during export.
 - Tray menu → **Clip fullscreen to shelf**, or `boltsnap replay save`.
 - `boltsnap record` opens the existing area selector. With a ready replay buffer,
   it shows the last buffered frame on the recorded display. Select a rectangle
-  and press **Clip** to save that historical region to the shelf. **REC** still
+  and press **Clip** to save that historical region to the shelf. **Record** still
   starts a new recording. Escape releases the frozen replay selection.
 - `boltsnap replay status` prints readiness, duration, encoder and export state,
   plus `bytes` held and the live `budget_bytes`. Bytes at the budget with a

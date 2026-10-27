@@ -9,8 +9,11 @@ Capture, selection, the screenshot shelf, and clipboard handling run in-process.
 
 - Native capture on Wayland and X11
 - In-process region selector and screenshot shelf on Wayland
-- Pipe-friendly: `-o -` writes PNG to stdout
+- Screen recording with pause/resume, keyboard-driven recording controls and
+  an optional spring-smoothed cursor (Linux)
 - Experimental Linux / Hyprland [replay clips](docs/replay.md): fullscreen or retrospective area clips into the shelf
+- A settings window for the shelf, screenshots, recording and replay (Linux)
+- Pipe-friendly: `-o -` writes PNG to stdout
 
 The Windows backend remains in the repository as unmaintained experimental
 code. CI compile- and unit-tests it, but new releases do not ship Windows
@@ -18,13 +21,21 @@ artifacts and Windows behavior is not manually verified.
 
 ## Screenshots
 
-These were captured from a real 1280 x 720 headless Sway session using the
-software renderer. The second image is a crop of the same session.
-
-![Two screenshots on the Boltsnap shelf in headless Sway](assets/screenshots/shelf-nested-sway.png)
+Drawn headless by Boltsnap itself with default settings: the settings window
+with `boltsnap settings --render` at twice its size, the recording controls by
+their own painter at their real size. The cards in the shelf preview are
+painted by the shelf overlay's code.
 
 <p align="center">
-  <img src="assets/screenshots/shelf-headless-render.png" alt="Close-up of two real captures on the Boltsnap shelf" width="330">
+  <img src="assets/screenshots/settings-shelf.png" alt="The Shelf page of the settings window: two cards to try out at their real size, card size, count, corner and the cards' look" width="760">
+</p>
+
+<p align="center">
+  <img src="assets/screenshots/settings-recording.png" alt="The Recording page: display, frame rate, codec, cursor, audio and where recordings are saved" width="760">
+</p>
+
+<p align="center">
+  <img src="assets/screenshots/recording-controls.png" alt="The recording controls while recording and while paused: Pause or Resume, Save to shelf, Save to disk, Discard, each with its key" width="510">
 </p>
 
 ## Full-screen capture benchmark
@@ -213,11 +224,11 @@ boltsnap full --no-copy -o /tmp/x.png   # write file, skip clipboard
 boltsnap area --no-copy -o -            # PNG to stdout
 
 boltsnap doctor                         # check helpers + capabilities
-boltsnap settings                       # settings window (preview, saves nothing yet)
+boltsnap settings [PAGE]                # settings window (Shelf, Screenshots, Recording, Replay, General)
 ```
 
 The settings window also opens from the tray (**Settings…**) and from the app
-launcher (**Boltsnap**).
+launcher (**Boltsnap**). See [Settings window](#settings-window).
 
 Boltsnap does not bundle an editor. Linux shelf images open in the desktop's
 default image app; pipe PNG output when an explicit editor is preferred:
@@ -233,7 +244,34 @@ boltsnap area --no-copy -o - | satty --filename -
 bind = , Print, exec, boltsnap area
 bind = CTRL, Print, exec, boltsnap full
 bind = ALT, Print, exec, boltsnap record
+bind = ALT SHIFT, Print, exec, boltsnap replay save
 ```
+
+On a keyboard without a Print key, the same binds on another key (for example
+`Home`) work the same way; a bare `Home` then no longer reaches applications.
+
+## Settings window
+
+`boltsnap settings` opens one window per session; a second call raises it.
+Each row writes its own key to `config.toml` through the daemon as you change
+it, so the shelf, the tray and the next recording follow at once; keys you did
+not touch, and comments, stay as they are. A row whose key the file sets offers
+a reset to the default. Pages:
+
+- **Shelf**: two placeholder cards at their real size, painted by the shelf's
+  own code. Hover one, dismiss it with its ✕, and a new card arrives as on the
+  shelf; drag the measure beside the front card to change the card size. Below
+  are card size, how many cards show, the corner, and the cards' opacity,
+  whether they turn solid on hover, their shadow and their animations.
+- **Screenshots**: the save folder.
+- **Recording**: display, frame rate, codec, cursor, frame, audio and where
+  recordings go.
+- **Replay**: a timeline of what the buffer holds, its length, memory and frame
+  rate, and whether it starts with Boltsnap.
+- **General**: the UI font.
+
+`boltsnap settings --render PAGE OUT.png [--scale N] [--size WxH]` draws a page
+without a window, as in [Screenshots](#screenshots).
 
 ## Build
 
@@ -342,6 +380,10 @@ apply live to the cards already showing:
 card_width = 190        # 140 to 380 px; the height follows (190 x 132)
 visible_cards = 5       # 1 to 8; more cards stay cached below
 corner = "bottom-left"  # bottom-right, top-left or top-right
+card_opacity = 80       # 30 to 100 %, a card at rest
+solid_on_hover = true   # the hovered card turns fully opaque
+card_shadow = true      # a soft shadow under each card
+animations = true       # cards scale and fade as they come and go
 ```
 
 The newest card is on top of the stack in every corner. The Windows backend
@@ -361,9 +403,9 @@ boltsnap recording watch --json        # newline-delimited state stream
 ```
 
 When idle, `boltsnap record` opens the region selector. Draw a region and click
-**REC** to start. The control beside **REC** toggles audio; on Linux an
-additional checkbox toggles whether a thin, click-through frame remains around
-the captured area. Both choices are saved.
+**Record** to start (**Clip** saves the region from the replay buffer instead).
+The **Frame** and **Audio** buttons beside them toggle a thin, click-through
+frame around the captured area (Linux) and audio; both choices are saved.
 When a recording is already running, paused, or being saved, the same command
 opens the centered recording controls instead of starting another recording.
 This makes an `Alt+Print` binding a state-aware recording toggle.
@@ -384,18 +426,18 @@ The recording controls offer:
   At save time compatible segments are joined with FFmpeg stream copy, so the
   normal pause path does not re-encode or reduce quality. Paused time is not
   included in the displayed duration.
-- **Shelf Save** — finalize into Boltsnap's disk-backed cache and add a temporary
+- **Save to shelf** — finalize into Boltsnap's disk-backed cache and add a temporary
   video card. Dismissing the card deletes that cached recording. Recordings of
   at least `record_shelf_to_disk_after_seconds` (default 60) are saved
   permanently to `record_dir` instead and still get a shelf card, so long clips
   survive dismissing and daemon restarts. Once a recording reaches that length
   it no longer counts toward the 2 GiB temporary cache quota; only the free
   disk reserve can pause it.
-- **Disk Save** — finalize permanently in `record_dir`. With the tray toggle
+- **Save to disk** — finalize permanently in `record_dir`. With the tray toggle
   enabled, the shelf card references that same permanent file; it does not make
   a second copy, and dismissing the card never deletes the disk file.
 - **Discard** — stop the recorder, remove its cache segments, and create no card
-  or permanent file. On Linux the button first asks CONFIRM; a second press
+  or permanent file. On Linux the button first reads **Confirm**; a second press
   within three seconds discards.
 
 On Linux opening the controls during a recording pauses it first and shows
@@ -432,7 +474,7 @@ high-quality settings intended to be visually lossless. The composed canvas
 uses the highest output scale; with a hardware encoder it shrinks to at most
 4096 pixels per side, the H.264 limit. Failed finalization retains recoverable
 files, which may already be remuxed or composed. The popup then reads
-**SAVE FAILED**: Shelf Save, Disk Save and Discard still work, Resume stays off
+**Save failed**: Save to shelf, Save to disk and Discard still work, Resume stays off
 because the recovered files no longer match new segments. A recorder that
 merely failed to stop cleanly keeps its segments and can still resume. The
 [codebase inventory](docs/codebase.md#open-review-findings) lists the review
