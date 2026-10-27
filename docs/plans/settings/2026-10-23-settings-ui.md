@@ -2584,6 +2584,63 @@ Bildschirm bei allen Breiten.
 Macht nicht: andere Linienstärken, Maße an anderen Karten, Zahlen in der
 Karte.
 
+### Phase 5f: Squircle-Ecken für alle Flächen (27.10., Wunsch des Nutzers)
+
+Meldung zur neuen Selector-Leiste (gilt für das ganze Produkt): „die kanten
+und so wirken nicht squircle und etwas unclean … mathematisch alles
+gestützt“. Teil des Selector-Plans
+(`docs/plans/selector/2026-10-27-selector-toolbar.md`, S4/S5); hier, weil es
+`ui::Canvas` und damit Settings-Fenster, Vorschauen und Selector betrifft.
+
+**Befund:** `ui::push_rounded` (`src/ui/mod.rs:294`) setzt Kreisbögen als
+Kubiken an die geraden Kanten. Am Übergang springt die Krümmung von 0 auf
+1/r; das Auge sieht den Knick als „Ecke angesetzt“. Benutzer: `Canvas::fill`
+(`mod.rs:257`), `Canvas::ring` (`mod.rs:235`), `picture.rs:91` (Bild in
+runder Fläche) über `rounded_rect`, und `icons.rs:261` (Lucide `<rect rx>`).
+
+**Mathe:**
+- Jede Ecke ist ein Quadrant der Superellipse |x/R|ⁿ + |y/R|ⁿ = 1 um den
+  Punkt, der R von beiden Kanten entfernt ist. n = 4: die Krümmung ist an der
+  Stelle, an der die Kante in die Ecke übergeht, 0 wie die der Geraden
+  (stetige Krümmung, kein Knick).
+- R so, dass der 45°-Punkt der Ecke genau dort liegt, wo ihn der Kreis des
+  Tokens r hinsetzt: der Kreis liegt dort r(1 − 1/√2) von beiden Kanten
+  entfernt, die Superellipse R(1 − 2^(−1/n)). Gleichsetzen:
+  R = r · (1 − 1/√2) / (1 − 2^(−1/4)) = r · 0,292893 / 0,159104 ≈ 1,8409 r.
+  Jedes Radius-Token behält damit seine wahrgenommene Größe; nur der Verlauf
+  wird glatt.
+- Klemmen: R ≤ m = min(w, h)/2 (und r ≤ m wie bisher). Wird R geklemmt,
+  wird n so gewählt, dass der 45°-Punkt weiter stimmt:
+  1 − 2^(−1/n) = r(1 − 1/√2)/R ⇒ n = −ln 2 / ln(1 − r(1 − 1/√2)/R). Bei
+  r = m ergibt das n = 2, also genau den Kreis: Pillen (Schalter-Spur,
+  Slider, Scroll-Daumen) und Kreise (Knöpfe) bleiben rund, dazwischen geht
+  die Form stetig von n = 4 nach n = 2. Kein Sprung beim Ziehen über die
+  Schwelle.
+- Verschachtelt: die Token-Regel bleibt (innen r − Abstand), danach dieselbe
+  Abbildung für beide. Am 45°-Punkt ist der Abstand der beiden Konturen dann
+  genau der des Kreispaars, also der Abstand selbst.
+- Abtasten: Quadrant über θ ∈ [0, π/2], Punkt (R·cos^(2/n) θ, R·sin^(2/n) θ),
+  adaptiv halbiert, bis der Abstand der Kurvenmitte zur Sehne unter 0,025
+  logischen px liegt (≤ 0,1 Gerätepixel bei Skala 4, dem größten
+  `--render`-Wert). Füllung mit Kantenglättung wie bisher; Flächen bleiben
+  auf ganzen Pixeln, gerade Kanten ändern sich nicht.
+- `push_rounded` bleibt für Lucide `<rect rx>` in `icons.rs`: Icons bleiben
+  genau Lucide.
+
+**Umsetzung:** `src/ui/mod.rs`: `push_squircle(pb, rect, r)` neben
+`push_rounded`, `squircle_shape(r, w, h) -> (R, n)`; `rounded_rect` nutzt
+`push_squircle` (damit `fill` und `picture`), `ring` beide Konturen.
+`src/ui/tests.rs`: 45°-Punkt gleich dem Kreis ± 0,05 px für r = 2, 4, 5, 9,
+12, 16; Klemmen (n = 2 bei r = m, Kreis-Abstand ± 0,05); Sehnenfehler gegen
+dicht abgetastete Kurve < 0,025; Pixeltest gerade Kante gleich einer
+eckigen Füllung. Danach alle App-Gates neu (Padding, Kontrast, Icons,
+Überlauf, Versalien) und Zoom-Ausschnitte (4×) von Segment, Dropdown,
+Schalter, Slider, Stepper, Shelf-Maßflächen, Selector-Leiste vorher und
+nachher.
+
+**Macht nicht:** das echte Shelf-Overlay (`src/shelf/paint.rs`, eigener
+Zeichencode), den Windows-Selector, Icons.
+
 ## 6. Reihenfolge
 
 Jede Phase ist ein eigener Commit (oder wenige), baut, testet und lässt den
@@ -2752,3 +2809,4 @@ Vom Nutzer am 24.10. so bestätigt:
 | 5a | umgesetzt 26.10. nach „Phase 5a: Öffnen ohne Terminal“: Tray-Eintrag „Settings…“ ganz unten (Prozessstart im Tray-Thread), `assets/linux/boltsnap.desktop` mit Icons 64/128/256 aus `boltsnap.ico`, `.deb`-Assets, Flake-`postInstall`, Release-Tarball, README. Abweichung: `Categories=Graphics;`. Checks: `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test` 75 + 371 grün, `desktop-file-validate` ohne Meldung. Live: Daemon neu gestartet, dbusmenu-`GetLayout` endet auf „Settings…“; `gio launch` der installierten `.desktop`-Datei öffnet das Fenster (Klasse `boltsnap`). Nicht live prüfbar: Klick im Tray. |
 | 5 | geplant, freigegeben 24.10. |
 | 6 (Library) | Skizze im Library-Plan |
+| 5f | geplant 27.10., Abschnitt „Phase 5f“ (Squircle-Ecken), zusammen mit Selector S4/S5 (`docs/plans/selector/2026-10-27-selector-toolbar.md`) |

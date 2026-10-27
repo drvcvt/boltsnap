@@ -270,6 +270,82 @@ Pixeln ohne Buffer-Scale (unverändert), ganze Pixel gelten dort.
 **Macht nicht (zusätzlich):** HiDPI-Puffer, Tastatur-Fokus in der Leiste
 (gibt es heute nicht), Hysterese beim Layoutwechsel.
 
+## 4b. S4 Variante A und S5 Squircle (27.10., nach dem Review)
+
+Nutzer zur Leiste aus S1–S3: „geht so vom design her … langweilig“; aus
+drei Entwürfen gewählt: **A** (`scratchpad/sel/mock/zA.png`), dazu: „mach
+mit hover namen und die kanten und so wirken nicht squircle und etwas
+unclean … mathematisch alles gestützt“. Reihenfolge: Plan, S5 (Squircle,
+gemeinsam im `ui`, Plan dort: `docs/plans/settings/2026-10-23-settings-ui.md`
+„Phase 5f“), dann S4, je ein Commit.
+
+**S5** siehe Settings-Plan Phase 5f: Ecken als Superellipse n = 4 mit
+R = r(1 − 1/√2)/(1 − 2^(−1/4)) ≈ 1,84 r (gleicher 45°-Punkt wie der Kreis),
+geklemmt auf min(w, h)/2 mit angepasstem n bis zum Kreis (n = 2).
+
+**S4 Verhalten:**
+- Eine Leiste, Gruppen mit `GAP_S` dazwischen, `GAP_XS` innerhalb:
+  [Record, Clip] · [Frame, Audio] · Maße.
+- Record ist die eine primäre Aktion: Fläche `ACCENT`, Label `ON_ACCENT`,
+  `circle` gefüllt in `ERROR`. Das Settings-Fenster hat keinen primären
+  Knopf (`Look::surface` kennt nur `RAISE → HOVER → SELECTED`, Schalter und
+  Slider nutzen `ACCENT` ohne Hover), also neue Regel, hier festgelegt:
+  Hover ein Viertel Richtung `SUB`, Druck ein weiteres Viertel
+  (`mix(ACCENT, SUB, 0,25 · (hover + press))`: #ECECEC → #D7D7D7 → #C3C3C3).
+  `ON_ACCENT` darauf ≥ 9,6:1. Der Punkt `ERROR` auf `ACCENT` 3,2:1, auf der
+  Hover-Stufe darunter (Grafik neben dem Wort „Record“, nicht allein
+  bedeutungstragend; gemessen und berichtet).
+- Clip wie bisher (Label, Schere, keine Fläche in Ruhe, Leiter, Grund-Hinweis).
+- Frame und Audio: Icon-Controls `CTL_H × CTL_H`, Icon-Box mittig (ganze
+  Pixel), Tinten-Mitte gemessen (Gate 8 ≤ 0,5 px in beiden Achsen). An:
+  `HOVER`, aus: keine Fläche, Icon `SUB`; Hover wie bisher eine Stufe;
+  Audio behält die Lautsprecher-Überblendung.
+- Maße: „1450 × 942“ (`Key`, `SUB`) mit U+00A0 um das ×, damit Zahl und
+  Zeichen eine Einheit bleiben (wie „190 px“ in der Shelf-Vorschau). Wert:
+  die Ausgabegröße des Crops wie `Crop::from_selection`
+  (`src/replay/crop.rs:14`) sie rechnet, aus Auswahl, Fläche (logisch) und
+  Videogröße: Replay-Bild (`FrozenSelection` Breite/Höhe), sonst der
+  aktuelle Modus des Ausgangs (`OutputInfo::modes`, `current`, bei 90°/270°
+  vertauscht; sctk 0.19.2 `output.rs:268–368`), sonst die Fläche. Scheitert
+  der Crop (zu klein), bleibt der Platz leer. Kein Control: kein Hover,
+  keine Trefferfläche. Breite reserviert für den breitesten Wert, den der
+  Bildschirm erlaubt (Ziffernzahl von Breite und Höhe des Videos, jede
+  Ziffer in einer Zelle so breit wie die breiteste Ziffer; ab_glyph wendet
+  kein `tnum` an, die Zellen ersetzen es; bei Outfit sind die Ziffern
+  ohnehin gleich breit, dann ändert sich nichts), links bündig: die Leiste
+  ändert beim Ziehen nie ihre Breite. `GAP_S` nach dem letzten Control;
+  rechts so viel Rand, dass der Text wie ein Label endet: `SIDE + GAP_XS`
+  vom Leistenrand.
+- Hover-Namen für Frame und Audio: „Frame on“/„Frame off“, „Audio on“/
+  „Audio off“ (Zustand im Wort). Fläche und Lage wie der Clip-Grund, bündig
+  mit dem Control. Erscheinen nach 400 ms Ruhe auf dem Control (Feder mit
+  Start in der Zukunft: davor exakt 0, kein Aufblitzen beim Überstreichen),
+  dann `QUICK`; zum anderen Icon-Control, während ein Name zu sehen ist:
+  sofort tauschen (Überblendung, keine neue Wartezeit); noch wartend:
+  Wartezeit neu; Verlassen: `QUICK` aus. Wechselt der Zustand per Klick,
+  blendet das Wort über. Record und Clip haben Labels, also keine Namen.
+- Lagen (die erste, die mit `GAP_S` Rand passt):
+  1. eine Zeile mit Maßen; 2. eine Zeile ohne Maße (die Maße fallen
+  zuerst); 3. zwei Zeilen [Record, Clip] / [Frame, Audio, Maße];
+  4. drei Zeilen [Record] / [Clip] / [Frame, Audio] ohne Maße.
+  Zeilen links bündig; zwischen Gruppen `GAP_S`, innerhalb `GAP_XS`, auch
+  senkrecht. Eine Lage mit zwei Zeilen ohne Maße wäre so breit wie 3 und
+  entfällt.
+- Treffer: jedes Control bis zur halben Fuge zum Nachbarn, am Rand bis zum
+  Leistenrand; die Maße gehören niemandem.
+
+**S4 Umsetzung:** `render/toolbar.rs` (Items und Zeilen statt Spalten,
+`Layout::{controls, hits, readout, arrangement}`, primäre Fläche,
+Icon-Controls, `hint_rect` mit Anker-Control), `render/chrome.rs` (Ziffern-
+zellen gemeinsam mit dem Badge), `selector/motion.rs` (`Targets::size`,
+Namen mit Verzögerung, `Bar::tips`), `scene.rs` (Damage und Zeichnen der
+Namen), `select_skia/mod.rs` (Videogröße, Crop-Maß), `replay/mod.rs`
+(`FrozenSelection::size`), Gates in `render/gates.rs` (Icon-Controls nach
+Tinte, Maße-Rand), Tests, Shots (alle Zustände, Zwischenbilder, Namen bei
+300 ms/400 ms/460 ms).
+
+**Macht nicht:** V-a/V-b darüber hinaus, Tastatur in der Leiste, Windows.
+
 ## 5. Abnahme (Gates mit Zahlen)
 
 Offscreen über einen ignorierten Test, der `scene::paint` auf ein Bild rendert
@@ -302,3 +378,4 @@ oberen Rand (Leiste unten) und bildschirmfüllend (Leiste innen).
 | S2 | umgesetzt 27.10.: `selector/motion.rs` (`BarMotion`, `Targets`, `Bar`/`Drawn`), Tests in `selector/motion_tests.rs`; `Scene::bar` statt `toggles`/`hovered`; `SceneCache` damagt nur die Leisten, wenn sich sonst nichts ändert; `toolbar::draw_faded` legt jede Leiste als eine Ebene mit `PixmapPaint::opacity` auf; `select_skia`: Ziele bei jedem `request_redraw` (Ereigniszeit), `pressed`, `pointer_in` (Leave nimmt Hover und Druck zurück), Treffer nur auf der aktuellen Leiste (`BarMotion::layout`), leerer Commit mit Frame-Callback, solange eine Feder läuft | Motion-Liste (alle `QUICK`, 150 ms, bounce 0): Leiste erscheint nach dem Loslassen, verschwindet beim neuen Aufziehen, Wechsel Streifen/2×2/Spalte und über/unter/innen als Überblendung an beiden Orten, Hover, Druck, An/Aus (Fläche, Text, Lautsprecher-Icons überblenden), Clip wird verfügbar. Ohne Animation: Mitziehen mit der Auswahl, Rahmen, Griffe. Tests: Einblenden (50 ms zwischen 0,2 und 0,95, 150 ms > 0,98, exakt 1 nach dem Ausschwingen), Mitziehen ohne Blende, Überblendung (alte Leiste bleibt am alten Ort, nur die neue nimmt Eingaben), Ausblenden ohne Eingaben, Retarget des Hovers ohne Sprung (< 1e-4) mit übernommener Geschwindigkeit (Abweichung < 50 %), Clip hellt auf; Szene: zufällige Folgen mit reinen Leisten-Änderungen gleich dem Vollbild, Damage bleibt in der Leiste (+ 3 px), Ebenen-Deckkraft halbe Mischung ± 1,5. Reduced Motion: keine räumliche Bewegung vorhanden, Blenden bleiben (wie `App::reduced_motion`). Zwischenbilder 30/60/100 ms unter `scratchpad/sel/s2/` angesehen. `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test` 133 + 388 grün (4 ignoriert), `git diff --check` |
 | S3 | umgesetzt 27.10.: `selector/clip.rs` (`ClipState`, sechs Gründe), `replay::preview_target() -> Result<PreviewTarget, ClipState>` über `preview_target_from` (stopped/keine Antwort → Off, starting, busy, nicht ready → Stalled, Fehler oder fehlendes Routing → Failed); `Selector::clip` startet mit Ziel in `Loading`, `FrozenSelection::prepare` → `Ready`, scheitert es (oder anderes Output, kein Bild) → `Failed` statt stumm; `Targets::reason`, `BarMotion` blendet den Hinweis mit `QUICK` (Text bleibt beim Ausblenden), `toolbar::hint_rect`/`draw_hint` (eine Ebene), Damage und Zeichnen in `scene.rs`. Meldung beim Drücken von Clip unverändert. V-a/V-b nicht gebaut | Tests: Zuordnung Status → Grund (8 Fälle), Hinweis blendet ein/aus und behält die Worte, liegt mit Clip bündig `GAP_XS` neben der Leiste weg von der Auswahl (über der Leiste bei „über“, darunter bei „unter“), nie über der Leiste, jeder der sechs Gründe in jeder der 35 Lagen im Bildschirm (Gate 1), Copy-Gate 10 Strings ohne Treffer; zufällige Szenen mit Hinweis gleich dem Vollbild. Bekannt: auf sehr kleinem Bildschirm (Spalte bei 160×240) ist außen kein Platz, der Hinweis liegt dann über dem oberen Rand der Auswahl. Renders unter `scratchpad/sel/after/` (33 Bilder, darunter `noclip-hover*`, `hint-in-*ms`) angesehen. `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test` 133 + 391 grün (4 ignoriert), `git diff --check` |
 | Offen | | Live-Prüfung durch den Nutzer (`boltsnap record`: Aufziehen, Einblenden beim Loslassen, Hover, Frame/Audio, Clip ohne und mit laufendem Replay samt Hinweis, Leave auf einen anderen Monitor); „Ohne Animation“-Liste (Mitziehen, Rahmen, Griffe) bestätigen; breitestes Icon → Text liegt mit `GAP_S` + 0,50 genau an der Grenze (gleiche Arithmetik wie das Settings-Fenster); Aufnahmepunkt auf `SELECTED` (gedrückt) 2,9:1, nur im Moment, in dem der Selector schließt. Kein Windows-Target installiert, Windows-Code unverändert und per Hash gehalten |
+| S4/S5 | geplant 27.10., Abschnitt 4b; S5 im Settings-Plan Phase 5f | |
