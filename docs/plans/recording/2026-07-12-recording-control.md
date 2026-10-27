@@ -1107,3 +1107,29 @@ lagen die Versalien vorher bei rund 7 px (14 px Schrift), jetzt 10. Test
 `controls_capitals_fill_whole_pixel_rows` (Reihen 10–19 voll, 9 und 20
 leer). Checks: fmt, clippy, `cargo test` grün, `controls_shots` 1× und 3×
 gegen den alten Stand angesehen.
+
+Nachtrag 27.10., vierte Meldung: „stell auch sicher das alles richtig
+zentriert ist [...] wie in /ui beschrieben, mathematisch gestuetzt“.
+Befund, nach Tinte statt Box: Titel-Versalien 19 px unter dem Rand (Kopf
+18 px hoch, Versalien 12 mittig), links 16; Knopf-Innenrand 12 statt
+`(CTL_H − Versalhöhe)/2 = 10`; die Prägeränder (1 px über und unter dem
+Knopf) fehlten im Abstand nach unten; Textanfang und -ende an der Box, nicht
+an der Tinte (Side Bearings).
+
+Soll, alles aus Tokens: Panel-Rand 16 auf allen vier Seiten nach Tinte
+(Titel-Versalien oben, Titel links, Zeit rechts, Unterkante des unteren
+Prägerands unten); Titel-Versalien → Oberkante des oberen Prägerands 16;
+im Knopf Versalien 10 von Ober- und Unterkante der Fläche und Tinte 10 von
+links (Label) und rechts (Taste), Tasten-Versalien (8) auf derselben Mitte.
+Text wird mit seiner Tinte an die Kante gesetzt (Bearing abgezogen). Test
+misst das an den gemalten Pixeln (± 0,5 px), Gegenprobe mit 1 px Versatz.
+Umgesetzt 27.10.: `controls.rs` mit `ink`, `ink_from`, `ink_to` (Text
+mit Subpixel-Versatz, sodass die Tinte genau an der Kante beginnt bzw.
+endet), `CTL_INSET = (CTL_H − CTL_LABEL_CAP)/2`, `CTL_ROW_GAP = CTL_PAD`,
+`CTL_RIM`, `CTL_KEY_GAP = CTL_GAP` (8 statt 6). Gate
+`controls_ink_keeps_the_token_distances` misst an den Pixeln: Titel links
+16, Versalien oben 16, Zeit rechts 16, Versalien → Prägerand 16, unterer
+Rand 16, Label-Tinte 10 von links, Tasten-Tinte 10 von rechts (± 0,5);
+Gegenprobe mit `CTL_INSET + 1` schlägt an (27 statt 26). Läuft auch mit der
+Desktop-Schrift (`controls_shots`). Checks: fmt, clippy, `cargo test` 149 +
+384 grün.

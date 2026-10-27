@@ -3,7 +3,9 @@ use super::*;
 use crate::shelf::recording::PopupButton;
 
 // Linux recording controls, on the mt-ui-style scales: panel padding 16,
-// 30 px buttons with a 12 px inset, 8 px gaps, capitals 12/10/8 px tall.
+// 30 px buttons, 8 px gaps, capitals 12/10/8 px tall. Every distance is
+// measured to ink: capitals, the text's first and last pixels (bearings
+// left out) and the pressed buttons' rims.
 const CTL_PANEL: (u8, u8, u8) = (0x12, 0x12, 0x12);
 /// A button's face, pressed in: a shade below the panel, as the mark's
 /// `theme::PRESSED` below the sidebar.
@@ -13,12 +15,16 @@ const CTL_SUB: (u8, u8, u8) = (0x96, 0x96, 0x96);
 const CTL_KEY: (u8, u8, u8) = (0x6A, 0x6A, 0x6A);
 const CTL_KEY_ON_PRIMARY: (u8, u8, u8) = (0x6E, 0x6E, 0x6E);
 const CTL_PAD: f32 = 16.0;
-const CTL_HEAD_H: f32 = 18.0;
-const CTL_ROW_GAP: f32 = 12.0;
+/// From the title's capitals to the buttons' top rims: the panel's padding.
+const CTL_ROW_GAP: f32 = CTL_PAD;
 const CTL_H: f32 = 30.0;
-const CTL_INSET: f32 = 12.0;
+/// A label's ink from a button's sides as its capitals from top and bottom.
+const CTL_INSET: f32 = (CTL_H - CTL_LABEL_CAP) / 2.0;
+/// The pressed rims reach a pixel past the face, above and below.
+const CTL_RIM: f32 = 1.0;
 const CTL_GAP: f32 = 8.0;
-const CTL_KEY_GAP: f32 = 6.0;
+/// The least room between a label and its key: the gap between buttons.
+const CTL_KEY_GAP: f32 = CTL_GAP;
 /// Type by the height of its capitals, as the settings window sets it
 /// (`ui::text::Fonts::size`): whole pixels, so their flat edges fall on
 /// pixel rows. Labels as the window's rows, keys as its `Key`.
@@ -57,27 +63,66 @@ impl ControlsLayout {
 }
 
 /// Each button is as wide as its widest label, so a state change never moves
-/// it; the panel is as wide as the row.
+/// it; the panel is as wide as the row. A width rounded up to whole pixels
+/// gives its slack to the gap between label and key.
 pub fn controls_layout(font: &FontVec) -> ControlsLayout {
-    let y = CTL_PAD + CTL_HEAD_H + CTL_ROW_GAP;
+    let y = CTL_PAD + CTL_TITLE_CAP + CTL_ROW_GAP + CTL_RIM;
     let mut x = CTL_PAD;
     let buttons = CONTROL_BUTTONS.map(|(button, labels, key)| {
         let label = labels
             .iter()
-            .map(|label| text_width(font, label, px(font, CTL_LABEL_CAP)))
+            .map(|label| ink(font, label, px(font, CTL_LABEL_CAP)).1)
             .fold(0.0, f32::max);
-        let width =
-            (CTL_INSET * 2.0 + label + CTL_KEY_GAP + text_width(font, key, px(font, CTL_KEY_CAP)))
-                .ceil();
+        let key = ink(font, key, px(font, CTL_KEY_CAP)).1;
+        let width = (CTL_INSET * 2.0 + label + CTL_KEY_GAP + key).ceil();
         let rect = (x, y, width, CTL_H);
         x += width + CTL_GAP;
         (button, rect)
     });
     ControlsLayout {
         width: (x - CTL_GAP + CTL_PAD) as u32,
-        height: (y + CTL_H + CTL_PAD) as u32,
+        height: (y + CTL_H + CTL_RIM + CTL_PAD) as u32,
         buttons,
     }
+}
+
+/// `text`'s ink at `px`: where it starts after the caret, and how wide it
+/// is (the first glyph's left bearing and the last one's right left out).
+pub(super) fn ink(font: &FontVec, text: &str, px: f32) -> (f32, f32) {
+    let scaled = font.as_scaled(PxScale::from(px));
+    let (mut caret, mut left, mut right) = (0.0, None, 0.0_f32);
+    let mut previous = None;
+    for ch in text.chars() {
+        let id = font.glyph_id(ch);
+        if let Some(previous) = previous {
+            caret += scaled.kern(previous, id);
+        }
+        if let Some(outline) = font.outline(id) {
+            let (min, max) = (
+                outline.bounds.min.x * scaled.h_scale_factor(),
+                outline.bounds.max.x * scaled.h_scale_factor(),
+            );
+            left.get_or_insert(caret + min);
+            right = right.max(caret + max);
+        }
+        caret += scaled.h_advance(id);
+        previous = Some(id);
+    }
+    let left = left.unwrap_or(0.0);
+    (left, (right - left).max(0.0))
+}
+
+/// The caret that starts `text`'s ink exactly at `x` (a whole pixel): the
+/// glyphs are drawn at that subpixel offset, so the first stem fills its
+/// column.
+fn ink_from(font: &FontVec, text: &str, px: f32, x: f32) -> f32 {
+    x - ink(font, text, px).0
+}
+
+/// The caret that ends `text`'s ink exactly at `x`.
+fn ink_to(font: &FontVec, text: &str, px: f32, x: f32) -> f32 {
+    let (left, width) = ink(font, text, px);
+    x - left - width
 }
 
 /// The size that makes `font`'s capitals `cap` pixels tall.
@@ -150,16 +195,19 @@ pub fn draw_recording_controls(
         PublicRecordingState::Finalizing => (saving.as_str(), CTL_SUB),
         PublicRecordingState::Idle => ("Idle", CTL_SUB),
     };
-    let head = cap_baseline(CTL_TITLE_CAP, CTL_PAD, CTL_HEAD_H);
+    // The title's capitals start `CTL_PAD` down, its ink `CTL_PAD` in; the
+    // time ends `CTL_PAD` from the right.
+    let head = CTL_PAD + CTL_TITLE_CAP;
+    let (title_px, time_px) = (px(strong, CTL_TITLE_CAP), px(body, CTL_TITLE_CAP));
     draw_font_text(
         canvas,
         w,
         h,
         strong,
-        CTL_PAD,
+        ink_from(strong, title, title_px, CTL_PAD),
         head,
         title,
-        px(strong, CTL_TITLE_CAP),
+        title_px,
         tone,
     );
     draw_font_text(
@@ -167,10 +215,10 @@ pub fn draw_recording_controls(
         w,
         h,
         body,
-        (w as f32 - CTL_PAD - text_width(body, elapsed, px(body, CTL_TITLE_CAP))).round(),
+        ink_to(body, elapsed, time_px, w as f32 - CTL_PAD),
         head,
         elapsed,
-        px(body, CTL_TITLE_CAP),
+        time_px,
         CTL_SUB,
     );
 
@@ -200,26 +248,29 @@ pub fn draw_recording_controls(
             (false, _) => (CTL_FACE, CTL_KEY, CTL_KEY),
         };
         pressed_button(canvas, w, h, (*x, *y, *bw, *bh), fill);
+        let (label_px, key_px) = (px(body, CTL_LABEL_CAP), px(body, CTL_KEY_CAP));
         draw_font_text(
             canvas,
             w,
             h,
             body,
-            x + CTL_INSET,
+            ink_from(body, label, label_px, x + CTL_INSET),
             cap_baseline(CTL_LABEL_CAP, *y, *bh),
             label,
-            px(body, CTL_LABEL_CAP),
+            label_px,
             text,
         );
+        // The key's capitals on the label's middle, its ink `CTL_INSET`
+        // from the right.
         draw_font_text(
             canvas,
             w,
             h,
             body,
-            (x + bw - CTL_INSET - text_width(body, key, px(body, CTL_KEY_CAP))).round(),
+            ink_to(body, key, key_px, x + bw - CTL_INSET),
             cap_baseline(CTL_KEY_CAP, *y, *bh),
             key,
-            px(body, CTL_KEY_CAP),
+            key_px,
             hint,
         );
     }

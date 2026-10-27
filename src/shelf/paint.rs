@@ -381,8 +381,9 @@ mod tests {
         let (first, last) = (rects[0], rects[3]);
         assert_eq!(first.0, 16.0, "left padding");
         assert_eq!(last.0 + last.2, layout.width as f32 - 16.0, "right padding");
+        // 16 below the pressed rim, which reaches a pixel past the face.
         assert_eq!(
-            first.1 + first.3,
+            first.1 + first.3 + 1.0,
             layout.height as f32 - 16.0,
             "bottom padding"
         );
@@ -561,6 +562,79 @@ mod tests {
         assert!(row(9) <= 0x10 && row(20) <= 0x10, "{} {}", row(9), row(20));
     }
 
+    /// Gate: every distance in the controls measured on the painted ink,
+    /// against the tokens (ui skill, "Optische Geometrie").
+    #[test]
+    fn controls_ink_keeps_the_token_distances() {
+        assert_controls_ink(&crate::shelf::font::fallback_popup_font());
+    }
+
+    fn assert_controls_ink(font: &FontVec) {
+        use crate::record::session::PublicRecordingState;
+        let (buf, layout) = controls_pixels(font, PublicRecordingState::Recording, false);
+        let (w, h) = (layout.width as usize, layout.height as usize);
+        let px = |x: usize, y: usize| &buf[(y * w + x) * 4..(y * w + x) * 4 + 3];
+        // How much ink a pixel holds against `ground`, 0 to 1.
+        let ink = |x: usize, y: usize, ground: u8, fg: u8| {
+            let v = f32::from(px(x, y)[0]);
+            ((v - f32::from(ground)) / (f32::from(fg) - f32::from(ground))).clamp(0.0, 1.0)
+        };
+        // The ink's left and right edge in `rows`, to a fraction of a pixel:
+        // the outer column counts by how much of it is filled.
+        let edges =
+            |cols: std::ops::Range<usize>, rows: std::ops::Range<usize>, ground: u8, fg: u8| {
+                let fill: Vec<f32> = cols
+                    .clone()
+                    .map(|x| {
+                        rows.clone()
+                            .map(|y| ink(x, y, ground, fg))
+                            .fold(0.0, f32::max)
+                    })
+                    .collect();
+                let first = fill.iter().position(|c| *c > 0.05).unwrap();
+                let last = fill.iter().rposition(|c| *c > 0.05).unwrap();
+                (
+                    cols.start as f32 + first as f32 + 1.0 - fill[first],
+                    cols.start as f32 + last as f32 + fill[last],
+                )
+            };
+        let near = |got: f32, want: f32, what: &str| {
+            assert!((got - want).abs() <= 0.5, "{what}: {got} for {want}");
+        };
+        // Panel: the title's ink 16 in, its capitals 16 down (the R's top);
+        // the time 16 from the right; the bottom rim 16 above the edge.
+        let (title_left, _) = edges(0..60, 16..28, 0x12, 0xEC);
+        near(title_left, 16.0, "title left");
+        let top = (0..20)
+            .find(|y| (16..22).any(|x| ink(x, *y, 0x12, 0xEC) > 0.5))
+            .unwrap();
+        assert_eq!(top, 16, "title capitals top");
+        let (_, time_right) = edges(w - 60..w, 16..28, 0x12, 0x96);
+        near(time_right, w as f32 - 16.0, "time right");
+        let (bx, by, bw, bh) = layout.buttons[0].1;
+        let (bx, by, bw, bh) = (bx as usize, by as usize, bw as usize, bh as usize);
+        assert_eq!(px(bx + bw / 2, by - 1), &[0x05, 0x05, 0x05], "top rim");
+        assert_eq!(by - 1 - (16 + 12), 16, "capitals to the rims");
+        assert_eq!(px(bx + bw / 2, by + bh), &[0x1D, 0x1D, 0x1D], "bottom rim");
+        assert_eq!(h - (by + bh + 1), 16, "bottom padding");
+        // Buttons: label ink 10 from the left, key ink 10 from the right,
+        // as the label's capitals from the face's top and bottom.
+        for (index, (_, (x, y, bw, bh))) in layout.buttons.iter().enumerate() {
+            let (x, y, bw) = (*x as usize, *y as usize, *bw as usize);
+            let rows = y + 10..y + *bh as usize - 10;
+            let primary = index == 1;
+            let (ground, label_fg, key_fg) = if primary {
+                (0xEC, 0x12, 0x6E)
+            } else {
+                (0x0A, 0xEC, 0x6A)
+            };
+            let (left, _) = edges(x..x + 40, rows.clone(), ground, label_fg);
+            near(left, x as f32 + 10.0, "label left");
+            let (_, right) = edges(x + bw - 40..x + bw, rows, ground, key_fg);
+            near(right, (x + bw) as f32 - 10.0, "key right");
+        }
+    }
+
     /// `CONTROLS_OUT=dir cargo test --bin boltsnap controls_shots -- --ignored`:
     /// the controls in their states with the desktop's UI font, as PNGs.
     #[cfg(target_os = "linux")]
@@ -570,6 +644,8 @@ mod tests {
         use crate::record::session::PublicRecordingState;
         let out = std::path::PathBuf::from(std::env::var("CONTROLS_OUT").expect("CONTROLS_OUT"));
         let (body, _) = crate::platform::shelf::font::load_ui_font_weights(None, (500.0, 600.0));
+        // The same gate with the desktop's face.
+        assert_controls_ink(&body);
         for (name, state, armed) in [
             ("recording", PublicRecordingState::Recording, false),
             ("paused", PublicRecordingState::Paused, false),
