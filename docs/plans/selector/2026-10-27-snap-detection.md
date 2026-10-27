@@ -33,10 +33,10 @@ haben und das Verhalten feststeht.
 | --- | --- | --- |
 | P1 Fenster | Woher, welche sind sichtbar, wie in Surface-Koordinaten | gemessen (unten) |
 | P2 Eingabe | Kommen Mausrad und Strg beim Selector an, belegt Hyprland sie | gemessen (unten) |
-| P3 Bewegung | Findet ein Frame-Vergleich das Video-Rechteck, wie genau, welche Störer (Cursor, Webcam-Overlay, animierte Vorschaubilder, Steuerleiste) | offen, braucht echtes Material |
-| P4 Kanten | Wie weit rückt die Kantensuche das Bewegungs-Rechteck auf die echte Videokante, auch bei dunklen Rändern im Bild | offen, braucht echtes Material |
-| P5 Zeit | Zweites Frame aus dem Puffer holen (Worker) und rechnen: wie lange, auf welchem Thread | offen |
-| P6 Ohne Bewegung | Screenshot-Modus und pausiertes Video: was liefern Kanten allein | offen |
+| P3 Bewegung | Findet ein Frame-Vergleich das Video-Rechteck, wie genau, welche Störer | gemessen (unten) |
+| P4 Kanten | Wie weit rückt die Kantensuche das Bewegungs-Rechteck auf die echte Videokante | gemessen (unten) |
+| P5 Zeit | Frames aus dem Puffer holen und rechnen | gemessen (unten) |
+| P6 Ohne Bewegung | Was liefern Kanten allein aus einem Bild | gemessen (unten) |
 
 **P1 (27.10., nur gelesen):** `hyprctl clients -j` liefert je Fenster `at`,
 `size`, `workspace`, `monitor`, `floating`, `fullscreen`, `hidden`;
@@ -57,10 +57,57 @@ Tastatur (`select_skia/mod.rs:298`) und wertet heute nur `alt` aus
 
 ## Material für P3–P6
 
-Ein laufendes YouTube-Video im Browser auf dem Replay-Display (normale
-Seite, nicht Vollbild), dann ein Vollbild-Clip aus dem Puffer. Daraus im
-Scratchpad Frames im Abstand 0,25 / 0,5 / 1 / 2 s, die echte
-Videokante von Hand aus dem Frame gemessen als Sollwert.
+Der Nutzer wollte nicht gestört werden. Der Replay-Puffer nimmt DP-3 auf
+(dort lief nur ein Terminal), das Video lief auf DP-1 (Crunchyroll in Brave,
+eingebettet, nicht Vollbild). Daher sechs stille Vollbild-Aufnahmen
+`boltsnap full --no-copy -o -` (ohne Shelf, ohne Zwischenablage) im Abstand
+von ~1 s, DP-1 ausgeschnitten, nur im Scratchpad (`scratchpad/snap/`, nicht
+ins Repo: fremdes Bildmaterial). Sollwert: die Videokante pixelweise aus dem
+Bild gelesen (Seite links/rechts/unten `#000`, oben die Kopfleiste `#272727`):
+erste Videospalte 382, letzte 1701, erste Zeile 138, letzte 879, also
+`(382, 138)–(1702, 880)` exklusiv, 1320 × 742.
+
+**P3 Bewegung:** Viertelauflösung, Grauwert, |Differenz| > 6 über
+aufeinanderfolgende Paare vereint, Zeilen/Spalten mit > 5 % Bewegung:
+`(380, 136)–(1704, 880)`, bis 2 px daneben (Viertel-Raster). Befund: drei
+Aufnahmen in 1 s waren pixelgleich (Anime hält Einstellungen mehrere
+Sekunden), ein Paar von fünf hatte nur 9 156 geänderte Pixel. Bewegung
+braucht also mehrere Frames über ≥ 2 s und versagt bei Standbild und
+Pause.
+
+**P4 Kanten nach Bewegung:** stärkste lange Kante je Seite in ±12 px um das
+Bewegungs-Rechteck (mittlerer Gradient über die Gegenrichtung):
+`(382, 138)–(1702, 880)`, **exakt** der Sollwert.
+
+**P6 Kanten allein (ein Bild):** vom Zeiger in vier Richtungen bis zur
+ersten Kante, die über die Breite/Höhe des bisher gefundenen Rechtecks zu
+≥ 90 % durchläuft (Gradient > 20); Start ±6 px um den Zeiger, wiederholt bis
+stabil. Zeiger in der Mitte, an den Untertiteln, 12 px von der oberen linken
+Ecke: alle drei **exakt** `(382, 138)–(1702, 880)`. Zwei Fehlversuche
+vorher, festgehalten: mit fester Spanne ±150 px nahe am Rand (Spanne ragt
+übers Video) → Seitenrand statt Videokante; Start mit dem ganzen Bild → das
+Fenster (das ist die Fenster-Ebene, nicht die innere). Außerhalb des Videos
+(Seitentitel, Kopfleiste) liefert es Seitenbereiche bzw. das Fenster, dort
+ist das Fenster aus Hyprland die richtige Ebene.
+
+**P5 Zeit:** Python/numpy: Kantenmasken für 1920 × 1080 ~20 ms einmal je
+Bild, Suche ~27 ms je Punkt (Python-Schleifen; in Rust ist die Suche ein
+paar hundert Speicherzugriffe, Schätzung < 1 ms, live beim Bewegen).
+Bewegung braucht Frames aus dem Puffer: letzte Sekunde 1080p60 auf 4
+kleine Frames dekodiert 0,60 s (Software, `-threads 2`) bzw. 0,55 s
+(NVDEC), synthetische Quelle aus der C2-Probe, inklusive ffmpeg-Start.
+
+## Ergebnis der Proben
+
+Kanten allein treffen das Video aus einem Bild exakt, sofort, in jedem
+Modus (auch Screenshot und pausiert). Bewegung kostet ~0,5 s und mehrere
+Sekunden Material und ist nur nötig, um ein Rechteck als „Video“ zu
+benennen oder wenn das Bild selbst lange gerade Kanten hat. **Vorschlag
+erste Fassung:** Ebenen = Kanten-Rechteck um den Zeiger (innen), Fenster
+aus Hyprland, Bildschirm; Bewegung erst, wenn Kanten in der Praxis
+danebenliegen. Tests mit synthetischen Fixtures (Seite, eingebettetes
+Video, Kopfleiste, Untertitel-Kontrast), die echten Aufnahmen nur zum
+Nachsehen im Scratchpad.
 
 ## Macht nicht (in der ersten Fassung)
 
