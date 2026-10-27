@@ -21,7 +21,7 @@ pub(super) fn use_card_size(size: CardSize) {
     CARD_WIDTH.store(size.w, Ordering::Relaxed);
 }
 
-pub(super) fn card_size() -> CardSize {
+pub(crate) fn card_size() -> CardSize {
     CardSize::from_width(CARD_WIDTH.load(Ordering::Relaxed).into()).unwrap_or(CardSize::DEFAULT)
 }
 

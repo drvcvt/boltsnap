@@ -1,5 +1,6 @@
 use std::io::Write;
 mod capture_log;
+mod card;
 mod monitor;
 pub(crate) mod process;
 mod socket;
@@ -613,6 +614,8 @@ pub(crate) fn serve(sender: calloop::channel::Sender<DaemonEvent>) -> Result<Ser
             let starting = starting.clone();
             let cancel_start = cancel_start.clone();
             std::thread::spawn(move || {
+                // The save whose card shows already; its failure takes it.
+                let mut pending = None;
                 let result = (|| {
                     let request = wire::read(&mut stream).map_err(|e| e.to_string())?;
                     let command = wire::command(&request)?;
@@ -726,8 +729,26 @@ pub(crate) fn serve(sender: calloop::channel::Sender<DaemonEvent>) -> Result<Ser
                             output_limit,
                         )?;
                         crate::record::finalize::check_recording_reserve(&crate::paths::rec_dir())?;
+                        let token = card::token();
+                        let thumb = card::picture(&request, super::shelf::card_size().dims());
+                        let _ = sender.send(DaemonEvent::ReplayClipPending {
+                            token,
+                            output: output.clone(),
+                            thumb,
+                        });
+                        pending = Some(token);
+                    }
+                    if command == "cancel"
+                        && let Some(snapshot) = request["snapshot"].as_u64()
+                    {
+                        card::forget(snapshot);
                     }
                     let (mut response, preview) = socket_call(&name, &request)?;
+                    if command == "freeze"
+                        && let Some(snapshot) = response["snapshot"].as_u64()
+                    {
+                        card::remember(snapshot, &preview);
+                    }
                     response["output"] = json!(output);
                     response["session"] = json!(name);
                     if command == "status" {
@@ -767,6 +788,7 @@ pub(crate) fn serve(sender: calloop::channel::Sender<DaemonEvent>) -> Result<Ser
                         let (tx, rx) = std::sync::mpsc::sync_channel(1);
                         sender
                             .send(DaemonEvent::ReplayClipReady {
+                                token: pending.take().ok_or("clip without its card")?,
                                 path,
                                 output,
                                 reply: tx,
@@ -779,6 +801,9 @@ pub(crate) fn serve(sender: calloop::channel::Sender<DaemonEvent>) -> Result<Ser
                     }
                     Ok((response, preview))
                 })();
+                if let (Err(_), Some(token)) = (&result, pending) {
+                    let _ = sender.send(DaemonEvent::ReplayClipFailed { token });
+                }
                 let (value, preview) = result.unwrap_or_else(|error: String| {
                     (json!({"ok":false,"error":error}), Vec::new())
                 });

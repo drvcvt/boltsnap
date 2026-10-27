@@ -17,10 +17,23 @@ pub(crate) enum DaemonEvent {
         image: Option<image::RgbaImage>,
         _permit: Option<Permit>,
     },
+    /// The replay control took save `token`; the clip is being written.
+    /// `thumb`: the frozen frame cut like the clip, in card size (a region
+    /// clip), else `None`.
+    ReplayClipPending {
+        token: u64,
+        output: String,
+        thumb: Option<image::RgbaImage>,
+    },
     ReplayClipReady {
+        token: u64,
         path: std::path::PathBuf,
         output: String,
         reply: std::sync::mpsc::SyncSender<()>,
+    },
+    /// Save `token` failed; the error goes back to whoever asked.
+    ReplayClipFailed {
+        token: u64,
     },
     /// The replay buffer came up or went away; the tray entry must follow.
     ReplayStateChanged,
@@ -171,21 +184,21 @@ impl Daemon {
                     AfterStop::Discard => self.finish_discard(segments),
                 }
             }
+            DaemonEvent::ReplayClipPending {
+                token,
+                output,
+                thumb,
+            } => self.add_pending_clip(token, output, thumb),
             DaemonEvent::ReplayClipReady {
+                token,
                 path,
                 output,
                 reply,
             } => {
-                self.add_finalized_cards(
-                    vec![FinalizedClip {
-                        path,
-                        output: Some(output),
-                        permanent: false,
-                    }],
-                    false,
-                );
+                self.finish_pending_clip(token, path, output);
                 let _ = reply.send(());
             }
+            DaemonEvent::ReplayClipFailed { token } => self.fail_pending_clip(token),
             DaemonEvent::Finalized(Ok(clips)) => {
                 let shelf_card = self
                     .recording

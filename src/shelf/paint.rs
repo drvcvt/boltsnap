@@ -28,6 +28,38 @@ pub fn draw_shelf(
     save_flash: Option<u64>,
     look: CardLook,
 ) {
+    draw_shelf_saving(
+        canvas,
+        cw,
+        ch,
+        layout,
+        model,
+        hovered,
+        cfg,
+        anims,
+        save_flash,
+        look,
+        (&[], 0.0),
+    );
+}
+
+/// [`draw_shelf`] with the cards whose clip is still being written: (id,
+/// how far to ready) and how far their arc has turned (`Frame::saving`,
+/// `Frame::spin`).
+#[allow(clippy::too_many_arguments)]
+pub fn draw_shelf_saving(
+    canvas: &mut [u8],
+    cw: u32,
+    ch: u32,
+    layout: &Layout,
+    model: &ShelfModel,
+    hovered: &[(u64, f32)],
+    cfg: &LayoutConfig,
+    anims: &[(u64, f32, f32)],
+    save_flash: Option<u64>,
+    look: CardLook,
+    (saving, spin): (&[(u64, f32)], f32),
+) {
     let frame = Frame {
         layout,
         cfg,
@@ -35,6 +67,8 @@ pub fn draw_shelf(
         anims,
         save_flash,
         save_button: true,
+        saving,
+        spin,
         look,
         scale: 1.0,
     };

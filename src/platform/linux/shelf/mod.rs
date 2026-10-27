@@ -20,6 +20,8 @@ mod handlers;
 #[path = "wayland/input.rs"]
 mod input;
 mod limits;
+#[path = "cards/pending.rs"]
+mod pending;
 mod placement;
 #[path = "cards/save.rs"]
 mod save;
@@ -41,7 +43,7 @@ use input::PressState;
 use limits::ClientLimits;
 // Reached as `super::…` by the siblings that stayed as they were.
 use actions::{MAX_CACHED_CARDS, MAX_CACHED_IMAGE_BYTES, PreparedAdd};
-pub(crate) use cards::EDITORS;
+pub(crate) use cards::{EDITORS, card_size};
 use clients::reject_busy;
 pub(crate) use events::DaemonEvent;
 use finish::watcher_connected;
@@ -158,6 +160,8 @@ pub struct Daemon {
     /// When the shelf's last animation frame callback was requested.
     frame_requested: Option<std::time::Instant>,
     saves: save::CardSaves,
+    /// Replay clips whose card shows while the worker still writes them.
+    pending: pending::PendingClips,
     press: Option<PressState>,
     /// In-flight per-card appear/dismiss animations.
     anims: Vec<CardAnim>,
@@ -384,6 +388,7 @@ pub fn run_daemon(save_dir_cli: Option<std::path::PathBuf>) -> DynResult<()> {
         save_flash: None,
         frame_requested: None,
         saves: save::CardSaves::default(),
+        pending: pending::PendingClips::default(),
         press: None,
         anims: Vec::new(),
         exit: false,

@@ -652,6 +652,8 @@ impl App {
                 anims: &placed.anims,
                 save_flash: None,
                 save_button: false,
+                saving: &[],
+                spin: 0.0,
                 look: key.look,
                 scale: placed.scale,
             };

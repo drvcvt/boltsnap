@@ -4,6 +4,7 @@
 
 use image::{RgbaImage, imageops};
 
+use super::badge::draw_play_badge;
 use super::layout::{Layout, LayoutConfig, ThumbRect, close_cell, save_cell};
 use super::{CardKind, CardLook};
 
@@ -12,7 +13,7 @@ const CARD_RADIUS: f32 = 10.0;
 
 /// Hover-button styling: a small translucent dark circle with an anti-aliased
 /// glyph. Minimal and unobtrusive over the screenshot.
-const BTN_BG: (u8, u8, u8) = (18, 18, 24);
+pub(super) const BTN_BG: (u8, u8, u8) = (18, 18, 24);
 const BTN_BG_A: f32 = 0.52;
 pub const GLYPH_RGB: (u8, u8, u8) = (244, 244, 248);
 pub const GLYPH_CLOSE_RGB: (u8, u8, u8) = (255, 124, 124);
@@ -193,86 +194,6 @@ fn stroke_line(
     }
 }
 
-/// Draw a ▶ play badge centered on a card, to mark Video cards as distinct from
-/// screenshots. The badge is always visible (not hover-gated).
-fn draw_play_badge(canvas: &mut [u8], cw: u32, ch: u32, r: &ThumbRect, scale: f32) {
-    let min_dim = r.w.min(r.h) as f32;
-    let radius = (min_dim * 0.14).max(11.0 * scale); // a touch larger; floor for tiny cards
-    let cx = r.x as f32 + r.w as f32 / 2.0;
-    let cy = r.y as f32 + r.h as f32 / 2.0;
-
-    // Soft dark halo (slightly larger, faint) gives the badge a crisp edge against
-    // busy thumbnails; then the translucent disc on top.
-    fill_circle(
-        canvas,
-        cw,
-        ch,
-        cx,
-        cy,
-        radius + 1.5 * scale,
-        (0, 0, 0),
-        0.28,
-    );
-    fill_circle(canvas, cw, ch, cx, cy, radius, BTN_BG, 0.6);
-
-    // Right-pointing triangle (▶), optically centred (a play glyph looks centred
-    // when its centroid — 1/3 from the flat left edge — sits at the disc centre).
-    let tri_h = radius * 1.04; // triangle height
-    let tri_w = radius * 0.96; // flat left edge → apex
-    let left_x = cx - tri_w / 3.0;
-    let apex_x = left_x + tri_w;
-    let top_y = cy - tri_h / 2.0;
-    let bot_y = cy + tri_h / 2.0;
-    let half_h = tri_h / 2.0;
-
-    // Inside test: within the y-band, right of the flat left edge, and left of the
-    // boundary that shrinks linearly from the apex (at mid-height) to `left_x` (at
-    // the tips). Sampled 4×4 per pixel for smooth anti-aliased edges on all sides.
-    let inside = |x: f32, y: f32| -> bool {
-        if y < top_y || y > bot_y || x < left_x {
-            return false;
-        }
-        let dy = (y - cy).abs();
-        let x_right = apex_x - (apex_x - left_x) * (dy / half_h);
-        x <= x_right
-    };
-
-    let x0 = left_x.floor() as i32 - 1;
-    let x1 = apex_x.ceil() as i32 + 1;
-    let y0 = top_y.floor() as i32 - 1;
-    let y1 = bot_y.ceil() as i32 + 1;
-    const SS: i32 = 4; // 4×4 supersampling
-    let inv = 1.0 / (SS * SS) as f32;
-    for py in y0..=y1 {
-        for px in x0..=x1 {
-            let mut hits = 0;
-            for sy in 0..SS {
-                for sx in 0..SS {
-                    let fx = px as f32 + (sx as f32 + 0.5) / SS as f32;
-                    let fy = py as f32 + (sy as f32 + 0.5) / SS as f32;
-                    if inside(fx, fy) {
-                        hits += 1;
-                    }
-                }
-            }
-            if hits > 0 {
-                let cov = hits as f32 * inv;
-                blend_px(
-                    canvas,
-                    cw,
-                    ch,
-                    px,
-                    py,
-                    GLYPH_RGB.0,
-                    GLYPH_RGB.1,
-                    GLYPH_RGB.2,
-                    cov,
-                );
-            }
-        }
-    }
-}
-
 /// One frame of the shelf, besides the cards' pictures.
 pub struct Frame<'a> {
     pub layout: &'a Layout,
@@ -288,6 +209,12 @@ pub struct Frame<'a> {
     /// The hovered card shows its save button; the settings preview has no
     /// file to save and leaves it out.
     pub save_button: bool,
+    /// (id, how far it has come to ready, 0 to 1) of the video cards whose
+    /// clip is still being written or has just been: an arc turns in their
+    /// badge, and they have no save button until 1.
+    pub saving: &'a [(u64, f32)],
+    /// How far the saving arc has turned, in turns.
+    pub spin: f32,
     pub look: CardLook,
     /// Canvas pixels per shelf pixel: 1 for the overlay, the window's scale
     /// for the preview. Radii, the shadow and strokes follow it.
@@ -354,12 +281,29 @@ pub fn draw_shelf<'p>(
         // ▶ play badge on Video cards (settled only, so it doesn't sit at full size
         // over a scaling card during the appear/dismiss animation).
         if !animating && card.map(|(_, kind)| kind) == Some(CardKind::Video) {
-            draw_play_badge(canvas, cw, ch, r, frame.scale);
+            draw_play_badge(
+                canvas,
+                cw,
+                ch,
+                r,
+                frame.scale,
+                ready(frame, r.id),
+                frame.spin,
+            );
         }
         if hovered_now {
             draw_hover_icons(canvas, cw, ch, r, frame, lift);
         }
     }
+}
+
+/// How far card `id` has come to ready: 1 unless it is saving.
+fn ready(frame: &Frame, id: u64) -> f32 {
+    frame
+        .saving
+        .iter()
+        .find(|(card, _)| *card == id)
+        .map_or(1.0, |(_, ready)| *ready)
 }
 
 /// Soft drop shadow behind a shelf card, for a subtle "lift" (drawn for every
@@ -463,7 +407,7 @@ fn draw_hover_icons(canvas: &mut [u8], cw: u32, ch: u32, r: &ThumbRect, frame: &
         GLYPH_CLOSE_RGB,
         lift,
     );
-    if !frame.save_button {
+    if !frame.save_button || ready(frame, r.id) < 1.0 {
         return;
     }
     let (sx, sy, _, _) = save_cell(r, cfg);
@@ -630,6 +574,8 @@ mod tests {
             anims: &[],
             save_flash: None,
             save_button: true,
+            saving: &[],
+            spin: 0.0,
             look,
             scale: 1.0,
         };
@@ -807,6 +753,8 @@ mod tests {
                 anims: &[],
                 save_flash: None,
                 save_button,
+                saving: &[],
+                spin: 0.0,
                 look: CardLook::default(),
                 scale: 1.0,
             };
@@ -839,6 +787,8 @@ mod tests {
                 anims: &[],
                 save_flash: None,
                 save_button: true,
+                saving: &[],
+                spin: 0.0,
                 look: CardLook::default(),
                 scale: 1.0,
             };

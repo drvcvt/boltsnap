@@ -602,6 +602,51 @@ Bereichsexport deutlich schneller.
 - Fehler: Karte blendet aus, die Fehlermeldung kommt wie heute.
 - Zeitlimit: kommt nach `SAVE_TIMEOUT` nichts, verhält sie sich wie ein Fehler.
 
+**C1 Umsetzungsplan (27.10., nach dem Shelf-Split):**
+- Verhalten im Detail: Die Karte erscheint mit `Appear` wie heute, in ihrer
+  Play-Plakette (gleiche Scheibe, gleiche Lage) dreht sich statt ▶ ein
+  Bogen (270°, eine Umdrehung pro Sekunde, Strichstärke des ▶-Glyphs).
+  Fertig: Bogen aus, ▶ ein, 120 ms (`HOVER_MS`, linear), sonst bewegt sich
+  nichts. Mit `[shelf] animations = false` steht der Bogen still und der
+  Wechsel ist sofort. Während des Speicherns: kein Speichern-Knopf beim
+  Hover, Klick auf die Karte, Ziehen und Kopieren tun nichts, Schließen geht
+  (die Datei wird bei Ankunft gelöscht). Die Cache-Grenze verdrängt eine
+  speichernde Karte nicht.
+- Daemon-Kontrollthread (`replay/mod.rs`): bei `freeze` mit Erfolg das PNG
+  mit Snapshot-ID in einem `Mutex<Option<(u64, Vec<u8>)>>` merken (eins,
+  ersetzt beim nächsten Freeze, genommen beim Save, geleert bei `cancel`).
+  Bei `save` nach den Platzprüfungen: Token aus einem Zähler; Bild =
+  gemerktes PNG dekodiert, auf `Crop::from_value` des Requests geschnitten,
+  `make_card_thumbnail` auf `cards::card_size()` (Bereich), sonst `None`
+  (Vollbild). `ReplayClipPending { token, output, thumb }` vor dem
+  Worker-Aufruf; jeder Fehler danach schickt `ReplayClipFailed { token }`;
+  Erfolg schickt `ReplayClipReady { token, path, output, reply }`.
+- Shelf: neue Datei `cards/pending.rs` (Modul `pending`): reiner Typ
+  `PendingClips` (Token ↔ Karte, fertig seit, geschlossen) mit Tests wie
+  `save.rs`, dazu die `Daemon`-Methoden für Pending/Ready/Failed,
+  `is_pending`, und die Liste für den Painter. `events.rs` ruft sie;
+  `actions.rs` (`on_click`, `trim_shelf_cache`, `remove_card_now`, Kopieren)
+  und `dnd.rs` (`begin_drag`) prüfen `is_pending`; `anim.rs` `animating()`
+  läuft weiter, solange eine Karte speichert oder ausblendet.
+- Painter (Bibliothek): `Frame` bekommt `saving: &[(u64, f32)]` (Karte,
+  0 speichert … 1 fertig) und `spin` (Umdrehungen); die Plakette mit ▶ und
+  Bogen zieht nach `shelf_card/badge.rs` um, weil `paint.rs` schon 921
+  Zeilen hat. Der Speichern-Knopf fehlt bei Karten aus `saving`. Vorschau im
+  Einstellungsfenster übergibt eine leere Liste.
+- `cards::card_size` wird `pub(crate)`, damit der Kontrollthread das
+  Kartenbild in Kartengröße baut (auf seinem Thread, nicht in der Shelf-Schleife).
+- Grenzfall bewusst so gelassen: ändert sich die Kartengröße, während eine
+  Karte speichert, behält sie ihr Bild bis zur Fertigmeldung; danach rendert
+  der normale Weg neu (erstes Frame).
+- Tests: `PendingClips` (Pending → Ready, Pending → Failed, geschlossen vor
+  Ready → Datei verwerfen, zweimal hintereinander, unbekanntes Token);
+  Painter: bei 0 sitzt der Bogen in der Plakette und kein ▶, bei 1 ist die
+  Karte pixelgleich zur fertigen Videokarte, kein Speichern-Knopf beim
+  Hover; Kontrast des Bogens wie ▶ (gleiche Farbe). Freeze-Bild: Crop auf
+  das Kartenbild (reine Funktion, Test mit synthetischem PNG).
+- Live (nur mit Okay): Install, Daemon-Neustart, Bereichs-Save, Karte steht
+  sofort, Zeiten aus C0.
+
 ### C2 Bereichsexport auf der GPU (NVENC)
 - Mit NVENC dekodiert NVDEC und croppt im Decoder: `-c:v h264_cuvid` (bzw.
   `hevc_cuvid`/`av1_cuvid` nach Puffer-Codec) `-crop T x B x L x R`,
@@ -667,7 +712,7 @@ Bild, wird fertig ohne Größensprung, Fehler und Schließen während des
 Speicherns, zwei Saves hintereinander. Live (nur mit Okay): Install,
 Daemon-Neustart, Vollbild- und Bereichs-Save, Zeiten aus C0.
 
-**Stand:** C2-Probe gemessen (oben), C0 und C2 gebaut. C0 Marken gebaut (27.10.): der Worker
+**Stand:** C2-Probe gemessen (oben), C0, C2 und C1 gebaut. C0 Marken gebaut (27.10.): der Worker
 antwortet mit `export_ms` (Export bis nach dem Rename) und `sync_ms`
 (`export.rs` `sync`, auch im Crop-Weg); der Daemon schreibt mit
 `BOLTSNAP_TIMINGS` `replay_save_accepted`, `replay_worker_answered`,
@@ -697,7 +742,37 @@ Worker-Log). Belege, alle mit dem frischen Debug-Worker:
 - `live.py` mit libx264 (Softwareweg) und `probe.py` ohne Flag grün; Worker
   `cargo test` 27 grün (neu: `nvdec_crops_only_on_even_edges_inside_the_video`).
 Offen: Live-Zahlen von C0 und ein echter Bereichs-Save (Install und
-Daemon-Neustart, nur mit Okay), dann C1.
+Daemon-Neustart, nur mit Okay).
+
+C1 gebaut (27.10.) wie im Umsetzungsplan oben, nach dem
+[Shelf-Split](../shelf/2026-10-27-shelf-split.md):
+- Kontrollthread: `replay/card.rs` (Freeze-PNG merken/vergessen, Token,
+  `picture` = `region_card`: dekodieren, `Crop::from_value`,
+  `make_card_thumbnail`), `replay/mod.rs` schickt `ReplayClipPending` nach
+  den Platzprüfungen, `ReplayClipReady` mit Token, bei jedem Fehler danach
+  `ReplayClipFailed`.
+- Shelf: `cards/pending.rs` (`PendingClips`, `add_pending_clip`,
+  `finish_pending_clip`, `fail_pending_clip`, `saving_frame`),
+  Sperren in `actions.rs` (Klick/Speichern, Kopieren, Cache-Grenze,
+  `remove_card_now` schließt das Token) und `dnd.rs` (`begin_drag`),
+  `anim.rs` `animating()` solange etwas dreht oder blendet; Modell
+  `ShelfModel::set_file` (Pfad nachtragen, Lebensdauer bleibt).
+- Painter: `shelf_card/badge.rs` (Plakette aus `paint.rs` hierher, Bogen
+  270°, Strich R/9, eine Umdrehung pro Sekunde), `Frame::saving`/`spin`,
+  kein Speichern-Knopf vor „fertig“; `draw_shelf_saving` im Binary,
+  `draw_shelf` (auch Windows) unverändert in der Signatur.
+- Abweichung: der Bogen bekam R/9 statt R/12 Strich, nach dem Shot neben dem
+  vollen ▶ zu dünn (`SAVING_OUT=… cargo test --lib saving_shot -- --ignored`).
+- UI-Gates: Bogen und ▶ in derselben Farbe auf derselben Scheibe (Kontrast
+  wie bisher), Ring per Konstruktion in der Plakettenmitte; Motion: Drehen
+  (dauernd, mit `animations = false` still), Bogen → ▶ 120 ms linear
+  (`HOVER_MS`, mit `animations = false` sofort), Erscheinen/Verschwinden der
+  Karte wie bisher (`Appear`/`Disappear`). Keine Größe, keine Lage ändert
+  sich beim Fertigwerden.
+- Checks: fmt, clippy `-D warnings` ohne Befund, `cargo test` 161 + 400
+  grün (neu: 3 Painter, 2 `PendingClips`, 2 Freeze-Bild).
+Offen: live mit Okay (Install, Daemon-Neustart, Bereichs- und
+Vollbild-Save, Schließen während des Speicherns).
 
 ## 14. Lag mit laufendem Replay: Beweise behalten (2026-10-27)
 

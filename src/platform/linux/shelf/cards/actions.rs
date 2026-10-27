@@ -118,7 +118,7 @@ impl Daemon {
             &cards,
             MAX_CACHED_CARDS,
             MAX_CACHED_IMAGE_BYTES,
-            |id| self.saves.is_saving(id),
+            |id| self.saves.is_saving(id) || self.is_pending(id),
         ) {
             self.remove_card_now(id);
         }
@@ -133,6 +133,7 @@ impl Daemon {
         let Some(card) = self.model.remove(id) else {
             return false;
         };
+        self.pending.close(id);
         self.drop_card_file(&card);
         self.anims.retain(|animation| animation.id != id);
         if self.hovered == Some(id) {
@@ -150,6 +151,9 @@ impl Daemon {
     /// Copy the card under the cursor to the clipboard: an image as `image/png`,
     /// a video as a `text/uri-list` file reference (path only, never bytes).
     pub(super) fn copy_card(&mut self, id: u64) {
+        if self.is_pending(id) {
+            return;
+        }
         if let Some(t) = self.model.get(id) {
             let path = t.png_path.clone();
             if t.kind == crate::shelf::model::CardKind::Video {
@@ -215,6 +219,8 @@ impl Daemon {
     /// Act on a completed (non-drag) left click.
     pub(super) fn on_click(&mut self, hit: Hit, redraw: &mut bool) {
         match hit {
+            // Nothing to open or save before the clip is written.
+            Hit::Body(id) | Hit::Save(id) if self.is_pending(id) => {}
             Hit::Body(id) => self.open_media_card(id),
             Hit::Save(id) => {
                 self.save_card(id);
@@ -301,6 +307,7 @@ impl Daemon {
             })
             .collect();
         let hovered = self.hover_lifts();
+        let saving = self.saving_frame();
         let layer = match self.layer.as_ref() {
             Some(l) => l,
             None => return,
@@ -316,7 +323,7 @@ impl Daemon {
             return;
         };
 
-        crate::shelf::paint::draw_shelf(
+        crate::shelf::paint::draw_shelf_saving(
             canvas,
             w,
             h,
@@ -327,6 +334,7 @@ impl Daemon {
             &anims,
             self.save_flash.map(|(id, _)| id),
             self.shelf_prefs.look(),
+            (&saving.0, saving.1),
         );
 
         let surface = layer.wl_surface();
@@ -336,7 +344,7 @@ impl Daemon {
         }
         // One callback in flight: a hover or configure redraw mid-frame must
         // not add another tick per frame.
-        if !self.anims.is_empty() && self.frame_requested.is_none() {
+        if self.animating() && self.frame_requested.is_none() {
             surface.frame(qh, surface.clone());
             self.frame_requested = Some(std::time::Instant::now());
         }

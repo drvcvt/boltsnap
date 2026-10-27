@@ -14,6 +14,12 @@ then use the selected hardware encoder. The buffer continues during export.
   it shows the last buffered frame on the recorded display. Select a rectangle
   and press **Clip** to save that historical region to the shelf. **Record** still
   starts a new recording. Escape releases the frozen replay selection.
+- A saved clip's card shows at once: a region clip with the frozen frame cut
+  like the clip, a full-screen clip with a placeholder. While the worker still
+  writes the file an arc turns in the card's play badge; opening, dragging,
+  copying and saving wait until it is done (the arc then fades to ▶ in
+  120 ms). Closing the card meanwhile drops the clip when it arrives; a failed
+  save takes the card away and reports the error as before.
 - `boltsnap replay status` prints readiness, duration, encoder and export state,
   plus `bytes` held and the live `budget_bytes`. Bytes at the budget with a
   duration under `duration_seconds` means the bitrate bounds the history.

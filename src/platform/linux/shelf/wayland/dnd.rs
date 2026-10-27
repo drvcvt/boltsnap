@@ -181,6 +181,9 @@ impl Daemon {
     /// and a file URI, with the thumbnail itself as the drag icon. Returns true if
     /// the drag was actually started.
     pub(super) fn begin_drag(&mut self, id: u64, serial: u32) -> bool {
+        if self.is_pending(id) {
+            return false;
+        }
         let (path, kind) = match self.model.get(id) {
             Some(t) => (t.png_path.clone(), t.kind),
             None => return false,

@@ -223,8 +223,9 @@ impl Daemon {
             .count()
     }
 
+    /// Also while a replay clip is being written: its arc turns.
     pub(super) fn animating(&self) -> bool {
-        !self.anims.is_empty()
+        !self.anims.is_empty() || self.pending.active()
     }
 
     /// Animations advance on the compositor's frame callbacks (the display's
@@ -248,6 +249,7 @@ impl Daemon {
             .collect();
         self.anims
             .retain(|a| a.start.elapsed().as_millis() < a.kind.dur());
+        self.pending.retire(std::time::Instant::now());
         let mut removed = false;
         for (id, kind) in done {
             if kind == AnimKind::Disappear && self.remove_card_now(id) {

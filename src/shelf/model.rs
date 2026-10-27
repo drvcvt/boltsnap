@@ -138,6 +138,17 @@ impl ShelfModel {
         true
     }
 
+    /// The file of a card that showed before it was written (a replay clip
+    /// still being exported) is there now; it keeps its lifetime.
+    #[cfg_attr(windows, allow(dead_code))]
+    pub fn set_file(&mut self, id: u64, path: PathBuf) -> bool {
+        let Some(card) = self.thumbs.iter_mut().find(|card| card.id == id) else {
+            return false;
+        };
+        card.png_path = path;
+        true
+    }
+
     /// Used by tests and reserved for shelf-state queries; not yet read by the binary.
     #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {

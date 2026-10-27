@@ -3,6 +3,7 @@
 //! window's shelf preview, so the preview is the overlay's own painting
 //! (settings plan, 5g V6).
 
+mod badge;
 pub mod layout;
 pub mod paint;
 
