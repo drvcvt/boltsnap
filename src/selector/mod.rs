@@ -1,3 +1,4 @@
+pub mod clip;
 pub mod desktop;
 pub mod edit;
 pub mod motion;

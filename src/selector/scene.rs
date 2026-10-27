@@ -123,15 +123,25 @@ fn decorations(s: &Scene, w: u32, h: u32, chrome: &Chrome) -> Vec<Region> {
         let (x, y) = loupe_position(s, cursor, w, h);
         add((x.round(), y.round(), 120.0, 120.0), 3.0);
     }
-    regions.extend(bar_regions(s, w, h));
+    regions.extend(bar_regions(s, w, h, chrome));
     regions
 }
 
-/// Every toolbar a frame draws, current and fading out.
-fn bar_regions(s: &Scene, w: u32, h: u32) -> Vec<Region> {
+/// The reason beside the current toolbar, where it goes and its words.
+fn hint(s: &Scene, w: u32, h: u32, chrome: &Chrome) -> Option<(Rect, String, f32)> {
+    let (text, alpha) = s.bar.hint?;
+    let layout = &s.bar.current.as_ref()?.layout;
+    let (rect, text) = toolbar::hint_rect(&chrome.fonts, layout, text, area(s, w, h));
+    Some((rect, text, alpha))
+}
+
+/// Every toolbar a frame draws, current and fading out, and the hint.
+fn bar_regions(s: &Scene, w: u32, h: u32, chrome: &Chrome) -> Vec<Region> {
     s.bar
         .all()
-        .filter_map(|drawn| bounds(wide(drawn.layout.bounds), 2.0, w, h))
+        .map(|drawn| drawn.layout.bounds)
+        .chain(hint(s, w, h, chrome).map(|(rect, _, _)| rect))
+        .filter_map(|rect| bounds(wide(rect), 2.0, w, h))
         .collect()
 }
 
@@ -193,6 +203,9 @@ pub fn paint(frame: &mut Canvas, base: &Pixmap, scene: &Scene, chrome: &Chrome) 
             drawn.alpha,
         );
     }
+    if let Some((rect, text, alpha)) = hint(scene, w, h, chrome) {
+        toolbar::draw_hint(frame, &chrome.fonts, rect, &text, alpha);
+    }
     if let Some(cursor) = scene.magnifier {
         render::draw_magnifier_at(
             &mut frame.pixmap,
@@ -230,8 +243,8 @@ impl SceneCache {
             // A toolbar animating: only it changes. Border and grips are
             // opaque on whole pixels, so painting them again over pixels
             // that were not reset leaves them as they are.
-            let mut regions = bar_regions(old, w, h);
-            regions.extend(bar_regions(&scene, w, h));
+            let mut regions = bar_regions(old, w, h, chrome);
+            regions.extend(bar_regions(&scene, w, h, chrome));
             compact(regions, w, h)
         } else if let Some(old) = &self.previous {
             let mut regions = decorations(old, w, h, chrome);
@@ -353,6 +366,7 @@ mod tests {
             alpha,
         };
         Bar {
+            hint: (i % 3 == 1).then_some(("Replay has no video", 0.6)),
             ghosts: if i.is_multiple_of(2) {
                 vec![drawn(layout.translated(30.0, 40.0), 0.4)]
             } else {
@@ -541,6 +555,7 @@ mod tests {
             magnifier: None,
         };
         scene.bar.ghosts.clear();
+        scene.bar.hint = None;
         cache.update(&base, scene.clone(), &chrome);
         let generation = cache.generation();
         let toolbar = scene.bar.current.as_ref().unwrap().layout.bounds;

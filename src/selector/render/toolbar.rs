@@ -200,22 +200,21 @@ pub fn text_x(control: Rect) -> f32 {
     control.x + SIDE + ICON + GAP_S
 }
 
-/// The toolbar at `alpha` as one layer: drawn on its own and laid over the
-/// frame, so the surfaces inside it do not show through each other while
-/// it fades.
-pub fn draw_faded(canvas: &mut Canvas, fonts: &Fonts, layout: &Layout, look: &Look, alpha: f32) {
+/// What `paint` draws inside `bounds`, at `alpha` as one layer: drawn on its
+/// own and laid over the frame, so surfaces inside it do not show through
+/// each other while it fades. `paint` gets `bounds`' origin to draw from.
+fn faded(canvas: &mut Canvas, bounds: Rect, alpha: f32, paint: impl FnOnce(&mut Canvas, f32, f32)) {
     if alpha >= 1.0 {
-        draw(canvas, fonts, layout, look);
+        paint(canvas, 0.0, 0.0);
         return;
     }
-    let b = layout.bounds;
-    let Some(mut layer) = Canvas::new(b.w.ceil() as u32, b.h.ceil() as u32, 1) else {
+    let Some(mut layer) = Canvas::new(bounds.w.ceil() as u32, bounds.h.ceil() as u32, 1) else {
         return;
     };
-    draw(&mut layer, fonts, &layout.translated(-b.x, -b.y), look);
+    paint(&mut layer, -bounds.x, -bounds.y);
     canvas.pixmap.draw_pixmap(
-        b.x as i32,
-        b.y as i32,
+        bounds.x as i32,
+        bounds.y as i32,
         layer.pixmap.as_ref(),
         &tiny_skia::PixmapPaint {
             opacity: alpha.clamp(0.0, 1.0),
@@ -224,6 +223,56 @@ pub fn draw_faded(canvas: &mut Canvas, fonts: &Fonts, layout: &Layout, look: &Lo
         tiny_skia::Transform::identity(),
         None,
     );
+}
+
+/// The toolbar at `alpha`, as one layer.
+pub fn draw_faded(canvas: &mut Canvas, fonts: &Fonts, layout: &Layout, look: &Look, alpha: f32) {
+    faded(canvas, layout.bounds, alpha, |canvas, dx, dy| {
+        draw(canvas, fonts, &layout.translated(dx, dy), look);
+    });
+}
+
+/// Where the reason Clip cannot be pressed goes: left with the Clip control,
+/// `GAP_XS` beside the toolbar on the side away from the selection (above a
+/// toolbar above it, below one below or inside it), else the other side,
+/// `GAP_S` inside `area`; cut with an ellipsis when too long.
+pub fn hint_rect(fonts: &Fonts, layout: &Layout, text: &str, area: Rect) -> (Rect, String) {
+    let room = (area.w - 2.0 * GAP_S - 2.0 * SIDE).max(0.0);
+    let text = fonts.ellipsize(TextStyle::Label, text, room).into_owned();
+    let w = (2.0 * SIDE + fonts.width(TextStyle::Label, &text)).ceil();
+    let b = layout.bounds;
+    let above = b.y - GAP_XS - CTL_H;
+    let below = b.bottom() + GAP_XS;
+    let (top, bottom) = (area.y + GAP_S, area.bottom() - GAP_S - CTL_H);
+    let y = match layout.placement {
+        Placement::Above if above >= top => above,
+        Placement::Above if below <= bottom => below,
+        _ if below <= bottom => below,
+        _ if above >= top => above,
+        _ => below.clamp(top, bottom.max(top)),
+    };
+    let x = layout.controls[CLIP].x.clamp(
+        area.x + GAP_S,
+        (area.right() - GAP_S - w).max(area.x + GAP_S),
+    );
+    (Rect::new(x.round(), y.round(), w, CTL_H), text)
+}
+
+/// The reason, in a small surface of the toolbar's kind, at `alpha`.
+pub fn draw_hint(canvas: &mut Canvas, fonts: &Fonts, rect: Rect, text: &str, alpha: f32) {
+    faded(canvas, rect, alpha, |canvas, dx, dy| {
+        let rect = Rect::new(rect.x + dx, rect.y + dy, rect.w, rect.h);
+        canvas.fill(rect, RADIUS, theme::PANEL, 1.0);
+        let baseline = fonts.baseline(TextStyle::Label, rect.y, rect.h);
+        fonts.draw(
+            canvas,
+            TextStyle::Label,
+            text,
+            (rect.x + SIDE, baseline),
+            theme::SUB,
+            1.0,
+        );
+    });
 }
 
 /// The toolbar's surface, each control's surface, icon and label.

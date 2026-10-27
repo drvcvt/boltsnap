@@ -1,5 +1,6 @@
 //! Wayland screenshot and recording selector using SCTK layer surfaces and tiny-skia.
 
+use crate::selector::clip::ClipState;
 use crate::selector::motion::{BarMotion, Targets};
 use crate::selector::{desktop, edit, render, scene::SceneCache};
 use boltsnap::ui::text::Fonts;
@@ -75,7 +76,14 @@ where
 {
     // Start the screenshot grab so it overlaps with Wayland init below.
     let capture_handle = thread::spawn(capture);
-    let mut sel = run_selector(instant, false, true, true, Some(capture_handle), None)?;
+    let mut sel = run_selector(
+        instant,
+        false,
+        true,
+        true,
+        Some(capture_handle),
+        Err(ClipState::Off),
+    )?;
     Ok(sel
         .result
         .take()
@@ -132,8 +140,11 @@ fn run_selector(
     show_frame: bool,
     audio_enabled: bool,
     capture_handle: Option<thread::JoinHandle<Result<CapturedDesktop, String>>>,
-    replay: Option<super::replay::PreviewTarget>,
+    replay: Result<super::replay::PreviewTarget, ClipState>,
 ) -> DynResult<Selector> {
+    // With a buffer, Clip waits for its frozen frame; without, it says why.
+    let clip = replay.as_ref().err().copied().unwrap_or(ClipState::Loading);
+    let replay = replay.ok();
     let font_handle = thread::spawn(ui_fonts);
     let timing = super::timing::Span::new("selector_setup");
 
@@ -165,11 +176,12 @@ fn run_selector(
         // The embedded face until the desktop's is loaded (before any frame).
         chrome: render::Chrome::new(Fonts::fallback()),
         motion: BarMotion::new(
-            &bar_targets(None, None, show_frame, audio_enabled, false),
+            &bar_targets(None, None, show_frame, audio_enabled, clip),
             Instant::now(),
         ),
         pressed: None,
         pointer_in: false,
+        clip,
         surf_w: 0,
         surf_h: 0,
         configured: false,
@@ -302,30 +314,37 @@ fn run_selector(
         events
             .handle()
             .insert_source(receiver, |event, _, sel| {
-                if let calloop::channel::Event::Msg(Some(mut frozen)) = event {
-                    if sel.replay_output.as_deref() != Some(frozen.output.as_str()) {
-                        return;
-                    }
-                    sel.image = frozen.preview.take();
-                    sel.base = Some(match sel.image.as_ref() {
-                        Some(image) => render::base_pixmap_from_image(
-                            image,
-                            sel.surf_w.max(1),
-                            sel.surf_h.max(1),
-                        ),
-                        None => return,
-                    });
-                    sel.overlay = sel.base.as_ref().map(SceneCache::new);
-                    for view in &mut sel.views {
-                        view.committed_generation = None;
-                        for buffer in &mut view.buffers {
-                            buffer.generation = None;
-                        }
-                    }
-                    sel.frozen = Some(frozen);
-                    sel.clip_reported = false;
+                let calloop::channel::Event::Msg(frozen) = event else {
+                    return;
+                };
+                let failed = |sel: &mut Selector| {
+                    sel.clip = ClipState::Failed;
                     sel.request_redraw();
+                };
+                let Some(mut frozen) = frozen else {
+                    return failed(sel);
+                };
+                if sel.replay_output.as_deref() != Some(frozen.output.as_str()) {
+                    return failed(sel);
                 }
+                sel.image = frozen.preview.take();
+                sel.base = Some(match sel.image.as_ref() {
+                    Some(image) => {
+                        render::base_pixmap_from_image(image, sel.surf_w.max(1), sel.surf_h.max(1))
+                    }
+                    None => return failed(sel),
+                });
+                sel.overlay = sel.base.as_ref().map(SceneCache::new);
+                for view in &mut sel.views {
+                    view.committed_generation = None;
+                    for buffer in &mut view.buffers {
+                        buffer.generation = None;
+                    }
+                }
+                sel.frozen = Some(frozen);
+                sel.clip = ClipState::Ready;
+                sel.clip_reported = false;
+                sel.request_redraw();
             })
             .map_err(|e| format!("replay preview source: {e}"))?;
         thread::spawn(move || {
@@ -371,6 +390,8 @@ struct Selector {
     pressed: Option<usize>,
     /// The pointer is over a selector surface (Wayland says when it leaves).
     pointer_in: bool,
+    /// Whether Clip has its buffer, and if not, why.
+    clip: ClipState,
     surf_w: u32,
     surf_h: u32,
     configured: bool,
@@ -428,14 +449,15 @@ fn bar_targets(
     pressed: Option<usize>,
     show_frame: bool,
     audio: bool,
-    clip: bool,
+    clip: ClipState,
 ) -> Targets {
     use render::toolbar::{AUDIO, CLIP, FRAME};
     Targets {
         hovered,
         pressed,
         on: std::array::from_fn(|i| (i == FRAME && show_frame) || (i == AUDIO && audio)),
-        enabled: std::array::from_fn(|i| i != CLIP || clip),
+        enabled: std::array::from_fn(|i| i != CLIP || clip == ClipState::Ready),
+        reason: clip.reason(),
     }
 }
 
@@ -463,7 +485,7 @@ impl Selector {
             self.pressed,
             self.show_frame,
             self.audio_enabled,
-            self.frozen.is_some(),
+            self.clip,
         );
         self.motion.update(layout, &targets, now);
     }

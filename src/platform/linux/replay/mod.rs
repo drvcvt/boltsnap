@@ -149,6 +149,8 @@ pub struct FrozenSelection {
     height: u32,
 }
 
+use crate::selector::clip::ClipState;
+
 pub struct PreviewTarget {
     pub output: String,
     session: String,
@@ -170,15 +172,35 @@ pub fn status_quiet() -> Option<Value> {
 }
 
 /// Only fetch routing metadata on the UI startup path, never a decoded frame.
-pub fn preview_target() -> Option<PreviewTarget> {
-    let response = status_quiet()?;
-    if response["ok"] != true || response["ready"] != true || response["busy"] == true {
-        return None;
+/// Without a buffer to clip from, why not, for the selector's Clip.
+pub fn preview_target() -> Result<PreviewTarget, ClipState> {
+    preview_target_from(status_quiet().as_ref())
+}
+
+fn preview_target_from(status: Option<&Value>) -> Result<PreviewTarget, ClipState> {
+    let Some(response) = status else {
+        // Nothing answers: no daemon, so no buffer either.
+        return Err(ClipState::Off);
+    };
+    if response["ok"] != true {
+        return Err(ClipState::Failed);
     }
-    Some(PreviewTarget {
-        output: response["output"].as_str()?.into(),
-        session: response["session"].as_str()?.into(),
-    })
+    match response["state"].as_str() {
+        Some("stopped") => return Err(ClipState::Off),
+        Some("starting") => return Err(ClipState::Starting),
+        _ => {}
+    }
+    if response["busy"] == true {
+        return Err(ClipState::Busy);
+    }
+    if response["ready"] != true {
+        return Err(ClipState::Stalled);
+    }
+    let field = |name: &str| response[name].as_str().map(String::from);
+    match (field("output"), field("session")) {
+        (Some(output), Some(session)) => Ok(PreviewTarget { output, session }),
+        _ => Err(ClipState::Failed),
+    }
 }
 
 impl FrozenSelection {
@@ -762,6 +784,46 @@ pub(crate) fn serve(sender: calloop::channel::Sender<DaemonEvent>) -> Result<Ser
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clip_says_why_the_buffer_is_not_there() {
+        let reason = |status: Option<Value>| preview_target_from(status.as_ref()).err();
+        assert_eq!(reason(None), Some(ClipState::Off));
+        assert_eq!(
+            reason(Some(json!({"ok":true,"ready":false,"state":"stopped"}))),
+            Some(ClipState::Off)
+        );
+        assert_eq!(
+            reason(Some(json!({"ok":true,"ready":false,"state":"starting"}))),
+            Some(ClipState::Starting)
+        );
+        assert_eq!(
+            reason(Some(json!({"ok":true,"ready":false,"state":"stalled"}))),
+            Some(ClipState::Stalled)
+        );
+        assert_eq!(
+            reason(Some(
+                json!({"ok":true,"ready":true,"busy":true,"state":"running"})
+            )),
+            Some(ClipState::Busy)
+        );
+        assert_eq!(
+            reason(Some(json!({"ok":false,"error":"x"}))),
+            Some(ClipState::Failed)
+        );
+        assert_eq!(
+            reason(Some(json!({"ok":true,"ready":true,"state":"running"}))),
+            Some(ClipState::Failed),
+            "a running buffer without routing is not one to clip from"
+        );
+        let target = preview_target_from(Some(&json!({"ok":true,"ready":true,"busy":false,
+            "state":"running","output":"DP-1","session":"s1"})))
+        .unwrap();
+        assert_eq!(
+            (target.output.as_str(), target.session.as_str()),
+            ("DP-1", "s1")
+        );
+    }
 
     #[test]
     fn a_held_selection_keeps_a_stalled_session() {

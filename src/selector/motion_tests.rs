@@ -22,6 +22,7 @@ fn targets() -> Targets {
         pressed: None,
         on: [false, false, true, true],
         enabled: [true, false, true, true],
+        reason: Some("Replay is loading"),
     }
 }
 
@@ -169,4 +170,45 @@ fn clip_getting_its_buffer_brightens_with_quick() {
     assert_eq!(enabled(t1), 0.0);
     assert!(enabled(ms(t1, 50)) > 0.2 && enabled(ms(t1, 50)) < 0.95);
     assert_eq!(enabled(ms(t1, 500)), 1.0);
+}
+
+#[test]
+fn the_reason_fades_in_on_an_unavailable_clip_and_out_with_its_words() {
+    let t0 = Instant::now();
+    let mut motion = BarMotion::new(&targets(), t0);
+    let l = layout((600.0, 300.0, 700.0, 400.0));
+    motion.update(Some(l), &targets(), t0);
+    let t1 = ms(t0, 500);
+    let on_clip = Targets {
+        hovered: Some(toolbar::CLIP),
+        ..targets()
+    };
+    motion.update(Some(l), &on_clip, t1);
+    assert!(motion.sample(t1).hint.is_none());
+    let (text, alpha) = motion.sample(ms(t1, 50)).hint.unwrap();
+    assert_eq!(text, "Replay is loading");
+    assert!(alpha > 0.2 && alpha < 0.95);
+    assert_eq!(motion.sample(ms(t1, 500)).hint.unwrap().1, 1.0);
+    // The buffer arrives under the pointer: Clip brightens, the reason goes
+    // with the words it had.
+    let t2 = ms(t1, 500);
+    let mut ready = on_clip;
+    ready.enabled[toolbar::CLIP] = true;
+    ready.reason = None;
+    motion.update(Some(l), &ready, t2);
+    assert_eq!(
+        motion.sample(ms(t2, 50)).hint.unwrap().0,
+        "Replay is loading"
+    );
+    assert!(motion.sample(ms(t2, 500)).hint.is_none());
+    // On an available Clip, or another control, there is no reason.
+    motion.update(
+        Some(l),
+        &Targets {
+            hovered: Some(0),
+            ..targets()
+        },
+        ms(t2, 600),
+    );
+    assert!(motion.sample(ms(t2, 1200)).hint.is_none());
 }

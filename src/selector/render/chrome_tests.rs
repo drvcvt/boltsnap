@@ -1,13 +1,14 @@
 //! The Linux chrome: border, grips, badge, toolbar layout and its gates.
 
 use boltsnap::ui::text::Fonts;
-use boltsnap::ui::theme::{self, CTL_H, GAP_S, GAP_XS, Rgb};
+use boltsnap::ui::theme::{self, CTL_H, GAP_S, GAP_XS, Rgb, TextStyle};
 use boltsnap::ui::{Canvas, Rect};
 use tiny_skia::Pixmap;
 
-use super::chrome::{Placement, draw_frame, draw_grips, size_badge_rect};
+use super::chrome::{Placement, SIDE, draw_frame, draw_grips, size_badge_rect};
 use super::gates;
 use super::toolbar::{self, LABELS, Look, Metrics};
+use crate::selector::clip::ClipState;
 
 fn black(w: u32, h: u32) -> Pixmap {
     let mut pm = Pixmap::new(w, h).unwrap();
@@ -158,10 +159,32 @@ fn gate_overflow_the_toolbar_stays_on_screen_everywhere() {
                     assert!(!c.inset(-(GAP_XS - 0.01)).overlaps(*d));
                 }
             }
+            // The reason beside it, the longest one, inside the screen too,
+            // and not over a toolbar.
+            for reason in ClipState::ALL.iter().filter_map(|c| c.reason()) {
+                let fonts = Fonts::fallback();
+                let (hint, text) = toolbar::hint_rect(&fonts, &t, reason, area);
+                assert!(
+                    hint.x >= GAP_S
+                        && hint.y >= GAP_S
+                        && hint.right() <= wf - GAP_S
+                        && hint.bottom() <= hf - GAP_S,
+                    "{w}x{h} {sel:?}: hint {hint:?}"
+                );
+                assert!(fonts.width(TextStyle::Label, &text) + 2.0 * SIDE <= hint.w + 0.5);
+                assert!(
+                    !hint.overlaps(t.bounds),
+                    "{w}x{h} {sel:?}: hint over the toolbar"
+                );
+                assert_eq!((hint.x.fract(), hint.y.fract()), (0.0, 0.0));
+            }
             cases += 1;
         }
     }
-    println!("gate overflow: {cases} placements on 5 screen sizes inside the screen");
+    println!(
+        "gate overflow: {cases} placements on 5 screen sizes, toolbar and each of the six \
+         reasons inside the screen"
+    );
     let t = toolbar::layout(
         (90.0, 90.0, 400.0, 200.0),
         Rect::new(0.0, 0.0, 800.0, 500.0),
@@ -254,6 +277,7 @@ fn gate_contrast_every_label_on_its_surface() {
     let mut pairs = 0;
     for step in [0.0, 1.0, 2.0, 3.0] {
         let surface = toolbar::ladder(step);
+        // `SUB` on no surface: an off toggle and the reason beside Clip.
         for (what, fg) in [("text", TEXT), ("sub", SUB)] {
             // An off toggle (SUB) only ever sits on no surface or the hover step.
             if fg == SUB && step > 1.0 {
@@ -311,6 +335,28 @@ pub fn copy_check(strings: &[&str]) {
 
 #[test]
 fn gate_copy_the_toolbar_reads_like_a_person_wrote_it() {
-    copy_check(&LABELS);
-    println!("gate copy: {} strings", LABELS.len());
+    let mut strings: Vec<&str> = LABELS.to_vec();
+    strings.extend(ClipState::ALL.iter().filter_map(|c| c.reason()));
+    copy_check(&strings);
+    println!("gate copy: {} strings: {strings:?}", strings.len());
+}
+
+#[test]
+fn the_reason_sits_away_from_the_selection() {
+    let fonts = Fonts::fallback();
+    let metrics = Metrics::new(&fonts);
+    let area = Rect::new(0.0, 0.0, 1920.0, 1080.0);
+    for sel in [(612.0, 300.0, 760.0, 430.0), (300.0, 4.0, 700.0, 400.0)] {
+        let t = toolbar::layout(sel, area, &metrics).unwrap();
+        let (hint, _) = toolbar::hint_rect(&fonts, &t, "Replay is loading", area);
+        let selection = Rect::new(sel.0, sel.1, sel.2, sel.3);
+        assert!(!hint.overlaps(selection), "{sel:?}: {hint:?}");
+        assert_eq!(hint.x, t.controls[toolbar::CLIP].x, "with the Clip control");
+        let gap = if hint.y < t.bounds.y {
+            t.bounds.y - hint.bottom()
+        } else {
+            hint.y - t.bounds.bottom()
+        };
+        assert_eq!(gap, GAP_XS);
+    }
 }

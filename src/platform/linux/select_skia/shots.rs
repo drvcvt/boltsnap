@@ -10,6 +10,7 @@ use boltsnap::ui::Rect;
 use image::RgbaImage;
 use tiny_skia::Pixmap;
 
+use crate::selector::clip::ClipState;
 use crate::selector::motion::{Bar, BarMotion, Targets};
 use crate::selector::render::{self, Chrome, toolbar};
 use crate::selector::scene::{Scene, paint};
@@ -53,6 +54,7 @@ fn targets(hovered: Option<usize>, clip: bool, on: bool) -> Targets {
         pressed: None,
         on: [false, false, on, on],
         enabled: [true, clip, true, true],
+        reason: (!clip).then(|| ClipState::Loading.reason()).flatten(),
     }
 }
 
@@ -115,13 +117,26 @@ fn shots(chrome: &Chrome) -> Vec<(String, (u32, u32), Scene)> {
         full,
         rest(sel, full, targets(Some(1), false, true)),
     ));
+    let below = (300.0, 4.0, 700.0, 400.0);
+    let t = targets(Some(1), false, true);
+    out.push(("noclip-hover-below".into(), full, rest(below, full, t)));
+    let column = (20.0, 180.0, 100.0, 40.0);
+    out.push((
+        "noclip-hover-column".into(),
+        (160, 240),
+        rest(column, (160, 240), t),
+    ));
+    for ms in [30, 60, 100] {
+        let steps = [step(sel, targets(None, false, true), 0), step(sel, t, 500)];
+        let bar = animated(chrome, full, &steps, ms);
+        out.push((format!("hint-in-{ms}ms"), full, scene(sel, true, bar)));
+    }
     let grid = (40.0, 160.0, 200.0, 100.0);
     out.push((
         "grid".into(),
         (300, 300),
         rest(grid, (300, 300), targets(Some(2), true, true)),
     ));
-    let column = (20.0, 180.0, 100.0, 40.0);
     let t = targets(Some(0), true, false);
     out.push(("column".into(), (160, 240), rest(column, (160, 240), t)));
     let below = (300.0, 4.0, 700.0, 400.0);

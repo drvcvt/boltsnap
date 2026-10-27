@@ -7,7 +7,7 @@ use std::time::Instant;
 use boltsnap::ui::motion::Spring;
 use boltsnap::ui::theme::QUICK;
 
-use super::render::toolbar::{ControlLook, Layout, Look};
+use super::render::toolbar::{CLIP, ControlLook, Layout, Look};
 
 /// What the toolbar should show.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -18,6 +18,8 @@ pub struct Targets {
     pub on: [bool; 4],
     /// Clip has a buffer to clip from (the others always do).
     pub enabled: [bool; 4],
+    /// Why Clip has none, said while the pointer is on it.
+    pub reason: Option<&'static str>,
 }
 
 /// One toolbar as drawn this frame, with its opacity.
@@ -34,6 +36,9 @@ pub struct Drawn {
 pub struct Bar {
     pub ghosts: Vec<Drawn>,
     pub current: Option<Drawn>,
+    /// Why Clip cannot be pressed, beside the current toolbar, with its
+    /// opacity (already times the toolbar's).
+    pub hint: Option<(&'static str, f32)>,
 }
 
 impl Bar {
@@ -62,6 +67,9 @@ pub struct BarMotion {
     ghosts: Vec<Ghost>,
     /// Per control: hover, press, on, enabled.
     controls: [[Spring; 4]; 4],
+    /// The reason beside the toolbar; the text stays while it fades out.
+    hint: Spring,
+    hint_text: Option<&'static str>,
 }
 
 fn unit(on: bool) -> f32 {
@@ -84,6 +92,8 @@ impl BarMotion {
                 [0.0, 0.0, unit(targets.on[i]), unit(targets.enabled[i])]
                     .map(|v| Spring::settled(v, now))
             }),
+            hint: Spring::settled(0.0, now),
+            hint_text: None,
         }
     }
 
@@ -118,6 +128,12 @@ impl BarMotion {
                 spring.retarget(to, QUICK, now);
             }
         }
+        let hint = targets.hovered == Some(CLIP) && !targets.enabled[CLIP] && layout.is_some();
+        let hint = hint.then_some(targets.reason).flatten();
+        if hint.is_some() {
+            self.hint_text = hint;
+        }
+        self.hint.retarget(unit(hint.is_some()), QUICK, now);
         match (layout, self.current.as_mut()) {
             (Some(layout), Some(shown))
                 if shown.alpha.target() == 1.0 && same_arrangement(&shown.layout, &layout) =>
@@ -181,6 +197,15 @@ impl BarMotion {
                     alpha: shown.alpha.value(now).clamp(0.0, 1.0),
                 })
                 .filter(|drawn| visible(drawn.alpha)),
+            hint: self
+                .current
+                .as_ref()
+                .zip(self.hint_text)
+                .and_then(|(shown, text)| {
+                    let alpha = self.hint.value(now).clamp(0.0, 1.0)
+                        * shown.alpha.value(now).clamp(0.0, 1.0);
+                    visible(alpha).then_some((text, alpha))
+                }),
         }
     }
 
@@ -190,7 +215,10 @@ impl BarMotion {
         let current = shown.is_some_and(|s| !s.alpha.done(now));
         let controls = shown.is_some_and(|s| s.alpha.target() > 0.0 || !s.alpha.done(now))
             && self.controls.iter().flatten().any(|s| !s.done(now));
-        current || controls || self.ghosts.iter().any(|g| !g.alpha.done(now))
+        current
+            || controls
+            || (shown.is_some() && !self.hint.done(now))
+            || self.ghosts.iter().any(|g| !g.alpha.done(now))
     }
 }
 
