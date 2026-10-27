@@ -339,15 +339,22 @@ fn gate_contrast_every_label_on_its_surface() {
         }
     }
     // Record's label (TEXT) sits on RAISE, HOVER, SELECTED: in the loop.
-    // The record dot is a graphic beside its word: 3:1 at rest and hovered.
-    let dot = |surface| contrast(ERROR, surface);
-    assert!(dot(RAISE) >= 3.0 && dot(HOVER) >= 3.0);
+    // The record dot is a graphic beside its word, lit with its surface:
+    // 3:1 on every step it can sit on, with the colour it has there.
+    let dot = |hover: f32, press: f32| {
+        let mut look = toolbar::ControlLook::default();
+        look.enabled = 1.0;
+        (look.hover, look.press) = (hover, press);
+        let surface = toolbar::surface(toolbar::RECORD, &look).unwrap();
+        contrast(toolbar::mark(&look), surface)
+    };
+    let (rest, hovered, pressed) = (dot(0.0, 0.0), dot(1.0, 0.0), dot(1.0, 1.0));
+    for ratio in [rest, hovered, pressed] {
+        assert!(ratio >= 3.0, "record dot {ratio:.2}:1");
+    }
     println!(
-        "gate contrast: {pairs} text pairs, lowest {lowest:.2}:1; record dot {:.2}:1 at rest \
-         (RAISE), {:.2}:1 hovered (HOVER), {:.2}:1 pressed (SELECTED)",
-        dot(RAISE),
-        dot(HOVER),
-        dot(SELECTED)
+        "gate contrast: {pairs} text pairs, lowest {lowest:.2}:1; record dot {rest:.2}:1 at rest \
+         (RAISE), {hovered:.2}:1 hovered (HOVER), {pressed:.2}:1 pressed (SELECTED)"
     );
 }
 

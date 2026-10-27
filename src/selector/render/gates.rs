@@ -119,7 +119,11 @@ pub fn measure(fonts: &Fonts, (w, h): (u32, u32), sel: (f32, f32, f32, f32), on:
         let control = &look.controls[i];
         let surface = toolbar::surface(i, control).unwrap_or(theme::PANEL);
         let ink_rgb = toolbar::ink(i, control);
-        let icon_rgb = if i == RECORD { theme::ERROR } else { ink_rgb };
+        let icon_rgb = if i == RECORD {
+            toolbar::mark(control)
+        } else {
+            ink_rgb
+        };
         let icon = ink(
             &canvas,
             toolbar::icon_rect(i, *rect).inset(-2.0),

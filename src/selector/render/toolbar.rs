@@ -336,6 +336,14 @@ pub fn surface(index: usize, look: &ControlLook) -> Option<Rgb> {
     (step > 0.0).then(|| ladder(step))
 }
 
+/// Record's dot, the toolbar's one colour: it lights up with its surface,
+/// an eighth of the way to `TEXT` per step above rest, so it keeps 3:1 on
+/// the hover and pressed surfaces too.
+pub fn mark(look: &ControlLook) -> Rgb {
+    let up = (step(RECORD, look) - 1.0).clamp(0.0, 2.0);
+    theme::mix(theme::ERROR, theme::TEXT, 0.125 * up)
+}
+
 /// The label's and icon's colour.
 pub fn ink(index: usize, look: &ControlLook) -> Rgb {
     match index {
@@ -395,7 +403,7 @@ pub fn draw_labelled(
         let icon = icon_rect(i, *rect);
         match i {
             // The one colour on the toolbar: the primary action's mark.
-            RECORD => Icon::Circle.fill(canvas, icon, theme::ERROR, 1.0),
+            RECORD => Icon::Circle.fill(canvas, icon, mark(control), 1.0),
             CLIP => Icon::Scissors.draw(canvas, icon, ink, 1.0),
             FRAME => Icon::SquareDashed.draw(canvas, icon, ink, 1.0),
             _ => {
