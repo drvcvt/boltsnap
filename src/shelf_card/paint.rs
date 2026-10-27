@@ -404,7 +404,7 @@ fn draw_hover_icons(canvas: &mut [u8], cw: u32, ch: u32, r: &ThumbRect, frame: &
         ch,
         clx as f32 + s / 2.0,
         cly as f32 + s / 2.0,
-        s / 2.0 - 0.5,
+        s / 2.0 - 0.5 * frame.scale,
         BTN_BG,
         BTN_BG_A,
     );
@@ -429,7 +429,7 @@ fn draw_hover_icons(canvas: &mut [u8], cw: u32, ch: u32, r: &ThumbRect, frame: &
         ch,
         sx as f32 + s / 2.0,
         sy as f32 + s / 2.0,
-        s / 2.0 - 0.5,
+        s / 2.0 - 0.5 * frame.scale,
         BTN_BG,
         BTN_BG_A,
     );

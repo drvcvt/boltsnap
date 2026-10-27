@@ -7,15 +7,22 @@ use std::path::Path;
 
 use boltsnap::app::ReplayLoad;
 
-/// The replay processes of the daemon with `daemon` as pid: its children
-/// named like GPU Screen Recorder and the worker, and their children.
+/// The replay processes of the daemon with `daemon` as pid: its replay
+/// worker and the GPU Screen Recorder that feeds it, and their children. A
+/// recording's GPU Screen Recorder is the daemon's child too; the replay's is
+/// the one writing to its stdout (`linux/replay` start, `-o /dev/stdout`).
 fn replay_pids(proc: &Path, daemon: u32) -> Vec<u32> {
     let parents = processes(proc);
+    let feeds_worker = |pid: u32| {
+        std::fs::read(proc.join(pid.to_string()).join("cmdline"))
+            .is_ok_and(|args| args.windows(15).any(|w| w == b"-o\0/dev/stdout\0"))
+    };
     let mut pids: Vec<u32> = parents
         .iter()
-        .filter(|(_, parent, comm)| {
+        .filter(|(pid, parent, comm)| {
             *parent == daemon
-                && (comm.starts_with("gpu-screen-reco") || comm.starts_with("boltsnap-replay"))
+                && (comm.starts_with("boltsnap-replay")
+                    || comm.starts_with("gpu-screen-reco") && feeds_worker(*pid))
         })
         .map(|(pid, ..)| *pid)
         .collect();
@@ -75,7 +82,8 @@ fn resident(proc: &Path, pid: u32, page: u64) -> Option<u64> {
 
 /// Measures the replay processes between two calls.
 pub(super) struct Meter {
-    last: Option<(std::time::Instant, u64)>,
+    /// The session, when and how many ticks at the last reading.
+    last: Option<(String, std::time::Instant, u64)>,
     tick: f64,
     page: u64,
 }
@@ -112,12 +120,18 @@ impl Meter {
             .iter()
             .filter_map(|pid| resident(proc, *pid, self.page))
             .sum();
-        let cpu = self.last.and_then(|(at, before)| {
-            let seconds = now.duration_since(at).as_secs_f64();
-            (seconds > 0.0 && ticks >= before)
-                .then(|| ((ticks - before) as f64 / self.tick / seconds * 100.0) as f32)
-        });
-        self.last = Some((now, ticks));
+        // Only against a reading of the same session: a restarted buffer
+        // starts its count anew.
+        let cpu = self
+            .last
+            .as_ref()
+            .filter(|(last, ..)| last == session)
+            .and_then(|(_, at, before)| {
+                let seconds = now.duration_since(*at).as_secs_f64();
+                (seconds > 0.0 && ticks >= *before)
+                    .then(|| ((ticks - before) as f64 / self.tick / seconds * 100.0) as f32)
+            });
+        self.last = Some((session.to_owned(), now, ticks));
         Some(ReplayLoad {
             cpu_percent: cpu,
             memory_bytes: memory,
@@ -144,6 +158,12 @@ mod tests {
         let stat = |pid: u32, comm: &str, parent: u32| {
             let dir = proc.join(pid.to_string());
             std::fs::create_dir_all(&dir).unwrap();
+            let args: &[u8] = if pid == 101 {
+                b"gpu-screen-recorder\0-w\0DP-3\0-o\0/dev/stdout\0"
+            } else {
+                b"gpu-screen-recorder\0-o\0/home/me/clip.mkv\0"
+            };
+            std::fs::write(dir.join("cmdline"), args).unwrap();
             std::fs::write(
                 dir.join("stat"),
                 format!("{pid} ({comm}) S {parent} 0 0 0 0 0 0 0 0 0 7 3 0 0 0"),
@@ -157,15 +177,18 @@ mod tests {
         stat(103, "boltsnap-replay", 100);
         stat(104, "eddy", 100);
         stat(105, "gpu-screen-reco", 999);
+        // A recording: the daemon's child too, writing to a file.
+        stat(106, "gpu-screen-reco", 100);
         let mut pids = replay_pids(&proc, 100);
         pids.sort();
         assert_eq!(pids, [101, 102, 103]);
         assert_eq!(ticks(&proc, 101), Some(10));
         assert_eq!(resident(&proc, 101, 4096), Some(25 * 4096));
-        for pid in 100..=105 {
+        for pid in 100..=106 {
             let dir = proc.join(pid.to_string());
-            std::fs::remove_file(dir.join("stat")).unwrap();
-            std::fs::remove_file(dir.join("statm")).unwrap();
+            for file in ["stat", "statm", "cmdline"] {
+                std::fs::remove_file(dir.join(file)).unwrap();
+            }
             std::fs::remove_dir(dir).unwrap();
         }
         std::fs::remove_dir(&proc).unwrap();

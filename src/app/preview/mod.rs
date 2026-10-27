@@ -23,7 +23,6 @@ pub use load::ReplayLoad;
 pub use replay::{
     bar as replay_bar_rect, cells as replay_cells, head as replay_head_rect, step as replay_step,
 };
-pub use shelf::card_height;
 
 use super::pages::Screen;
 use crate::ui::motion::Spring;

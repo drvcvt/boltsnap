@@ -44,7 +44,13 @@ impl App {
     /// runs with the settings from before the page's changes.
     pub fn replay_load_text(&self, stale: bool) -> (String, String) {
         let Some(load) = self.preview.load else {
-            return ("Off, nothing in use".into(), String::new());
+            // Running (it holds seconds), but nothing measured: say so.
+            let what = if self.preview.running {
+                "Running, not measured"
+            } else {
+                "Off, nothing in use"
+            };
+            return (what.into(), String::new());
         };
         let what = if stale {
             "Before your changes"

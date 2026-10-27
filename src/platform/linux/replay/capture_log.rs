@@ -10,6 +10,9 @@ use std::path::Path;
 const SLOW: f32 = 0.9;
 /// This many reports in a row (gsr reports once a second) make a change.
 const RUN: u32 = 3;
+/// A session's log stops growing here (about 16 hours of gsr's reports);
+/// slowdowns still reach the daemon's log.
+const MOST_BYTES: usize = 4 * 1024 * 1024;
 
 /// The capture log for a new session; the last session's becomes `.old`.
 pub(super) fn open(dir: &Path) -> Option<File> {
@@ -31,6 +34,7 @@ pub(super) fn follow(
         let mut pace = fps.map(Pace::new);
         let mut lines = BufReader::new(from);
         let mut line = Vec::new();
+        let mut written = 0;
         while lines
             .read_until(b'\n', &mut line)
             .is_ok_and(|read| read > 0)
@@ -38,9 +42,14 @@ pub(super) fn follow(
             let text = String::from_utf8_lossy(&line);
             let text = text.trim_end();
             let now = crate::paths::local_timestamp();
-            let _ = writeln!(to, "{now} {text}");
+            if written < MOST_BYTES {
+                written += now.len() + text.len() + 2;
+                let _ = writeln!(to, "{now} {text}");
+            }
             if let Some(note) = pace.as_mut().and_then(|pace| pace.note(text)) {
-                eprintln!("boltsnap daemon: {now} {note}");
+                // Never `eprintln!`: it panics on a full disk, the thread
+                // would end, and gsr die of the closed pipe.
+                let _ = writeln!(std::io::stderr(), "boltsnap daemon: {now} {note}");
             }
             line.clear();
         }

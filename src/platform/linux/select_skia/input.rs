@@ -126,7 +126,11 @@ impl PointerHandler for Selector {
                 let _ = p.set_cursor(conn, CursorIcon::Crosshair);
             }
             match ev.kind {
-                PointerEventKind::Enter { .. } => self.pointer_in = true,
+                PointerEventKind::Enter { .. } => {
+                    self.pointer_in = true;
+                    // An always-on magnifier appears where the pointer came in.
+                    redraw |= self.magnifier_on();
+                }
                 // Hover and press never stay lit once the pointer is gone.
                 PointerEventKind::Leave { .. } => {
                     self.pointer_in = false;

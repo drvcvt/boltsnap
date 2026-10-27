@@ -495,9 +495,10 @@ fn video_size(info: &smithay_client_toolkit::output::OutputInfo) -> Option<(u32,
 
 impl Selector {
     /// The magnifier follows the pointer: with Alt held, or always when
-    /// set; never while recording a region.
+    /// set; never while recording a region, and only while the pointer is
+    /// over the selector (it starts at (0, 0) and stays where it left).
     fn magnifier_on(&self) -> bool {
-        (self.alt_held || self.magnifier_always) && !self.record_mode
+        (self.alt_held || self.magnifier_always) && !self.record_mode && self.pointer_in
     }
 
     /// Hand the toolbar what it should show now: there once a selection is

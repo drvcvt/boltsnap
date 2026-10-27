@@ -20,9 +20,23 @@ pub struct Thumb {
     pub source: String,
     pub kind: CardKind,
     pub lifetime: FileLifetime,
+    /// When the file was last written as the card arrived: a later time
+    /// means an editor saved over it (`edited`).
+    pub arrived: Option<std::time::SystemTime>,
 }
 
 impl Thumb {
+    /// A temporary image an editor has saved over since the card arrived
+    /// (`[shelf] open_with` hands it the card's own file). Its dismissal must
+    /// not delete the edit.
+    #[cfg_attr(windows, allow(dead_code))]
+    pub fn edited(&self) -> bool {
+        let modified = std::fs::metadata(&self.png_path).and_then(|m| m.modified());
+        self.kind == CardKind::Image
+            && self.lifetime == FileLifetime::Temporary
+            && matches!((self.arrived, modified), (Some(arrived), Ok(now)) if now > arrived)
+    }
+
     pub fn delete_file_on_dismiss(&self) -> std::io::Result<()> {
         if self.lifetime == FileLifetime::Temporary {
             if self.kind == CardKind::Video {
@@ -70,6 +84,9 @@ impl ShelfModel {
     ) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
+        let arrived = std::fs::metadata(&png_path)
+            .and_then(|metadata| metadata.modified())
+            .ok();
         self.thumbs.insert(
             0,
             Thumb {
@@ -79,6 +96,7 @@ impl ShelfModel {
                 source,
                 kind,
                 lifetime,
+                arrived,
             },
         );
         id
@@ -191,6 +209,32 @@ mod tests {
         assert!(m.replace_thumb(a, RgbaImage::new(4, 4)));
         assert_eq!(m.get(a).unwrap().thumb.dimensions(), (4, 4));
         assert!(!m.replace_thumb(999, RgbaImage::new(1, 1)));
+    }
+
+    #[test]
+    fn an_image_saved_over_after_it_arrived_counts_as_edited() {
+        let path =
+            std::env::temp_dir().join(format!("boltsnap-edited-test-{}.png", std::process::id()));
+        std::fs::write(&path, b"capture").unwrap();
+        let past = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(past)
+            .unwrap();
+        let mut model = ShelfModel::new();
+        let image = model.add(path.clone(), img(), "area".into());
+        let video = model.add_kind(path.clone(), img(), "record".into(), CardKind::Video);
+        assert!(!model.get(image).unwrap().edited(), "as it arrived");
+        // An editor saves over it.
+        std::fs::write(&path, b"edited").unwrap();
+        assert!(model.get(image).unwrap().edited());
+        assert!(
+            !model.get(video).unwrap().edited(),
+            "videos are not edited here"
+        );
+        std::fs::remove_file(&path).unwrap();
     }
 
     #[test]

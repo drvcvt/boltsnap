@@ -1566,7 +1566,7 @@ impl Daemon {
         let Some(card) = self.model.remove(id) else {
             return false;
         };
-        let _ = card.delete_file_on_dismiss();
+        self.drop_card_file(&card);
         self.anims.retain(|animation| animation.id != id);
         if self.hovered == Some(id) {
             self.hovered = None;
@@ -1654,8 +1654,8 @@ impl Daemon {
                 *redraw = true;
             }
             Hit::Close(id) => {
-                // Animate the card out; tick_animations removes it (and its temp
-                // file) and relayouts when the dismiss animation completes.
+                // Animate the card out (tick_animations then removes it and its
+                // file); with `animations = false` start_anim removes it at once.
                 if self.hovered == Some(id) {
                     self.hovered = None;
                 }

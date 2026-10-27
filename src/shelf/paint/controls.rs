@@ -119,6 +119,19 @@ fn ink_from(font: &FontVec, text: &str, px: f32, x: f32) -> f32 {
     x - ink(font, text, px).0
 }
 
+/// The caret that ends a ticking number's ink at `x` as if every digit were
+/// 0: right-aligned by its advance, the bearing taken from that reference,
+/// so a changing last digit never moves it.
+fn steady_ink_to(font: &FontVec, text: &str, px: f32, x: f32) -> f32 {
+    let reference: String = text
+        .chars()
+        .map(|c| if c.is_ascii_digit() { '0' } else { c })
+        .collect();
+    let (left, width) = ink(font, &reference, px);
+    let bearing = text_width(font, &reference, px) - left - width;
+    x + bearing - text_width(font, text, px)
+}
+
 /// The caret that ends `text`'s ink exactly at `x`.
 fn ink_to(font: &FontVec, text: &str, px: f32, x: f32) -> f32 {
     let (left, width) = ink(font, text, px);
@@ -215,7 +228,7 @@ pub fn draw_recording_controls(
         w,
         h,
         body,
-        ink_to(body, elapsed, time_px, w as f32 - CTL_PAD),
+        steady_ink_to(body, elapsed, time_px, w as f32 - CTL_PAD),
         head,
         elapsed,
         time_px,

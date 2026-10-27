@@ -677,6 +677,9 @@ fn the_replay_load_says_off_in_use_and_before_your_changes() {
         "at the bottom of the page"
     );
     assert_eq!(app.replay_load_text(false).0, "Off, nothing in use");
+    // Running, but nothing measured (an older daemon, no process found).
+    app.set_replay_held(Some(12.0), now);
+    assert_eq!(app.replay_load_text(false).0, "Running, not measured");
     let load = |cpu| ReplayLoad {
         cpu_percent: cpu,
         memory_bytes: 414_000_000,
@@ -694,4 +697,61 @@ fn the_replay_load_says_off_in_use_and_before_your_changes() {
             "25% of one core, 414\u{a0}MB".into()
         )
     );
+}
+
+#[test]
+fn a_card_past_the_block_is_not_there_to_hover() {
+    use crate::app::{Channel, Target};
+    let now = Instant::now();
+    let mut app = app_on("shelf", SIZE, now);
+    // A top corner and big cards: the lower card runs past the block.
+    focus(&mut app, "Corner", now);
+    key(&mut app, Key::Left, now);
+    focus(&mut app, "Card size", now);
+    for _ in 0..10 {
+        key(&mut app, Key::Right, now);
+    }
+    let at = now + SETTLED;
+    let rect = shelf_rect(&app, at);
+    let cards = cards(&app, at);
+    let low = cards.last().unwrap();
+    assert!(low.1.bottom() > rect.bottom() + 20.0, "it runs past");
+    let block = app
+        .page()
+        .blocks
+        .iter()
+        .position(|b| matches!(b, Block::Preview(Preview::Shelf)))
+        .unwrap();
+    app.handle(
+        Input::Move {
+            x: low.1.x + 20.0,
+            y: rect.bottom() + 10.0,
+        },
+        at,
+    );
+    let hover = app.fade(Target::Card(block, low.0), Channel::Hover, at + SETTLED);
+    assert_eq!(hover, 0.0, "the row below keeps the pointer");
+}
+
+#[test]
+fn closing_a_card_that_is_still_arriving_takes_it_away_and_leaves_two() {
+    let now = Instant::now();
+    let mut app = app_on("shelf", SIZE, now);
+    let click = |app: &mut App, at: Instant, index: usize| {
+        let close = cards(app, at)[index].2;
+        let (x, y) = middle(close);
+        app.handle(Input::Move { x, y }, at);
+        app.handle(Input::Press { x, y, clicks: 1 }, at);
+        app.handle(Input::Release, at);
+    };
+    click(&mut app, now, 0);
+    // The new card arrives 240 ms on; close it while it does.
+    let arriving = now + Duration::from_millis(300);
+    let new = cards(&app, arriving)[0].0;
+    click(&mut app, arriving, 0);
+    let soon = cards(&app, arriving + Duration::from_millis(20));
+    assert!(soon.iter().all(|card| card.0 != new), "it is leaving");
+    let after = cards(&app, arriving + SETTLED);
+    assert_eq!(after.len(), 2);
+    assert!(after.iter().all(|card| card.0 != new));
 }

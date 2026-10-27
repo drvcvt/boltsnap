@@ -121,6 +121,31 @@ pub(super) fn anchor(corner: Corner) -> (Anchor, [i32; 4]) {
 }
 
 impl Daemon {
+    /// A card's file as the card goes: a temporary one is deleted, unless an
+    /// editor saved over it, then it moves to the save folder (and says so)
+    /// so an edit is never lost.
+    pub(super) fn drop_card_file(&self, card: &Thumb) {
+        if !card.edited() {
+            let _ = card.delete_file_on_dismiss();
+            return;
+        }
+        let dir = crate::config::resolve_save_dir(
+            self.save_dir_cli.as_deref(),
+            &crate::config::Config::load(),
+        );
+        match super::save::save_image(&card.png_path, &dir) {
+            Ok(path) => {
+                let _ = std::fs::remove_file(&card.png_path);
+                super::notify(&format!("Edited screenshot kept as {}", path.display()));
+            }
+            // Never delete what could not be kept.
+            Err(error) => eprintln!(
+                "boltsnap daemon: keeping edited {} failed: {error}",
+                card.png_path.display()
+            ),
+        }
+    }
+
     /// Open card `id`'s file (`media_open_command`).
     pub(super) fn open_media_card(&self, id: u64) {
         let Some(card) = self.model.get(id) else {
@@ -133,15 +158,28 @@ impl Daemon {
             open_with.as_deref(),
             crate::paths::has_cmd,
         );
-        // Once per daemon: the configured editor is gone.
-        static TOLD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-        if let Some(name) = missing
-            && !TOLD.swap(true, std::sync::atomic::Ordering::Relaxed)
-        {
-            super::notify(&format!("{name} not found, opened with the default app"));
+        // Once per missing editor: the configured one is gone.
+        static TOLD: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+        let tell = |name: &str| {
+            let mut told = TOLD.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            if told.as_deref() != Some(name) {
+                *told = Some(name.to_owned());
+                super::notify(&format!("{name} not found, opened with the default app"));
+            }
+        };
+        if let Some(name) = missing {
+            tell(name);
         }
         if let Err(error) = crate::paths::spawn_reaped(&mut command) {
             eprintln!("boltsnap daemon: open media failed: {error}");
+            // An editor that would not start (not executable, gone since the
+            // check): the default app instead.
+            if let Some(name) = open_with.as_deref().filter(|_| missing.is_none()) {
+                tell(name);
+                let mut fallback = std::process::Command::new("xdg-open");
+                fallback.arg(&card.png_path);
+                let _ = crate::paths::spawn_reaped(&mut fallback);
+            }
         }
     }
 

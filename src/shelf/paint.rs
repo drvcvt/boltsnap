@@ -571,7 +571,24 @@ mod tests {
 
     fn assert_controls_ink(font: &FontVec) {
         use crate::record::session::PublicRecordingState;
-        let (buf, layout) = controls_pixels(font, PublicRecordingState::Recording, false);
+        // Recording, then Paused ("Resume") and armed ("Confirm"): the
+        // widest labels set the buttons' widths.
+        for (state, armed, title) in [
+            (PublicRecordingState::Recording, false, 0xEC),
+            (PublicRecordingState::Paused, false, 0x96),
+            (PublicRecordingState::Paused, true, 0x96),
+        ] {
+            assert_controls_ink_in(font, state, armed, title);
+        }
+    }
+
+    fn assert_controls_ink_in(
+        font: &FontVec,
+        state: crate::record::session::PublicRecordingState,
+        armed: bool,
+        title: u8,
+    ) {
+        let (buf, layout) = controls_pixels(font, state, armed);
         let (w, h) = (layout.width as usize, layout.height as usize);
         let px = |x: usize, y: usize| &buf[(y * w + x) * 4..(y * w + x) * 4 + 3];
         // How much ink a pixel holds against `ground`, 0 to 1.
@@ -603,10 +620,10 @@ mod tests {
         };
         // Panel: the title's ink 16 in, its capitals 16 down (the R's top);
         // the time 16 from the right; the bottom rim 16 above the edge.
-        let (title_left, _) = edges(0..60, 16..28, 0x12, 0xEC);
+        let (title_left, _) = edges(0..60, 16..28, 0x12, title);
         near(title_left, 16.0, "title left");
         let top = (0..20)
-            .find(|y| (16..22).any(|x| ink(x, *y, 0x12, 0xEC) > 0.5))
+            .find(|y| (16..22).any(|x| ink(x, *y, 0x12, title) > 0.5))
             .unwrap();
         assert_eq!(top, 16, "title capitals top");
         let (_, time_right) = edges(w - 60..w, 16..28, 0x12, 0x96);

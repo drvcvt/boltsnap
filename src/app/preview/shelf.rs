@@ -80,7 +80,7 @@ pub(super) struct Play {
     second: Spring,
     pub(super) shape: Option<ShelfShape>,
     /// The placeholder picture for the last size drawn.
-    picture: RefCell<Option<RgbaImage>>,
+    picture: RefCell<Option<(f32, RgbaImage)>>,
     /// What the painter drew last, and how often it ran.
     painted: RefCell<Option<Painted>>,
     paints: Cell<usize>,
@@ -283,6 +283,9 @@ impl App {
         let new = play.next;
         play.next += 1;
         play.ids.insert(0, new);
+        // A card still arriving leaves from where it is, as on the shelf
+        // (`linux/shelf/anim.rs` replaces a card's animation).
+        play.anims.retain(|anim| anim.id != id);
         if animate {
             play.anims.push(Anim {
                 id,
@@ -426,6 +429,11 @@ impl App {
         now: Instant,
     ) -> Option<Target> {
         let block = self.shelf_block()?;
+        // What runs past the block is cut there, so it is not there to hit
+        // either: the rows below keep their pointer.
+        if !rects[block].contains(at.0, at.1) {
+            return None;
+        }
         self.play_cards(rects[block], now)
             .into_iter()
             .find(|(_, card, _)| card.contains(at.0, at.1))
@@ -447,6 +455,13 @@ impl App {
             .any(|(card, _, close)| *card == id && close.contains(at.0, at.1));
         if on_close {
             self.dismiss_card(id, now);
+            // As on the shelf: a closed card is no longer hovered, so it
+            // leaves at its own opacity.
+            let target = Target::Card(block, id);
+            self.fades.set(target, Channel::Hover, 0.0, now);
+            if self.hover == Some(target) {
+                self.hover = None;
+            }
         }
     }
 
@@ -454,10 +469,11 @@ impl App {
     /// the image icon in the middle; none of the user's pictures.
     fn picture(&self, (w, h): (u32, u32), scale: f32) -> Option<std::cell::Ref<'_, RgbaImage>> {
         let cache = &self.preview.play.picture;
+        // Keyed by size and scale: the icon is drawn at the scale.
         if cache
             .borrow()
             .as_ref()
-            .is_none_or(|picture| picture.dimensions() != (w, h))
+            .is_none_or(|(at, picture)| picture.dimensions() != (w, h) || *at != scale)
         {
             let mut canvas = Canvas {
                 pixmap: Pixmap::new(w, h)?,
@@ -472,9 +488,13 @@ impl App {
                 1.0,
             );
             // Opaque, so premultiplied and straight are the same.
-            *cache.borrow_mut() = RgbaImage::from_raw(w, h, canvas.pixmap.take());
+            *cache.borrow_mut() =
+                RgbaImage::from_raw(w, h, canvas.pixmap.take()).map(|picture| (scale, picture));
         }
-        std::cell::Ref::filter_map(cache.borrow(), Option::as_ref).ok()
+        std::cell::Ref::filter_map(cache.borrow(), |kept| {
+            kept.as_ref().map(|(_, picture)| picture)
+        })
+        .ok()
     }
 
     pub(super) fn draw_shelf(&self, canvas: &mut Canvas, rect: Rect, now: Instant) {
@@ -524,7 +544,17 @@ impl App {
             look,
             scale: placed.scale,
         };
-        let mut wanted = vec![None];
+        // One card fully hovered: only its picture is needed; otherwise the
+        // picture without hover too, to blend from.
+        let solo = match lifts.as_slice() {
+            [(index, lift)] if *lift >= 1.0 => Some(layout.thumbs[*index].id),
+            _ => None,
+        };
+        let mut wanted = if solo.is_some() {
+            Vec::new()
+        } else {
+            vec![None]
+        };
         wanted.extend(
             lifts
                 .iter()
@@ -542,16 +572,19 @@ impl App {
                 .find(|(id, _)| *id == hovered)
                 .map(|(_, pixmap)| pixmap)
         };
-        let Some(base) = state(None) else {
-            return;
-        };
         let blended;
-        let cards = match lifts.as_slice() {
-            [] => base,
-            [(index, lift)] if *lift >= 1.0 => {
-                state(Some(layout.thumbs[*index].id)).unwrap_or(base)
-            }
-            _ => {
+        let cards = if let Some(id) = solo {
+            let Some(hovered) = state(Some(id)) else {
+                return;
+            };
+            hovered
+        } else {
+            let Some(base) = state(None) else {
+                return;
+            };
+            if lifts.is_empty() {
+                base
+            } else {
                 let mut out = base.clone();
                 for (index, lift) in &lifts {
                     let thumb = &layout.thumbs[*index];

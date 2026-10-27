@@ -18,7 +18,7 @@ use super::{Bind, Block, Page};
 use crate::settings;
 use crate::ui::icons::Icon;
 use crate::ui::theme;
-use crate::ui::widgets::{Dropdown, IconButton, Part, Slider, Stepper, Switch};
+use crate::ui::widgets::{IconButton, Part, Slider, Stepper, Switch};
 
 const FRAME_RATES: [u32; 5] = [30, 60, 120, 144, 240];
 const SHELF_TO_DISK: [Option<u64>; 5] = [None, Some(30), Some(60), Some(300), Some(900)];
@@ -494,30 +494,15 @@ fn replay_display(prefs: &Prefs, now: Instant) -> (Box<dyn crate::ui::widgets::W
 /// The face the shelf, the selector, the recording controls and this window
 /// use: the desktop's, or an installed family.
 fn general(prefs: &Prefs, now: Instant) -> Page {
-    let mut entries: Vec<(Option<String>, String)> = vec![(None, "Desktop font".into())];
+    let mut entries = vec![(None, "Desktop font".to_owned())];
     entries.extend(
         prefs
             .fonts
             .iter()
             .flatten()
-            .map(|family| (Some(family.clone()), family.clone())),
+            .map(|family| (Some(settings::Value::Text(family.clone())), family.clone())),
     );
-    if let Some(font) = &prefs.ui_font
-        && !entries
-            .iter()
-            .any(|(value, _)| value.as_ref() == Some(font))
-    {
-        entries.push((Some(font.clone()), font.clone()));
-    }
-    let chosen = entries
-        .iter()
-        .position(|(value, _)| *value == prefs.ui_font)
-        .unwrap_or(0);
-    let labels = entries.iter().map(|(_, label)| label.clone()).collect();
-    let values = entries
-        .into_iter()
-        .map(|(value, _)| value.map(settings::Value::Text))
-        .collect();
+    let font = prefs.ui_font.clone().map(settings::Value::Text);
     Page {
         name: "General".into(),
         icon: Icon::Settings,
@@ -527,12 +512,16 @@ fn general(prefs: &Prefs, now: Instant) -> Page {
                 Icon::Type,
                 "Font",
                 Some("For the shelf, the selector and this window"),
-                (
-                    Box::new(Dropdown::new(labels, chosen, now)),
-                    Bind::Choices {
-                        key: "ui_font",
-                        values,
+                // A family the file names that is not installed shows as it is.
+                choices(
+                    "ui_font",
+                    entries,
+                    font,
+                    |value| match value {
+                        settings::Value::Text(family) => family.clone(),
+                        _ => String::new(),
                     },
+                    now,
                 ),
             ),
         ],
