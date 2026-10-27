@@ -1077,3 +1077,16 @@ Tests `controls_buttons_cast_a_shadow_and_the_title_has_no_dot` neu, die
 beiden bestehenden grün; `controls_shots` mit der Desktop-Schrift
 angesehen (Recording, Paused, Confirm). Checks: fmt, clippy ohne Warnung,
 `cargo test` 149 + 382 grün. Live beim Nutzer offen.
+
+Nachtrag 27.10., zweite Meldung: „das ist mir btw zu 3d und es geht nach
+aussen und nicht so nach innen wie gewollt [...] so wie das boltsnap logo
+in der settings app unten links“. Abweichung vom Plan oben: kein
+Schlagschatten, kein Verlauf, keine Lichtkante mehr. Die Knöpfe sind wie
+das Zeichen (`app/brand.rs`) eingeprägt: Fläche `CTL_FACE` 0x0A (8 unter
+dem Panel 0x12, wie `PRESSED` unter `SIDEBAR`), der Umriss 1 px höher in
+0x05 (13 darunter, `SHADE`) und 1 px tiefer in 0x1D (11 darüber, `LIP`).
+Der Primärknopf bleibt hell, mit denselben Rändern. Zwei Flächen
+verglichen (0x22 und 0x0A), 0x22 las sich kaum anders als flach. Test
+`controls_buttons_are_pressed_in_and_the_title_has_no_dot` statt des
+Schatten-Tests. Checks: fmt, clippy, `cargo test` grün, `controls_shots`
+angesehen.

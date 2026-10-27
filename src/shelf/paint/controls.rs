@@ -5,7 +5,9 @@ use crate::shelf::recording::PopupButton;
 // Linux recording controls, on the mt-ui-style scales: panel padding 16,
 // 30 px buttons with a 12 px inset, 8 px gaps, type at 16/14/12 px.
 const CTL_PANEL: (u8, u8, u8) = (0x12, 0x12, 0x12);
-const CTL_RAISE: (u8, u8, u8) = (0x22, 0x22, 0x22);
+/// A button's face, pressed in: a shade below the panel, as the mark's
+/// `theme::PRESSED` below the sidebar.
+const CTL_FACE: (u8, u8, u8) = (0x0A, 0x0A, 0x0A);
 const CTL_FG: (u8, u8, u8) = (0xEC, 0xEC, 0xEC);
 const CTL_SUB: (u8, u8, u8) = (0x96, 0x96, 0x96);
 const CTL_KEY: (u8, u8, u8) = (0x6A, 0x6A, 0x6A);
@@ -21,11 +23,10 @@ const CTL_TITLE_PX: f32 = 16.0;
 const CTL_LABEL_PX: f32 = 14.0;
 const CTL_KEY_PX: f32 = 12.0;
 const CTL_RADIUS: f32 = 9.0;
-/// A button's depth: its drop shadow (down, soft, how dark), how much
-/// lighter its top and darker its bottom than its colour, its top light.
-const SHADOW: (f32, f32, f32) = (2.0, 6.0, 0.5);
-const SHADE: (i16, i16) = (6, -4);
-const TOP_LIGHT: f32 = 0.08;
+/// The rims of a pressed button, as the mark's against the sidebar
+/// (`theme::SHADE` 13 darker, `theme::LIP` 11 lighter than its ground):
+/// above, the shadowed wall, below, the lit one.
+const RIM: ((u8, u8, u8), (u8, u8, u8)) = ((0x05, 0x05, 0x05), (0x1D, 0x1D, 0x1D));
 
 /// Every label a button can show, and its key.
 const CONTROL_BUTTONS: [(PopupButton, &[&str], &str); 4] = [
@@ -85,68 +86,19 @@ fn cap_baseline(font: &FontVec, px: f32, top: f32, height: f32) -> f32 {
     (top + (height + cap) / 2.0).round()
 }
 
-fn shade((r, g, b): (u8, u8, u8), by: i16) -> (u8, u8, u8) {
-    let step = |c: u8| (i16::from(c) + by).clamp(0, 255) as u8;
-    (step(r), step(g), step(b))
-}
-
-/// A raised button at (x, y): a soft shadow under it, its face a little
-/// lighter at the top than at the bottom, and a thin light along its top.
-#[allow(clippy::too_many_arguments)]
-fn raised_button(
+/// A button pressed into the panel like the Boltsnap mark into the
+/// settings sidebar (`app/brand.rs`): its outline one pixel up in a
+/// darker shade of the panel and one pixel down in a lighter one, as if
+/// light from above fell into it, its face on top.
+fn pressed_button(
     canvas: &mut [u8],
     cw: u32,
     ch: u32,
     (x, y, w, h): (f32, f32, f32, f32),
-    color: (u8, u8, u8),
-    alpha: f32,
+    face: (u8, u8, u8),
 ) {
-    let (drop, blur, dark) = SHADOW;
-    let r = CTL_RADIUS;
-    for py in (y - blur).floor() as i32..=(y + h + drop + blur).ceil() as i32 {
-        for px in (x - blur).floor() as i32..=(x + w + blur).ceil() as i32 {
-            let (lx, ly) = (px as f32 + 0.5 - x, py as f32 + 0.5 - y - drop);
-            // Signed distance to the button's outline, moved down.
-            let dx = (lx - w / 2.0).abs() - (w / 2.0 - r);
-            let dy = (ly - h / 2.0).abs() - (h / 2.0 - r);
-            let outside = (dx.max(0.0).powi(2) + dy.max(0.0).powi(2)).sqrt();
-            let sdf = outside + dx.max(dy).min(0.0) - r;
-            let cov = (1.0 - sdf / blur).clamp(0.0, 1.0);
-            if cov > 0.0 {
-                blend_px(canvas, cw, ch, px, py, 0, 0, 0, dark * alpha * cov * cov);
-            }
-        }
-    }
-    let (top, bottom) = (shade(color, SHADE.0), shade(color, SHADE.1));
-    for py in y.floor() as i32..(y + h).ceil() as i32 {
-        let t = ((py as f32 + 0.5 - y) / h).clamp(0.0, 1.0);
-        let mix = |a: u8, b: u8| (f32::from(a) + (f32::from(b) - f32::from(a)) * t).round() as u8;
-        let (cr, cg, cb) = (
-            mix(top.0, bottom.0),
-            mix(top.1, bottom.1),
-            mix(top.2, bottom.2),
-        );
-        for px in x.floor() as i32..(x + w).ceil() as i32 {
-            let cov = rr_coverage(px as f32 + 0.5 - x, py as f32 + 0.5 - y, w, h, r);
-            if cov > 0.0 {
-                blend_px(canvas, cw, ch, px, py, cr, cg, cb, alpha * cov);
-            }
-        }
-    }
-    // The light along the top, between the corners.
-    let top_row = y.round() as i32;
-    for px in (x + r).round() as i32..(x + w - r).round() as i32 {
-        blend_px(
-            canvas,
-            cw,
-            ch,
-            px,
-            top_row,
-            255,
-            255,
-            255,
-            TOP_LIGHT * alpha,
-        );
+    for (color, dy) in [(RIM.0, -1.0), (RIM.1, 1.0), (face, 0.0)] {
+        fill_round_rect(canvas, cw, ch, x, y + dy, w, h, CTL_RADIUS, color, 1.0);
     }
 }
 
@@ -234,10 +186,10 @@ pub fn draw_recording_controls(
         let primary = active && *button == PopupButton::SaveShelf;
         let (fill, text, hint) = match (active, primary) {
             (_, true) => (CTL_FG, CTL_PANEL, CTL_KEY_ON_PRIMARY),
-            (true, false) => (CTL_RAISE, CTL_FG, CTL_KEY),
-            (false, _) => (CTL_RAISE, CTL_KEY, CTL_KEY),
+            (true, false) => (CTL_FACE, CTL_FG, CTL_KEY),
+            (false, _) => (CTL_FACE, CTL_KEY, CTL_KEY),
         };
-        raised_button(canvas, w, h, (*x, *y, *bw, *bh), fill, 1.0);
+        pressed_button(canvas, w, h, (*x, *y, *bw, *bh), fill);
         draw_font_text(
             canvas,
             w,
