@@ -1,5 +1,6 @@
 //! A card's appear and dismiss animations in the overlay, on the timing the
-//! settings preview shares (`boltsnap::shelf_card`).
+//! settings preview shares (`boltsnap::shelf_card`), and its hover fade
+//! (`[shelf] hover_fade`).
 
 use boltsnap::shelf_card::{self, ease_out_cubic};
 
@@ -10,6 +11,9 @@ use super::{Daemon, Layout, QueueHandle};
 pub(super) enum AnimKind {
     Appear,
     Disappear,
+    /// Into and out of the hover look: neither scales nor moves the card.
+    HoverIn,
+    HoverOut,
 }
 
 impl AnimKind {
@@ -18,8 +22,34 @@ impl AnimKind {
         match self {
             AnimKind::Appear => shelf_card::APPEAR_MS,
             AnimKind::Disappear => shelf_card::DISMISS_MS,
+            AnimKind::HoverIn | AnimKind::HoverOut => shelf_card::HOVER_MS,
         }
     }
+
+    fn hover(self) -> bool {
+        matches!(self, AnimKind::HoverIn | AnimKind::HoverOut)
+    }
+}
+
+/// How far a hover fade `kind` has come after `ms`, 0 to 1: linear, so a
+/// fade turned around midway goes on from where it is.
+pub(super) fn hover_lift(kind: AnimKind, ms: f32) -> f32 {
+    let t = (ms / shelf_card::HOVER_MS as f32).clamp(0.0, 1.0);
+    if kind == AnimKind::HoverIn {
+        t
+    } else {
+        1.0 - t
+    }
+}
+
+/// How long ago a hover fade `kind` must have begun to stand at `lift` now.
+pub(super) fn hover_begun(kind: AnimKind, lift: f32) -> f32 {
+    let done = if kind == AnimKind::HoverIn {
+        lift
+    } else {
+        1.0 - lift
+    };
+    done.clamp(0.0, 1.0) * shelf_card::HOVER_MS as f32
 }
 
 /// A running per-card animation. `start` is when it began; progress is
@@ -46,10 +76,66 @@ pub(super) fn anim_start(animations: bool, kind: AnimKind) -> Start {
         (true, _) => Start::Animate,
         (false, AnimKind::Disappear) => Start::RemoveNow,
         (false, AnimKind::Appear) => Start::Nothing,
+        // A hover fade has its own switch, `hover_fade`.
+        (false, AnimKind::HoverIn | AnimKind::HoverOut) => Start::Animate,
     }
 }
 
 impl Daemon {
+    /// The pointer is on card `to` now (or on none). With `[shelf]
+    /// hover_fade` the old card fades out and the new one in, each from
+    /// where it stands; without, the change is at once.
+    pub(super) fn set_hovered(&mut self, to: Option<u64>) {
+        if to == self.hovered {
+            return;
+        }
+        if self.shelf_prefs.hover_fade {
+            let lifts = self.hover_lifts();
+            let lift = |id: u64| {
+                lifts
+                    .iter()
+                    .find(|(card, _)| *card == id)
+                    .map_or(0.0, |(_, l)| *l)
+            };
+            let now = std::time::Instant::now();
+            for (id, kind) in [(self.hovered, AnimKind::HoverOut), (to, AnimKind::HoverIn)] {
+                let Some(id) = id else { continue };
+                let from = lift(id);
+                self.anims.retain(|a| !(a.id == id && a.kind.hover()));
+                let begun =
+                    std::time::Duration::from_micros((hover_begun(kind, from) * 1000.0) as u64);
+                self.anims.push(CardAnim {
+                    id,
+                    kind,
+                    start: now.checked_sub(begun).unwrap_or(now),
+                });
+            }
+        }
+        self.hovered = to;
+    }
+
+    /// How far each card's hover has come, for the painter: fading cards by
+    /// their fade, the hovered one at 1 once it is in.
+    pub(super) fn hover_lifts(&self) -> Vec<(u64, f32)> {
+        let mut lifts: Vec<(u64, f32)> = self
+            .anims
+            .iter()
+            .filter(|a| a.kind.hover())
+            .map(|a| {
+                (
+                    a.id,
+                    hover_lift(a.kind, a.start.elapsed().as_secs_f32() * 1000.0),
+                )
+            })
+            .collect();
+        if let Some(id) = self.hovered
+            && !lifts.iter().any(|(card, _)| *card == id)
+        {
+            lifts.push((id, 1.0));
+        }
+        lifts
+    }
+
     /// Begin an appear/dismiss animation for card `id`, replacing any existing
     /// animation on that card.
     pub(super) fn start_anim(&mut self, id: u64, kind: AnimKind) {
@@ -73,7 +159,7 @@ impl Daemon {
     /// when it is settled.
     pub(super) fn anim_factor(&self, id: u64) -> (f32, f32) {
         for a in &self.anims {
-            if a.id != id {
+            if a.id != id || a.kind.hover() {
                 continue;
             }
             let t = (a.start.elapsed().as_millis() as f32 / a.kind.dur() as f32).clamp(0.0, 1.0);
@@ -81,6 +167,8 @@ impl Daemon {
             return match a.kind {
                 AnimKind::Appear => shelf_card::appear(eased),
                 AnimKind::Disappear => shelf_card::dismiss(eased),
+                // Skipped above: a hover fade does not scale or fade the card.
+                AnimKind::HoverIn | AnimKind::HoverOut => (1.0, 1.0),
             };
         }
         if let Some(position) = self.model.newest_first().position(|card| card.id == id) {
@@ -222,5 +310,21 @@ mod tests {
         assert_eq!(anim_start(true, AnimKind::Disappear), Start::Animate);
         assert_eq!(anim_start(false, AnimKind::Disappear), Start::RemoveNow);
         assert_eq!(anim_start(false, AnimKind::Appear), Start::Nothing);
+    }
+
+    #[test]
+    fn a_hover_fade_goes_both_ways_and_turns_around_where_it_stands() {
+        use super::{hover_begun, hover_lift};
+        assert_eq!(hover_lift(AnimKind::HoverIn, 0.0), 0.0);
+        assert_eq!(hover_lift(AnimKind::HoverIn, 60.0), 0.5);
+        assert_eq!(hover_lift(AnimKind::HoverIn, 500.0), 1.0);
+        assert_eq!(hover_lift(AnimKind::HoverOut, 30.0), 0.75);
+        // Out at 0.75, turned in: the fade in begins as if 90 ms ago.
+        let begun = hover_begun(AnimKind::HoverIn, 0.75);
+        assert_eq!(hover_lift(AnimKind::HoverIn, begun), 0.75);
+        let begun = hover_begun(AnimKind::HoverOut, 0.25);
+        assert_eq!(hover_lift(AnimKind::HoverOut, begun), 0.25);
+        // Never more than the 150 ms asked for.
+        const { assert!(boltsnap::shelf_card::HOVER_MS <= 150) };
     }
 }

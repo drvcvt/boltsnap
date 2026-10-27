@@ -11,6 +11,8 @@ pub struct Prefs {
     pub solid_on_hover: bool,
     pub card_shadow: bool,
     pub card_animations: bool,
+    /// `[shelf] hover_fade`.
+    pub card_hover_fade: bool,
     pub save_dir: String,
     /// `copy_to_clipboard`: screenshots also go to the clipboard.
     pub copy_to_clipboard: bool,

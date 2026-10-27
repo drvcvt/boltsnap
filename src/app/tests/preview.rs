@@ -801,3 +801,37 @@ fn cards_past_the_block_are_cut_with_one_mask_however_the_page_scrolls() {
         "cut at the block"
     );
 }
+
+#[test]
+fn a_preview_card_hovers_at_once_unless_the_hover_fade_is_on() {
+    use crate::app::{Channel, Target};
+    let now = Instant::now();
+    let mut app = app_on("shelf", SIZE, now);
+    let block = app
+        .page()
+        .blocks
+        .iter()
+        .position(|b| matches!(b, Block::Preview(Preview::Shelf)))
+        .unwrap();
+    let card = cards(&app, now)[1];
+    let target = Target::Card(block, card.0);
+    let (x, y) = (card.1.x + 20.0, card.1.y + 60.0);
+    app.handle(Input::Move { x, y }, now);
+    assert_eq!(
+        app.fade(target, Channel::Hover, now),
+        1.0,
+        "as the shelf: at once"
+    );
+    app.handle(Input::Move { x: 5.0, y: 5.0 }, now);
+    assert_eq!(app.fade(target, Channel::Hover, now), 0.0);
+    // With the fade on it takes its time.
+    focus(&mut app, "Fade on hover", now);
+    key(&mut app, Key::Space, now);
+    let later = now + SETTLED;
+    let card = cards(&app, later)[1];
+    let target = Target::Card(block, card.0);
+    let (x, y) = (card.1.x + 20.0, card.1.y + 60.0);
+    app.handle(Input::Move { x, y }, later);
+    let mid = app.fade(target, Channel::Hover, later + Duration::from_millis(40));
+    assert!(mid > 0.0 && mid < 1.0, "fading: {mid}");
+}

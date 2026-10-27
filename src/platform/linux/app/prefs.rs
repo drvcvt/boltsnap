@@ -61,6 +61,7 @@ pub fn load(displays: Vec<Screen>) -> Prefs {
         solid_on_hover: shelf.solid_on_hover,
         card_shadow: shelf.shadow,
         card_animations: shelf.animations,
+        card_hover_fade: shelf.hover_fade,
         corner: match shelf.corner {
             layout::Corner::TopLeft => Corner::TopLeft,
             layout::Corner::TopRight => Corner::TopRight,

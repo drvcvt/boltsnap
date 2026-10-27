@@ -251,6 +251,14 @@
       <line x1="11" x2="11" y1="8" y2="14" />
       <line x1="8" x2="14" y1="11" y2="11" />
     </symbol>
+    <symbol id="clock-fading" viewBox="0 0 24 24">
+      <path d="M12 2a10 10 0 0 1 7.38 16.75" />
+      <path d="M12 6v6l4 2" />
+      <path d="M2.5 8.875a10 10 0 0 0-.5 3" />
+      <path d="M2.83 16a10 10 0 0 0 2.43 3.4" />
+      <path d="M4.636 5.235a10 10 0 0 1 .891-.857" />
+      <path d="M8.644 21.42a10 10 0 0 0 7.631-.38" />
+    </symbol>
     <!-- Own symbols in the Lucide style (24 grid, settings plan 5g V6): the
          screen's corner as an angle, the shelf card 4 units in from it on
          both axes, 14 x 10 like a card's 190 x 132. Ink 2..22 x 4..20, centred

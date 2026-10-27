@@ -28,6 +28,7 @@ pub fn prefs() -> Prefs {
         solid_on_hover: true,
         card_shadow: true,
         card_animations: true,
+        card_hover_fade: false,
         corner: Corner::BottomLeft,
         save_dir: "~/Pictures/boltsnap".into(),
         copy_to_clipboard: false,

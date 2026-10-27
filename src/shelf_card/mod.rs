@@ -39,6 +39,9 @@ pub const APPEAR_MS: u128 = 150;
 /// How long a dismissed card takes to leave, in ms: a touch longer than the
 /// appear so it reads as smooth rather than snappy.
 pub const DISMISS_MS: u128 = 240;
+/// How long a card takes into and out of its hover look with `[shelf]
+/// hover_fade`, in ms: under the 150 the user asked for at most.
+pub const HOVER_MS: u128 = 120;
 /// Card scale at the far end of the appear animation.
 pub const ANIM_SCALE_MIN: f32 = 0.88;
 

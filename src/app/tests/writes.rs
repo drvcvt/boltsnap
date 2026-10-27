@@ -160,7 +160,7 @@ fn every_bound_row_writes_a_value_its_key_accepts() {
     }
     // Rows on their default with nothing to write (open with, replay display
     // and bitrate) remove their key instead and are not counted.
-    assert_eq!(checked, 26, "every row but the replay buffer has a key");
+    assert_eq!(checked, 27, "every row but the replay buffer has a key");
 }
 
 #[test]

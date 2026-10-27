@@ -136,6 +136,7 @@ pub const KEYS: &[Key] = &[
     key("shelf.card_opacity", Int { min: 30, max: 100 }, Live),
     key("shelf.solid_on_hover", Bool, Live),
     key("shelf.card_shadow", Bool, Live),
+    key("shelf.hover_fade", Bool, Live),
     key("shelf.animations", Bool, Live),
     strict(
         "replay.duration_seconds",

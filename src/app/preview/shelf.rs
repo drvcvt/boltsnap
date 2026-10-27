@@ -146,6 +146,9 @@ pub(super) struct ShelfShape {
     pub(super) count: usize,
     pub(super) look: CardLook,
     pub(super) animations: bool,
+    /// `[shelf] hover_fade`: the cards' hover fades in and out, as on the
+    /// shelf; off, it is there at once.
+    pub(super) hover_fade: bool,
 }
 
 /// One frame of the preview in device pixels: where the shelf's surface
@@ -224,6 +227,7 @@ impl App {
                 shadow: on("shelf.card_shadow", default.shadow),
             },
             animations: on("shelf.animations", true),
+            hover_fade: on("shelf.hover_fade", false),
         })
     }
 
@@ -253,6 +257,16 @@ impl App {
         }
         play.shape = Some(shape);
         self.sync_dims(animate, now);
+    }
+
+    /// A card's hover changes at once: the shelf's `hover_fade` is off.
+    pub(in crate::app) fn hover_at_once(&self, target: Target) -> bool {
+        matches!(target, Target::Card(..))
+            && self
+                .preview
+                .play
+                .shape
+                .is_some_and(|shape| !shape.hover_fade)
     }
 
     pub(super) fn shelf_moving(&self, now: Instant) -> bool {
@@ -630,10 +644,11 @@ impl App {
                 return;
             };
             let mut pixels = vec![0u8; (lw * lh * 4) as usize];
+            let lift = hovered.map(|id| [(id, 1.0)]);
             let frame = Frame {
                 layout: &placed.layout,
                 cfg: &placed.cfg,
-                hovered: *hovered,
+                hovered: lift.as_ref().map_or(&[][..], |lift| &lift[..]),
                 anims: &placed.anims,
                 save_flash: None,
                 save_button: false,

@@ -104,6 +104,8 @@ pub struct ShelfPrefs {
     pub shadow: bool,
     /// Cards scale and fade as they come and go.
     pub animations: bool,
+    /// A card fades into and out of its hover look (`HOVER_MS`).
+    pub hover_fade: bool,
 }
 
 impl Default for ShelfPrefs {
@@ -117,6 +119,7 @@ impl Default for ShelfPrefs {
             solid_on_hover: look.solid_on_hover,
             shadow: look.shadow,
             animations: true,
+            hover_fade: false,
         }
     }
 }
@@ -160,6 +163,7 @@ pub struct Config {
     shelf_solid_on_hover: Option<bool>,
     shelf_card_shadow: Option<bool>,
     shelf_animations: Option<bool>,
+    shelf_hover_fade: Option<bool>,
     copy_to_clipboard: Option<bool>,
     selector_magnifier: Option<String>,
     /// `[shelf] open_with`: what opens an image card (`linux/shelf/cards.rs`
@@ -269,6 +273,7 @@ impl Config {
             shelf_solid_on_hover: doc.bool("shelf.solid_on_hover"),
             shelf_card_shadow: doc.bool("shelf.card_shadow"),
             shelf_animations: doc.bool("shelf.animations"),
+            shelf_hover_fade: doc.bool("shelf.hover_fade"),
             copy_to_clipboard: doc.bool("copy_to_clipboard"),
             selector_magnifier: text("selector_magnifier"),
             shelf_open_with: text("shelf.open_with"),
@@ -335,6 +340,7 @@ impl Config {
             solid_on_hover: self.shelf_solid_on_hover.unwrap_or(defaults.solid_on_hover),
             shadow: self.shelf_card_shadow.unwrap_or(defaults.shadow),
             animations: self.shelf_animations.unwrap_or(defaults.animations),
+            hover_fade: self.shelf_hover_fade.unwrap_or(defaults.hover_fade),
         }
     }
 

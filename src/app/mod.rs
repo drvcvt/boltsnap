@@ -352,11 +352,20 @@ impl App {
     /// The pointer is on `target` now; parts inside a control follow it.
     fn set_hover(&mut self, target: Option<Target>, now: Instant) {
         if target != self.hover {
+            // A preview card follows the shelf's own hover: at once unless
+            // its hover fade is on.
+            let fade = |app: &mut Self, target: Target, to: f32| {
+                if app.hover_at_once(target) {
+                    app.fades.set(target, Channel::Hover, to, now);
+                } else {
+                    app.fades.to(target, Channel::Hover, to, now);
+                }
+            };
             if let Some(old) = self.hover {
-                self.fades.to(old, Channel::Hover, 0.0, now);
+                fade(self, old, 0.0);
             }
             if let Some(new) = target {
-                self.fades.to(new, Channel::Hover, 1.0, now);
+                fade(self, new, 1.0);
             }
             self.part_hover(self.hover, None, now);
             self.hover = target;

@@ -50,7 +50,7 @@ pub fn debug_render(output: &std::path::Path) -> DynResult<()> {
         height,
         &layout,
         &model,
-        Some(id),
+        &[(id, 1.0)],
         &config,
         &[],
         None,

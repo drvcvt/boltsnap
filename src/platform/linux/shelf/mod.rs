@@ -1819,6 +1819,7 @@ impl Daemon {
                 }
             })
             .collect();
+        let hovered = self.hover_lifts();
         let layer = match self.layer.as_ref() {
             Some(l) => l,
             None => return,
@@ -1840,7 +1841,7 @@ impl Daemon {
             h,
             &render,
             &self.model,
-            self.hovered,
+            &hovered,
             &self.cfg,
             &anims,
             self.save_flash.map(|(id, _)| id),
@@ -3176,7 +3177,7 @@ impl PointerHandler for Daemon {
             let (x, y) = ev.position;
             match ev.kind {
                 PointerEventKind::Leave { .. } if self.hovered.is_some() => {
-                    self.hovered = None;
+                    self.set_hovered(None);
                     redraw = true;
                 }
                 PointerEventKind::Enter { .. } | PointerEventKind::Motion { .. } => {
@@ -3184,7 +3185,7 @@ impl PointerHandler for Daemon {
                         Hit::Body(id) | Hit::Save(id) | Hit::Close(id) => id,
                     });
                     if now != self.hovered {
-                        self.hovered = now;
+                        self.set_hovered(now);
                         redraw = true;
                     }
                     let start_drag = self

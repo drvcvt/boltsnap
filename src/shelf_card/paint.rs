@@ -278,7 +278,9 @@ pub struct Frame<'a> {
     pub layout: &'a Layout,
     /// Button geometry, in the canvas's pixels.
     pub cfg: &'a LayoutConfig,
-    pub hovered: Option<u64>,
+    /// (id, how far its hover has come, 0 to 1) of the hovered cards: 1 at
+    /// once, or a fade in and out with `[shelf] hover_fade`.
+    pub hovered: &'a [(u64, f32)],
     /// (id, scale, opacity) of the cards mid-animation.
     pub anims: &'a [(u64, f32, f32)],
     /// The card whose save button shows the ✓.
@@ -317,7 +319,11 @@ pub fn draw_shelf<'p>(
     for r in &layout.thumbs {
         // Hide overlays on a card that is mid-animation (scaling/fading).
         let animating = anims.iter().any(|(id, _, _)| *id == r.id);
-        let hovered_now = hovered == Some(r.id) && !animating;
+        let lift = hovered
+            .iter()
+            .find(|(id, _)| *id == r.id)
+            .map_or(0.0, |(_, lift)| lift.clamp(0.0, 1.0));
+        let hovered_now = lift > 0.0 && !animating;
         let card = picture(r.id);
         if let Some((thumb, _)) = card {
             let (scale, anim_opacity) = anims
@@ -326,10 +332,10 @@ pub fn draw_shelf<'p>(
                 .map(|(_, s, o)| (*s, *o))
                 .unwrap_or((1.0, 1.0));
             // Hovered card is fully opaque so it's easy to read, unless the
-            // look keeps it translucent. The appear/dismiss fade still
-            // multiplies in.
-            let base = if hovered == Some(r.id) && frame.look.solid_on_hover {
-                1.0
+            // look keeps it translucent; on its way there with a hover fade.
+            // The appear/dismiss fade still multiplies in.
+            let base = if frame.look.solid_on_hover {
+                frame.look.opacity + (1.0 - frame.look.opacity) * lift
             } else {
                 frame.look.opacity
             };
@@ -351,7 +357,7 @@ pub fn draw_shelf<'p>(
             draw_play_badge(canvas, cw, ch, r, frame.scale);
         }
         if hovered_now {
-            draw_hover_icons(canvas, cw, ch, r, frame);
+            draw_hover_icons(canvas, cw, ch, r, frame, lift);
         }
     }
 }
@@ -393,7 +399,8 @@ fn draw_card_shadow(canvas: &mut [u8], cw: u32, ch: u32, r: &ThumbRect, scale: f
     }
 }
 
-fn draw_hover_icons(canvas: &mut [u8], cw: u32, ch: u32, r: &ThumbRect, frame: &Frame) {
+/// The card's buttons, at `lift` of their strength (a hover fade).
+fn draw_hover_icons(canvas: &mut [u8], cw: u32, ch: u32, r: &ThumbRect, frame: &Frame, lift: f32) {
     let cfg = frame.cfg;
     let hw = GLYPH_HALF_W * frame.scale;
     let s = cfg.icon as f32;
@@ -406,7 +413,7 @@ fn draw_hover_icons(canvas: &mut [u8], cw: u32, ch: u32, r: &ThumbRect, frame: &
         cly as f32 + s / 2.0,
         s / 2.0 - 0.5 * frame.scale,
         BTN_BG,
-        BTN_BG_A,
+        BTN_BG_A * lift,
     );
     draw_glyph(
         canvas,
@@ -418,6 +425,7 @@ fn draw_hover_icons(canvas: &mut [u8], cw: u32, ch: u32, r: &ThumbRect, frame: &
         s,
         hw,
         GLYPH_CLOSE_RGB,
+        lift,
     );
     if !frame.save_button {
         return;
@@ -431,7 +439,7 @@ fn draw_hover_icons(canvas: &mut [u8], cw: u32, ch: u32, r: &ThumbRect, frame: &
         sy as f32 + s / 2.0,
         s / 2.0 - 0.5 * frame.scale,
         BTN_BG,
-        BTN_BG_A,
+        BTN_BG_A * lift,
     );
     if frame.save_flash == Some(r.id) {
         draw_glyph(
@@ -444,6 +452,7 @@ fn draw_hover_icons(canvas: &mut [u8], cw: u32, ch: u32, r: &ThumbRect, frame: &
             s,
             hw,
             GLYPH_OK_RGB,
+            lift,
         );
     } else {
         draw_glyph(
@@ -456,6 +465,7 @@ fn draw_hover_icons(canvas: &mut [u8], cw: u32, ch: u32, r: &ThumbRect, frame: &
             s,
             hw,
             GLYPH_RGB,
+            lift,
         );
     }
 }
@@ -479,6 +489,7 @@ fn draw_glyph(
     s: f32,
     hw: f32,
     c: (u8, u8, u8),
+    a: f32,
 ) {
     let inset = s * 0.30;
     let lo = inset;
@@ -492,18 +503,7 @@ fn draw_glyph(
             // down-arrow into a tray (the modern "save / download" idiom)
             let mid = x + s / 2.0;
             let head = s * 0.18;
-            stroke_line(
-                canvas,
-                cw,
-                ch,
-                mid,
-                y + inset,
-                mid,
-                y + s * 0.58,
-                hw,
-                c,
-                1.0,
-            );
+            stroke_line(canvas, cw, ch, mid, y + inset, mid, y + s * 0.58, hw, c, a);
             stroke_line(
                 canvas,
                 cw,
@@ -514,7 +514,7 @@ fn draw_glyph(
                 y + s * 0.58,
                 hw,
                 c,
-                1.0,
+                a,
             );
             stroke_line(
                 canvas,
@@ -526,7 +526,7 @@ fn draw_glyph(
                 y + s * 0.58,
                 hw,
                 c,
-                1.0,
+                a,
             );
             stroke_line(
                 canvas,
@@ -538,7 +538,7 @@ fn draw_glyph(
                 y + s * 0.74,
                 hw,
                 c,
-                1.0,
+                a,
             );
         }
         Glyph::Check => {
@@ -552,7 +552,7 @@ fn draw_glyph(
                 y + s * 0.70,
                 hw,
                 c,
-                1.0,
+                a,
             );
             stroke_line(
                 canvas,
@@ -564,7 +564,7 @@ fn draw_glyph(
                 y + s * 0.30,
                 hw,
                 c,
-                1.0,
+                a,
             );
         }
     }
@@ -590,7 +590,7 @@ mod tests {
         let frame = Frame {
             layout: &layout,
             cfg: &cfg,
-            hovered: hovered.then_some(1),
+            hovered: if hovered { &[(1, 1.0)] } else { &[] },
             anims: &[],
             save_flash: None,
             save_button: true,
@@ -767,7 +767,7 @@ mod tests {
             let frame = Frame {
                 layout: &layout,
                 cfg: &cfg,
-                hovered: Some(1),
+                hovered: &[(1, 1.0)],
                 anims: &[],
                 save_flash: None,
                 save_button,
@@ -786,5 +786,40 @@ mod tests {
         let centre = |x: u32, y: u32| at(x + cfg.icon / 2, y + cfg.icon / 2);
         assert_ne!(with[centre(sx, sy)..][..4], without[centre(sx, sy)..][..4]);
         assert_eq!(with[centre(cx, cy)..][..4], without[centre(cx, cy)..][..4]);
+    }
+
+    #[test]
+    fn half_a_hover_fade_is_half_way_to_solid_with_half_its_buttons() {
+        let thumb = plain(190, 132, [200, 200, 200, 255]);
+        let cfg = LayoutConfig::default();
+        let layout = Layout::compute(&[(1, 190, 132)], &cfg);
+        let draw = |lift: f32| {
+            let mut canvas = vec![0u8; (layout.width * layout.height * 4) as usize];
+            let hovered = [(1, lift)];
+            let frame = Frame {
+                layout: &layout,
+                cfg: &cfg,
+                hovered: if lift > 0.0 { &hovered } else { &[] },
+                anims: &[],
+                save_flash: None,
+                save_button: true,
+                look: CardLook::default(),
+                scale: 1.0,
+            };
+            draw_shelf(&mut canvas, layout.width, layout.height, &frame, |_| {
+                Some((&thumb, CardKind::Image))
+            });
+            canvas
+        };
+        let r = &layout.thumbs[0];
+        let centre = (((r.y + r.h / 2) * layout.width + r.x + r.w / 2) * 4 + 3) as usize;
+        let (rest, half, full) = (draw(0.0), draw(0.5), draw(1.0));
+        assert_eq!((rest[centre], full[centre]), (204, 255));
+        assert!((half[centre] as i32 - 230).abs() <= 1, "{}", half[centre]);
+        // The close button's middle: half its darkening at half the fade.
+        let (bx, by, _, _) = close_cell(r, &cfg);
+        let button = (((by + cfg.icon / 2) * layout.width + bx + 2) * 4) as usize;
+        let shade = |canvas: &[u8]| i32::from(full[centre - 3]) - i32::from(canvas[button]);
+        assert!(shade(&half) > 0 && shade(&half) < shade(&full));
     }
 }

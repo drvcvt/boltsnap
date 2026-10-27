@@ -497,6 +497,12 @@ fn shelf_prefs_read_the_shelf_table_and_fall_back_per_key() {
         ),
         (80, true, true, true)
     );
+    assert!(!look.hover_fade, "a hover changes at once unless asked");
+    assert!(
+        Config::parse("[shelf]\nhover_fade = true\n")
+            .shelf_prefs()
+            .hover_fade
+    );
     assert_eq!(look.look(), boltsnap::shelf_card::CardLook::default());
     let set = Config::parse(
         "[shelf]\ncard_opacity = 55\nsolid_on_hover = false\ncard_shadow = false\nanimations = false\n",

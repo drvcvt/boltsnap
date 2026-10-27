@@ -22,7 +22,7 @@ pub fn draw_shelf(
     ch: u32,
     layout: &Layout,
     model: &ShelfModel,
-    hovered: Option<u64>,
+    hovered: &[(u64, f32)],
     cfg: &LayoutConfig,
     anims: &[(u64, f32, f32)],
     save_flash: Option<u64>,
@@ -59,8 +59,9 @@ pub fn draw_shelf_opaque(
         opacity: 1.0,
         ..CardLook::default()
     };
+    let hovered: Vec<(u64, f32)> = hovered.map(|id| (id, 1.0)).into_iter().collect();
     draw_shelf(
-        canvas, cw, ch, layout, model, hovered, cfg, anims, save_flash, look,
+        canvas, cw, ch, layout, model, &hovered, cfg, anims, save_flash, look,
     );
 }
 

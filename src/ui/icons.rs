@@ -25,6 +25,7 @@ pub enum Icon {
     ChevronDown,
     Circle,
     ClipboardCopy,
+    ClockFading,
     Clock,
     Columns2,
     Cpu,
@@ -68,7 +69,7 @@ pub enum Icon {
 }
 
 impl Icon {
-    pub const ALL: [Icon; 51] = [
+    pub const ALL: [Icon; 52] = [
         Icon::Activity,
         Icon::AppWindow,
         Icon::ArrowDownLeft,
@@ -80,6 +81,7 @@ impl Icon {
         Icon::ChevronDown,
         Icon::Circle,
         Icon::ClipboardCopy,
+        Icon::ClockFading,
         Icon::Clock,
         Icon::Columns2,
         Icon::Cpu,
@@ -128,6 +130,7 @@ impl Icon {
             Icon::Activity => "activity",
             Icon::AppWindow => "app-window",
             Icon::ClipboardCopy => "clipboard-copy",
+            Icon::ClockFading => "clock-fading",
             Icon::Cpu => "cpu",
             Icon::ZoomIn => "zoom-in",
             Icon::ArrowDownLeft => "arrow-down-left",

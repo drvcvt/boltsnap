@@ -122,6 +122,12 @@ fn shelf(prefs: &Prefs, now: Instant) -> Page {
                 switch("shelf.solid_on_hover", prefs.solid_on_hover, now),
             ),
             row(
+                Icon::ClockFading,
+                "Fade on hover",
+                Some("Over 120\u{a0}ms instead of at once"),
+                switch("shelf.hover_fade", prefs.card_hover_fade, now),
+            ),
+            row(
                 Icon::SquaresUnite,
                 "Shadow",
                 None,

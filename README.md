@@ -265,7 +265,8 @@ a reset to the default. Pages:
   own code. Hover one, dismiss it with its ✕, and a new card arrives as on the
   shelf; drag the measure beside the front card to change the card size. Below
   are card size, how many cards show, the corner, and the cards' opacity,
-  whether they turn solid on hover, their shadow and their animations.
+  whether they turn solid on hover and fade into it, their shadow and their
+  animations.
 - **Screenshots**: whether every screenshot also goes to the clipboard, the
   selector's magnifier (with Alt held, or always), what opens an image card
   (the default app or an installed editor: eddy, Satty, swappy, GIMP, Krita,
@@ -405,6 +406,7 @@ open_with = "eddy"      # what opens an image card: eddy, satty, swappy, gimp,
 card_opacity = 80       # 30 to 100 %, a card at rest
 solid_on_hover = true   # the hovered card turns fully opaque
 card_shadow = true      # a soft shadow under each card
+hover_fade = false      # the hover look fades in and out over 120 ms
 animations = true       # cards scale and fade as they come and go
 ```
 

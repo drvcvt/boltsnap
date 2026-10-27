@@ -3026,6 +3026,42 @@ App. Render der Replay-Seite.
 **Macht nicht:** GPU- oder Encoder-Last (nur NVIDIA abfragbar, und dann für
 die ganze Karte), Schätzwerte für nicht laufende Einstellungen.
 
+### Phase 5j: Hover-Fade der Karten als Schalter (27.10., Wunsch des Nutzers)
+
+Wunsch: „mach noch als toggle fuer das shelf eine hover animation [...] das
+solid on hover ist ja nicht animiert aber das soll per toggle moeglich sein,
+so ein max 150ms fade in-out“.
+
+Befund: Der Overlay schaltet beim Hover hart um (`draw_shelf` mit
+`hovered: Option<u64>`: Deckkraft 1,0 und die Knöpfe sofort, beim Verlassen
+sofort zurück; `linux/shelf/mod.rs` Motion/Leave setzen `self.hovered`). Die
+Vorschau blendet dagegen immer mit `QUICK` (App-Fades), passt also bei
+ausgeschaltetem Fade nicht zum Overlay.
+
+Soll:
+- Neuer Key `shelf.hover_fade` (Bool, Live, Standard **aus** = heute).
+  Zeile „Fade on hover“ unter „Look“, nach „Solid on hover“.
+- An: die Hover-Stärke einer Karte geht in **120 ms** linear von 0 auf 1
+  und beim Verlassen zurück (unter den gewünschten 150 ms; linear, damit ein
+  Wechsel mitten im Blenden von der erreichten Stärke weitergeht). Deckkraft
+  `opacity → 1` (mit „Solid on hover“) und die Knöpfe blenden mit. Aus:
+  wie heute sofort.
+- Painter: `Frame::hovered` wird `&[(id, Stärke)]`; Deckkraft
+  `mix(opacity, 1, Stärke)`, Knöpfe mit Alpha × Stärke.
+- Overlay: `AnimKind::HoverIn/HoverOut` in der vorhandenen
+  Animationsliste (Frame-Callbacks und Timer laufen dann schon),
+  `Daemon::set_hovered` in `anim.rs`; Auftauchen und Verschwinden
+  unberührt (`anim_factor`, Layout zählen nur Appear/Disappear).
+- Vorschau: Hover-Fade der Karten mit 120 ms wie der Overlay, wenn an;
+  sofort, wenn aus.
+
+Abnahme: Painter-Test (Stärke 0,5 → Alpha mittig zwischen Ruhe und deckend,
+Knöpfe halb), Daemon-Hilfsfunktion für die Stärke (an, aus, Wechsel mitten
+im Blenden), Config-Test, Zeilen-Zählung, Gates, Render.
+
+**Macht nicht:** andere Hover-Effekte (Größe, Schatten), andere Dauer als
+Einstellung.
+
 ## 6. Reihenfolge
 
 Jede Phase ist ein eigener Commit (oder wenige), baut, testet und lässt den
@@ -3202,3 +3238,4 @@ Vom Nutzer am 24.10. so bestätigt:
 | 5g V7 | umgesetzt 27.10. nach „V7 Zwei Monitore als ein Clip“: `displays.rs` `joins` statt `seams` (Fuge plus `BODY_RADIUS` in beide Gehäuse in `RAISE`, über die gemeinsame Höhe bzw. Breite), Bildschirme danach obendrauf, also mit Rahmen und Ecken. Test `one_clip_joins_the_monitors_bodies_and_keeps_their_screens_whole` (Fuge Panel bei zwei Clips, `RAISE` bei einem, Innenrahmen bleibt, keine Kerbe oben und unten); `display_shots` (ignoriert) für die Bilder. Checks: fmt, clippy, `cargo test` grün, Render beider Zustände in 2× angesehen. |
 | 5h | umgesetzt 27.10. nach „Phase 5h“, Entscheidung (a) nur öffnen. Abweichungen: (1) Segment „Alt held / Always“ statt „With Alt“ (Copy-Gate: Title Case); (2) die Lupe ist nicht im Scene-Test, `Selector::magnifier_on` braucht Wayland-Objekte, getestet ist das Lesen der Config; (3) beim Bauen gefunden und behoben: ein Reset oder Entfernen eines Replay-Keys (auch der Reset-Knopf bei Frame rate) markierte die laufende Session nicht als veraltet, „Restart replay“ kam nicht (`linux/app/save.rs::send`); (4) `open_media_card` mit `media_open_command` aus `linux/shelf/mod.rs` nach `cards.rs` (`mod.rs` 3494 → 3479); (5) Display, Bitrate, Encoder unter eigener Überschrift „Video“ statt „Buffer“; (6) ein Wert, den die Liste nicht anbietet, steht als „NAME (not installed)“ da; (7) kein `ShelfPrefs::open_with`, sondern `Config::shelf_open_with`, beim Klick neu gelesen (ShelfPrefs ist `Copy`). Neu: Keys `copy_to_clipboard`, `selector_magnifier`, `shelf.open_with`; `EDITORS` (eddy, Satty, swappy, GIMP, Krita, Pinta), fehlender Editor → `xdg-open` und einmal eine Meldung; Replay-Zeilen Display („Like recordings“ entfernt den Key), Bitrate (Auto, 10–80 Mbit/s), Encoder (ohne CPU) unter „Video“; Icons `clipboard-copy`, `zoom-in`, `app-window`, `activity`, `cpu`; `rows::choices`. Tests `a_wayland_shelf_capture_copies_by_the_config_unless_a_flag_says`, `copy_magnifier_and_open_with_read_with_their_defaults`, `an_image_card_opens_with_the_chosen_editor_and_a_video_with_the_default_app`, `like_recordings_and_auto_remove_their_replay_key_and_a_monitor_sets_it`, Zählung der schreibenden Zeilen 26. Checks: fmt, clippy ohne Warnung, `cargo test` 151 + 389 grün; Gates: Kontrast min. 4,83:1, Copy 242 Texte, Icons 0,32 px, Padding 0,00, Überlauf 1467 Teile bei 360–1400 px; `settings --measure` 36 Zeilen 0,31 px. Renders Screenshots (760, 360, offenes Dropdown) und Replay angesehen. Live offen (Daemon-Neustart für „Open with“). |
 | 5i | umgesetzt 27.10. nach „Phase 5i“, Abweichung: der Block bekommt die Überschrift „Load“ (wie jede Gruppe) und bricht in schmalen Spalten die Zahlen in eine zweite Zeile (Höhe aus der breitesten Form, springt nicht). `linux/app/load.rs` (`Meter`, Prozesse aus `/proc` über die Session-PID, CPU aus `utime + stime`, RSS aus `statm`), `poll_replay` schickt `(held, load)`, `preview/load.rs` (`Preview::Load { stale }`, `ReplayLoad`, „Off, nothing in use“ / „In use now“ / „Before your changes“), `save.rs::refusal` („Boltsnap is older than this window. Restart it to save this“). Tests: `/proc/stat` mit Klammern im Namen, Prozessbaum (gsr, kms-Helfer, Worker, kein fremdes Kind), Texte, Refusal; ignoriert `replay_load_now` gegen den laufenden Buffer: 36 % eines Kerns, 424 MB (`ps`: RSS 210 + 203 + 1,7 MB). Checks: fmt, clippy, `cargo test` 152 + 392 grün, Gates (Kontrast 4,83:1, Copy 242, Padding 0,00, Überlauf 1467). Render nur „Off“ (der Poll läuft nur im Fenster); live offen. |
+| 5j | umgesetzt 27.10. nach „Phase 5j“, Abweichung: die Vorschau blendet mit der Feder `QUICK` (≈ 150 ms) statt linear 120 ms, weil ihre Hover über die App-Fades laufen; aus ist sie wie der Overlay sofort (`App::hover_at_once`). Key `shelf.hover_fade` (Standard aus), Zeile „Fade on hover“ (Icon `clock-fading`, Hinweis „Over 120 ms instead of at once“); `shelf_card::HOVER_MS = 120`; Painter `Frame::hovered: &[(id, Stärke)]` (Deckkraft gemischt, Knöpfe mit Alpha × Stärke); Overlay `AnimKind::HoverIn/HoverOut`, `Daemon::set_hovered`, `hover_lifts`, `hover_lift`/`hover_begun` (linear, Umkehr von der erreichten Stärke); Windows-Wrapper behält `Option<u64>`. Tests: `half_a_hover_fade_is_half_way_to_solid_with_half_its_buttons`, `a_hover_fade_goes_both_ways_and_turns_around_where_it_stands`, `a_preview_card_hovers_at_once_unless_the_hover_fade_is_on`, Config-Standard, Zählung 27. Checks: fmt, clippy ohne Warnung, `cargo test` 157 + 396 grün, Gates (Copy 248, Icons 0,32 px, Padding 0,00, Überlauf 1507). Live offen. |
