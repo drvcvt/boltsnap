@@ -17,6 +17,7 @@ use boltsnap::replay::{settings::Settings, wire};
 use serde_json::{Value, json};
 
 use super::shelf::DaemonEvent;
+use super::timing;
 
 struct Session {
     capture: Child,
@@ -719,6 +720,7 @@ pub(crate) fn serve(sender: calloop::channel::Sender<DaemonEvent>) -> Result<Ser
                         return Err("replay session changed; open the selector again".into());
                     }
                     if command == "save" {
+                        timing::mark("replay_save_accepted");
                         crate::record::finalize::check_recording_cache_capacity(
                             &crate::paths::rec_dir(),
                             output_limit,
@@ -739,6 +741,12 @@ pub(crate) fn serve(sender: calloop::channel::Sender<DaemonEvent>) -> Result<Ser
                         });
                     }
                     if command == "save" {
+                        timing::mark("replay_worker_answered");
+                        for stage in ["export_ms", "sync_ms"] {
+                            if let Some(ms) = response[stage].as_u64() {
+                                timing::reported(stage, ms);
+                            }
+                        }
                         let bytes = response["path_bytes"]
                             .as_array()
                             .ok_or("clip response has no native path")?
@@ -766,6 +774,8 @@ pub(crate) fn serve(sender: calloop::channel::Sender<DaemonEvent>) -> Result<Ser
                             .map_err(|e| e.to_string())?;
                         rx.recv_timeout(Duration::from_secs(5))
                             .map_err(|_| "shelf did not acknowledge the clip")?;
+                        // The shelf answers after it drew the card.
+                        timing::mark("replay_card_drawn");
                     }
                     Ok((response, preview))
                 })();

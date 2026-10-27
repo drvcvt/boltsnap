@@ -47,10 +47,14 @@ impl Worker {
                     .is_ok()
             };
             while let Ok(job) = receiver.recv() {
-                if let Job::Video(id, path) = job
-                    && !send(id, extract(&path, size()).ok())
-                {
-                    return;
+                if let Job::Video(id, path) = job {
+                    let image = {
+                        let _timing = super::super::timing::Span::new("video_thumbnail");
+                        extract(&path, size()).ok()
+                    };
+                    if !send(id, image) {
+                        return;
+                    }
                 }
                 // After every job, so a wake-up lost to a full queue is
                 // made up by the job that filled it.

@@ -131,7 +131,7 @@ pub fn save(
     encoder: &str,
     path: &Path,
     limit: u64,
-) -> Result<u64, String> {
+) -> Result<crate::export::Written, String> {
     if encoder == crate::replay::crop::NO_ENCODER {
         return Err(
             "region clips need a hardware encoder in FFmpeg (h264_nvenc, h264_vaapi or h264_vulkan)"
@@ -150,13 +150,13 @@ pub fn save(
         .map_err(|e| format!("create crop output: {e}"))?;
     // A failed clip must not keep a full disk full; a finished one that only
     // could not take its name stays.
-    let bytes =
+    let written =
         encode(recording, source, output, &partial, encoder, crop, limit).inspect_err(|_| {
             let _ = std::fs::remove_file(&partial);
         })?;
     crate::export::publish(&partial, path)
         .map_err(|e| format!("{e}; finished clip kept at {}", partial.display()))?;
-    Ok(bytes)
+    Ok(written)
 }
 
 fn encode(
@@ -167,7 +167,7 @@ fn encode(
     encoder: &str,
     crop: Crop,
     limit: u64,
-) -> Result<u64, String> {
+) -> Result<crate::export::Written, String> {
     let mut command = Command::new("ffmpeg");
     command.args([
         "-hide_banner",
@@ -261,7 +261,7 @@ fn encode(
     if !status?.success() {
         return Err("crop encoder failed".into());
     }
-    output.sync_all().map_err(|e| format!("sync crop: {e}"))?;
+    let sync_ms = crate::export::sync(&output, "crop")?;
     let bytes = output
         .metadata()
         .map_err(|e| format!("crop metadata: {e}"))?
@@ -272,5 +272,5 @@ fn encode(
     if bytes == 0 {
         return Err("empty crop output".into());
     }
-    Ok(bytes)
+    Ok(crate::export::Written { bytes, sync_ms })
 }

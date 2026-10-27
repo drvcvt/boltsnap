@@ -89,7 +89,21 @@ pub(crate) fn publish(source: &Path, destination: &Path) -> Result<(), String> {
     Ok(())
 }
 
-pub fn remux(recording: &Recording, path: &Path, limit: u64) -> Result<u64, String> {
+/// A finished clip: its size, and how long `fsync` took before its rename
+/// (replay plan §13 C0).
+pub struct Written {
+    pub bytes: u64,
+    pub sync_ms: u128,
+}
+
+/// `fsync` of `file`, timed.
+pub(crate) fn sync(file: &File, what: &str) -> Result<u128, String> {
+    let start = std::time::Instant::now();
+    file.sync_all().map_err(|e| format!("sync {what}: {e}"))?;
+    Ok(start.elapsed().as_millis())
+}
+
+pub fn remux(recording: &Recording, path: &Path, limit: u64) -> Result<Written, String> {
     if path.extension().and_then(|s| s.to_str()) != Some("mp4") {
         return Err("clip output must use the .mp4 extension".into());
     }
@@ -100,9 +114,9 @@ pub fn remux(recording: &Recording, path: &Path, limit: u64) -> Result<u64, Stri
         return Err("output already exists".into());
     }
     let (temporary, writer, handle) = create_partial(path, limit)?;
-    let written: Result<u64, String> = (|| {
+    let written: Result<Written, String> = (|| {
         mux(recording, writer, "mp4")?;
-        handle.sync_all().map_err(|e| format!("sync output: {e}"))?;
+        let sync_ms = sync(&handle, "output")?;
         let bytes = handle
             .metadata()
             .map_err(|e| format!("output metadata: {e}"))?
@@ -110,16 +124,16 @@ pub fn remux(recording: &Recording, path: &Path, limit: u64) -> Result<u64, Stri
         if bytes == 0 {
             return Err("empty output".into());
         }
-        Ok(bytes)
+        Ok(Written { bytes, sync_ms })
     })();
     // A failed clip must not keep a full disk full; a finished one that only
     // could not take its name stays.
-    let bytes = written.inspect_err(|_| {
+    let written = written.inspect_err(|_| {
         let _ = std::fs::remove_file(&temporary);
     })?;
     publish(&temporary, path)
         .map_err(|e| format!("{e}; finished clip kept at {}", temporary.display()))?;
-    Ok(bytes)
+    Ok(written)
 }
 
 /// NUT keeps the capture's `1/fps` time base for the crop encoder; MP4 keeps

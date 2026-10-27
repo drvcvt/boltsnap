@@ -64,7 +64,7 @@ fn run() -> Result<(), String> {
             let recording = media::ingest(&input, (seconds * 1_000_000) as i64, budget)?;
             let ingest_ms = started.elapsed().as_secs_f64() * 1000.0;
             let (start, end) = recording.ring.bounds()?;
-            let saved_bytes = export::remux(&recording, &output, 2 * budget as u64)?;
+            let saved_bytes = export::remux(&recording, &output, 2 * budget as u64)?.bytes;
             println!("{}", serde_json::json!({"mode": "probe", "start_us": start, "end_us": end,
                 "duration_us": end - start, "accounted_bytes": recording.ring.bytes(),
                 "peak_accounted_bytes": recording.ring.peak_bytes(), "budget_bytes": budget,

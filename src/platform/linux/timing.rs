@@ -37,6 +37,18 @@ pub fn mark_request(stage: &'static str, id: Option<u64>) {
     }
 }
 
+/// A duration another process measured (the replay worker), under `stage`.
+pub fn reported(stage: &'static str, duration_ms: u64) {
+    if let Some(id) = request_id() {
+        eprintln!(
+            "boltsnap timing request={id} pid={} stage={stage} at_us={} duration_us={}",
+            std::process::id(),
+            monotonic_us(),
+            duration_ms * 1000
+        );
+    }
+}
+
 pub struct Span(Option<(&'static str, u64, Instant)>);
 impl Span {
     pub fn new(stage: &'static str) -> Self {

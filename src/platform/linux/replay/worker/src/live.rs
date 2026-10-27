@@ -285,7 +285,8 @@ pub fn run(
                             crate::process::background_thread();
                             let result = (|| {
                                 let (start, end) = recording.ring.bounds()?;
-                                let bytes = match crop {
+                                let began = std::time::Instant::now();
+                                let written = match crop {
                                     Some(crop) => crate::crop::save(
                                         &recording,
                                         crop,
@@ -296,7 +297,8 @@ pub fn run(
                                     None => crate::export::remux(&recording, &path, budget as u64)?,
                                 };
                                 Ok(
-                                    json!({"path": path.to_string_lossy(), "path_bytes":path.as_os_str().as_bytes(), "bytes": bytes, "duration_us": end-start, "input_lost": input_lost}),
+                                    json!({"path": path.to_string_lossy(), "path_bytes":path.as_os_str().as_bytes(), "bytes": written.bytes, "duration_us": end-start, "input_lost": input_lost,
+                                        "export_ms": began.elapsed().as_millis(), "sync_ms": written.sync_ms}),
                                 )
                             })();
                             drop(recording);

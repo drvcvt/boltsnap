@@ -667,7 +667,17 @@ Bild, wird fertig ohne Größensprung, Fehler und Schließen während des
 Speicherns, zwei Saves hintereinander. Live (nur mit Okay): Install,
 Daemon-Neustart, Vollbild- und Bereichs-Save, Zeiten aus C0.
 
-**Stand:** geplant, nicht begonnen.
+**Stand:** C2-Probe gemessen (oben). C0 Marken gebaut (27.10.): der Worker
+antwortet mit `export_ms` (Export bis nach dem Rename) und `sync_ms`
+(`export.rs` `sync`, auch im Crop-Weg); der Daemon schreibt mit
+`BOLTSNAP_TIMINGS` `replay_save_accepted`, `replay_worker_answered`,
+`export_ms`, `sync_ms` und `replay_card_drawn` (nach dem Ack des Shelfs, der
+erst nach dem Zeichnen kommt, `replay/mod.rs`); das Vorschaubild jeder
+Videokarte als Span `video_thumbnail` (`thumbnail.rs`). Abweichung vom Plan:
+keine Marke in `shelf/mod.rs` (über dem Limit, darf nicht wachsen), die
+Ack-Marke trägt dieselbe Aussage. Root fmt/clippy/test grün, Worker
+`cargo test` und `tests/live.py` grün. Offen: die Live-Zahlen (Neustart mit
+`BOLTSNAP_TIMINGS=1`, nur mit Okay), dann C1.
 
 ## 14. Lag mit laufendem Replay: Beweise behalten (2026-10-27)
 
