@@ -15,8 +15,9 @@ pub const CLIP: usize = 1;
 pub const FRAME: usize = 2;
 pub const AUDIO: usize = 3;
 
-/// Every word on the toolbar, its size and the lines beside it: one step.
-pub const TEXT: TextStyle = TextStyle::Key;
+/// Every word on the toolbar, its size and the lines beside it: one step,
+/// the settings rows' (capitals 10).
+pub const TEXT: TextStyle = TextStyle::Label;
 /// The size's style (the same step).
 pub const READOUT: TextStyle = TEXT;
 /// A control's height: the capitals plus `GAP_S` above and below, so the
@@ -34,17 +35,18 @@ pub const IN_GAP: f32 = PAD;
 /// Between groups: the inner gap plus one spacing step, so a group's end
 /// reads as exactly one step more.
 pub const GROUP_GAP: f32 = IN_GAP + GAP_XS;
-/// A control's corners: a quarter of its height.
-pub const CTL_RADIUS: f32 = CTL / 4.0;
+/// A control's corners: its side room minus the rim, so a control's corner
+/// sits inside the toolbar's as its edge sits inside the toolbar's edge;
+/// whole pixels at any text step (a quarter of `CTL` would be 6.5 here).
+pub const CTL_RADIUS: f32 = SIDE - PAD;
 /// The toolbar's corners, concentric with its controls': inner = outer −
 /// rim, both through the same squircle mapping.
 pub const BAR_RADIUS: f32 = CTL_RADIUS + PAD;
 /// The toolbar's height in one row, and the lines' beside it.
 pub const BAR_H: f32 = CTL + 2.0 * PAD;
-/// An icon's box: 1.5 capitals. Lucide's ink fills about 20/24 of it, 10 px,
-/// under `Key`'s nominal size (8 / 0.7 = 11.4 px): never larger than the
-/// text beside it.
-pub const ICON_BOX: f32 = 1.5 * TEXT.cap();
+/// An icon's box: the theme's icon beside `Label` text, exactly as the
+/// settings rows pair them (never larger than the text's nominal size).
+pub const ICON_BOX: f32 = theme::ICON;
 /// From the widest labelled icon's ink to its label: one spacing step.
 pub const ICON_TEXT: f32 = GAP_S;
 
