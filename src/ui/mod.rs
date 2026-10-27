@@ -237,8 +237,8 @@ impl Canvas {
             return;
         }
         let mut pb = PathBuilder::new();
-        push_rounded(&mut pb, rect, radius);
-        push_rounded(&mut pb, rect.inset(width), (radius - width).max(0.0));
+        push_squircle(&mut pb, rect, radius);
+        push_squircle(&mut pb, rect.inset(width), (radius - width).max(0.0));
         let Some(path) = pb.finish() else {
             return;
         };
@@ -283,14 +283,134 @@ pub(crate) fn paint(color: Rgb, alpha: f32) -> Paint<'static> {
     paint
 }
 
-/// A rounded rectangle with circular corners (radius clamped to half the
-/// shorter side).
+/// A rectangle with squircle corners of the radius token `radius` (see
+/// [`push_squircle`]): every surface the window draws.
 pub(crate) fn rounded_rect(rect: Rect, radius: f32) -> Option<tiny_skia::Path> {
     let mut pb = PathBuilder::new();
-    push_rounded(&mut pb, rect, radius);
+    push_squircle(&mut pb, rect, radius);
     pb.finish()
 }
 
+/// R for a radius token r: (1 − 1/√2) / (1 − 2^(−1/4)).
+pub const SQUIRCLE_SCALE: f32 = 1.840_896_4;
+/// The corner exponent while R is free.
+const SQUIRCLE_N: f32 = 4.0;
+/// Largest distance of a flattened corner from the true curve, in logical
+/// pixels: 0.1 device pixels at scale 4, the largest the window renders.
+pub const SQUIRCLE_TOLERANCE: f32 = 0.025;
+
+/// The corner of a radius token `radius` on a `w`×`h` rectangle, as the
+/// half axis R and the exponent n of the superellipse |x/R|ⁿ + |y/R|ⁿ = 1
+/// whose quadrant forms it.
+///
+/// With n = 4 the curvature is 0 where the straight edge runs into the
+/// corner, as the edge's own, so there is no kink. R puts the corner's
+/// 45° point exactly where the circular corner of `radius` would: the circle
+/// sits r(1 − 1/√2) in from both edges there, the superellipse R(1 − 2^(−1/n));
+/// equal for R = r · (1 − 1/√2) / (1 − 2^(−1/4)) ≈ 1.84 r. Each token keeps
+/// its perceived size, the curve is smooth.
+///
+/// R is at most half the shorter side. Clamped there, n follows so the 45°
+/// point still matches: 1 − 2^(−1/n) = r(1 − 1/√2)/R, so
+/// n = −ln 2 / ln(1 − r(1 − 1/√2)/R). With r at half the side that is n = 2,
+/// a circle: pills and knobs stay round, and between the two the shape moves
+/// steadily from n = 4 to n = 2.
+pub fn squircle_shape(radius: f32, w: f32, h: f32) -> (f32, f32) {
+    let half = (w.min(h) / 2.0).max(0.0);
+    let r = radius.min(half).max(0.0);
+    if r <= 0.0 {
+        return (0.0, SQUIRCLE_N);
+    }
+    let free = r * SQUIRCLE_SCALE;
+    if free <= half {
+        return (free, SQUIRCLE_N);
+    }
+    let inset = r * (1.0 - std::f32::consts::FRAC_1_SQRT_2);
+    let n = -std::f32::consts::LN_2 / (1.0 - inset / half).ln();
+    (half, n.clamp(2.0, SQUIRCLE_N))
+}
+
+/// `rect` with squircle corners (see [`squircle_shape`]), clockwise from the
+/// top edge. Each quadrant is flattened into lines, halving until the curve
+/// strays less than [`SQUIRCLE_TOLERANCE`] from each one; straight edges
+/// stay exactly where `rect` puts them.
+pub fn push_squircle(pb: &mut PathBuilder, rect: Rect, radius: f32) {
+    let (big, n) = squircle_shape(radius, rect.w, rect.h);
+    let (x, y, right, bottom) = (rect.x, rect.y, rect.right(), rect.bottom());
+    if big <= 0.0 {
+        pb.move_to(x, y);
+        pb.line_to(right, y);
+        pb.line_to(right, bottom);
+        pb.line_to(x, bottom);
+        pb.close();
+        return;
+    }
+    let half_pi = std::f32::consts::FRAC_PI_2;
+    // Corner centre, the axis the quadrant starts (θ = 0) and ends on
+    // (θ = π/2), and which way θ runs.
+    let corners = [
+        (
+            (right - big, y + big),
+            (1.0, 0.0),
+            (0.0, -1.0),
+            (half_pi, 0.0),
+        ),
+        (
+            (right - big, bottom - big),
+            (1.0, 0.0),
+            (0.0, 1.0),
+            (0.0, half_pi),
+        ),
+        (
+            (x + big, bottom - big),
+            (-1.0, 0.0),
+            (0.0, 1.0),
+            (half_pi, 0.0),
+        ),
+        ((x + big, y + big), (-1.0, 0.0), (0.0, -1.0), (0.0, half_pi)),
+    ];
+    pb.move_to(x + big, y);
+    for ((cx, cy), (ax, ay), (bx, by), (from, to)) in corners {
+        // Polar form: the ray at angle t meets the curve at
+        // R / (cosⁿ t + sinⁿ t)^(1/n); smooth in t, unlike cos^(2/n) t.
+        let at = |t: f32| {
+            let (sin, cos) = t.sin_cos();
+            let (cos, sin) = (cos.max(0.0), sin.max(0.0));
+            let k = big / (cos.powf(n) + sin.powf(n)).powf(1.0 / n);
+            let (u, v) = (cos * k, sin * k);
+            (cx + u * ax + v * bx, cy + u * ay + v * by)
+        };
+        let start = at(from);
+        pb.line_to(start.0, start.1);
+        flatten(pb, &at, (from, start), (to, at(to)), 0);
+    }
+    pb.close();
+}
+
+/// Lines along `at` from `a` to `b` (parameter and point), halving until the
+/// curve's middle is within the tolerance of the chord. At least four pieces,
+/// so a quadrant cannot pass as straight from its ends and middle alone.
+fn flatten(
+    pb: &mut PathBuilder,
+    at: &impl Fn(f32) -> (f32, f32),
+    a: (f32, (f32, f32)),
+    b: (f32, (f32, f32)),
+    depth: u32,
+) {
+    let t = (a.0 + b.0) / 2.0;
+    let mid = at(t);
+    let chord = ((a.1.0 + b.1.0) / 2.0, (a.1.1 + b.1.1) / 2.0);
+    let off = (mid.0 - chord.0).hypot(mid.1 - chord.1);
+    if depth >= 14 || (depth >= 2 && off <= SQUIRCLE_TOLERANCE) {
+        pb.line_to(b.1.0, b.1.1);
+        return;
+    }
+    flatten(pb, at, a, (t, mid), depth + 1);
+    flatten(pb, at, (t, mid), b, depth + 1);
+}
+
+/// Circular corners as cubics, for Lucide's `<rect rx>` in `icons.rs`: icons
+/// stay exactly as Lucide draws them.
 pub(crate) fn push_rounded(pb: &mut PathBuilder, rect: Rect, radius: f32) {
     let r = radius.min(rect.w / 2.0).min(rect.h / 2.0).max(0.0);
     // Cubic handle length for a quarter circle.

@@ -197,12 +197,17 @@ impl App {
             .cards
             .iter()
             .map(|card| {
-                let r = Rect::new(
+                // Edges on whole pixels, so cards stay crisp.
+                let (x, y) = (
                     screen.x + card.x.value(now) * scale,
                     screen.y + card.y.value(now) * scale,
-                    card.w.value(now) * scale,
-                    card.h.value(now) * scale,
                 );
+                let (right, bottom) = (
+                    (x + card.w.value(now) * scale).round(),
+                    (y + card.h.value(now) * scale).round(),
+                );
+                let (x, y) = (x.round(), y.round());
+                let r = Rect::new(x, y, right - x, bottom - y);
                 (r, card.shown.value(now).clamp(0.0, 1.0))
             })
             .collect()

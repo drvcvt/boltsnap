@@ -2619,8 +2619,10 @@ runder Fläche) über `rounded_rect`, und `icons.rs:261` (Lucide `<rect rx>`).
 - Verschachtelt: die Token-Regel bleibt (innen r − Abstand), danach dieselbe
   Abbildung für beide. Am 45°-Punkt ist der Abstand der beiden Konturen dann
   genau der des Kreispaars, also der Abstand selbst.
-- Abtasten: Quadrant über θ ∈ [0, π/2], Punkt (R·cos^(2/n) θ, R·sin^(2/n) θ),
-  adaptiv halbiert, bis der Abstand der Kurvenmitte zur Sehne unter 0,025
+- Abtasten: Quadrant in Polarform über θ ∈ [0, π/2], Punkt
+  R·(cos θ, sin θ)/(cosⁿ θ + sinⁿ θ)^(1/n) (glatt in θ; die Form
+  (cos^(2/n) θ, sin^(2/n) θ) hat an den Enden unendliche Steigung und braucht
+  dreimal so viele Stücke), adaptiv halbiert, bis der Abstand der Kurvenmitte zur Sehne unter 0,025
   logischen px liegt (≤ 0,1 Gerätepixel bei Skala 4, dem größten
   `--render`-Wert). Füllung mit Kantenglättung wie bisher; Flächen bleiben
   auf ganzen Pixeln, gerade Kanten ändern sich nicht.
@@ -2809,4 +2811,4 @@ Vom Nutzer am 24.10. so bestätigt:
 | 5a | umgesetzt 26.10. nach „Phase 5a: Öffnen ohne Terminal“: Tray-Eintrag „Settings…“ ganz unten (Prozessstart im Tray-Thread), `assets/linux/boltsnap.desktop` mit Icons 64/128/256 aus `boltsnap.ico`, `.deb`-Assets, Flake-`postInstall`, Release-Tarball, README. Abweichung: `Categories=Graphics;`. Checks: `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test` 75 + 371 grün, `desktop-file-validate` ohne Meldung. Live: Daemon neu gestartet, dbusmenu-`GetLayout` endet auf „Settings…“; `gio launch` der installierten `.desktop`-Datei öffnet das Fenster (Klasse `boltsnap`). Nicht live prüfbar: Klick im Tray. |
 | 5 | geplant, freigegeben 24.10. |
 | 6 (Library) | Skizze im Library-Plan |
-| 5f | geplant 27.10., Abschnitt „Phase 5f“ (Squircle-Ecken), zusammen mit Selector S4/S5 (`docs/plans/selector/2026-10-27-selector-toolbar.md`) |
+| 5f | umgesetzt 27.10. nach „Phase 5f“ (zusammen mit Selector S4/S5, `docs/plans/selector/2026-10-27-selector-toolbar.md`): `ui::push_squircle`, `squircle_shape`, `SQUIRCLE_SCALE` 1,8408964, `SQUIRCLE_TOLERANCE` 0,025; `rounded_rect` (also `Canvas::fill`, `Canvas::picture`) und `Canvas::ring` nutzen sie, `push_rounded` nur noch für Lucide-`rect`. Abweichung: Polarform statt (cos^(2/n), sin^(2/n)), siehe Abschnitt. Gemessen: 45°-Punkt gleich dem Kreis ± 0,05 px bei r = 2, 4, 5, 9, 12, 16; Pille r = h/2 ergibt n = 2,0000, Punkte ± 0,03 px auf dem Kreis; r = 6/7,5/9 in 20 px Höhe geklemmt mit 2 < n < 4, 45°-Punkt ± 0,05; Sehnenfehler gegen die dichte Kurve 0,023 (r 4, 61 Punkte je Fläche), 0,024 (r 12, 93), 0,020 (r 40, 181), alle < 0,025; gerade Kanten pixelgleich zur eckigen Füllung. Gefunden und behoben (Zoom 4×, Skript für über zwei Reihen verschmierte gerade Kanten, Lauf ≥ 30 px): Segment-Teile lagen bei geteiltem Rest auf Bruchteilen (gewählte Fläche „Mic“ mit verschmierter linker Kante bei Skala 2), jetzt Grenzen gerundet, Summe gleich; Karten der Shelf-Vorschau lagen auf Bruchteilen (skaliert), jetzt Kanten gerundet. Danach keine verschmierte Flächenkante auf Shelf, Screenshots, Recording, Replay, General bei 760@2 und 360 (Treffer nur noch Lucide-Striche und Schrift). Gates unverändert grün: Padding 12 px (Abweichung 0,00), Achse 0,00; Kontrast 13 Paare, niedrigstes 4,83:1; Icons 24 Zeilen, Mitte 0,32, Achse 0,31, Kante 0,00, Abstand 0,37 (`--measure` Outfit: 26 Zeilen 0,31/0,31/0,00/0,37); Versalien 0,00 px je Control (eingebettet und Outfit); Überlauf 1067 Teile; Umbruch 376 Zeilen; Copy 170 Strings. Renders vorher/nachher in `scratchpad/s5/{before,after}/` (Shelf, Recording, General bei 760@2 und 360, dazu Screenshots und Replay nachher), Vergleich `scratchpad/s5/z-compare.png`. Checks: fmt, clippy ohne Warnung, `cargo test` 137 + 391 grün, `git diff --check`. |

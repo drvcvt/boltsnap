@@ -477,3 +477,125 @@ fn a_picture_keeps_halves_down_to_64_px_and_premultiplies() {
     assert_eq!(at(20, 20), 128, "white at half over black");
     assert_eq!(at(2, 2), 0, "nothing outside the clip");
 }
+
+/// The flattened outline of `rect` with corners of `radius`.
+fn squircle_points(rect: Rect, radius: f32) -> Vec<(f32, f32)> {
+    let mut pb = PathBuilder::new();
+    super::push_squircle(&mut pb, rect, radius);
+    pb.finish()
+        .expect("path")
+        .points()
+        .iter()
+        .map(|p| (p.x, p.y))
+        .collect()
+}
+
+/// Where the outline crosses the top-left corner's diagonal, as the distance
+/// in from both edges.
+fn diagonal_inset(rect: Rect, radius: f32) -> f32 {
+    let points = squircle_points(rect, radius);
+    let side = |p: (f32, f32)| (p.0 - rect.x) - (p.1 - rect.y);
+    for pair in points.windows(2) {
+        let (a, b) = (pair[0], pair[1]);
+        let near = a.0 - rect.x < rect.w / 2.0 && a.1 - rect.y < rect.h / 2.0;
+        if near && side(a).signum() != side(b).signum() {
+            let t = side(a) / (side(a) - side(b));
+            return a.0 + (b.0 - a.0) * t - rect.x;
+        }
+    }
+    panic!("no crossing");
+}
+
+#[test]
+fn a_squircle_corner_keeps_the_circles_45_degree_point() {
+    let rect = Rect::new(10.0, 20.0, 200.0, 120.0);
+    for r in [2.0, 4.0, 5.0, 9.0, 12.0, 16.0] {
+        let circle = r * (1.0 - std::f32::consts::FRAC_1_SQRT_2);
+        let inset = diagonal_inset(rect, r);
+        assert!((inset - circle).abs() <= 0.05, "r {r}: {inset} vs {circle}");
+        let (big, n) = super::squircle_shape(r, rect.w, rect.h);
+        assert_eq!(n, 4.0);
+        assert!((big - 1.8409 * r).abs() < 0.001);
+    }
+}
+
+#[test]
+fn a_clamped_squircle_turns_into_the_circle_at_half_the_side() {
+    // A pill: r is half the height, the ends are half circles.
+    let pill = Rect::new(0.0, 0.0, 44.0, 20.0);
+    let (big, n) = super::squircle_shape(10.0, pill.w, pill.h);
+    assert_eq!(big, 10.0);
+    assert!((n - 2.0).abs() < 1e-4, "{n}");
+    for (x, y) in squircle_points(pill, 10.0) {
+        if x < 10.0 {
+            let d = (x - 10.0).hypot(y - 10.0);
+            assert!((d - 10.0).abs() < 0.03, "({x}, {y}) {d}");
+        }
+    }
+    // Clamped on the way there: n between, the 45° point still the circle's.
+    for r in [6.0, 7.5, 9.0] {
+        let (big, n) = super::squircle_shape(r, pill.w, pill.h);
+        assert_eq!(big, 10.0);
+        assert!(n > 2.0 && n < 4.0, "r {r}: n {n}");
+        let circle = r * (1.0 - std::f32::consts::FRAC_1_SQRT_2);
+        assert!((diagonal_inset(pill, r) - circle).abs() <= 0.05);
+    }
+}
+
+#[test]
+fn a_flattened_squircle_strays_less_than_the_tolerance() {
+    let rect = Rect::new(0.0, 0.0, 300.0, 200.0);
+    for r in [4.0, 12.0, 40.0] {
+        let (big, n) = super::squircle_shape(r, rect.w, rect.h);
+        let points = squircle_points(rect, r);
+        let segments: Vec<_> = points.windows(2).map(|w| (w[0], w[1])).collect();
+        let distance = |p: (f32, f32)| {
+            segments
+                .iter()
+                .map(|&(a, b)| {
+                    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+                    let len = dx * dx + dy * dy;
+                    let t = if len > 0.0 {
+                        (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / len).clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
+                    (p.0 - a.0 - t * dx).hypot(p.1 - a.1 - t * dy)
+                })
+                .fold(f32::MAX, f32::min)
+        };
+        // The true top-right quadrant, densely.
+        let mut worst = 0.0f32;
+        for i in 0..=2000 {
+            let t = i as f32 / 2000.0 * std::f32::consts::FRAC_PI_2;
+            let u = t.cos().max(0.0).powf(2.0 / n) * big;
+            let v = t.sin().max(0.0).powf(2.0 / n) * big;
+            worst = worst.max(distance((rect.right() - big + u, big - v)));
+        }
+        assert!(worst <= super::SQUIRCLE_TOLERANCE, "r {r}: {worst}");
+        println!(
+            "squircle r {r}: {} points, worst {worst:.4} px",
+            points.len()
+        );
+    }
+}
+
+#[test]
+fn a_squircle_fill_leaves_straight_edges_as_a_square_one() {
+    let mut round = Canvas::new(80, 40, 2).unwrap();
+    let mut square = Canvas::new(80, 40, 2).unwrap();
+    let rect = Rect::new(10.0, 8.0, 60.0, 24.0);
+    round.fill(rect, 4.0, theme::TEXT, 1.0);
+    square.fill(rect, 0.0, theme::TEXT, 1.0);
+    let (big, _) = super::squircle_shape(4.0, rect.w, rect.h);
+    let at = |c: &Canvas, x: usize, y: usize| c.pixmap.pixels()[y * 160 + x];
+    let from = ((rect.x + big + 1.0) * 2.0) as usize;
+    let to = ((rect.right() - big - 1.0) * 2.0) as usize;
+    for x in from..to {
+        for y in 0..80 {
+            assert_eq!(at(&round, x, y), at(&square, x, y), "{x},{y}");
+        }
+    }
+    // The corner itself is cut.
+    assert_ne!(at(&round, 20, 16), at(&square, 20, 16));
+}

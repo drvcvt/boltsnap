@@ -119,13 +119,15 @@ impl Segment {
             let scale = rect.w / total.max(1.0);
             contents.iter().map(|content| content * scale).collect()
         };
+        // Boundaries on whole pixels, so the chosen surface's edges are
+        // crisp; the rounding error goes to the next part, the total stays.
         let mut x = rect.x;
         widths
             .into_iter()
             .map(|w| {
-                let cell = Rect::new(x, rect.y, w, rect.h);
+                let (left, right) = (x.round(), (x + w).round());
                 x += w;
-                cell
+                Rect::new(left, rect.y, right - left, rect.h)
             })
             .collect()
     }
