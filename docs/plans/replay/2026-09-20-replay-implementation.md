@@ -615,6 +615,26 @@ Bereichsexport deutlich schneller.
   im Scratchpad): synthetischer 30-s-Clip 1080p60, beide Wege, Zeit und
   `ffprobe` der Ausgabe (Maße, Zeitbasis 1/fps, Frames vollständig).
 
+**Probe C2 (27.10., Okay des Nutzers, isoliert im Scratchpad, nice 19):**
+Quelle synthetisch wie der Puffer: `testsrc2` 1920×1080, 60 fps, 30 s,
+`h264_nvenc` 41 Mbit/s, GOP 60, NUT (149 MB). Ausschnitt 1450×942.
+
+| Weg | Zeit | Ergebnis |
+| --- | --- | --- |
+| heute: Software-Dekodierung, CPU-Crop, NVENC (`-threads 2`) | 8,45 s / 8,19 s | 1450×942, 1800 Frames, = Quelle |
+| `-hwaccel cuda -hwaccel_output_format cuda -c:v h264_cuvid -crop`, NVENC | 2,91–2,96 s (erster, kalter Lauf 5,2 s) | 1450×942, 1800 Frames, Zeitbasis wie heute |
+| nur GPU-Dekodieren + Crop | 2,33 s | (die Dekodierung bestimmt die Zeit) |
+| NVENC `-preset p1` statt Standard | 2,40 s | |
+
+**Fund:** mit ungerader linker Kante (235) vertauscht der cuvid-Crop U und V
+(NV12 verzahnt U/V paarweise; ein ungerader Versatz verschiebt um ein Byte):
+PSNR 12,8 dB, Farben falsch, mit und ohne `-hwaccel`. Mit gerader Lage (236)
+höchstens 23 Stufen Abweichung zum Quellausschnitt (Kompression), richtig.
+`Crop::even` (`src/replay/crop.rs:72–75`) rundet schon auf gerade Werte;
+der GPU-Weg prüft das trotzdem und fällt sonst auf den Softwareweg.
+Ergebnis: **2,8× schneller**, die CPU bleibt frei. Preset p1 brächte weitere
+0,5 s gegen etwas Qualität bei gleichem `-qp`; bleibt beim Standard.
+
 ### C3 Prioritäten (nur nach C0)
 - Ein Save ist eine Nutzeraktion; nice 19 lässt ihn bei Last warten. Kandidat:
   nice 10 für den Export, IO best-effort 4. Tradeoff: konkurriert stärker mit
