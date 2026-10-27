@@ -573,3 +573,30 @@ fn hovering_a_card_blends_kept_pictures_instead_of_painting_again() {
     app.draw(&mut canvas, later + SETTLED + Duration::from_millis(30));
     assert_eq!(app.shelf_paints(), at_rest + 1);
 }
+
+#[test]
+fn the_card_left_behind_keeps_its_picture_while_the_top_one_goes() {
+    use crate::ui::theme::{PANEL, SELECTED, mix};
+    let now = Instant::now();
+    let mut app = app_on("shelf", SIZE, now);
+    let before = cards(&app, now);
+    let kept = before[1].1;
+    let (x, y) = middle(before[0].2);
+    app.handle(Input::Press { x, y, clicks: 1 }, now);
+    app.handle(Input::Release, now);
+    let mut canvas = crate::ui::Canvas::new(SIZE.0 as u32, SIZE.1 as u32, 1).unwrap();
+    // Low on the card left behind, beside its picture: a placeholder all
+    // the way, never its shadow or the block.
+    let at = (kept.x + 20.0, kept.bottom() - 12.0);
+    for ms in [30, 80, 140, 200] {
+        app.draw(&mut canvas, now + Duration::from_millis(ms));
+        let i = ((at.1 as u32 * SIZE.0 as u32 + at.0 as u32) * 4) as usize;
+        let d = canvas.pixmap.data();
+        let want = mix(PANEL, SELECTED, 0.8);
+        assert!(
+            d[i].abs_diff(want.0) <= 2,
+            "at {ms} ms: {:?}, want {want:?}",
+            &d[i..i + 3]
+        );
+    }
+}

@@ -153,6 +153,9 @@ pub(super) struct Placed {
     pub(super) cfg: LayoutConfig,
     anims: Vec<(u64, f32, f32)>,
     scale: f32,
+    /// A card's full size, device pixels: the placeholder's, whatever the
+    /// slots are doing.
+    card: (u32, u32),
 }
 
 impl Placed {
@@ -389,6 +392,7 @@ impl App {
             cfg,
             anims,
             scale,
+            card: (w, h),
         })
     }
 
@@ -590,14 +594,11 @@ impl App {
             return;
         };
         let (lw, lh) = key.size;
-        let Some(first) = placed.layout.thumbs.first() else {
-            return;
-        };
         for hovered in wanted {
             if painted.states.iter().any(|(id, _)| id == hovered) {
                 continue;
             }
-            let Some(picture) = self.picture((first.w, first.h), placed.scale) else {
+            let Some(picture) = self.picture(placed.card, placed.scale) else {
                 return;
             };
             let mut pixels = vec![0u8; (lw * lh * 4) as usize];
