@@ -15,6 +15,9 @@ The module is the stem's width s. O is the bowl's centre; y grows downwards.
   right edge meets it at the top (the valley) and at the foot (the dent) are
   mirror images. Both, the stem's foot corner and the bite's tips are rounded
   with s/8.
+- Notch (the Kimme): a circle of s/4 on the stem's right edge at the foot
+  line, so the foot reads as stem and bowl even when small; it sits on the
+  same vertical as the valley at the top and the counter's left edge.
 """
 
 import math
@@ -25,7 +28,7 @@ from shapely.ops import unary_union
 PHI = (1 + 5**0.5) / 2
 S = 120.0  # the module in view box units: the mark is 360 x 480
 R, N = 1.5 * S, 2.4
-HALF, ROUND = S / 2, S / 8
+HALF, ROUND, NOTCH = S / 2, S / 8, S / 4
 DOT = HALF / PHI
 ARC = 128  # segments per quarter circle
 
@@ -59,6 +62,11 @@ def mark():
     centre = (d * math.cos(angle), d * math.sin(angle))
     shape = shape.difference(Point(0, 0).buffer(HALF, ARC))
     shape = shape.difference(Point(*centre).buffer(HALF, ARC))
+    shape = shape.buffer(-ROUND, ARC).buffer(ROUND, ARC)
+    # The notch's meeting with the foot's dent is a concave corner, its tips
+    # convex: both rounded with s/8 like the rest.
+    shape = shape.difference(Point(-R + S, R).buffer(NOTCH, ARC))
+    shape = shape.buffer(ROUND, ARC).buffer(-ROUND, ARC)
     shape = shape.buffer(-ROUND, ARC).buffer(ROUND, ARC)
     return shape.simplify(0.05), Point(*centre).buffer(DOT, ARC).simplify(0.05)
 

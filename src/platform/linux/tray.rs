@@ -8,13 +8,23 @@ use std::sync::{Arc, LazyLock, Mutex};
 
 static OFFLINE_LOGGED: AtomicBool = AtomicBool::new(false);
 
-fn tray_icons() -> &'static [ksni::Icon] {
-    static ICONS: LazyLock<Vec<ksni::Icon>> = LazyLock::new(|| {
+/// One state's tray pixmaps, every size a tray host may pick from, as made by
+/// `assets/logo/icons.py` (fitted to the pixel grid up to 24 px).
+macro_rules! tray_pngs {
+    ($state:literal) => {
         [
-            include_bytes!("../../../assets/icons/boltsnap-tray-32.png").as_slice(),
-            include_bytes!("../../../assets/icons/boltsnap-tray-64.png").as_slice(),
+            include_bytes!(concat!("../../../assets/icons/tray/", $state, "-16.png")).as_slice(),
+            include_bytes!(concat!("../../../assets/icons/tray/", $state, "-20.png")),
+            include_bytes!(concat!("../../../assets/icons/tray/", $state, "-24.png")),
+            include_bytes!(concat!("../../../assets/icons/tray/", $state, "-32.png")),
+            include_bytes!(concat!("../../../assets/icons/tray/", $state, "-48.png")),
+            include_bytes!(concat!("../../../assets/icons/tray/", $state, "-64.png")),
         ]
-        .into_iter()
+    };
+}
+
+fn decode(pngs: &[&[u8]]) -> Vec<ksni::Icon> {
+    pngs.iter()
         .map(|png| {
             let image = image::load_from_memory_with_format(png, image::ImageFormat::Png)
                 .expect("embedded Boltsnap tray icon must be valid PNG");
@@ -30,35 +40,20 @@ fn tray_icons() -> &'static [ksni::Icon] {
             }
         })
         .collect()
-    });
-    ICONS.as_slice()
 }
 
-/// The mark's snap dot doubles as the recording light: red while recording or
-/// saving, amber while paused. Position and radius are fractions of the icon
-/// size and fit both embedded sizes.
+/// The mark's own dot doubles as the recording light: red while recording or
+/// saving, amber while paused.
 fn tray_icons_for(state: PublicRecordingState) -> Vec<ksni::Icon> {
-    let (red, green, blue) = match state {
-        PublicRecordingState::Idle => return tray_icons().to_vec(),
-        PublicRecordingState::Paused => (0xff, 0xb0, 0x20),
-        PublicRecordingState::Recording | PublicRecordingState::Finalizing => (0xff, 0x45, 0x3a),
-    };
-    tray_icons()
-        .iter()
-        .map(|icon| {
-            let mut icon = icon.clone();
-            let size = icon.width as f32;
-            let (cx, cy, radius) = (0.71 * size, 0.40 * size, 0.085 * size);
-            for (index, pixel) in icon.data.chunks_exact_mut(4).enumerate() {
-                let x = (index as i32 % icon.width) as f32 + 0.5;
-                let y = (index as i32 / icon.width) as f32 + 0.5;
-                if (x - cx).hypot(y - cy) <= radius {
-                    pixel[1..].copy_from_slice(&[red, green, blue]);
-                }
-            }
-            icon
-        })
-        .collect()
+    static IDLE: LazyLock<Vec<ksni::Icon>> = LazyLock::new(|| decode(&tray_pngs!("idle")));
+    static RECORDING: LazyLock<Vec<ksni::Icon>> =
+        LazyLock::new(|| decode(&tray_pngs!("recording")));
+    static PAUSED: LazyLock<Vec<ksni::Icon>> = LazyLock::new(|| decode(&tray_pngs!("paused")));
+    match state {
+        PublicRecordingState::Idle => IDLE.clone(),
+        PublicRecordingState::Paused => PAUSED.clone(),
+        PublicRecordingState::Recording | PublicRecordingState::Finalizing => RECORDING.clone(),
+    }
 }
 
 pub(crate) struct LatestValue<T>(Mutex<Option<T>>);
@@ -736,31 +731,67 @@ mod tests {
         );
     }
 
+    /// Each size with its module s, left and top in pixels, as
+    /// `assets/logo/icons.py` `fit` places the mark.
+    const TRAY_FIT: [(i32, f32, f32, f32); 6] = [
+        (16, 4.0, 2.0, 0.0),
+        (20, 5.0, 2.0, 0.0),
+        (24, 6.0, 3.0, 0.0),
+        (32, 7.0, 5.0, 2.0),
+        (48, 11.0, 7.0, 2.0),
+        (64, 15.0, 9.0, 2.0),
+    ];
+
+    /// (alpha, red, green, blue) at a point of the mark, in modules from its
+    /// top left corner.
+    fn tray_px(icon: &ksni::Icon, (x, y): (f32, f32)) -> [u8; 4] {
+        let (_, s, left, top) = TRAY_FIT.iter().find(|f| f.0 == icon.width).unwrap();
+        let (px, py) = ((left + x * s) as i32, (top + y * s) as i32);
+        let at = ((py * icon.width + px) * 4) as usize;
+        icon.data[at..at + 4].try_into().unwrap()
+    }
+
+    /// The dot's centre in modules: (288.625, 191.375) of the 360 x 480
+    /// mark (`construct.py`), a module being 120.
+    const DOT: (f32, f32) = (288.625 / 120.0, 191.375 / 120.0);
+    /// Inside the stem, halfway down.
+    const STEM: (f32, f32) = (0.5, 2.0);
+
     #[test]
     fn embedded_tray_icons_are_valid_argb_pixmaps() {
-        let icons = tray_icons();
+        let icons = tray_icons_for(PublicRecordingState::Idle);
         assert_eq!(
             icons.iter().map(|icon| icon.width).collect::<Vec<_>>(),
-            [32, 64]
+            TRAY_FIT.map(|f| f.0)
         );
-        assert!(icons.iter().all(|icon| {
-            icon.width == icon.height
-                && icon.data.len() == (icon.width * icon.height * 4) as usize
-                && icon.data.chunks_exact(4).any(|pixel| pixel[0] == 0)
-                && icon.data.chunks_exact(4).any(|pixel| pixel[0] > 0)
-        }));
+        for icon in &icons {
+            assert_eq!(icon.width, icon.height);
+            assert_eq!(icon.data.len(), (icon.width * icon.height * 4) as usize);
+            assert_eq!(tray_px(icon, STEM), [255, 0xec, 0xec, 0xec], "a solid stem");
+            assert_eq!(tray_px(icon, DOT)[1..], [0xec, 0xec, 0xec], "the dot");
+            // The moat between the bowl and the dot stays open.
+            let moat = (DOT.0 - 0.7, DOT.1 - 0.7);
+            assert!(tray_px(icon, moat)[1] < 0x80, "{}: moat", icon.width);
+        }
+    }
 
-        let icon = &icons[0];
-        let alpha_at = |x: i32, y: i32| icon.data[((y * icon.width + x) * 4) as usize];
-        assert!(alpha_at(16, 20) > 200, "the chosen mark has a solid body");
-        assert!(alpha_at(23, 15) > 0, "the snap dot must fill its cutout");
-
-        let icon = &icons[1];
-        let alpha_at = |x: i32, y: i32| icon.data[((y * icon.width + x) * 4) as usize];
-        assert!(alpha_at(24, 56) > 200, "the base must remain solid");
-        assert!(alpha_at(29, 56) > 200, "the base must remain continuous");
-        assert!(alpha_at(39, 25) < 64, "the snap cutout must stay open");
-        assert!(alpha_at(45, 25) > 200, "the snap dot must stay opaque");
+    #[test]
+    fn small_tray_icons_have_their_stem_on_whole_pixels() {
+        for icon in tray_icons_for(PublicRecordingState::Idle)
+            .iter()
+            .filter(|icon| icon.width <= 24)
+        {
+            let (_, s, left, _) = TRAY_FIT.iter().find(|f| f.0 == icon.width).unwrap();
+            let y = (icon.height / 2) as usize;
+            let column = |x: f32| {
+                let at = (y * icon.width as usize + x as usize) * 4;
+                icon.data[at + 1]
+            };
+            // Its first and last columns are full ink, none half.
+            assert_eq!(column(*left), 0xec, "{}: left edge", icon.width);
+            assert_eq!(column(left + s - 1.0), 0xec, "{}: right edge", icon.width);
+            assert!(column(left - 1.0) < 0x40, "{}: outside left", icon.width);
+        }
     }
 
     #[test]
@@ -803,29 +834,26 @@ mod tests {
     }
 
     #[test]
-    fn recording_tints_only_the_snap_dot() {
-        let rgb = |icons: &[ksni::Icon], size: i32, x: i32, y: i32| {
-            let icon = icons.iter().find(|icon| icon.width == size).unwrap();
-            let at = ((y * icon.width + x) * 4) as usize;
-            (icon.data[at + 1], icon.data[at + 2], icon.data[at + 3])
-        };
+    fn recording_colours_only_the_marks_own_dot() {
         let idle = tray_icons_for(PublicRecordingState::Idle);
-        let recording = tray_icons_for(PublicRecordingState::Recording);
-        let paused = tray_icons_for(PublicRecordingState::Paused);
-        assert!(idle.iter().zip(tray_icons()).all(|(a, b)| a.data == b.data));
-        for (size, dot, body) in [(32, (22, 12), (10, 20)), (64, (45, 25), (24, 56))] {
-            assert_eq!(rgb(&recording, size, dot.0, dot.1), (0xff, 0x45, 0x3a));
-            assert_eq!(rgb(&paused, size, dot.0, dot.1), (0xff, 0xb0, 0x20));
-            assert_eq!(rgb(&recording, size, body.0, body.1), (0xff, 0xff, 0xff));
+        for (state, colour) in [
+            (PublicRecordingState::Recording, [0xff, 0x45, 0x3a]),
+            (PublicRecordingState::Finalizing, [0xff, 0x45, 0x3a]),
+            (PublicRecordingState::Paused, [0xff, 0xb0, 0x20]),
+        ] {
+            for (tinted, plain) in tray_icons_for(state).iter().zip(&idle) {
+                assert_eq!(tray_px(tinted, DOT)[1..], colour, "{}", tinted.width);
+                assert_eq!(tray_px(tinted, STEM), tray_px(plain, STEM));
+                // The shape stays: every pixel's alpha is the idle one's.
+                assert!(
+                    tinted
+                        .data
+                        .chunks_exact(4)
+                        .zip(plain.data.chunks_exact(4))
+                        .all(|(a, b)| a[0] == b[0])
+                );
+            }
         }
-        // Alpha is untouched, so the mark keeps its shape.
-        assert!(recording.iter().zip(tray_icons()).all(|(tinted, plain)| {
-            tinted
-                .data
-                .chunks_exact(4)
-                .zip(plain.data.chunks_exact(4))
-                .all(|(a, b)| a[0] == b[0])
-        }));
     }
 
     #[test]

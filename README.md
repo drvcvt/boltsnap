@@ -439,7 +439,10 @@ The native tray icon is available whenever the daemon is running. On Windows,
 its menu provides area/fullscreen screenshots, area/fullscreen recordings,
 recording controls, and a daemon quit action.
 On Linux the icon's dot turns red while a recording runs or is being saved and
-amber while it is paused. During a recording the menu starts with Pause or
+amber while it is paused. It comes in 16 to 64 px, the small sizes fitted to
+whole pixels so a 16 px tray shows it sharp. For light surfaces there is a
+dark version of the mark, `assets/logo/boltsnap-icon-dark.svg`; all icons are
+built from `assets/logo/construct.py` by `assets/logo/icons.py`. During a recording the menu starts with Pause or
 Resume, Save to shelf and Save to disk; Discard stays in the recording controls.
 "Clip fullscreen to shelf" is only enabled while the replay buffer runs.
 Default monitor offers Focused display, each monitor and Both displays; a
