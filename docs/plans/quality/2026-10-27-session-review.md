@@ -127,3 +127,22 @@ kompiliert). A9 `linux/shelf/tests/{mod,focus}.rs`, 10 Dateien und ein Ordner,
 `mod.rs` 3477 Zeilen. Checks: fmt, clippy ohne Warnung, `cargo test` 155 +
 395 grün.
 Danach aufgeteilt: [Shelf-Split](../shelf/2026-10-27-shelf-split.md).
+
+## Nachtrag 27.10.: Zombie-Daemon unter dem Einstellungsfenster
+
+**Priorität:** P3. **Auslöser:** Daemon beenden, während das
+Einstellungsfenster offen ist und es den Daemon selbst gestartet hatte
+(`systemctl --user start` greift hier nicht, Rückfall in `ipc.rs`).
+**Wirkung:** der beendete Daemon bleibt `<defunct>` unter dem Fenster
+(`ps`: `381126 376067 Zs [boltsnap] <defunct>`), `kill -0` meldet ihn weiter
+als lebend; ein Neustart, der auf sein Ende wartet, wartet ewig. Das Fenster
+startet nach 2 s selbst einen neuen Daemon, mit seiner eigenen Umgebung
+(so gingen die `BOLTSNAP_TIMINGS` für C0 verloren). **Beleg:**
+`src/platform/linux/ipc.rs` `daemon.spawn()?` verwarf den `Child`.
+**Reproduziert:** ja, live beim Neustart für Replay C0.
+**Fix:** ein Thread wartet auf den gestarteten Daemon (`daemon.wait()`), so
+räumt jeder Client ab, auch ein langlebiger. Tradeoff: ein schlafender
+Thread pro gestartetem Daemon in diesem Client, in der Praxis einer.
+Doppelter Fork wäre die Alternative, mehr Code für dasselbe.
+**Stand:** gebaut, `cargo test` grün; wirkt erst, wenn das Fenster mit dem
+neuen Binary läuft.

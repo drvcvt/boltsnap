@@ -111,7 +111,10 @@ pub(super) fn ensure_daemon() -> io::Result<UnixStream> {
                 Ok(())
             });
         }
-        daemon.spawn()?;
+        let mut daemon = daemon.spawn()?;
+        // A long-lived client (the settings window) would otherwise keep every
+        // daemon that exits as a zombie, still holding its pid.
+        std::thread::spawn(move || daemon.wait());
     }
 
     // Poll for it to come up (~1s).
