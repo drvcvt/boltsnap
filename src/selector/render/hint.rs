@@ -2,11 +2,16 @@
 //! why Clip cannot be pressed, and the icon-only controls' names.
 
 use boltsnap::ui::text::Fonts;
-use boltsnap::ui::theme::{self, CTL_H, GAP_S, GAP_XS, RADIUS, TextStyle};
+use boltsnap::ui::theme::{self, GAP_S, GAP_XS};
 use boltsnap::ui::{Canvas, Rect};
 
-use super::chrome::{Placement, SIDE};
+use super::chrome::Placement;
 use super::toolbar::{self, Layout, Look};
+use super::toolbar::{BAR_H, BAR_RADIUS, PAD, SIDE, TEXT};
+
+/// A line beside the toolbar is a toolbar with one control that has no
+/// surface: `BAR_H` tall, `BAR_RADIUS`, its text where a label sits.
+const INSET: f32 = PAD + SIDE;
 
 /// What `paint` draws inside `bounds`, at `alpha` as one layer: drawn on its
 /// own and laid over the frame, so surfaces inside it do not show through
@@ -51,13 +56,13 @@ pub fn hint_rect(
     text: &str,
     area: Rect,
 ) -> (Rect, String) {
-    let room = (area.w - 2.0 * GAP_S - 2.0 * SIDE).max(0.0);
-    let text = fonts.ellipsize(TextStyle::Label, text, room).into_owned();
-    let w = (2.0 * SIDE + fonts.width(TextStyle::Label, &text)).ceil();
+    let room = (area.w - 2.0 * GAP_S - 2.0 * INSET).max(0.0);
+    let text = fonts.ellipsize(TEXT, text, room).into_owned();
+    let w = (2.0 * INSET + fonts.width(TEXT, &text)).ceil();
     let b = layout.bounds;
-    let above = b.y - GAP_XS - CTL_H;
+    let above = b.y - GAP_XS - BAR_H;
     let below = b.bottom() + GAP_XS;
-    let (top, bottom) = (area.y + GAP_S, area.bottom() - GAP_S - CTL_H);
+    let (top, bottom) = (area.y + GAP_S, area.bottom() - GAP_S - BAR_H);
     let y = match layout.placement {
         Placement::Above if above >= top => above,
         Placement::Above if below <= bottom => below,
@@ -69,20 +74,20 @@ pub fn hint_rect(
         area.x + GAP_S,
         (area.right() - GAP_S - w).max(area.x + GAP_S),
     );
-    (Rect::new(x.round(), y.round(), w, CTL_H), text)
+    (Rect::new(x.round(), y.round(), w, BAR_H), text)
 }
 
 /// The line, in a small surface of the toolbar's kind, at `alpha`.
 pub fn draw_hint(canvas: &mut Canvas, fonts: &Fonts, rect: Rect, text: &str, alpha: f32) {
     faded(canvas, rect, alpha, |canvas, dx, dy| {
         let rect = Rect::new(rect.x + dx, rect.y + dy, rect.w, rect.h);
-        canvas.fill(rect, RADIUS, theme::PANEL, 1.0);
-        let baseline = fonts.baseline(TextStyle::Label, rect.y, rect.h);
+        canvas.fill(rect, BAR_RADIUS, theme::PANEL, 1.0);
+        let baseline = fonts.baseline(TEXT, rect.y, rect.h);
         fonts.draw(
             canvas,
-            TextStyle::Label,
+            TEXT,
             text,
-            (rect.x + SIDE, baseline),
+            (rect.x + INSET, baseline),
             theme::SUB,
             1.0,
         );
@@ -99,11 +104,7 @@ pub fn names_rect(fonts: &Fonts, layout: &Layout, area: Rect) -> Rect {
         .flat_map(|i| [true, false].map(|on| toolbar::name(i, on)))
         .flatten();
     let widest = names
-        .max_by(|a, b| {
-            fonts
-                .width(TextStyle::Label, a)
-                .total_cmp(&fonts.width(TextStyle::Label, b))
-        })
+        .max_by(|a, b| fonts.width(TEXT, a).total_cmp(&fonts.width(TEXT, b)))
         .unwrap_or_default();
     hint_rect(fonts, layout, toolbar::FRAME, widest, area).0
 }
@@ -117,11 +118,11 @@ pub fn draw_names(canvas: &mut Canvas, fonts: &Fonts, rect: Rect, names: &[(&str
     }
     faded(canvas, rect, most, |canvas, dx, dy| {
         let rect = Rect::new(rect.x + dx, rect.y + dy, rect.w, rect.h);
-        canvas.fill(rect, RADIUS, theme::PANEL, 1.0);
-        let baseline = fonts.baseline(TextStyle::Label, rect.y, rect.h);
+        canvas.fill(rect, BAR_RADIUS, theme::PANEL, 1.0);
+        let baseline = fonts.baseline(TEXT, rect.y, rect.h);
         for (text, alpha) in names {
-            let at = (rect.x + SIDE, baseline);
-            fonts.draw(canvas, TextStyle::Label, text, at, theme::SUB, alpha / most);
+            let at = (rect.x + INSET, baseline);
+            fonts.draw(canvas, TEXT, text, at, theme::SUB, alpha / most);
         }
     });
 }

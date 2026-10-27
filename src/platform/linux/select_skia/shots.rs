@@ -134,17 +134,12 @@ fn shots(chrome: &Chrome) -> Vec<(String, (u32, u32), Scene)> {
     }
     // The other arrangements: one row without the size, two rows, three.
     let t = targets(Some(2), true, true);
-    let no_size = (40.0, 160.0, 200.0, 100.0);
-    out.push((
-        "row-no-size".into(),
-        (300, 300),
-        rest(no_size, (300, 300), t),
-    ));
-    let two = (20.0, 200.0, 150.0, 80.0);
-    out.push(("two-rows".into(), (200, 300), rest(two, (200, 300), t)));
+    let [_, (s1, no_size), (s2, two), (s3, three)] = render::gates::SHOTS;
+    out.push(("row-no-size".into(), s1, rest(no_size, s1, t)));
+    out.push(("two-rows".into(), s2, rest(two, s2, t)));
     let t = targets(Some(0), true, false);
-    out.push(("three-rows".into(), (160, 240), rest(column, (160, 240), t)));
-    // The primary pressed.
+    out.push(("three-rows".into(), s3, rest(three, s3, t)));
+    // Record pressed.
     let mut pressed = targets(Some(0), true, true);
     pressed.pressed = Some(0);
     out.push(("press-record".into(), full, rest(sel, full, pressed)));

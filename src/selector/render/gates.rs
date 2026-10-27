@@ -6,11 +6,12 @@
 
 use boltsnap::app::measure::Ink;
 use boltsnap::ui::text::Fonts;
-use boltsnap::ui::theme::{self, CTL_H, GAP_S, Rgb};
+use boltsnap::ui::theme::{self, Rgb};
 use boltsnap::ui::{Canvas, Rect};
 
-use super::chrome::SIDE;
-use super::toolbar::{self, FRAME, GROUP_GAP, Layout, Look, PAD, READOUT, RECORD};
+use super::toolbar::{
+    self, CTL, FRAME, GROUP_GAP, ICON_TEXT, IN_GAP, Layout, Look, PAD, READOUT, RECORD, SIDE,
+};
 
 /// Capitals only: their top is the cap height, their bottom the baseline.
 const CAPS: [&str; 2] = ["RECORD", "CLIP"];
@@ -25,9 +26,9 @@ type Selection = (f32, f32, f32, f32);
 /// A screen and a selection for each arrangement.
 pub const SHOTS: [(Screen, Selection); 4] = [
     ((1920, 1080), (612.0, 300.0, 760.0, 430.0)),
-    ((300, 300), (40.0, 160.0, 200.0, 100.0)),
-    ((200, 300), (20.0, 200.0, 150.0, 80.0)),
-    ((160, 240), (20.0, 180.0, 100.0, 40.0)),
+    ((260, 300), (40.0, 160.0, 180.0, 100.0)),
+    ((180, 300), (20.0, 200.0, 140.0, 80.0)),
+    ((140, 240), (20.0, 180.0, 100.0, 40.0)),
 ];
 
 /// The edges of what `fg` drew over `bg` inside `region`, read on the
@@ -216,7 +217,7 @@ pub fn check(report: &Report) -> Result<String, String> {
     }
     let l = &report.layout;
     let (controls, b) = (l.controls, l.bounds);
-    if controls.iter().any(|r| r.h != CTL_H) || controls[FRAME..].iter().any(|r| r.w != CTL_H) {
+    if controls.iter().any(|r| r.h != CTL) || controls[FRAME..].iter().any(|r| r.w != CTL) {
         return Err("controls of different heights, or an icon-only one not square".into());
     }
     // Groups: GROUP_GAP between Clip and Frame when they share a row, PAD
@@ -224,8 +225,8 @@ pub fn check(report: &Report) -> Result<String, String> {
     if controls[1].y == controls[2].y && controls[2].x - controls[1].right() != GROUP_GAP {
         return Err("Clip to Frame is not the group gap".into());
     }
-    if controls[3].x - controls[2].right() != PAD {
-        return Err("Frame to Audio is not the padding".into());
+    if controls[3].x - controls[2].right() != IN_GAP {
+        return Err("Frame to Audio is not the inner gap".into());
     }
     if let Some(size) = l.size {
         // In one row the size ends the toolbar, `SIDE` from its padding as a
@@ -267,17 +268,17 @@ pub fn check(report: &Report) -> Result<String, String> {
         .iter()
         .map(|c| c.icon.right - c.text_x)
         .fold(f32::MIN, f32::max);
-    let gap = -widest - GAP_S;
+    let gap = -widest - ICON_TEXT;
     if axis > 0.5 || edge > 0.5 || gap.abs() > 0.5 {
         return Err(format!(
-            "icon axis spread {axis:.2}, text edge spread {edge:.2}, gap off GAP_S {gap:+.2}"
+            "icon axis spread {axis:.2}, text edge spread {edge:.2}, gap off ICON_TEXT {gap:+.2}"
         ));
     }
     Ok(format!(
         "arrangement {}: capitals worst {caps:.2} px, icon on capitals worst {icons:.2} px, \
          icon-only icons off their middle worst {alone:.2} px, padding {:?}, size inset \
          {}, icon axis spread {axis:.2}, text edge spread {edge:.2}, widest icon to text \
-         off GAP_S by {gap:+.2}",
+         off ICON_TEXT by {gap:+.2}",
         l.arrangement,
         report.padding,
         report

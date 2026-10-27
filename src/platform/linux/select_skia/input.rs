@@ -427,7 +427,7 @@ mod tests {
             Some(RecordControlHit::Record)
         );
         assert_eq!(
-            hit(record.right() + 1.0, record.y + 2.0),
+            hit(record.right() + 0.5, record.y + 2.0),
             Some(RecordControlHit::Record)
         );
         // Every point of the toolbar is some control's, none outside it.

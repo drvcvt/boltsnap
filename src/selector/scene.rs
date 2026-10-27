@@ -614,7 +614,7 @@ mod tests {
     }
 
     fn theme_raise() -> u8 {
-        // Record rests on the primary surface.
-        boltsnap::ui::theme::ACCENT.0
+        // Record rests on the control surface.
+        boltsnap::ui::theme::RAISE.0
     }
 }

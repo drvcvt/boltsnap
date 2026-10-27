@@ -1,14 +1,14 @@
 //! The Linux chrome: border, grips, badge, toolbar layout and its gates.
 
 use boltsnap::ui::text::Fonts;
-use boltsnap::ui::theme::{self, CTL_H, GAP_S, GAP_XS, Rgb, TextStyle};
+use boltsnap::ui::theme::{self, CTL_H, GAP_S, GAP_XS, Rgb};
 use boltsnap::ui::{Canvas, Rect};
 use tiny_skia::Pixmap;
 
-use super::chrome::{Placement, SIDE, draw_frame, draw_grips, size_badge_rect};
+use super::chrome::{Placement, draw_frame, draw_grips, size_badge_rect};
 use super::gates;
 use super::hint;
-use super::toolbar::{self, AUDIO, FRAME, LABELS, Look, Metrics};
+use super::toolbar::{self, AUDIO, CTL, FRAME, IN_GAP, LABELS, Look, Metrics, PAD, SIDE, TEXT};
 use crate::selector::clip::ClipState;
 
 fn black(w: u32, h: u32) -> Pixmap {
@@ -114,29 +114,35 @@ fn the_toolbar_takes_one_two_or_three_rows_by_the_room_there_is() {
             &metrics,
         )
     };
-    let full = layout(1920.0, 1080.0).unwrap();
-    assert_eq!(full.arrangement, 0);
-    assert!(full.size.is_some());
-    // Narrower: the size goes first, then the groups go onto rows.
-    let no_size = layout(300.0, 300.0).unwrap();
-    assert_eq!((no_size.arrangement, no_size.size), (1, None));
-    let two = layout(200.0, 300.0).unwrap();
-    assert_eq!(two.arrangement, 2);
-    assert!(two.size.is_some());
-    assert_eq!(layout(160.0, 240.0).unwrap().arrangement, 3);
+    // Each arrangement's width, then the screens where each one is the first
+    // that fits with `GAP_S` around it: the size goes first, then the groups
+    // go onto rows.
+    let widths: Vec<f32> = (0..4)
+        .map(|a| {
+            (16..2000)
+                .map(|w| w as f32)
+                .find_map(|w| layout(w, 400.0).filter(|l| l.arrangement == a))
+                .map_or(f32::NAN, |l| l.bounds.w)
+        })
+        .collect();
+    assert!(widths.windows(2).all(|p| p[0] > p[1]), "{widths:?}");
+    for (a, w) in widths.iter().enumerate() {
+        let l = layout(w + 2.0 * GAP_S, 400.0).unwrap();
+        assert_eq!(l.arrangement, a);
+        assert_eq!(l.size.is_some(), a == 0 || a == 2);
+    }
+    assert_eq!(layout(1920.0, 1080.0).unwrap().arrangement, 0);
     assert!(layout(60.0, 60.0).is_none());
     println!(
-        "toolbar widths: one row {} px, without the size {}, two rows {}, three rows {}",
-        full.bounds.w,
-        no_size.bounds.w,
-        two.bounds.w,
-        layout(160.0, 240.0).unwrap().bounds.w
+        "toolbar widths: one row {} px, without the size {}, two rows {}, three rows {}; \
+         each from a screen that wide plus 2·GAP_S",
+        widths[0], widths[1], widths[2], widths[3]
     );
 }
 
 /// Gate 1: wherever the selection is, on every screen size, the toolbar
 /// stays `GAP_S` inside the screen, on whole pixels, its controls inside it
-/// and apart, `GAP_XS` around and between them.
+/// and apart, `PAD` around and at least `IN_GAP` between them.
 #[test]
 fn gate_overflow_the_toolbar_stays_on_screen_everywhere() {
     let fonts = Fonts::fallback();
@@ -169,16 +175,16 @@ fn gate_overflow_the_toolbar_stays_on_screen_everywhere() {
             );
             assert_eq!((b.x.fract(), b.y.fract()), (0.0, 0.0));
             for (i, c) in t.controls.iter().enumerate() {
-                assert!(c.x >= b.x + GAP_XS && c.y >= b.y + GAP_XS);
-                assert!(c.right() <= b.right() - GAP_XS && c.bottom() <= b.bottom() - GAP_XS);
-                assert_eq!(c.h, CTL_H);
+                assert!(c.x >= b.x + PAD && c.y >= b.y + PAD);
+                assert!(c.right() <= b.right() - PAD && c.bottom() <= b.bottom() - PAD);
+                assert_eq!(c.h, CTL);
                 for d in &t.controls[i + 1..] {
-                    // At least `GAP_XS` apart.
-                    assert!(!c.inset(-(GAP_XS - 0.01)).overlaps(*d));
+                    // At least `IN_GAP` apart.
+                    assert!(!c.inset(-(IN_GAP - 0.01)).overlaps(*d));
                 }
             }
             if let Some(size) = t.size {
-                assert!(size.x >= b.x + GAP_XS && size.right() <= b.right() - GAP_XS);
+                assert!(size.x >= b.x + PAD && size.right() <= b.right() - PAD);
                 assert!(t.controls.iter().all(|c| !c.overlaps(size)));
             }
             // Each line beside it, every reason and name, inside the screen
@@ -197,8 +203,8 @@ fn gate_overflow_the_toolbar_stays_on_screen_everywhere() {
                 .iter()
                 .flat_map(|&i| [true, false].map(|on| toolbar::name(i, on)))
             {
-                let width = fonts.width(TextStyle::Label, word.unwrap());
-                assert!(width + 2.0 * SIDE <= names.w + 0.5 || names.w >= wf - 2.0 * GAP_S);
+                let width = fonts.width(TEXT, word.unwrap());
+                assert!(width + 2.0 * (PAD + SIDE) <= names.w + 0.5 || names.w >= wf - 2.0 * GAP_S);
             }
             let lines = ClipState::ALL
                 .iter()
@@ -212,7 +218,7 @@ fn gate_overflow_the_toolbar_stays_on_screen_everywhere() {
                         && hint.bottom() <= hf - GAP_S,
                     "{w}x{h} {sel:?}: hint {hint:?}"
                 );
-                assert!(fonts.width(TextStyle::Label, &text) + 2.0 * SIDE <= hint.w + 0.5);
+                assert!(fonts.width(TEXT, &text) + 2.0 * (PAD + SIDE) <= hint.w + 0.5);
                 assert!(
                     !hint.overlaps(t.bounds),
                     "{w}x{h} {sel:?}: hint over the toolbar"
@@ -247,7 +253,7 @@ fn highlights_stay_inside_the_toolbars_contour() {
                 toolbar::layout((20.0 + offset, 150.0 + offset, 80.0, 40.0), area, &metrics)
                     .unwrap();
             let mut outline = Canvas::new(w, h, 1).unwrap();
-            outline.fill(layout.bounds, theme::RADIUS, theme::PANEL, 1.0);
+            outline.fill(layout.bounds, toolbar::BAR_RADIUS, theme::PANEL, 1.0);
             for hovered in 0..4 {
                 let mut drawn = Canvas::new(w, h, 1).unwrap();
                 let look = Look::at_rest(true, true, true, Some(hovered));
@@ -332,28 +338,16 @@ fn gate_contrast_every_label_on_its_surface() {
             pairs += 1;
         }
     }
-    // The primary: its label on its surface at rest, hovered, pressed.
-    for steps in [0.0, 1.0, 2.0] {
-        let surface = mix(ACCENT, SUB, toolbar::PRIMARY_STEP * steps);
-        let ratio = contrast(ON_ACCENT, surface);
-        assert!(ratio >= 4.5, "record label at {steps}: {ratio:.2}:1");
-        lowest = lowest.min(ratio);
-        pairs += 1;
-    }
-    // The size and the lines beside the toolbar: SUB on PANEL, in the loop.
-    // The record dot is a graphic beside its word: 3:1 at rest.
-    let dot = |steps: f32| contrast(ERROR, mix(ACCENT, SUB, toolbar::PRIMARY_STEP * steps));
-    assert!(dot(0.0) >= 3.0, "{:.2}", dot(0.0));
+    // Record's label (TEXT) sits on RAISE, HOVER, SELECTED: in the loop.
+    // The record dot is a graphic beside its word: 3:1 at rest and hovered.
+    let dot = |surface| contrast(ERROR, surface);
+    assert!(dot(RAISE) >= 3.0 && dot(HOVER) >= 3.0);
     println!(
-        "gate contrast: {pairs} text pairs, lowest {lowest:.2}:1; record label on the primary \
-         {:.2}/{:.2}/{:.2}:1 (rest/hover/press); record dot {:.2}:1 at rest, {:.2}:1 hovered, \
-         {:.2}:1 pressed",
-        contrast(ON_ACCENT, ACCENT),
-        contrast(ON_ACCENT, mix(ACCENT, SUB, 0.25)),
-        contrast(ON_ACCENT, mix(ACCENT, SUB, 0.5)),
-        dot(0.0),
-        dot(1.0),
-        dot(2.0)
+        "gate contrast: {pairs} text pairs, lowest {lowest:.2}:1; record dot {:.2}:1 at rest \
+         (RAISE), {:.2}:1 hovered (HOVER), {:.2}:1 pressed (SELECTED)",
+        dot(RAISE),
+        dot(HOVER),
+        dot(SELECTED)
     );
 }
 

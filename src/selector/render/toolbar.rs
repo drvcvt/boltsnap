@@ -1,12 +1,13 @@
-//! The recording selector's toolbar (variant A): [Record, Clip] · [Frame,
-//! Audio] · the size of the clip, one row if it fits, else two or three.
+//! The recording selector's toolbar (variant A, compact K2): [Record, Clip]
+//! · [Frame, Audio] · the size of the clip, one row if it fits, else two or
+//! three. Every measure is a formula of the theme's tokens, below.
 
 use boltsnap::ui::icons::Icon;
 use boltsnap::ui::text::Fonts;
-use boltsnap::ui::theme::{self, CTL_H, GAP_S, GAP_XS, ICON, RADIUS, Rgb, STROKE, TextStyle};
+use boltsnap::ui::theme::{self, GAP_S, GAP_XS, Rgb, STROKE, TextStyle};
 use boltsnap::ui::{Canvas, Rect};
 
-use super::chrome::{Placement, SIDE, place, size_text};
+use super::chrome::{Placement, place, size_text};
 
 pub const LABELS: [&str; 4] = ["Record", "Clip", "Frame", "Audio"];
 pub const RECORD: usize = 0;
@@ -14,27 +15,47 @@ pub const CLIP: usize = 1;
 pub const FRAME: usize = 2;
 pub const AUDIO: usize = 3;
 
-/// Room between the toolbar's edge and its controls, and between the
-/// controls of one group.
-pub const PAD: f32 = GAP_XS;
-/// Between groups.
-pub const GROUP_GAP: f32 = GAP_S;
-/// Concentric with the toolbar's corners.
-pub const INNER_RADIUS: f32 = RADIUS - PAD;
-/// How far the primary surface goes toward `SUB` per step (hover, press):
-/// the settings window has no primary button, so this is its rule.
-pub const PRIMARY_STEP: f32 = 0.25;
-/// The size's style.
-pub const READOUT: TextStyle = TextStyle::Key;
+/// Every word on the toolbar, its size and the lines beside it: one step.
+pub const TEXT: TextStyle = TextStyle::Key;
+/// The size's style (the same step).
+pub const READOUT: TextStyle = TEXT;
+/// A control's height: the capitals plus `GAP_S` above and below, so the
+/// side room `(CTL − cap) / 2` is `GAP_S` too (as much beside the text as
+/// above it) and `CTL − cap` is even, the capitals exactly in the middle.
+pub const CTL: f32 = TEXT.cap() + 2.0 * GAP_S;
+/// Room beside a label, and before the toolbar's end after the size.
+pub const SIDE: f32 = (CTL - TEXT.cap()) / 2.0;
+/// The toolbar's rim: half a spacing step, so the toolbar hugs its controls;
+/// it is the group's outline, not a surface of its own.
+pub const PAD: f32 = GAP_XS / 2.0;
+/// Between the controls of one group: the rim, so every inner gap is the
+/// same as the edge they are set in.
+pub const IN_GAP: f32 = PAD;
+/// Between groups: the inner gap plus one spacing step, so a group's end
+/// reads as exactly one step more.
+pub const GROUP_GAP: f32 = IN_GAP + GAP_XS;
+/// A control's corners: a quarter of its height.
+pub const CTL_RADIUS: f32 = CTL / 4.0;
+/// The toolbar's corners, concentric with its controls': inner = outer −
+/// rim, both through the same squircle mapping.
+pub const BAR_RADIUS: f32 = CTL_RADIUS + PAD;
+/// The toolbar's height in one row, and the lines' beside it.
+pub const BAR_H: f32 = CTL + 2.0 * PAD;
+/// An icon's box: 1.5 capitals. Lucide's ink fills about 20/24 of it, 10 px,
+/// under `Key`'s nominal size (8 / 0.7 = 11.4 px): never larger than the
+/// text beside it.
+pub const ICON_BOX: f32 = 1.5 * TEXT.cap();
+/// From the widest labelled icon's ink to its label: one spacing step.
+pub const ICON_TEXT: f32 = GAP_S;
 
 /// The labelled controls' icons and whether they are filled.
 const LABELLED_ICONS: [(Icon, bool); 2] = [(Icon::Circle, true), (Icon::Scissors, false)];
 
-/// Right edge of an icon's ink in its `ICON` box: its outline's box, plus
+/// Right edge of an icon's ink in its `ICON_BOX`: its outline's box, plus
 /// half the stroke for a stroked icon.
 fn ink_right(icon: Icon, filled: bool) -> f32 {
     let right = icon.path().map_or(24.0, |path| path.bounds().right());
-    right * ICON / 24.0 + if filled { 0.0 } else { STROKE / 2.0 }
+    right * ICON_BOX / 24.0 + if filled { 0.0 } else { STROKE / 2.0 }
 }
 
 /// What a row of the toolbar holds.
@@ -71,7 +92,7 @@ const ARRANGEMENTS: [&[&[Item]]; 4] = [
 /// The gap between two neighbours, across or down.
 fn gap(a: Item, b: Item) -> f32 {
     if a.group() == b.group() {
-        PAD
+        IN_GAP
     } else {
         GROUP_GAP
     }
@@ -95,10 +116,10 @@ impl Metrics {
             .iter()
             .map(|&(icon, filled)| ink_right(icon, filled))
             .fold(0.0, f32::max);
-        let text_offset = SIDE + ink.round() + GAP_S;
-        let labelled = |label| (text_offset + fonts.width(TextStyle::Label, label) + SIDE).ceil();
+        let text_offset = SIDE + ink.round() + ICON_TEXT;
+        let labelled = |label| (text_offset + fonts.width(TEXT, label) + SIDE).ceil();
         Self {
-            widths: [labelled(LABELS[0]), labelled(LABELS[1]), CTL_H, CTL_H],
+            widths: [labelled(LABELS[0]), labelled(LABELS[1]), CTL, CTL],
             text_offset,
             size: None,
         }
@@ -191,7 +212,7 @@ fn extent(rows: &[Vec<(Item, f32)>]) -> (f32, f32) {
     let gaps: f32 = rows.windows(2).map(|p| gap(p[0][0].0, p[1][0].0)).sum();
     (
         width + 2.0 * PAD,
-        rows.len() as f32 * CTL_H + gaps + 2.0 * PAD,
+        rows.len() as f32 * CTL + gaps + 2.0 * PAD,
     )
 }
 
@@ -218,7 +239,7 @@ pub fn layout(sel: (f32, f32, f32, f32), area: Rect, metrics: &Metrics) -> Optio
         let below = rows.get(r + 1).map(|next| gap(row[0].0, next[0].0));
         let mut left = x + PAD;
         for (k, &(item, w)) in row.iter().enumerate() {
-            let rect = Rect::new(left, top, w, CTL_H);
+            let rect = Rect::new(left, top, w, CTL);
             let after = row.get(k + 1).map(|&(next, _)| gap(item, next));
             match item {
                 Item::Control(i) => {
@@ -230,11 +251,11 @@ pub fn layout(sel: (f32, f32, f32, f32), area: Rect, metrics: &Metrics) -> Optio
                     controls[i] = rect;
                     hits[i] = Rect::new(l, t, rt - l, b - t);
                 }
-                Item::Size => size = Some(Rect::new(rect.x, rect.y, w - SIDE, CTL_H)),
+                Item::Size => size = Some(Rect::new(rect.x, rect.y, w - SIDE, CTL)),
             }
             left += w + after.unwrap_or(0.0);
         }
-        top += CTL_H + below.unwrap_or(0.0);
+        top += CTL + below.unwrap_or(0.0);
     }
     Some(Layout {
         arrangement,
@@ -294,20 +315,21 @@ pub fn ladder(step: f32) -> Rgb {
     theme::mix(LADDER[low], LADDER[low + 1], step - low as f32)
 }
 
-/// A secondary control's step: Clip rests on none, a toggle that is on two
-/// steps up (like a segment's chosen part over its track); one more under
-/// the pointer, one more while pressed.
+/// A control's step on the ladder: Record rests on the control surface
+/// (the only resting surface, with the only colour: the one primary), Clip
+/// on none, a toggle that is on two steps up (like a segment's chosen part
+/// over its track); one more under the pointer, one more while pressed.
 pub fn step(index: usize, look: &ControlLook) -> f32 {
-    let rest = if index == CLIP { 0.0 } else { 2.0 * look.on };
+    let rest = match index {
+        RECORD => 1.0,
+        CLIP => 0.0,
+        _ => 2.0 * look.on,
+    };
     rest + (look.hover + look.press) * look.enabled
 }
 
 /// A control's surface, `None` where there is none.
 pub fn surface(index: usize, look: &ControlLook) -> Option<Rgb> {
-    if index == RECORD {
-        let toward = PRIMARY_STEP * (look.hover + look.press);
-        return Some(theme::mix(theme::ACCENT, theme::SUB, toward));
-    }
     let step = step(index, look);
     (step > 0.0).then(|| ladder(step))
 }
@@ -315,7 +337,7 @@ pub fn surface(index: usize, look: &ControlLook) -> Option<Rgb> {
 /// The label's and icon's colour.
 pub fn ink(index: usize, look: &ControlLook) -> Rgb {
     match index {
-        RECORD => theme::ON_ACCENT,
+        RECORD => theme::TEXT,
         CLIP => theme::mix(theme::DIM, theme::TEXT, look.enabled),
         _ => theme::mix(theme::SUB, theme::TEXT, look.on.max(look.hover)),
     }
@@ -324,11 +346,16 @@ pub fn ink(index: usize, look: &ControlLook) -> Rgb {
 /// A control's icon box: `SIDE` in for a labelled one, centred in an
 /// icon-only one; on whole pixels either way.
 pub fn icon_rect(index: usize, control: Rect) -> Rect {
-    let y = control.y + (control.h - ICON) / 2.0;
+    let y = control.y + (control.h - ICON_BOX) / 2.0;
     if index >= FRAME {
-        Rect::new(control.x + (control.w - ICON) / 2.0, y, ICON, ICON)
+        Rect::new(
+            control.x + (control.w - ICON_BOX) / 2.0,
+            y,
+            ICON_BOX,
+            ICON_BOX,
+        )
     } else {
-        Rect::new(control.x + SIDE, y, ICON, ICON)
+        Rect::new(control.x + SIDE, y, ICON_BOX, ICON_BOX)
     }
 }
 
@@ -356,11 +383,11 @@ pub fn draw_labelled(
     look: &Look,
     labels: [&str; 2],
 ) {
-    canvas.fill(layout.bounds, RADIUS, theme::PANEL, 1.0);
+    canvas.fill(layout.bounds, BAR_RADIUS, theme::PANEL, 1.0);
     for (i, rect) in layout.controls.iter().enumerate() {
         let control = &look.controls[i];
         if let Some(fill) = surface(i, control) {
-            canvas.fill(*rect, INNER_RADIUS, fill, 1.0);
+            canvas.fill(*rect, CTL_RADIUS, fill, 1.0);
         }
         let ink = ink(i, control);
         let icon = icon_rect(i, *rect);
@@ -376,9 +403,9 @@ pub fn draw_labelled(
             }
         }
         if i < FRAME {
-            let baseline = fonts.baseline(TextStyle::Label, rect.y, rect.h);
+            let baseline = fonts.baseline(TEXT, rect.y, rect.h);
             let at = (rect.x + layout.text_offset, baseline);
-            fonts.draw(canvas, TextStyle::Label, labels[i], at, ink, 1.0);
+            fonts.draw(canvas, TEXT, labels[i], at, ink, 1.0);
         }
     }
     if let (Some(rect), Some(size)) = (layout.size, look.size) {
