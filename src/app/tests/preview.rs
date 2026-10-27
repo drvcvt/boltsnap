@@ -186,6 +186,44 @@ fn the_monitors_sit_in_their_order_and_light_up_for_where_a_recording_goes() {
 }
 
 #[test]
+fn one_clip_joins_the_monitors_bodies_and_keeps_their_screens_whole() {
+    use crate::ui::theme::{PANEL, RAISE};
+    let now = Instant::now();
+    let mut app = app_on("recording", SIZE, now);
+    let pixel = |app: &App, at: Instant, (x, y): (f32, f32)| {
+        let mut canvas = crate::ui::Canvas::new(SIZE.0 as u32, SIZE.1 as u32, 1).unwrap();
+        app.draw(&mut canvas, at);
+        let i = ((y as u32 * SIZE.0 as u32 + x as u32) * 4) as usize;
+        let d = canvas.pixmap.data();
+        (d[i], d[i + 1], d[i + 2])
+    };
+    // Both displays, as two clips first.
+    focus(&mut app, "Display", now);
+    key(&mut app, Key::Enter, now);
+    key(&mut app, Key::Down, now);
+    key(&mut app, Key::Down, now);
+    key(&mut app, Key::Down, now);
+    key(&mut app, Key::Enter, now);
+    let at = now + SETTLED;
+    let (lit, _) = displays(&app, at);
+    let (left, right) = (lit[0].0, lit[1].0);
+    let middle = left.y + left.h / 2.0;
+    let gap = ((left.right() + right.x) / 2.0, middle);
+    // The left screen's inner frame, a pixel in from the body's edge.
+    let frame = (left.right() - 1.0, middle);
+    assert_eq!(pixel(&app, at, gap), PANEL, "two clips: a gap");
+    assert_eq!(pixel(&app, at, frame), RAISE);
+    focus(&mut app, "Both displays as", at);
+    key(&mut app, Key::Right, at);
+    let at = at + SETTLED;
+    assert_eq!(pixel(&app, at, gap), RAISE, "one clip: one body");
+    assert_eq!(pixel(&app, at, frame), RAISE, "the screen keeps its frame");
+    // Top and bottom of the join: no notch of the panel between them.
+    assert_eq!(pixel(&app, at, (gap.0, left.y + 1.0)), RAISE);
+    assert_eq!(pixel(&app, at, (gap.0, left.bottom() - 1.0)), RAISE);
+}
+
+#[test]
 fn without_known_monitors_there_is_no_display_preview() {
     let now = Instant::now();
     let mut prefs = super::prefs();
@@ -599,4 +637,29 @@ fn the_card_left_behind_keeps_its_picture_while_the_top_one_goes() {
             &d[i..i + 3]
         );
     }
+}
+
+/// `PREVIEW_OUT=dir cargo test --lib display_shots -- --ignored`: the
+/// monitors of the test prefs as two clips and as one, as PNGs.
+#[test]
+#[ignore]
+fn display_shots() {
+    let out = std::path::PathBuf::from(std::env::var("PREVIEW_OUT").expect("PREVIEW_OUT"));
+    let now = Instant::now();
+    let mut app = app_on("recording", SIZE, now);
+    focus(&mut app, "Display", now);
+    key(&mut app, Key::Enter, now);
+    for _ in 0..3 {
+        key(&mut app, Key::Down, now);
+    }
+    key(&mut app, Key::Enter, now);
+    let save = |app: &App, at: Instant, name: &str| {
+        let mut canvas = crate::ui::Canvas::new(SIZE.0 as u32, SIZE.1 as u32, 2).unwrap();
+        app.draw(&mut canvas, at);
+        canvas.pixmap.save_png(out.join(name)).unwrap();
+    };
+    save(&app, now + SETTLED, "displays-two.png");
+    focus(&mut app, "Both displays as", now + SETTLED);
+    key(&mut app, Key::Right, now + SETTLED);
+    save(&app, now + SETTLED + SETTLED, "displays-one.png");
 }

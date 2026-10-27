@@ -2827,6 +2827,28 @@ Abnahme: Test, dass Linie und Zahl greifbar sind und der Zeiger dort
 `ResizeX` ist; Test, dass Hover-Frames keinen Painter-Lauf mehr auslösen
 (Zähler); bestehende Tests grün; Render Hover.
 
+#### V7 Zwei Monitore als ein Clip ohne abgeschnittene Innenseiten (27.10., Meldung des Nutzers)
+
+Meldung: „die beiden monitore hier sind auch connected das sieht weird aus
+weil die innere seite der monitore abgeschnitten ist“.
+
+Befund (`preview/displays.rs::seams`, `draw_displays`): bei „Combined“ füllt
+ein Rechteck von `left.right() − BEZEL` bis `right.x + BEZEL` (Höhe ohne die
+Rahmen oben und unten) die Fuge in Bildschirmfarbe. Damit fehlen beiden
+Monitoren die inneren Rahmen und Ecken, und oben und unten bleibt eine
+Kerbe aus Panel-Grund.
+
+Soll: die Bildschirme bleiben ganz (Rahmen, Ecken). „Ein Clip“ zeigt sich
+an den Gehäusen: die Fuge zwischen zwei Nachbarn wird mit `RAISE`
+geschlossen, um `BODY_RADIUS` in beide Gehäuse hinein und über die
+gemeinsame Höhe, sodass die inneren Gehäuse-Ecken eckig werden und beide
+ein Doppelmonitor sind; die Bildschirme liegen danach obendrauf. Übereinander
+ebenso. Blendet mit der Feder `bridge` (`QUICK`) wie bisher.
+
+Abnahme: Test, dass bei „Combined“ die Innenkante beider Bildschirme
+(Mitte der Fuge ± BEZEL) Rahmenfarbe hat und die Fuge selbst `RAISE` ist,
+bei „Separate“ Panel-Grund; Render mit zwei Monitoren nebeneinander.
+
 ## 6. Reihenfolge
 
 Jede Phase ist ein eigener Commit (oder wenige), baut, testet und lässt den
@@ -3000,3 +3022,4 @@ Vom Nutzer am 24.10. so bestätigt:
 | 5g V6 | umgesetzt 27.10. nach „Phase 5g V6“, zwei Abweichungen: (1) die neue Karte kommt erst, wenn die alte weg ist (240 ms, dann 150 ms): gleichzeitig ließ die Shelf-Logik (`overflow_card_opacity`) die übrige Karte aus- und am Ende hart wieder einblenden, im Render bei 90 ms gesehen; (2) `--render` kann `--move X,Y`, `--click X,Y`, `--after MS`, für die Zustands-Screenshots. A: `src/shelf_card/` (Lib: `layout.rs` per `git mv` mit `animated_card_layout`, `animated_item_limit`, `overflow_card_opacity`, `hold_size`; `paint.rs` mit `Frame`, `draw_shelf(…, picture)`, Skala für Radius, Schatten, Striche; `CardKind`, `CardLook`, `APPEAR_MS`/`DISMISS_MS`, `appear`/`dismiss`), `shelf/paint.rs` 1197 → 501 Zeilen, `linux/shelf/anim.rs` (aus `mod.rs`, 3681 → 3494). B: Keys `shelf.card_opacity` (30–100), `shelf.solid_on_hover`, `shelf.card_shadow`, `shelf.animations`, `ShelfPrefs::look()`; Animations aus: kein Appear, Dismiss entfernt sofort. C: `app/preview/shelf.rs` (`Play`: zwei Platzhalter, Federn für Breite `SNAP`, Ecke `GLIDE`, zweite Karte `SNAP`; Malen über den Shelf-Painter in eine Pixmap, Maske auf den Block; Hover je Karte als Differenzbild mit `QUICK`), `dims.rs` (Höhenlinie plus „190 × 132 px“ am ruhenden Eckplatz), `Target::Card`, Überschrift „Look“ mit `blend`, `square-mouse-pointer`, `squares-unite`, `orbit`; Slider zeigt „80%“ ohne Leerzeichen. D: Ecken-Symbole G. Tests neu: `two_cards_rest_in_the_corner_at_their_real_size`, `a_new_corner_glides_the_cards_there`, `one_card_shown_folds_the_second_away`, `the_x_dismisses_a_card_and_a_new_one_arrives_on_top`, `without_animations_a_card_goes_and_comes_at_once`, `the_cards_are_the_shelfs_own_painting_with_the_look_of_the_page`, `the_look_sets_opacity_hover_and_shadow`, `the_preview_leaves_the_save_button_out`, Ecken-Symbol-Test mit Tinten-Mitte (± 1 px bei 48 px). Checks: `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test` 146 + 381 grün, Gates (Kontrast min. 4,83:1, Icons 0,31 px, Padding 0,00, Überlauf 1227 Teile bei 360–1400 px), `settings --measure` mit echter Schrift. Renders Ruhe, Hover, Dismiss-Folge, 2×, 360 px angesehen. Nicht geprüft: `cargo check --target x86_64-pc-windows-msvc` (Ziel nicht installiert; `draw_shelf_opaque` behält Signatur), live im Daemon (Installation und Neustart beim Nutzer). |
 | 5g V6b | umgesetzt 27.10. nach „V6b Maß greifbar, Hover flüssig“: `dims::measure` nimmt `shown`, `edge` reicht von `GRIP/2` in der Karte bis `GAP_XS` hinter die Zahl (ohne Maß der Streifen an der Kante); `ui::PointerShape`, `App::pointer_shape`, das Fenster setzt `ew-resize`/Standard nur bei Wechsel (`linux/app/input.rs`, nach jedem Pointer-Frame). `preview/shelf.rs`: Painter-Bilder je Hover-Zustand behalten (`PaintKey` aus Größe, Kartenrechtecken, Animationen, Look, Skala), Hover mischt nur das Kartenrechteck (`blend_rect`), Maske nur wenn die Fläche über den Block ragt und dann behalten. Tests `the_whole_measure_drags_and_shows_the_sideways_pointer`, `hovering_a_card_blends_kept_pictures_instead_of_painting_again` (ein Painter-Lauf für den Hover-Zustand, danach keiner). Checks: fmt, clippy ohne Warnung, `cargo test` 148 + 381 grün, Render Hover. Live beim Nutzer offen. |
 | 5g V6c | Fix 27.10. (Meldung mit Aufnahme `boltsnap-final-3573342-1.mp4`: „die animation wenn man die obere card im preview wegclickt ist tot broken“): das Platzhalterbild kam aus der Größe der ersten Karte im Layout; geht die obere, ist das die schrumpfende, und jede Karte bekam ihr gestauchtes Bild (die untere wurde von oben her leer, dann sprang sie zurück). Jetzt aus der Kartengröße (`Placed::card`). Test `the_card_left_behind_keeps_its_picture_while_the_top_one_goes`, schlägt mit dem alten Code an (21 statt 52 bei 30 ms). Checks: fmt, clippy, `cargo test` grün, Render-Folge 30–260 ms. |
+| 5g V7 | umgesetzt 27.10. nach „V7 Zwei Monitore als ein Clip“: `displays.rs` `joins` statt `seams` (Fuge plus `BODY_RADIUS` in beide Gehäuse in `RAISE`, über die gemeinsame Höhe bzw. Breite), Bildschirme danach obendrauf, also mit Rahmen und Ecken. Test `one_clip_joins_the_monitors_bodies_and_keeps_their_screens_whole` (Fuge Panel bei zwei Clips, `RAISE` bei einem, Innenrahmen bleibt, keine Kerbe oben und unten); `display_shots` (ignoriert) für die Bilder. Checks: fmt, clippy, `cargo test` grün, Render beider Zustände in 2× angesehen. |

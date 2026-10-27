@@ -153,29 +153,31 @@ fn stands(places: &[Rect]) -> Vec<Option<(Rect, Rect)>> {
         .collect()
 }
 
-/// Between neighbouring screens: their frames and the seam, where the
-/// screens face each other.
-fn seams(places: &[Rect]) -> Vec<Rect> {
-    let mut seams = Vec::new();
+/// Between neighbouring monitors, for one clip over both: the seam and
+/// `BODY_RADIUS` into each body, over the height (or width) they share, so
+/// their facing corners fill square and the two read as one double monitor.
+/// Their screens keep their frames.
+fn joins(places: &[Rect]) -> Vec<Rect> {
+    let mut joins = Vec::new();
     for (i, a) in places.iter().enumerate() {
         for b in &places[i + 1..] {
             let (left, right) = if a.x <= b.x { (a, b) } else { (b, a) };
             let (top, bottom) = if a.y <= b.y { (a, b) } else { (b, a) };
             if (right.x - left.right() - SEAM).abs() <= 1.0 {
-                let y = left.y.max(right.y) + BEZEL;
-                let h = left.bottom().min(right.bottom()) - BEZEL - y;
-                let x = left.right() - BEZEL;
-                seams.push(Rect::new(x, y, right.x + BEZEL - x, h));
+                let y = left.y.max(right.y);
+                let h = left.bottom().min(right.bottom()) - y;
+                let x = left.right() - BODY_RADIUS;
+                joins.push(Rect::new(x, y, right.x + BODY_RADIUS - x, h));
             } else if (bottom.y - top.bottom() - SEAM).abs() <= 1.0 {
-                let x = top.x.max(bottom.x) + BEZEL;
-                let w = top.right().min(bottom.right()) - BEZEL - x;
-                let y = top.bottom() - BEZEL;
-                seams.push(Rect::new(x, y, w, bottom.y + BEZEL - y));
+                let x = top.x.max(bottom.x);
+                let w = top.right().min(bottom.right()) - x;
+                let y = top.bottom() - BODY_RADIUS;
+                joins.push(Rect::new(x, y, w, bottom.y + BODY_RADIUS - y));
             }
         }
     }
-    seams.retain(|seam| seam.w > 0.0 && seam.h > 0.0);
-    seams
+    joins.retain(|join| join.w > 0.0 && join.h > 0.0);
+    joins
 }
 
 /// The top of the names' lines in the block `rect`.
@@ -360,23 +362,23 @@ impl App {
                 on,
             );
         };
-        for ((body, on), stand) in lit.iter().zip(stands(&bodies)) {
+        for (body, stand) in bodies.iter().zip(stands(&bodies)) {
             canvas.fill(*body, BODY_RADIUS, theme::RAISE, 1.0);
             if let Some((neck, foot)) = stand {
                 canvas.fill(neck, 0.0, theme::RAISE, 1.0);
                 canvas.fill(foot, FOOT_H / 2.0, theme::RAISE, 1.0);
             }
+        }
+        // Combined: one clip over all of them, their bodies joined into one.
+        if bridge > 0.0 {
+            for join in joins(&bodies) {
+                canvas.fill(join, 0.0, theme::RAISE, bridge);
+            }
+        }
+        for (body, on) in &lit {
             let screen = body.inset(BEZEL);
             canvas.fill(screen, SCREEN_RADIUS, theme::WINDOW, 1.0);
             light(canvas, screen, SCREEN_RADIUS, *on);
-        }
-        // Combined: one clip over all of them, the seams between their
-        // screens closed.
-        if bridge > 0.0 {
-            for seam in seams(&bodies) {
-                canvas.fill(seam, 0.0, theme::WINDOW, bridge);
-                light(canvas, seam, 0.0, bridge);
-            }
         }
         let fonts = &self.fonts;
         for ((place, (_, on)), screen) in name_places(rect, screens).iter().zip(&lit).zip(screens) {
