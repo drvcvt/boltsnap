@@ -1,7 +1,9 @@
 //! Wayland screenshot and recording selector using SCTK layer surfaces and tiny-skia.
 
+use crate::selector::motion::{BarMotion, Targets};
 use crate::selector::{desktop, edit, render, scene::SceneCache};
 use boltsnap::ui::text::Fonts;
+use std::time::Instant;
 
 use std::thread;
 
@@ -162,6 +164,12 @@ fn run_selector(
         overlay: None,
         // The embedded face until the desktop's is loaded (before any frame).
         chrome: render::Chrome::new(Fonts::fallback()),
+        motion: BarMotion::new(
+            &bar_targets(None, None, show_frame, audio_enabled, false),
+            Instant::now(),
+        ),
+        pressed: None,
+        pointer_in: false,
         surf_w: 0,
         surf_h: 0,
         configured: false,
@@ -357,6 +365,12 @@ struct Selector {
     overlay: Option<SceneCache>,
     /// The face and the toolbar's measured widths.
     chrome: render::Chrome,
+    /// The toolbar's springs.
+    motion: BarMotion,
+    /// The toolbar control held down, until the button comes up.
+    pressed: Option<usize>,
+    /// The pointer is over a selector surface (Wayland says when it leaves).
+    pointer_in: bool,
     surf_w: u32,
     surf_h: u32,
     configured: bool,
@@ -407,7 +421,53 @@ enum Mode {
     Editing { rect: edit::Rect },
 }
 
+/// The toolbar's targets: what is under the pointer and held, the toggles,
+/// and whether Clip has a buffer.
+fn bar_targets(
+    hovered: Option<usize>,
+    pressed: Option<usize>,
+    show_frame: bool,
+    audio: bool,
+    clip: bool,
+) -> Targets {
+    use render::toolbar::{AUDIO, CLIP, FRAME};
+    Targets {
+        hovered,
+        pressed,
+        on: std::array::from_fn(|i| (i == FRAME && show_frame) || (i == AUDIO && audio)),
+        enabled: std::array::from_fn(|i| i != CLIP || clip),
+    }
+}
+
 impl Selector {
+    /// Hand the toolbar what it should show now: there once a selection is
+    /// drawn (not while it is first dragged out), following it as it changes.
+    fn sync_bar(&mut self, now: Instant) {
+        if !self.record_mode {
+            return;
+        }
+        let layout = match self.mode {
+            Mode::Editing { rect } => render::toolbar::layout(
+                (rect.x as f32, rect.y as f32, rect.w as f32, rect.h as f32),
+                boltsnap::ui::Rect::new(0.0, 0.0, self.surf_w as f32, self.surf_h as f32),
+                &self.chrome.toolbar,
+            ),
+            _ => None,
+        };
+        let hovered = layout
+            .as_ref()
+            .filter(|_| self.pointer_in)
+            .and_then(|l| l.hit((self.cursor.0 as f32, self.cursor.1 as f32)));
+        let targets = bar_targets(
+            hovered,
+            self.pressed,
+            self.show_frame,
+            self.audio_enabled,
+            self.frozen.is_some(),
+        );
+        self.motion.update(layout, &targets, now);
+    }
+
     /// Captured pixels must remain attached to the same logical output layout.
     fn target_layout_valid(&self) -> bool {
         self.views.iter().enumerate().all(|(index, view)| {

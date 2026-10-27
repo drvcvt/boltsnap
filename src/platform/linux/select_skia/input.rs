@@ -32,17 +32,12 @@ pub(super) fn contains(rect: (f64, f64, f64, f64), point: (f64, f64)) -> bool {
     point.0 >= rect.0 && point.0 < rect.0 + rect.2 && point.1 >= rect.1 && point.1 < rect.1 + rect.3
 }
 
+/// The control of the toolbar that takes input under `point`.
 pub(super) fn record_control_hit(
-    sel: (f32, f32, f32, f32),
-    surf_w: u32,
-    surf_h: u32,
-    chrome: &render::Chrome,
+    toolbar: Option<&render::toolbar::Layout>,
     point: (f64, f64),
 ) -> Option<RecordControlHit> {
-    let area = boltsnap::ui::Rect::new(0.0, 0.0, surf_w as f32, surf_h as f32);
-    let toolbar = render::toolbar::layout(sel, area, &chrome.toolbar)?;
-    let point = (point.0 as f32, point.1 as f32);
-    toolbar.hit(point).map(|i| {
+    toolbar?.hit((point.0 as f32, point.1 as f32)).map(|i| {
         [
             RecordControlHit::Record,
             RecordControlHit::Clip,
@@ -130,6 +125,16 @@ impl PointerHandler for Selector {
             {
                 let _ = p.set_cursor(conn, CursorIcon::Crosshair);
             }
+            match ev.kind {
+                PointerEventKind::Enter { .. } => self.pointer_in = true,
+                // Hover and press never stay lit once the pointer is gone.
+                PointerEventKind::Leave { .. } => {
+                    self.pointer_in = false;
+                    self.pressed = None;
+                    redraw = true;
+                }
+                _ => {}
+            }
             let Some(view) = self
                 .views
                 .iter()
@@ -149,23 +154,10 @@ impl PointerHandler for Selector {
                     != self.views.iter().position(|v| v.contains((x, y)));
             }
             self.cursor = (x, y);
-            if self.record_mode
-                && let Mode::Editing { rect } = self.mode
-            {
-                let sel = (rect.x as f32, rect.y as f32, rect.w as f32, rect.h as f32);
-                redraw |= record_control_hit(
-                    sel,
-                    self.surf_w,
-                    self.surf_h,
-                    &self.chrome,
-                    previous_cursor,
-                ) != record_control_hit(
-                    sel,
-                    self.surf_w,
-                    self.surf_h,
-                    &self.chrome,
-                    self.cursor,
-                );
+            if self.record_mode {
+                let toolbar = self.motion.layout();
+                redraw |= record_control_hit(toolbar, previous_cursor)
+                    != record_control_hit(toolbar, self.cursor);
             }
             match ev.kind {
                 PointerEventKind::Press { button, .. } if button == BTN_LEFT => {
@@ -173,15 +165,7 @@ impl PointerHandler for Selector {
                         Mode::Editing { rect } => {
                             // Toolbar clicks do not alter the selection.
                             if self.record_mode {
-                                let sel =
-                                    (rect.x as f32, rect.y as f32, rect.w as f32, rect.h as f32);
-                                match record_control_hit(
-                                    sel,
-                                    self.surf_w,
-                                    self.surf_h,
-                                    &self.chrome,
-                                    (x, y),
-                                ) {
+                                match record_control_hit(self.motion.layout(), (x, y)) {
                                     Some(RecordControlHit::Clip) => {
                                         if self.frozen.is_some() {
                                             self.result_clip = true;
@@ -204,12 +188,14 @@ impl PointerHandler for Selector {
                                     }
                                     Some(RecordControlHit::Audio) => {
                                         self.audio_enabled = !self.audio_enabled;
+                                        self.pressed = Some(render::toolbar::AUDIO);
                                         self.interaction = None;
                                         self.request_redraw();
                                         return;
                                     }
                                     Some(RecordControlHit::Frame) => {
                                         self.show_frame = !self.show_frame;
+                                        self.pressed = Some(render::toolbar::FRAME);
                                         self.interaction = None;
                                         self.request_redraw();
                                         return;
@@ -311,6 +297,7 @@ impl PointerHandler for Selector {
                     }
                 },
                 PointerEventKind::Release { button, .. } if button == BTN_LEFT => {
+                    redraw |= self.pressed.take().is_some();
                     match self.mode {
                         Mode::Drawing { anchor, now } => {
                             let rect = edit::Rect::from_corners(anchor, now);
@@ -423,7 +410,7 @@ mod tests {
         let sel = (80.0, 80.0, 200.0, 120.0);
         let area = boltsnap::ui::Rect::new(0.0, 0.0, 400.0, 300.0);
         let toolbar = render::toolbar::layout(sel, area, &chrome.toolbar).unwrap();
-        let hit = |x: f32, y: f32| record_control_hit(sel, 400, 300, &chrome, (x as f64, y as f64));
+        let hit = |x: f32, y: f32| record_control_hit(Some(&toolbar), (x as f64, y as f64));
         let audio = toolbar.controls[3];
         assert_eq!(
             hit(audio.x + audio.w / 2.0, audio.y + audio.h / 2.0),

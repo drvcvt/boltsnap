@@ -48,6 +48,17 @@ pub struct Layout {
 }
 
 impl Layout {
+    /// The same toolbar `dx`, `dy` further.
+    pub fn translated(&self, dx: f32, dy: f32) -> Self {
+        let shift = |r: Rect| Rect::new(r.x + dx, r.y + dy, r.w, r.h);
+        Self {
+            bounds: shift(self.bounds),
+            controls: self.controls.map(shift),
+            hits: self.hits.map(shift),
+            ..*self
+        }
+    }
+
     /// The control under `point`.
     pub fn hit(&self, (x, y): (f32, f32)) -> Option<usize> {
         self.hits.iter().position(|rect| rect.contains(x, y))
@@ -128,6 +139,7 @@ pub struct Look {
 
 impl Look {
     /// The look without motion: `hovered`, the toggles' states, Clip there.
+    #[allow(dead_code)] // Tests and the selector bench.
     pub fn at_rest(clip: bool, frame: bool, audio: bool, hovered: Option<usize>) -> Self {
         let f = |b: bool| f32::from(u8::from(b));
         Self {
@@ -186,6 +198,32 @@ pub fn icon_rect(control: Rect) -> Rect {
 /// Where a control's label starts.
 pub fn text_x(control: Rect) -> f32 {
     control.x + SIDE + ICON + GAP_S
+}
+
+/// The toolbar at `alpha` as one layer: drawn on its own and laid over the
+/// frame, so the surfaces inside it do not show through each other while
+/// it fades.
+pub fn draw_faded(canvas: &mut Canvas, fonts: &Fonts, layout: &Layout, look: &Look, alpha: f32) {
+    if alpha >= 1.0 {
+        draw(canvas, fonts, layout, look);
+        return;
+    }
+    let b = layout.bounds;
+    let Some(mut layer) = Canvas::new(b.w.ceil() as u32, b.h.ceil() as u32, 1) else {
+        return;
+    };
+    draw(&mut layer, fonts, &layout.translated(-b.x, -b.y), look);
+    canvas.pixmap.draw_pixmap(
+        b.x as i32,
+        b.y as i32,
+        layer.pixmap.as_ref(),
+        &tiny_skia::PixmapPaint {
+            opacity: alpha.clamp(0.0, 1.0),
+            ..Default::default()
+        },
+        tiny_skia::Transform::identity(),
+        None,
+    );
 }
 
 /// The toolbar's surface, each control's surface, icon and label.

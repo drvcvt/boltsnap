@@ -10,8 +10,10 @@ use wayland_client::{
     protocol::{wl_output, wl_surface::WlSurface},
 };
 
+use std::time::Instant;
+
 use super::{Mode, Selector, contains};
-use crate::selector::{desktop, edit, render, scene::Scene};
+use crate::selector::{desktop, edit, scene::Scene};
 
 pub(super) struct FrameBuffer {
     pub(super) buffer: Buffer,
@@ -42,6 +44,8 @@ impl Selector {
     /// no frame callback is pending; otherwise marks a redraw owed so the next
     /// `frame` callback coalesces it. Keeps a fast drag from flooding commits.
     pub(super) fn request_redraw(&mut self) {
+        // What the toolbar should show changes now, not at the next frame.
+        self.sync_bar(Instant::now());
         self.needs_redraw = true;
         for view in &mut self.views {
             view.needs_redraw = true;
@@ -68,7 +72,6 @@ impl Selector {
         let (Some(base), Some(overlay)) = (self.base.as_ref(), self.overlay.as_mut()) else {
             return;
         };
-        let (w, h) = (self.surf_w, self.surf_h);
         let sel = match self.mode {
             Mode::Idle => None,
             Mode::Drawing { anchor, now } => {
@@ -80,11 +83,7 @@ impl Selector {
             }
         };
 
-        let hovered = sel.and_then(|s| {
-            let area = boltsnap::ui::Rect::new(0.0, 0.0, w as f32, h as f32);
-            render::toolbar::layout(s, area, &self.chrome.toolbar)?
-                .hit((self.cursor.0 as f32, self.cursor.1 as f32))
-        });
+        let now = Instant::now();
         overlay.update(
             base,
             Scene {
@@ -99,12 +98,11 @@ impl Selector {
                 selection: sel,
                 editing: matches!(self.mode, Mode::Editing { .. }),
                 record: self.record_mode,
-                toggles: if self.record_mode {
-                    (self.frozen.is_some(), self.show_frame, self.audio_enabled)
+                bar: if self.record_mode {
+                    self.motion.sample(now)
                 } else {
-                    (false, false, false)
+                    Default::default()
                 },
-                hovered: self.record_mode.then_some(hovered).flatten(),
                 magnifier: (self.alt_held && !self.record_mode).then_some(self.cursor),
             },
             &self.chrome,
@@ -186,6 +184,19 @@ impl Selector {
             view.committed_generation = Some(overlay.generation());
             view.frame_pending = true;
             view.needs_redraw = false;
+        }
+        // A spring still running asks for the next frame even when this one
+        // showed nothing new, the way the settings window does.
+        if self.motion.moving(now) {
+            for view in &mut self.views {
+                if !view.frame_pending {
+                    let surface = view.layer.wl_surface();
+                    surface.frame(&self.qh, surface.clone());
+                    view.layer.commit();
+                    view.frame_pending = true;
+                }
+                view.needs_redraw = true;
+            }
         }
         self.needs_redraw = self.views.iter().any(|v| v.needs_redraw);
     }

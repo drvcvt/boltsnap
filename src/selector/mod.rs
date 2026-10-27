@@ -1,5 +1,6 @@
 pub mod desktop;
 pub mod edit;
+pub mod motion;
 pub mod render;
 
 pub use crate::platform::select_skia::run_select_record;

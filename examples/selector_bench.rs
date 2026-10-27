@@ -12,6 +12,8 @@ mod shelf {
 pub mod desktop;
 #[path = "../src/selector/edit.rs"]
 pub mod edit;
+#[path = "../src/selector/motion.rs"]
+pub mod motion;
 #[path = "../src/selector/render/mod.rs"]
 pub mod render;
 #[path = "../src/selector/scene.rs"]
@@ -20,6 +22,24 @@ mod selector {
     pub use crate::edit;
 }
 use scene::{Scene, SceneCache};
+
+/// The recording toolbar at rest for `sel`, `hovered` lit.
+fn bar(
+    chrome: &render::Chrome,
+    sel: (f32, f32, f32, f32),
+    (w, h): (u32, u32),
+    hovered: Option<usize>,
+) -> motion::Bar {
+    let area = boltsnap::ui::Rect::new(0.0, 0.0, w as f32, h as f32);
+    motion::Bar {
+        ghosts: Vec::new(),
+        current: render::toolbar::layout(sel, area, &chrome.toolbar).map(|layout| motion::Drawn {
+            layout,
+            look: render::toolbar::Look::at_rest(true, true, false, hovered),
+            alpha: 1.0,
+        }),
+    }
+}
 
 fn main() {
     let chrome = render::Chrome::new(boltsnap::ui::text::Fonts::fallback());
@@ -48,11 +68,15 @@ fn main() {
                         selection: Some((40. + offset, 90., w as f32 * 0.7, h as f32 * 0.7)),
                         editing: true,
                         record: scenario == "hover",
-                        toggles: (true, true, false),
-                        hovered: if scenario == "hover" {
-                            Some(i % 4)
+                        bar: if scenario == "hover" {
+                            bar(
+                                &chrome,
+                                (40., 90., w as f32 * 0.7, h as f32 * 0.7),
+                                (w, h),
+                                Some(i % 4),
+                            )
                         } else {
-                            None
+                            Default::default()
                         },
                         magnifier: (scenario == "loupe").then_some((300. + (i % 30) as f64, 240.)),
                     };
@@ -103,8 +127,7 @@ fn main() {
                 selection: Some((100., 180., 740., 280.)),
                 editing: true,
                 record: true,
-                toggles: (true, true, false),
-                hovered: Some(0),
+                bar: bar(&chrome, (100., 180., 740., 280.), (960, 540), Some(0)),
                 magnifier: None,
             },
             &chrome,

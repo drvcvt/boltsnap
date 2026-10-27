@@ -1,4 +1,5 @@
 //! Persistent selector frame and bounded damage history, independent of Wayland.
+use super::motion::Bar;
 use super::render::{self, Chrome, toolbar};
 use boltsnap::ui::{Canvas, Rect};
 use std::collections::VecDeque;
@@ -12,8 +13,8 @@ pub struct Scene {
     pub selection: Option<(f32, f32, f32, f32)>,
     pub editing: bool,
     pub record: bool,
-    pub toggles: (bool, bool, bool),
-    pub hovered: Option<usize>,
+    /// The recording toolbar as this frame shows it (empty otherwise).
+    pub bar: Bar,
     // Ignore pointer motion unless it changes the visible loupe or hover.
     pub magnifier: Option<(f64, f64)>,
 }
@@ -76,16 +77,6 @@ fn badge_bounds(
     render::size_badge_rect(&chrome.fonts, sel, area(s, w, h))
 }
 
-fn toolbar(
-    s: &Scene,
-    sel: (f32, f32, f32, f32),
-    w: u32,
-    h: u32,
-    chrome: &Chrome,
-) -> Option<toolbar::Layout> {
-    toolbar::layout(sel, area(s, w, h), &chrome.toolbar)
-}
-
 fn wide(r: Rect) -> (f64, f64, f64, f64) {
     (r.x as f64, r.y as f64, r.w as f64, r.h as f64)
 }
@@ -122,12 +113,9 @@ fn decorations(s: &Scene, w: u32, h: u32, chrome: &Chrome) -> Vec<Region> {
         ] {
             add(r, pad);
         }
-        let panel = if s.record {
-            toolbar(s, sel, w, h, chrome).map(|t| t.bounds)
-        } else {
-            badge_bounds(s, sel, w, h, chrome)
-        };
-        if let Some(r) = panel {
+        if !s.record
+            && let Some(r) = badge_bounds(s, sel, w, h, chrome)
+        {
             add(wide(r), 2.0);
         }
     }
@@ -135,7 +123,25 @@ fn decorations(s: &Scene, w: u32, h: u32, chrome: &Chrome) -> Vec<Region> {
         let (x, y) = loupe_position(s, cursor, w, h);
         add((x.round(), y.round(), 120.0, 120.0), 3.0);
     }
+    regions.extend(bar_regions(s, w, h));
     regions
+}
+
+/// Every toolbar a frame draws, current and fading out.
+fn bar_regions(s: &Scene, w: u32, h: u32) -> Vec<Region> {
+    s.bar
+        .all()
+        .filter_map(|drawn| bounds(wide(drawn.layout.bounds), 2.0, w, h))
+        .collect()
+}
+
+/// Two frames that differ in nothing but the toolbar.
+fn only_bar_differs(a: &Scene, b: &Scene) -> bool {
+    a.chrome_viewport == b.chrome_viewport
+        && a.selection == b.selection
+        && a.editing == b.editing
+        && a.record == b.record
+        && a.magnifier == b.magnifier
 }
 
 /// Disjoint bounded regions. Never merge crossing border strips into the full
@@ -172,15 +178,20 @@ pub fn paint(frame: &mut Canvas, base: &Pixmap, scene: &Scene, chrome: &Chrome) 
         if scene.editing {
             render::draw_grips(&mut frame.pixmap, sel);
         }
-        if scene.record {
-            if let Some(layout) = toolbar(scene, sel, w, h, chrome) {
-                let (clip, show_frame, audio) = scene.toggles;
-                let look = toolbar::Look::at_rest(clip, show_frame, audio, scene.hovered);
-                toolbar::draw(frame, &chrome.fonts, &layout, &look);
-            }
-        } else if let Some(rect) = badge_bounds(scene, sel, w, h, chrome) {
+        if !scene.record
+            && let Some(rect) = badge_bounds(scene, sel, w, h, chrome)
+        {
             render::draw_size_badge(frame, &chrome.fonts, sel, rect);
         }
+    }
+    for drawn in scene.bar.all() {
+        toolbar::draw_faded(
+            frame,
+            &chrome.fonts,
+            &drawn.layout,
+            &drawn.look,
+            drawn.alpha,
+        );
     }
     if let Some(cursor) = scene.magnifier {
         render::draw_magnifier_at(
@@ -213,7 +224,16 @@ impl SceneCache {
             return false;
         }
         let (w, h) = (base.width(), base.height());
-        let regions = if let Some(old) = &self.previous {
+        let regions = if let Some(old) = &self.previous
+            && only_bar_differs(old, &scene)
+        {
+            // A toolbar animating: only it changes. Border and grips are
+            // opaque on whole pixels, so painting them again over pixels
+            // that were not reset leaves them as they are.
+            let mut regions = bar_regions(old, w, h);
+            regions.extend(bar_regions(&scene, w, h));
+            compact(regions, w, h)
+        } else if let Some(old) = &self.previous {
             let mut regions = decorations(old, w, h, chrome);
             regions.extend(decorations(&scene, w, h, chrome));
             match (selection(old, w, h), selection(&scene, w, h)) {
@@ -312,6 +332,35 @@ mod tests {
     fn chrome() -> Chrome {
         Chrome::new(boltsnap::ui::text::Fonts::fallback())
     }
+
+    /// A toolbar for `sel` at frame `i`: lit, fading, with a toolbar
+    /// fading out beside it every other frame.
+    fn bar(sel: Option<(f32, f32, f32, f32)>, i: usize, chrome: &Chrome) -> Bar {
+        let area = Rect::new(0.0, 0.0, 640.0, 360.0);
+        let Some(layout) = sel.and_then(|sel| toolbar::layout(sel, area, &chrome.toolbar)) else {
+            return Bar::default();
+        };
+        let mut look = toolbar::Look::at_rest(
+            i.is_multiple_of(2),
+            i.is_multiple_of(3),
+            i.is_multiple_of(4),
+            Some(i % 4),
+        );
+        look.controls[i % 4].press = 0.5;
+        let drawn = |layout, alpha| crate::selector::motion::Drawn {
+            layout,
+            look,
+            alpha,
+        };
+        Bar {
+            ghosts: if i.is_multiple_of(2) {
+                vec![drawn(layout.translated(30.0, 40.0), 0.4)]
+            } else {
+                Vec::new()
+            },
+            current: Some(drawn(layout, [1.0, 0.5, 0.25][i % 3])),
+        }
+    }
     #[test]
     fn regional_frames_and_rotating_buffers_match_full_render() {
         for alpha in [0, 127, 255] {
@@ -330,22 +379,41 @@ mod tests {
             let mut reference = render::CachedOverlay::new(&base);
             let mut buffers: Vec<_> = (0..3).map(|_| (None, vec![0; 640 * 360 * 4])).collect();
             let mut seed = 73u32;
+            let mut last: Option<Scene> = None;
             for i in 0..160 {
                 seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
-                let scene = Scene {
-                    chrome_viewport: None,
-                    selection: (i % 17 != 0).then_some((
-                        (seed % 570) as f32 - 20.25,
-                        (seed % 300) as f32 - 10.5,
-                        (seed % 450 + 1) as f32,
-                        (seed % 230 + 1) as f32,
-                    )),
-                    editing: i % 3 != 0,
-                    record: i % 5 < 2,
-                    toggles: (i % 2 == 0, i % 3 == 0, i % 4 == 0),
-                    hovered: Some(i % 4),
-                    magnifier: (i % 5 == 3).then_some(((seed % 640) as f64, (seed % 360) as f64)),
+                let selection = (i % 17 != 0).then_some((
+                    (seed % 570) as f32 - 20.25,
+                    (seed % 300) as f32 - 10.5,
+                    (seed % 450 + 1) as f32,
+                    (seed % 230 + 1) as f32,
+                ));
+                let record = i % 5 < 2;
+                // Only the toolbar changes: its damage alone repairs it.
+                let bar_only = last
+                    .take()
+                    .filter(|p| p.record && i % 4 != 0)
+                    .map(|previous| Scene {
+                        bar: bar(previous.selection, i, &chrome),
+                        ..previous
+                    });
+                let scene = match bar_only {
+                    Some(scene) if Some(&scene) != cache.previous.as_ref() => scene,
+                    _ => Scene {
+                        chrome_viewport: None,
+                        selection,
+                        editing: i % 3 != 0,
+                        record,
+                        bar: if record {
+                            bar(selection, i, &chrome)
+                        } else {
+                            Bar::default()
+                        },
+                        magnifier: (!record && i % 5 == 3)
+                            .then_some(((seed % 640) as f64, (seed % 360) as f64)),
+                    },
                 };
+                last = Some(scene.clone());
                 assert!(cache.update(&base, scene.clone(), &chrome));
                 let expected = reference.reset(&base, scene.selection);
                 paint(expected, &base, &scene, &chrome);
@@ -389,8 +457,7 @@ mod tests {
                     selection: Some((100. + i as f32, 120., 360., 100.)),
                     editing: i % 3 == 0,
                     record: false,
-                    toggles: (false, false, false),
-                    hovered: None,
+                    bar: Bar::default(),
                     magnifier: (i % 4 == 0).then_some((310., 200.)),
                 },
                 &chrome,
@@ -423,8 +490,7 @@ mod tests {
             selection: Some((200., 30., 250., 180.)),
             editing: true,
             record: false,
-            toggles: (false, false, false),
-            hovered: None,
+            bar: Bar::default(),
             magnifier: None,
         };
         let Rect { x, y, w, h } =
@@ -444,8 +510,7 @@ mod tests {
             selection: Some((100., 100., 3000., 1600.)),
             editing: true,
             record: false,
-            toggles: (false, false, false),
-            hovered: None,
+            bar: Bar::default(),
             magnifier: None,
         };
         cache.update(&base, scene.clone(), &chrome);
@@ -458,5 +523,61 @@ mod tests {
             .map(|r| (r.2 - r.0) as u64 * (r.3 - r.1) as u64)
             .sum();
         assert!(area < 3840 * 2160 / 10, "{area}");
+    }
+
+    #[test]
+    fn an_animating_toolbar_damages_only_the_toolbar_and_fades_as_one_layer() {
+        let mut base = Pixmap::new(640, 360).unwrap();
+        base.fill(tiny_skia::Color::from_rgba8(200, 180, 160, 255));
+        let chrome = chrome();
+        let mut cache = SceneCache::new(&base);
+        let sel = Some((100.0, 150.0, 300.0, 150.0));
+        let mut scene = Scene {
+            chrome_viewport: None,
+            selection: sel,
+            editing: true,
+            record: true,
+            bar: bar(sel, 1, &chrome),
+            magnifier: None,
+        };
+        scene.bar.ghosts.clear();
+        cache.update(&base, scene.clone(), &chrome);
+        let generation = cache.generation();
+        let toolbar = scene.bar.current.as_ref().unwrap().layout.bounds;
+        for (index, alpha) in [0.6f32, 0.8, 1.0].into_iter().enumerate() {
+            scene.bar.current.as_mut().unwrap().alpha = alpha;
+            scene.bar.current.as_mut().unwrap().look.controls[0].hover = index as f32 / 2.0;
+            assert!(cache.update(&base, scene.clone(), &chrome));
+            for (x0, y0, x1, y1) in cache.damage_since(Some(generation)) {
+                assert!(
+                    x0 as f32 >= toolbar.x - 3.0
+                        && y0 as f32 >= toolbar.y - 3.0
+                        && x1 as f32 <= toolbar.right() + 3.0
+                        && y1 as f32 <= toolbar.bottom() + 3.0,
+                    "damage {:?} outside the toolbar {toolbar:?}",
+                    (x0, y0, x1, y1)
+                );
+            }
+        }
+        // Halfway faded, Record's surface is half its colour over what is
+        // behind, not the toolbar's surface showing through it.
+        scene.bar.current.as_mut().unwrap().alpha = 0.5;
+        scene.bar.current.as_mut().unwrap().look.controls[0].hover = 0.0;
+        cache.update(&base, scene.clone(), &chrome);
+        let record = scene.bar.current.as_ref().unwrap().layout.controls[0];
+        let (x, y) = (record.x as u32 + 3, record.bottom() as u32 - 3);
+        let i = ((y * 640 + x) * 4) as usize;
+        let behind = {
+            let mut dimmed = base.clone();
+            render::dim_and_restore_with_style(&mut dimmed, None, render::SCREENSHOT_OVERLAY_STYLE);
+            dimmed.data()[i]
+        };
+        let expected = (behind as f32 + theme_raise() as f32) / 2.0;
+        let got = cache.frame().data()[i] as f32;
+        assert!((got - expected).abs() <= 1.5, "{got} vs {expected}");
+    }
+
+    fn theme_raise() -> u8 {
+        boltsnap::ui::theme::RAISE.0
     }
 }
