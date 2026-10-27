@@ -342,9 +342,12 @@ fn gate_contrast_every_label_on_its_surface() {
     // The record dot is a graphic beside its word, lit with its surface:
     // 3:1 on every step it can sit on, with the colour it has there.
     let dot = |hover: f32, press: f32| {
-        let mut look = toolbar::ControlLook::default();
-        look.enabled = 1.0;
-        (look.hover, look.press) = (hover, press);
+        let look = toolbar::ControlLook {
+            hover,
+            press,
+            enabled: 1.0,
+            ..Default::default()
+        };
         let surface = toolbar::surface(toolbar::RECORD, &look).unwrap();
         contrast(toolbar::mark(&look), surface)
     };
