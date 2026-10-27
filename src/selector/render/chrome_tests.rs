@@ -352,6 +352,71 @@ fn without_replay_the_toolbar_leaves_clip_out_entirely() {
     }
 }
 
+/// More than one row: every row ends at the right padding, nothing left
+/// over beside a short row, gaps and edges as in one row, whole pixels.
+#[test]
+fn every_row_of_a_stacked_toolbar_reaches_the_padding() {
+    let fonts = Fonts::fallback();
+    let with = Metrics::new(&fonts).with_size(&fonts, gates::VIDEO);
+    let mut stacked = 0;
+    for metrics in [with, with.without_clip(), Metrics::new(&fonts)] {
+        for (w, h) in [
+            (400u32, 300u32),
+            (300, 300),
+            (200, 300),
+            (240, 200),
+            (160, 240),
+        ] {
+            let (wf, hf) = (w as f32, h as f32);
+            let area = Rect::new(0.0, 0.0, wf, hf);
+            for sel in [
+                (20.25, 70.5, 80.0, 40.0),
+                (0.0, 0.0, wf, hf),
+                (wf / 3.0, 2.0, 10.0, hf - 4.0),
+            ] {
+                let t = toolbar::layout(sel, area, &metrics).unwrap();
+                let b = t.bounds;
+                let mut items: Vec<Rect> = (0..4)
+                    .filter(|&i| t.shown[i])
+                    .map(|i| t.controls[i])
+                    .collect();
+                items.extend(t.size.map(|r| Rect::new(r.x, r.y, r.w + SIDE, r.h)));
+                let mut ys: Vec<f32> = items.iter().map(|r| r.y).collect();
+                ys.dedup();
+                if ys.len() < 2 {
+                    continue;
+                }
+                stacked += 1;
+                for y in ys {
+                    let mut row: Vec<Rect> = items.iter().copied().filter(|r| r.y == y).collect();
+                    row.sort_by(|a, c| a.x.total_cmp(&c.x));
+                    let last = row.last().unwrap();
+                    assert_eq!(b.right() - last.right(), PAD, "{w}x{h} {sel:?} row {y}");
+                    assert_eq!(row[0].x - b.x, PAD, "{w}x{h} {sel:?} row {y}");
+                    for r in &row {
+                        assert_eq!((r.x.fract(), r.w.fract()), (0.0, 0.0), "{w}x{h} {sel:?}");
+                    }
+                    for pair in row.windows(2) {
+                        let gap = pair[1].x - pair[0].right();
+                        assert!(
+                            gap == IN_GAP || gap == toolbar::GROUP_GAP,
+                            "{w}x{h} {sel:?}: {gap}"
+                        );
+                    }
+                }
+                // The gate sees one pixel off the padding.
+                let mut moved =
+                    gates::measure_with(&fonts, (w, h), sel, true, t.shown[toolbar::CLIP]);
+                if gates::check(&moved).is_ok() {
+                    moved.layout.controls[AUDIO].w -= 1.0;
+                    assert!(gates::check(&moved).is_err(), "{w}x{h} {sel:?}");
+                }
+            }
+        }
+    }
+    assert!(stacked > 0, "no stacked toolbar was tried");
+}
+
 #[test]
 fn gate_capitals_padding_and_icons_measure_without_clip_too() {
     let fonts = Fonts::fallback();

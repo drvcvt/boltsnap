@@ -234,6 +234,36 @@ fn extent(rows: &[Vec<(Item, f32)>]) -> (f32, f32) {
     )
 }
 
+/// With more than one row, every row ends at the right padding, so the
+/// toolbar keeps one edge all round: the size takes a row's rest where it
+/// stands (its text stays at its start), else the row's controls share it in
+/// whole pixels, the last taking a pixel left over.
+fn justify(mut rows: Vec<Vec<(Item, f32)>>, inner: f32) -> Vec<Vec<(Item, f32)>> {
+    if rows.len() < 2 {
+        return rows;
+    }
+    for row in &mut rows {
+        let gaps: f32 = row.windows(2).map(|p| gap(p[0].0, p[1].0)).sum();
+        let rest = inner - gaps - row.iter().map(|(_, w)| w).sum::<f32>();
+        if rest <= 0.0 {
+            continue;
+        }
+        if let Some(size) = row.iter_mut().find(|(item, _)| *item == Item::Size) {
+            size.1 += rest;
+            continue;
+        }
+        let count = row.len() as f32;
+        let share = (rest / count).floor();
+        for (_, w) in row.iter_mut() {
+            *w += share;
+        }
+        if let Some((_, w)) = row.last_mut() {
+            *w += rest - share * count;
+        }
+    }
+    rows
+}
+
 /// The toolbar for `sel` inside `area`, `GAP_S` from its edges; `None` when
 /// not even three rows fit or the selection is empty.
 pub fn layout(sel: (f32, f32, f32, f32), area: Rect, metrics: &Metrics) -> Option<Layout> {
@@ -246,6 +276,7 @@ pub fn layout(sel: (f32, f32, f32, f32), area: Rect, metrics: &Metrics) -> Optio
         let (w, h) = extent(&rows);
         (w + 2.0 * GAP_S <= area.w && h + 2.0 * GAP_S <= area.h).then_some((a, rows, (w, h)))
     })?;
+    let rows = justify(rows, width - 2.0 * PAD);
     let (x, y, placement) = place(sel, (width, height), area);
     let bounds = Rect::new(x, y, width, height);
     let mut controls = [Rect::default(); 4];
@@ -378,7 +409,8 @@ pub fn icon_rect(index: usize, control: Rect) -> Rect {
     let y = control.y + (control.h - ICON_BOX) / 2.0;
     if index >= FRAME {
         Rect::new(
-            control.x + (control.w - ICON_BOX) / 2.0,
+            // A control widened to fill a row may be an odd pixel wider.
+            control.x + ((control.w - ICON_BOX) / 2.0).floor(),
             y,
             ICON_BOX,
             ICON_BOX,

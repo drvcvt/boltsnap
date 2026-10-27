@@ -521,3 +521,47 @@ kompakter, kein Pixel außerhalb der Leiste),
 halbe Pixel trifft einen Knopf, nie Clip; alle anderen sechs Zustände
 behalten Clip). fmt, clippy `-D warnings`, `cargo test` 161 + 404 grün.
 Live offen (Replay aus, Selector öffnen).
+
+## Nachtrag 27.10.: Reihen füllen die Leiste (Nutzer: Abstände)
+
+O-Ton zum Bild der Spalte ohne Clip: „achte auch drauf das die abstaende
+alle schoen sind und nicht so unterschiedliche abstaende ueberall sind“.
+
+**Befund:** In mehrreihigen Anordnungen ist jede Reihe so breit wie ihr
+Inhalt, die Leiste so breit wie die breiteste Reihe. Spalte ohne Clip:
+[Record] ist breiter als [Frame, Audio] (2 · `CTL` + `IN_GAP` = 54 px),
+rechts neben Audio bleibt ein Loch, also rechts ein ganz anderer Rand als
+die 2 px (`PAD`) sonst. Dasselbe gab es schon mit Clip ([Clip] kürzer als
+[Record]) und in Anordnung 2 je nach Größe. Abstände sonst: `PAD` 2,
+`IN_GAP` 2, `GROUP_GAP` 6 (eine Stufe mehr zwischen Gruppen) bleiben.
+
+**Verhalten:** Bei mehr als einer Reihe endet jede Reihe am rechten Rand
+(`PAD` vor der Kante). Den Rest einer Reihe bekommt die Größe, wenn sie in
+der Reihe steht (ihr Text bleibt links, wie sie ohnehin steht); sonst
+teilen ihn die Knöpfe der Reihe zu gleichen ganzen Pixeln, ein übriger
+Pixel geht an den letzten. Beschriftete Knöpfe behalten Icon und Text an
+derselben Stelle (Textkante wie gestapelt bisher), Icon-Knöpfe ihr Icon in
+der Mitte, auf ganzem Pixel (abgerundet). Eine Reihe ändert nie die
+Höhe. Einreihige Leisten unverändert.
+
+**Umsetzung:** `toolbar::layout`: nach der Wahl der Anordnung die Breiten
+der Reihen auffüllen, bevor die Rechtecke entstehen (Treffer folgen von
+selbst). `icon_rect` rundet die Lage ab. `gates::check`: Icon-Knöpfe nur in
+einer Reihe quadratisch, sonst mindestens `CTL`; neu: bei mehreren Reihen
+endet jede an `bounds.right() − PAD`.
+
+**Tests:** alle Bildschirme und Lagen aus Gate 1, mit und ohne Clip: jede
+Reihe endet bündig, Abstände in der Reihe genau `IN_GAP`/`GROUP_GAP`, ganze
+Pixel; Gates (Zentrierung ≤ 0,5 px) auch für die gestreckten Icon-Knöpfe;
+Shot der Spalte mit und ohne Clip.
+
+**Stand:** umgesetzt 27.10. wie geplant (`toolbar::justify`, `icon_rect`
+abgerundet, `gates::check` mit Reihen-Ende). Test
+`every_row_of_a_stacked_toolbar_reaches_the_padding` (mit Größe, ohne Clip,
+ohne Größe × 5 Bildschirme × 3 Lagen: jede Reihe `PAD` vom linken und
+rechten Rand, Abstände nur `IN_GAP`/`GROUP_GAP`, ganze Pixel; Gegenprobe:
+1 px schmaleres Audio fällt dem Gate auf). Gates mit der Nutzer-Schrift
+auf den gestapelten Leisten: Versalien worst 0,00 px, Icon-only 0,12 px,
+Rand 2,0 rundum. Shots `noclip-hover-column`, `replay-off-column`
+angesehen: Frame und Audio füllen die Reihe. fmt, clippy `-D warnings`,
+`cargo test` 161 + 405 grün.

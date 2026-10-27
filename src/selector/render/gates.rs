@@ -204,6 +204,11 @@ pub fn measure_with(
     }
 }
 
+/// A control that is on the toolbar (the others have an empty rectangle).
+fn shown_rect(r: &Rect) -> bool {
+    r.w > 0.0
+}
+
 /// Gate 2, 3 and 8 over `report`: the worst values, or what fails.
 pub fn check(report: &Report) -> Result<String, String> {
     let (mut caps, mut icons, mut alone) = (0.0f32, 0.0f32, 0.0f32);
@@ -242,10 +247,35 @@ pub fn check(report: &Report) -> Result<String, String> {
     let l = &report.layout;
     let (controls, b) = (l.controls, l.bounds);
     let shown = |i: usize| l.shown[i];
+    // Icon-only controls are square in one row; in more they may be widened
+    // to fill theirs, and every row then ends at the right padding.
+    let one_row = controls
+        .iter()
+        .all(|r| !shown_rect(r) || r.y == controls[0].y);
     if (0..4).any(|i| shown(i) && controls[i].h != CTL)
-        || controls[FRAME..].iter().any(|r| r.w != CTL)
+        || controls[FRAME..]
+            .iter()
+            .any(|r| if one_row { r.w != CTL } else { r.w < CTL })
     {
         return Err("controls of different heights, or an icon-only one not square".into());
+    }
+    if !one_row {
+        let ends = (0..4)
+            .filter(|&i| shown(i))
+            .map(|i| controls[i])
+            .chain(l.size.map(|r| Rect::new(r.x, r.y, r.w + SIDE, r.h)));
+        let mut rows: Vec<(f32, f32)> = Vec::new();
+        for r in ends {
+            match rows.iter_mut().find(|(y, _)| *y == r.y) {
+                Some(row) => row.1 = row.1.max(r.right()),
+                None => rows.push((r.y, r.right())),
+            }
+        }
+        if let Some((y, right)) = rows.iter().find(|(_, right)| *right != b.right() - PAD) {
+            return Err(format!(
+                "the row at {y} ends at {right}, not at the padding"
+            ));
+        }
     }
     // Groups: GROUP_GAP between the first group's end (Clip, or Record
     // without it) and Frame when they share a row, PAD within a group; the
