@@ -2,12 +2,12 @@
 //! (`/ui` motion). The platform hands in what should be (layout, pointer,
 //! toggles) at the moment it changes; drawing samples what is.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use boltsnap::ui::motion::Spring;
 use boltsnap::ui::theme::QUICK;
 
-use super::render::toolbar::{CLIP, ControlLook, Layout, Look};
+use super::render::toolbar::{self, CLIP, ControlLook, FRAME, Layout, Look};
 
 /// What the toolbar should show.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -20,7 +20,13 @@ pub struct Targets {
     pub enabled: [bool; 4],
     /// Why Clip has none, said while the pointer is on it.
     pub reason: Option<&'static str>,
+    /// The clip's size in pixels, if the selection makes one.
+    pub size: Option<(u32, u32)>,
 }
+
+/// How long the pointer rests on an icon-only control before its name
+/// shows: sweeping over the toolbar shows none.
+pub const NAME_DELAY: Duration = Duration::from_millis(400);
 
 /// One toolbar as drawn this frame, with its opacity.
 #[derive(Clone, Debug, PartialEq)]
@@ -39,6 +45,9 @@ pub struct Bar {
     /// Why Clip cannot be pressed, beside the current toolbar, with its
     /// opacity (already times the toolbar's).
     pub hint: Option<(&'static str, f32)>,
+    /// Names of icon-only controls beside them, with their opacity: the one
+    /// showing and any fading out.
+    pub tips: Vec<(usize, &'static str, f32)>,
 }
 
 impl Bar {
@@ -50,6 +59,14 @@ impl Bar {
 struct Shown {
     layout: Layout,
     alpha: Spring,
+}
+
+/// A control's name: it shows from `from` on.
+struct Tip {
+    control: usize,
+    text: &'static str,
+    alpha: Spring,
+    from: Instant,
 }
 
 struct Ghost {
@@ -70,6 +87,9 @@ pub struct BarMotion {
     /// The reason beside the toolbar; the text stays while it fades out.
     hint: Spring,
     hint_text: Option<&'static str>,
+    /// The last is the one showing or waiting to, unless it fades out.
+    tips: Vec<Tip>,
+    size: Option<(u32, u32)>,
 }
 
 fn unit(on: bool) -> f32 {
@@ -94,6 +114,8 @@ impl BarMotion {
             }),
             hint: Spring::settled(0.0, now),
             hint_text: None,
+            tips: Vec::new(),
+            size: targets.size,
         }
     }
 
@@ -109,6 +131,48 @@ impl BarMotion {
                     enabled,
                 }
             }),
+            size: self.size,
+        }
+    }
+
+    /// The name of the icon-only control under the pointer: after
+    /// `NAME_DELAY` at rest; at once while another one shows (they swap);
+    /// out with `QUICK` when the pointer leaves. A name whose state changes
+    /// crossfades to the new word.
+    fn update_tips(&mut self, hovered: Option<usize>, on: &[bool; 4], now: Instant) {
+        let fade_out = |tip: &mut Tip| {
+            if tip.alpha.target() != 0.0 {
+                tip.alpha.retarget(0.0, QUICK, now);
+            }
+        };
+        let want = hovered
+            .filter(|&i| i >= FRAME)
+            .and_then(|i| Some((i, toolbar::name(i, on[i])?)));
+        let current = self.tips.last().filter(|tip| tip.alpha.target() == 1.0);
+        let (showing, same) = match (current, want) {
+            (Some(tip), Some((i, text))) => (now >= tip.from, tip.control == i && tip.text == text),
+            _ => (false, false),
+        };
+        if same {
+            return;
+        }
+        let waited = current.filter(|tip| tip.control == want.map_or(usize::MAX, |w| w.0));
+        let from = match (showing, waited) {
+            (true, _) => now,
+            // The word changed while waiting: the wait goes on.
+            (false, Some(tip)) => tip.from,
+            (false, None) => now + NAME_DELAY,
+        };
+        self.tips.iter_mut().for_each(fade_out);
+        if let Some((control, text)) = want {
+            let mut alpha = Spring::settled(0.0, now);
+            alpha.retarget(1.0, QUICK, from);
+            self.tips.push(Tip {
+                control,
+                text,
+                alpha,
+                from,
+            });
         }
     }
 
@@ -128,6 +192,11 @@ impl BarMotion {
                 spring.retarget(to, QUICK, now);
             }
         }
+        self.size = targets.size;
+        let hovered = targets.hovered.filter(|_| layout.is_some());
+        self.update_tips(hovered, &targets.on, now);
+        self.tips
+            .retain(|tip| !tip.alpha.done(now) || tip.alpha.target() != 0.0);
         let hint = targets.hovered == Some(CLIP) && !targets.enabled[CLIP] && layout.is_some();
         let hint = hint.then_some(targets.reason).flatten();
         if hint.is_some() {
@@ -206,6 +275,21 @@ impl BarMotion {
                         * shown.alpha.value(now).clamp(0.0, 1.0);
                     visible(alpha).then_some((text, alpha))
                 }),
+            tips: self
+                .current
+                .as_ref()
+                .map(|shown| {
+                    let bar = shown.alpha.value(now).clamp(0.0, 1.0);
+                    self.tips
+                        .iter()
+                        .map(|tip| {
+                            let alpha = tip.alpha.value(now).clamp(0.0, 1.0) * bar;
+                            (tip.control, tip.text, alpha)
+                        })
+                        .filter(|tip| visible(tip.2))
+                        .collect()
+                })
+                .unwrap_or_default(),
         }
     }
 
@@ -218,13 +302,14 @@ impl BarMotion {
         current
             || controls
             || (shown.is_some() && !self.hint.done(now))
+            || (shown.is_some() && self.tips.iter().any(|t| !t.alpha.done(now)))
             || self.ghosts.iter().any(|g| !g.alpha.done(now))
     }
 }
 
-/// Strip, grid or column, and the same side of the selection.
+/// The same rows, and the same side of the selection.
 fn same_arrangement(a: &Layout, b: &Layout) -> bool {
-    a.columns == b.columns && a.placement == b.placement
+    a.arrangement == b.arrangement && a.placement == b.placement
 }
 
 #[cfg(test)]

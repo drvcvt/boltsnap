@@ -1,6 +1,6 @@
 //! Persistent selector frame and bounded damage history, independent of Wayland.
 use super::motion::Bar;
-use super::render::{self, Chrome, toolbar};
+use super::render::{self, Chrome, hint, toolbar};
 use boltsnap::ui::{Canvas, Rect};
 use std::collections::VecDeque;
 use tiny_skia::Pixmap;
@@ -127,20 +127,28 @@ fn decorations(s: &Scene, w: u32, h: u32, chrome: &Chrome) -> Vec<Region> {
     regions
 }
 
-/// The reason beside the current toolbar, where it goes and its words.
+/// Clip's reason beside the current toolbar: where it goes, its words, its
+/// opacity.
 fn hint(s: &Scene, w: u32, h: u32, chrome: &Chrome) -> Option<(Rect, String, f32)> {
     let (text, alpha) = s.bar.hint?;
     let layout = &s.bar.current.as_ref()?.layout;
-    let (rect, text) = toolbar::hint_rect(&chrome.fonts, layout, text, area(s, w, h));
+    let (rect, text) = hint::hint_rect(&chrome.fonts, layout, toolbar::CLIP, text, area(s, w, h));
     Some((rect, text, alpha))
 }
 
-/// Every toolbar a frame draws, current and fading out, and the hint.
+/// The icon-only controls' names: their one place, if any shows.
+fn names(s: &Scene, w: u32, h: u32, chrome: &Chrome) -> Option<Rect> {
+    let layout = &s.bar.current.as_ref()?.layout;
+    (!s.bar.tips.is_empty()).then(|| hint::names_rect(&chrome.fonts, layout, area(s, w, h)))
+}
+
+/// Every toolbar a frame draws, current and fading out, and the lines.
 fn bar_regions(s: &Scene, w: u32, h: u32, chrome: &Chrome) -> Vec<Region> {
     s.bar
         .all()
         .map(|drawn| drawn.layout.bounds)
         .chain(hint(s, w, h, chrome).map(|(rect, _, _)| rect))
+        .chain(names(s, w, h, chrome))
         .filter_map(|rect| bounds(wide(rect), 2.0, w, h))
         .collect()
 }
@@ -195,7 +203,7 @@ pub fn paint(frame: &mut Canvas, base: &Pixmap, scene: &Scene, chrome: &Chrome) 
         }
     }
     for drawn in scene.bar.all() {
-        toolbar::draw_faded(
+        hint::draw_faded(
             frame,
             &chrome.fonts,
             &drawn.layout,
@@ -204,7 +212,11 @@ pub fn paint(frame: &mut Canvas, base: &Pixmap, scene: &Scene, chrome: &Chrome) 
         );
     }
     if let Some((rect, text, alpha)) = hint(scene, w, h, chrome) {
-        toolbar::draw_hint(frame, &chrome.fonts, rect, &text, alpha);
+        hint::draw_hint(frame, &chrome.fonts, rect, &text, alpha);
+    }
+    if let Some(rect) = names(scene, w, h, chrome) {
+        let words: Vec<_> = scene.bar.tips.iter().map(|&(_, t, a)| (t, a)).collect();
+        hint::draw_names(frame, &chrome.fonts, rect, &words);
     }
     if let Some(cursor) = scene.magnifier {
         render::draw_magnifier_at(
@@ -367,6 +379,14 @@ mod tests {
         };
         Bar {
             hint: (i % 3 == 1).then_some(("Replay has no video", 0.6)),
+            tips: if i % 3 == 2 {
+                vec![
+                    (toolbar::FRAME, "Frame on", 0.3),
+                    (toolbar::AUDIO, "Audio off", 0.7),
+                ]
+            } else {
+                Vec::new()
+            },
             ghosts: if i.is_multiple_of(2) {
                 vec![drawn(layout.translated(30.0, 40.0), 0.4)]
             } else {
@@ -556,6 +576,7 @@ mod tests {
         };
         scene.bar.ghosts.clear();
         scene.bar.hint = None;
+        scene.bar.tips.clear();
         cache.update(&base, scene.clone(), &chrome);
         let generation = cache.generation();
         let toolbar = scene.bar.current.as_ref().unwrap().layout.bounds;
@@ -593,6 +614,7 @@ mod tests {
     }
 
     fn theme_raise() -> u8 {
-        boltsnap::ui::theme::RAISE.0
+        // Record rests on the primary surface.
+        boltsnap::ui::theme::ACCENT.0
     }
 }

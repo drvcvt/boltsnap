@@ -387,6 +387,7 @@ pub fn draw_magnifier_at(pm: &mut Pixmap, base: &Pixmap, cursor: (f64, f64), (lx
 }
 
 pub mod chrome;
+pub mod hint;
 mod legacy;
 pub mod toolbar;
 

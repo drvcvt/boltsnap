@@ -142,41 +142,69 @@ pub fn draw_grips(pm: &mut Pixmap, sel: (f32, f32, f32, f32)) {
     }
 }
 
-/// "1450 × 942", spaces that do not break.
+/// The selection's size as the badge says it.
 fn size_label(sel: (f32, f32, f32, f32)) -> String {
-    format!(
-        "{}\u{a0}×\u{a0}{}",
-        sel.2.round() as i32,
-        sel.3.round() as i32
-    )
+    size_text((sel.2.round() as u32, sel.3.round() as u32))
 }
 
-/// Widest digit: every digit gets that much room, so the badge keeps its
-/// width while the numbers change (the face has no `tnum` for ab_glyph).
-fn digit_cell(fonts: &Fonts) -> f32 {
+/// Widest digit in `style`: every digit gets that much room, so a number
+/// keeps its width while it changes. ab_glyph applies no `tnum`; the cells
+/// do its work (and change nothing in a face whose digits are equal).
+pub fn digit_cell(fonts: &Fonts, style: TextStyle) -> f32 {
     ('0'..='9')
-        .map(|d| fonts.width(TextStyle::Label, d.encode_utf8(&mut [0; 4])))
+        .map(|d| fonts.width(style, d.encode_utf8(&mut [0; 4])))
         .fold(0.0, f32::max)
 }
 
 /// Width of `text` with tabular digits.
-fn tabular_width(fonts: &Fonts, text: &str) -> f32 {
-    let cell = digit_cell(fonts);
+pub fn tabular_width(fonts: &Fonts, style: TextStyle, text: &str) -> f32 {
+    let cell = digit_cell(fonts, style);
     text.chars()
         .map(|c| {
             if c.is_ascii_digit() {
                 cell
             } else {
-                fonts.width(TextStyle::Label, c.encode_utf8(&mut [0; 4]))
+                fonts.width(style, c.encode_utf8(&mut [0; 4]))
             }
         })
         .sum()
 }
 
+/// `text` from `x` on `baseline`, each digit centred in its cell.
+pub fn draw_tabular(
+    canvas: &mut Canvas,
+    fonts: &Fonts,
+    style: TextStyle,
+    text: &str,
+    (mut x, baseline): (f32, f32),
+    color: Rgb,
+) {
+    let cell = digit_cell(fonts, style);
+    for c in text.chars() {
+        let glyph = c.encode_utf8(&mut [0; 4]).to_owned();
+        let w = fonts.width(style, &glyph);
+        let room = if c.is_ascii_digit() { cell } else { w };
+        fonts.draw(
+            canvas,
+            style,
+            &glyph,
+            (x + (room - w) / 2.0, baseline),
+            color,
+            1.0,
+        );
+        x += room;
+    }
+}
+
+/// "1450 × 942": no-break spaces keep the numbers and the sign together.
+pub fn size_text((w, h): (u32, u32)) -> String {
+    format!("{w}\u{a0}×\u{a0}{h}")
+}
+
 /// Where the size badge of `sel` sits inside `area`, in whole pixels.
 pub fn size_badge_rect(fonts: &Fonts, sel: (f32, f32, f32, f32), area: Rect) -> Option<Rect> {
     pixels(sel)?;
-    let w = (2.0 * SIDE + tabular_width(fonts, &size_label(sel))).ceil();
+    let w = (2.0 * SIDE + tabular_width(fonts, TextStyle::Label, &size_label(sel))).ceil();
     let (x, y, _) = place(sel, (w, CTL_H), area);
     Some(Rect::new(x, y, w, CTL_H))
 }
@@ -184,21 +212,14 @@ pub fn size_badge_rect(fonts: &Fonts, sel: (f32, f32, f32, f32), area: Rect) -> 
 /// The selection's size on the toolbar's surface, digits in equal cells.
 pub fn draw_size_badge(canvas: &mut Canvas, fonts: &Fonts, sel: (f32, f32, f32, f32), rect: Rect) {
     canvas.fill(rect, RADIUS, theme::PANEL, 1.0);
-    let cell = digit_cell(fonts);
     let baseline = fonts.baseline(TextStyle::Label, rect.y, rect.h);
-    let mut x = rect.x + SIDE;
-    for c in size_label(sel).chars() {
-        let glyph = c.encode_utf8(&mut [0; 4]).to_owned();
-        let w = fonts.width(TextStyle::Label, &glyph);
-        let room = if c.is_ascii_digit() { cell } else { w };
-        fonts.draw(
-            canvas,
-            TextStyle::Label,
-            &glyph,
-            (x + (room - w) / 2.0, baseline),
-            theme::TEXT,
-            1.0,
-        );
-        x += room;
-    }
+    let at = (rect.x + SIDE, baseline);
+    draw_tabular(
+        canvas,
+        fonts,
+        TextStyle::Label,
+        &size_label(sel),
+        at,
+        theme::TEXT,
+    );
 }

@@ -176,12 +176,13 @@ fn run_selector(
         // The embedded face until the desktop's is loaded (before any frame).
         chrome: render::Chrome::new(Fonts::fallback()),
         motion: BarMotion::new(
-            &bar_targets(None, None, show_frame, audio_enabled, clip),
+            &bar_targets(None, None, show_frame, audio_enabled, clip, None),
             Instant::now(),
         ),
         pressed: None,
         pointer_in: false,
         clip,
+        video: None,
         surf_w: 0,
         surf_h: 0,
         configured: false,
@@ -238,6 +239,7 @@ fn run_selector(
             .output_state
             .info(&output)
             .map(|i| i.logical_position.unwrap_or(i.location));
+        sel.video = sel.output_state.info(&output).and_then(|i| video_size(&i));
         vec![(output, (0, 0, 1, 1))]
     } else {
         let regions: Vec<_> = sel
@@ -274,6 +276,9 @@ fn run_selector(
             .collect::<Result<Vec<_>, &str>>()?
     };
     sel.chrome = render::Chrome::new(font_handle.join().map_err(|_| "font worker panicked")?);
+    if let Some(video) = sel.video {
+        sel.set_video(video);
+    }
     for (output, viewport) in outputs {
         let surface = sel.compositor.create_surface(&qh);
         let layer = sel.layer_shell.create_layer_surface(
@@ -341,7 +346,11 @@ fn run_selector(
                         buffer.generation = None;
                     }
                 }
+                let size = frozen.size();
                 sel.frozen = Some(frozen);
+                if sel.video != Some(size) {
+                    sel.set_video(size);
+                }
                 sel.clip = ClipState::Ready;
                 sel.clip_reported = false;
                 sel.request_redraw();
@@ -390,6 +399,9 @@ struct Selector {
     pressed: Option<usize>,
     /// The pointer is over a selector surface (Wayland says when it leaves).
     pointer_in: bool,
+    /// The screen's pixels as a recording or clip sees them, for the size
+    /// the toolbar shows.
+    video: Option<(u32, u32)>,
     /// Whether Clip has its buffer, and if not, why.
     clip: ClipState,
     surf_w: u32,
@@ -450,6 +462,7 @@ fn bar_targets(
     show_frame: bool,
     audio: bool,
     clip: ClipState,
+    size: Option<(u32, u32)>,
 ) -> Targets {
     use render::toolbar::{AUDIO, CLIP, FRAME};
     Targets {
@@ -458,7 +471,23 @@ fn bar_targets(
         on: std::array::from_fn(|i| (i == FRAME && show_frame) || (i == AUDIO && audio)),
         enabled: std::array::from_fn(|i| i != CLIP || clip == ClipState::Ready),
         reason: clip.reason(),
+        size,
     }
+}
+
+/// The output's current mode in pixels, turned as the screen is.
+fn video_size(info: &smithay_client_toolkit::output::OutputInfo) -> Option<(u32, u32)> {
+    use wl_output::Transform;
+    let mode = info.modes.iter().find(|mode| mode.current)?;
+    let (w, h) = (
+        u32::try_from(mode.dimensions.0).ok()?,
+        u32::try_from(mode.dimensions.1).ok()?,
+    );
+    let turned = matches!(
+        info.transform,
+        Transform::_90 | Transform::_270 | Transform::Flipped90 | Transform::Flipped270
+    );
+    (w > 0 && h > 0).then_some(if turned { (h, w) } else { (w, h) })
 }
 
 impl Selector {
@@ -480,14 +509,37 @@ impl Selector {
             .as_ref()
             .filter(|_| self.pointer_in)
             .and_then(|l| l.hit((self.cursor.0 as f32, self.cursor.1 as f32)));
+        let size = match self.mode {
+            Mode::Editing { rect } => self.clip_size(rect),
+            _ => None,
+        };
         let targets = bar_targets(
             hovered,
             self.pressed,
             self.show_frame,
             self.audio_enabled,
             self.clip,
+            size,
         );
         self.motion.update(layout, &targets, now);
+    }
+
+    /// The pixels a recording or clip of `rect` has, as the clip's crop
+    /// computes them; `None` when it would be too small.
+    fn clip_size(&self, rect: edit::Rect) -> Option<(u32, u32)> {
+        let crop = boltsnap::replay::crop::Crop::from_selection(
+            [rect.x, rect.y, rect.w, rect.h],
+            (self.surf_w, self.surf_h),
+            self.video?,
+        )
+        .ok()?;
+        Some((crop.width, crop.height))
+    }
+
+    /// The screen's pixels, and room for the widest size they allow.
+    fn set_video(&mut self, video: (u32, u32)) {
+        self.video = Some(video);
+        self.chrome.toolbar = self.chrome.toolbar.with_size(&self.chrome.fonts, video);
     }
 
     /// Captured pixels must remain attached to the same logical output layout.
@@ -642,6 +694,10 @@ impl LayerShellHandler for Selector {
             view.viewport = (0, 0, w, h);
         }
         view.configured = true;
+        if self.record_mode && self.video.is_none() {
+            // No mode from the compositor: the surface's own pixels.
+            self.set_video((w, h));
+        }
         if self.views.iter().any(|v| !v.configured) {
             return;
         }

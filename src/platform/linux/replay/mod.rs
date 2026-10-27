@@ -233,6 +233,11 @@ impl FrozenSelection {
         Some(selection)
     }
 
+    /// The frozen frame's pixels.
+    pub fn size(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
     pub fn save(
         &self,
         rect: crate::selector::edit::Rect,

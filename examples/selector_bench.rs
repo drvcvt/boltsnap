@@ -33,6 +33,7 @@ fn bar(
     let area = boltsnap::ui::Rect::new(0.0, 0.0, w as f32, h as f32);
     motion::Bar {
         hint: None,
+        tips: Vec::new(),
         ghosts: Vec::new(),
         current: render::toolbar::layout(sel, area, &chrome.toolbar).map(|layout| motion::Drawn {
             layout,

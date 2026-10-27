@@ -55,6 +55,7 @@ fn targets(hovered: Option<usize>, clip: bool, on: bool) -> Targets {
         on: [false, false, on, on],
         enabled: [true, clip, true, true],
         reason: (!clip).then(|| ClipState::Loading.reason()).flatten(),
+        size: Some((1520, 860)),
     }
 }
 
@@ -131,14 +132,42 @@ fn shots(chrome: &Chrome) -> Vec<(String, (u32, u32), Scene)> {
         let bar = animated(chrome, full, &steps, ms);
         out.push((format!("hint-in-{ms}ms"), full, scene(sel, true, bar)));
     }
-    let grid = (40.0, 160.0, 200.0, 100.0);
+    // The other arrangements: one row without the size, two rows, three.
+    let t = targets(Some(2), true, true);
+    let no_size = (40.0, 160.0, 200.0, 100.0);
     out.push((
-        "grid".into(),
+        "row-no-size".into(),
         (300, 300),
-        rest(grid, (300, 300), targets(Some(2), true, true)),
+        rest(no_size, (300, 300), t),
     ));
+    let two = (20.0, 200.0, 150.0, 80.0);
+    out.push(("two-rows".into(), (200, 300), rest(two, (200, 300), t)));
     let t = targets(Some(0), true, false);
-    out.push(("column".into(), (160, 240), rest(column, (160, 240), t)));
+    out.push(("three-rows".into(), (160, 240), rest(column, (160, 240), t)));
+    // The primary pressed.
+    let mut pressed = targets(Some(0), true, true);
+    pressed.pressed = Some(0);
+    out.push(("press-record".into(), full, rest(sel, full, pressed)));
+    // The icon-only controls' names: before, at and after the delay, and
+    // swapped over to Audio while Frame's shows.
+    let frame = targets(Some(2), true, true);
+    for ms in [300, 400, 460, 600] {
+        let steps = [
+            step(sel, targets(None, true, true), 0),
+            step(sel, frame, 500),
+        ];
+        let bar = animated(chrome, full, &steps, ms);
+        out.push((format!("name-{ms}ms"), full, scene(sel, true, bar)));
+    }
+    for ms in [40, 100] {
+        let steps = [
+            step(sel, targets(None, true, true), 0),
+            step(sel, frame, 500),
+            step(sel, targets(Some(3), true, true), 1000),
+        ];
+        let bar = animated(chrome, full, &steps, ms);
+        out.push((format!("name-swap-{ms}ms"), full, scene(sel, true, bar)));
+    }
     let below = (300.0, 4.0, 700.0, 400.0);
     out.push((
         "below".into(),
@@ -193,7 +222,14 @@ fn shots(chrome: &Chrome) -> Vec<(String, (u32, u32), Scene)> {
 fn selector_shots() {
     let out = PathBuf::from(std::env::var_os("SEL_OUT").expect("SEL_OUT=dir"));
     std::fs::create_dir_all(&out).expect("SEL_OUT");
-    let chrome = Chrome::new(super::ui_fonts());
+    let mut chrome = Chrome::new(super::ui_fonts());
+    chrome.toolbar = chrome
+        .toolbar
+        .with_size(&chrome.fonts, render::gates::VIDEO);
+    let digits: Vec<f32> = ('0'..='9')
+        .map(|d| chrome.fonts.width(toolbar::READOUT, &d.to_string()))
+        .collect();
+    println!("digit advances in the size's style: {digits:?}");
     for (name, (w, h), scene) in shots(&chrome) {
         let base = render::base_pixmap_from_image(&backdrop(w, h), w, h);
         let mut overlay = render::CachedOverlay::new(&base);
@@ -202,14 +238,10 @@ fn selector_shots() {
         save(&frame.pixmap, &out.join(format!("{name}.png")));
     }
     // The gates with the user's face.
-    for ((w, h), sel) in [
-        ((1920, 1080), (612.0, 300.0, 760.0, 430.0)),
-        ((300, 300), (40.0, 160.0, 200.0, 100.0)),
-        ((160, 240), (20.0, 180.0, 100.0, 40.0)),
-    ] {
+    for ((w, h), sel) in render::gates::SHOTS {
         for on in [true, false] {
             let report = render::gates::measure(&chrome.fonts, (w, h), sel, on);
-            match render::gates::check(&report, on) {
+            match render::gates::check(&report) {
                 Ok(line) => println!("gate geometry (user face, {w}x{h}, on {on}): {line}"),
                 Err(error) => panic!("{w}x{h} on {on}: {error}"),
             }

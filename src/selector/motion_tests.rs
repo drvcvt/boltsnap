@@ -23,6 +23,7 @@ fn targets() -> Targets {
         on: [false, false, true, true],
         enabled: [true, false, true, true],
         reason: Some("Replay is loading"),
+        size: Some((1450, 942)),
     }
 }
 
@@ -211,4 +212,81 @@ fn the_reason_fades_in_on_an_unavailable_clip_and_out_with_its_words() {
         ms(t2, 600),
     );
     assert!(motion.sample(ms(t2, 1200)).hint.is_none());
+}
+
+fn tips(motion: &BarMotion, t: Instant) -> Vec<(usize, &'static str, f32)> {
+    motion.sample(t).tips
+}
+
+#[test]
+fn a_name_shows_after_the_pointer_rests_and_swaps_at_once_while_shown() {
+    let t0 = Instant::now();
+    let mut motion = BarMotion::new(&targets(), t0);
+    let l = layout((600.0, 300.0, 700.0, 400.0));
+    motion.update(Some(l), &targets(), t0);
+    let on = |i| Targets {
+        hovered: Some(i),
+        ..targets()
+    };
+    let t1 = ms(t0, 500);
+    motion.update(Some(l), &on(toolbar::FRAME), t1);
+    // Resting less than the delay: nothing, exactly.
+    assert!(tips(&motion, ms(t1, 399)).is_empty());
+    assert!(
+        motion.moving(ms(t1, 200)),
+        "keeps frames coming while it waits"
+    );
+    let (control, text, alpha) = tips(&motion, ms(t1, 450))[0];
+    assert_eq!((control, text), (toolbar::FRAME, "Frame on"));
+    assert!(alpha > 0.2 && alpha < 0.95, "{alpha}");
+    assert_eq!(tips(&motion, ms(t1, 1000))[0].2, 1.0);
+    // Over to Audio while Frame's shows: swapped at once, crossfading.
+    let t2 = ms(t1, 1000);
+    motion.update(Some(l), &on(toolbar::AUDIO), t2);
+    let mid = tips(&motion, ms(t2, 50));
+    let audio = mid.iter().find(|t| t.0 == toolbar::AUDIO).unwrap();
+    let frame = mid.iter().find(|t| t.0 == toolbar::FRAME).unwrap();
+    assert_eq!(audio.1, "Audio on");
+    assert!(audio.2 > 0.2 && frame.2 < 0.8, "{mid:?}");
+    // Switched off with a click: the word crossfades to the new state.
+    let t3 = ms(t2, 500);
+    let mut off = on(toolbar::AUDIO);
+    off.on[toolbar::AUDIO] = false;
+    motion.update(Some(l), &off, t3);
+    let words: Vec<_> = tips(&motion, ms(t3, 50)).iter().map(|t| t.1).collect();
+    assert!(
+        words.contains(&"Audio on") && words.contains(&"Audio off"),
+        "{words:?}"
+    );
+    assert_eq!(tips(&motion, ms(t3, 500)).last().unwrap().1, "Audio off");
+    // Leaving fades it out with QUICK.
+    let t4 = ms(t3, 500);
+    motion.update(Some(l), &targets(), t4);
+    assert!(tips(&motion, ms(t4, 50))[0].2 < 0.8);
+    assert!(tips(&motion, ms(t4, 500)).is_empty());
+}
+
+#[test]
+fn sweeping_over_the_icons_shows_no_name() {
+    let t0 = Instant::now();
+    let mut motion = BarMotion::new(&targets(), t0);
+    let l = layout((600.0, 300.0, 700.0, 400.0));
+    motion.update(Some(l), &targets(), t0);
+    let on = |i| Targets {
+        hovered: Some(i),
+        ..targets()
+    };
+    let t1 = ms(t0, 500);
+    motion.update(Some(l), &on(toolbar::FRAME), t1);
+    // On to Audio before Frame's name came: the wait starts again.
+    motion.update(Some(l), &on(toolbar::AUDIO), ms(t1, 300));
+    assert!(tips(&motion, ms(t1, 650)).is_empty());
+    // Off before the delay: never shown at all.
+    motion.update(Some(l), &on(toolbar::CLIP), ms(t1, 650));
+    for later in [700, 800, 1200, 2000] {
+        assert!(tips(&motion, ms(t1, later)).is_empty());
+    }
+    // Record and Clip have labels: no names.
+    motion.update(Some(l), &on(toolbar::RECORD), ms(t1, 2000));
+    assert!(tips(&motion, ms(t1, 3000)).is_empty());
 }

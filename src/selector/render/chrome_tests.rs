@@ -7,7 +7,8 @@ use tiny_skia::Pixmap;
 
 use super::chrome::{Placement, SIDE, draw_frame, draw_grips, size_badge_rect};
 use super::gates;
-use super::toolbar::{self, LABELS, Look, Metrics};
+use super::hint;
+use super::toolbar::{self, AUDIO, FRAME, LABELS, Look, Metrics};
 use crate::selector::clip::ClipState;
 
 fn black(w: u32, h: u32) -> Pixmap {
@@ -103,8 +104,9 @@ fn the_size_badge_keeps_its_width_while_the_numbers_change_and_stays_on_its_moni
 }
 
 #[test]
-fn the_toolbar_takes_a_strip_a_grid_or_a_column_by_the_room_there_is() {
-    let metrics = Metrics::new(&Fonts::fallback());
+fn the_toolbar_takes_one_two_or_three_rows_by_the_room_there_is() {
+    let fonts = Fonts::fallback();
+    let metrics = Metrics::new(&fonts).with_size(&fonts, gates::VIDEO);
     let layout = |w: f32, h: f32| {
         toolbar::layout(
             (20.0, h - 70.0, 60.0, 40.0),
@@ -112,10 +114,24 @@ fn the_toolbar_takes_a_strip_a_grid_or_a_column_by_the_room_there_is() {
             &metrics,
         )
     };
-    assert_eq!(layout(1920.0, 1080.0).unwrap().columns, 4);
-    assert_eq!(layout(300.0, 300.0).unwrap().columns, 2);
-    assert_eq!(layout(160.0, 240.0).unwrap().columns, 1);
+    let full = layout(1920.0, 1080.0).unwrap();
+    assert_eq!(full.arrangement, 0);
+    assert!(full.size.is_some());
+    // Narrower: the size goes first, then the groups go onto rows.
+    let no_size = layout(300.0, 300.0).unwrap();
+    assert_eq!((no_size.arrangement, no_size.size), (1, None));
+    let two = layout(200.0, 300.0).unwrap();
+    assert_eq!(two.arrangement, 2);
+    assert!(two.size.is_some());
+    assert_eq!(layout(160.0, 240.0).unwrap().arrangement, 3);
     assert!(layout(60.0, 60.0).is_none());
+    println!(
+        "toolbar widths: one row {} px, without the size {}, two rows {}, three rows {}",
+        full.bounds.w,
+        no_size.bounds.w,
+        two.bounds.w,
+        layout(160.0, 240.0).unwrap().bounds.w
+    );
 }
 
 /// Gate 1: wherever the selection is, on every screen size, the toolbar
@@ -123,12 +139,14 @@ fn the_toolbar_takes_a_strip_a_grid_or_a_column_by_the_room_there_is() {
 /// and apart, `GAP_XS` around and between them.
 #[test]
 fn gate_overflow_the_toolbar_stays_on_screen_everywhere() {
-    let metrics = Metrics::new(&Fonts::fallback());
+    let fonts = Fonts::fallback();
+    let metrics = Metrics::new(&fonts).with_size(&fonts, gates::VIDEO);
     let mut cases = 0;
     for (w, h) in [
         (1920u32, 1080u32),
         (400, 300),
         (300, 300),
+        (200, 300),
         (240, 200),
         (160, 240),
     ] {
@@ -159,11 +177,34 @@ fn gate_overflow_the_toolbar_stays_on_screen_everywhere() {
                     assert!(!c.inset(-(GAP_XS - 0.01)).overlaps(*d));
                 }
             }
-            // The reason beside it, the longest one, inside the screen too,
-            // and not over a toolbar.
-            for reason in ClipState::ALL.iter().filter_map(|c| c.reason()) {
-                let fonts = Fonts::fallback();
-                let (hint, text) = toolbar::hint_rect(&fonts, &t, reason, area);
+            if let Some(size) = t.size {
+                assert!(size.x >= b.x + GAP_XS && size.right() <= b.right() - GAP_XS);
+                assert!(t.controls.iter().all(|c| !c.overlaps(size)));
+            }
+            // Each line beside it, every reason and name, inside the screen
+            // too, and not over a toolbar.
+            // The names' one place, as wide as the widest name.
+            let names = hint::names_rect(&fonts, &t, area);
+            assert!(
+                names.x >= GAP_S
+                    && names.y >= GAP_S
+                    && names.right() <= wf - GAP_S
+                    && names.bottom() <= hf - GAP_S
+                    && !names.overlaps(t.bounds),
+                "{w}x{h} {sel:?}: names {names:?}"
+            );
+            for word in [FRAME, AUDIO]
+                .iter()
+                .flat_map(|&i| [true, false].map(|on| toolbar::name(i, on)))
+            {
+                let width = fonts.width(TextStyle::Label, word.unwrap());
+                assert!(width + 2.0 * SIDE <= names.w + 0.5 || names.w >= wf - 2.0 * GAP_S);
+            }
+            let lines = ClipState::ALL
+                .iter()
+                .filter_map(|c| Some((toolbar::CLIP, c.reason()?)));
+            for (anchor, reason) in lines {
+                let (hint, text) = hint::hint_rect(&fonts, &t, anchor, reason, area);
                 assert!(
                     hint.x >= GAP_S
                         && hint.y >= GAP_S
@@ -182,8 +223,8 @@ fn gate_overflow_the_toolbar_stays_on_screen_everywhere() {
         }
     }
     println!(
-        "gate overflow: {cases} placements on 5 screen sizes, toolbar and each of the six \
-         reasons inside the screen"
+        "gate overflow: {cases} placements on 6 screen sizes, toolbar, size and each of the \
+         six reasons and four names inside the screen"
     );
     let t = toolbar::layout(
         (90.0, 90.0, 400.0, 200.0),
@@ -222,14 +263,10 @@ fn highlights_stay_inside_the_toolbars_contour() {
 #[test]
 fn gate_capitals_padding_and_icons_measure_on_the_pixels() {
     let fonts = Fonts::fallback();
-    for ((w, h), sel) in [
-        ((1920, 1080), (612.0, 300.0, 760.0, 430.0)),
-        ((300, 300), (40.0, 160.0, 200.0, 100.0)),
-        ((160, 240), (20.0, 180.0, 100.0, 40.0)),
-    ] {
+    for ((w, h), sel) in gates::SHOTS {
         for on in [true, false] {
             let report = gates::measure(&fonts, (w, h), sel, on);
-            match gates::check(&report, on) {
+            match gates::check(&report) {
                 Ok(line) => println!("gate geometry (embedded face, on {on}): {line}"),
                 Err(error) => panic!("{w}x{h} on {on}: {error}"),
             }
@@ -241,14 +278,20 @@ fn gate_capitals_padding_and_icons_measure_on_the_pixels() {
 fn the_capitals_and_icon_measure_see_a_one_pixel_shift() {
     let fonts = Fonts::fallback();
     let mut report = gates::measure(&fonts, (1920, 1080), (612.0, 300.0, 760.0, 430.0), true);
-    report.controls[1].icon_off += 1.0;
-    assert!(gates::check(&report, true).is_err());
+    report.labelled[1].icon_off += 1.0;
+    assert!(gates::check(&report).is_err());
     let mut report = gates::measure(&fonts, (1920, 1080), (612.0, 300.0, 760.0, 430.0), true);
-    report.controls[2].caps_off += 1.0;
-    assert!(gates::check(&report, true).is_err());
+    report.labelled[0].caps_off += 1.0;
+    assert!(gates::check(&report).is_err());
     let mut report = gates::measure(&fonts, (1920, 1080), (612.0, 300.0, 760.0, 430.0), true);
-    report.padding[3] += 1.0;
-    assert!(gates::check(&report, true).is_err());
+    report.padding[2] += 1.0;
+    assert!(gates::check(&report).is_err());
+    let mut report = gates::measure(&fonts, (1920, 1080), (612.0, 300.0, 760.0, 430.0), true);
+    report.icon_only[1].0 += 1.0;
+    assert!(gates::check(&report).is_err());
+    let mut report = gates::measure(&fonts, (1920, 1080), (612.0, 300.0, 760.0, 430.0), true);
+    report.labelled[0].icon.right += 1.0;
+    assert!(gates::check(&report).is_err());
 }
 
 fn luminance((r, g, b): Rgb) -> f64 {
@@ -289,16 +332,28 @@ fn gate_contrast_every_label_on_its_surface() {
             pairs += 1;
         }
     }
-    // The record mark is a graphic: 3:1 against its resting and hover
-    // surface (pressed, the selector is already closing).
-    for surface in [RAISE, HOVER] {
-        assert!(contrast(ERROR, surface) >= 3.0);
+    // The primary: its label on its surface at rest, hovered, pressed.
+    for steps in [0.0, 1.0, 2.0] {
+        let surface = mix(ACCENT, SUB, toolbar::PRIMARY_STEP * steps);
+        let ratio = contrast(ON_ACCENT, surface);
+        assert!(ratio >= 4.5, "record label at {steps}: {ratio:.2}:1");
+        lowest = lowest.min(ratio);
+        pairs += 1;
     }
+    // The size and the lines beside the toolbar: SUB on PANEL, in the loop.
+    // The record dot is a graphic beside its word: 3:1 at rest.
+    let dot = |steps: f32| contrast(ERROR, mix(ACCENT, SUB, toolbar::PRIMARY_STEP * steps));
+    assert!(dot(0.0) >= 3.0, "{:.2}", dot(0.0));
     println!(
-        "gate contrast: {pairs} text pairs, lowest {lowest:.2}:1; record mark {:.2}:1 resting, \
-         {:.2}:1 under the pointer",
-        contrast(ERROR, RAISE),
-        contrast(ERROR, HOVER)
+        "gate contrast: {pairs} text pairs, lowest {lowest:.2}:1; record label on the primary \
+         {:.2}/{:.2}/{:.2}:1 (rest/hover/press); record dot {:.2}:1 at rest, {:.2}:1 hovered, \
+         {:.2}:1 pressed",
+        contrast(ON_ACCENT, ACCENT),
+        contrast(ON_ACCENT, mix(ACCENT, SUB, 0.25)),
+        contrast(ON_ACCENT, mix(ACCENT, SUB, 0.5)),
+        dot(0.0),
+        dot(1.0),
+        dot(2.0)
     );
 }
 
@@ -335,8 +390,11 @@ pub fn copy_check(strings: &[&str]) {
 
 #[test]
 fn gate_copy_the_toolbar_reads_like_a_person_wrote_it() {
-    let mut strings: Vec<&str> = LABELS.to_vec();
+    let mut strings: Vec<&str> = LABELS[..2].to_vec();
     strings.extend(ClipState::ALL.iter().filter_map(|c| c.reason()));
+    for i in [FRAME, AUDIO] {
+        strings.extend([true, false].iter().filter_map(|&on| toolbar::name(i, on)));
+    }
     copy_check(&strings);
     println!("gate copy: {} strings: {strings:?}", strings.len());
 }
@@ -348,7 +406,7 @@ fn the_reason_sits_away_from_the_selection() {
     let area = Rect::new(0.0, 0.0, 1920.0, 1080.0);
     for sel in [(612.0, 300.0, 760.0, 430.0), (300.0, 4.0, 700.0, 400.0)] {
         let t = toolbar::layout(sel, area, &metrics).unwrap();
-        let (hint, _) = toolbar::hint_rect(&fonts, &t, "Replay is loading", area);
+        let (hint, _) = hint::hint_rect(&fonts, &t, toolbar::CLIP, "Replay is loading", area);
         let selection = Rect::new(sel.0, sel.1, sel.2, sel.3);
         assert!(!hint.overlaps(selection), "{sel:?}: {hint:?}");
         assert_eq!(hint.x, t.controls[toolbar::CLIP].x, "with the Clip control");

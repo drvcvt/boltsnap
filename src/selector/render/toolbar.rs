@@ -1,12 +1,12 @@
-//! The recording selector's toolbar on the app's design system: Record,
-//! Clip, Frame and Audio in one strip, a 2×2 grid or one column.
+//! The recording selector's toolbar (variant A): [Record, Clip] · [Frame,
+//! Audio] · the size of the clip, one row if it fits, else two or three.
 
 use boltsnap::ui::icons::Icon;
 use boltsnap::ui::text::Fonts;
-use boltsnap::ui::theme::{self, CTL_H, GAP_S, GAP_XS, ICON, RADIUS, Rgb, TextStyle};
+use boltsnap::ui::theme::{self, CTL_H, GAP_S, GAP_XS, ICON, RADIUS, Rgb, STROKE, TextStyle};
 use boltsnap::ui::{Canvas, Rect};
 
-use super::chrome::{Placement, SIDE, place};
+use super::chrome::{Placement, SIDE, place, size_text};
 
 pub const LABELS: [&str; 4] = ["Record", "Clip", "Frame", "Audio"];
 pub const RECORD: usize = 0;
@@ -14,37 +14,137 @@ pub const CLIP: usize = 1;
 pub const FRAME: usize = 2;
 pub const AUDIO: usize = 3;
 
-/// Room between the toolbar's edge and its controls, and between controls.
-const PAD: f32 = GAP_XS;
+/// Room between the toolbar's edge and its controls, and between the
+/// controls of one group.
+pub const PAD: f32 = GAP_XS;
+/// Between groups.
+pub const GROUP_GAP: f32 = GAP_S;
 /// Concentric with the toolbar's corners.
 pub const INNER_RADIUS: f32 = RADIUS - PAD;
+/// How far the primary surface goes toward `SUB` per step (hover, press):
+/// the settings window has no primary button, so this is its rule.
+pub const PRIMARY_STEP: f32 = 0.25;
+/// The size's style.
+pub const READOUT: TextStyle = TextStyle::Key;
 
-/// Each control's width in the face in use, measured once.
+/// The labelled controls' icons and whether they are filled.
+const LABELLED_ICONS: [(Icon, bool); 2] = [(Icon::Circle, true), (Icon::Scissors, false)];
+
+/// Right edge of an icon's ink in its `ICON` box: its outline's box, plus
+/// half the stroke for a stroked icon.
+fn ink_right(icon: Icon, filled: bool) -> f32 {
+    let right = icon.path().map_or(24.0, |path| path.bounds().right());
+    right * ICON / 24.0 + if filled { 0.0 } else { STROKE / 2.0 }
+}
+
+/// What a row of the toolbar holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Item {
+    Control(usize),
+    Size,
+}
+
+impl Item {
+    /// [Record, Clip] · [Frame, Audio] · size.
+    fn group(self) -> u8 {
+        match self {
+            Item::Control(i) if i < FRAME => 0,
+            Item::Control(_) => 1,
+            Item::Size => 2,
+        }
+    }
+}
+
+use Item::{Control as C, Size as S};
+
+/// The arrangements, the first that fits wins: one row; one row without
+/// the size (it goes first); two rows; three rows without the size. Two
+/// rows without the size would be as wide as two rows with it, so it is
+/// not one.
+const ARRANGEMENTS: [&[&[Item]]; 4] = [
+    &[&[C(0), C(1), C(2), C(3), S]],
+    &[&[C(0), C(1), C(2), C(3)]],
+    &[&[C(0), C(1)], &[C(2), C(3), S]],
+    &[&[C(0)], &[C(1)], &[C(2), C(3)]],
+];
+
+/// The gap between two neighbours, across or down.
+fn gap(a: Item, b: Item) -> f32 {
+    if a.group() == b.group() {
+        PAD
+    } else {
+        GROUP_GAP
+    }
+}
+
+/// Each control's width in the face in use, measured once, and the room
+/// the size takes.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Metrics {
     widths: [f32; 4],
+    /// From a labelled control's left edge to its label: `SIDE`, then the
+    /// widest labelled icon's ink rounded to a whole pixel, then `GAP_S`.
+    text_offset: f32,
+    /// The widest size the screen allows, digits in cells; `None` hides it.
+    size: Option<f32>,
 }
 
 impl Metrics {
     pub fn new(fonts: &Fonts) -> Self {
+        let ink = LABELLED_ICONS
+            .iter()
+            .map(|&(icon, filled)| ink_right(icon, filled))
+            .fold(0.0, f32::max);
+        let text_offset = SIDE + ink.round() + GAP_S;
+        let labelled = |label| (text_offset + fonts.width(TextStyle::Label, label) + SIDE).ceil();
         Self {
-            widths: LABELS.map(|label| {
-                (SIDE + ICON + GAP_S + fonts.width(TextStyle::Label, label) + SIDE).ceil()
-            }),
+            widths: [labelled(LABELS[0]), labelled(LABELS[1]), CTL_H, CTL_H],
+            text_offset,
+            size: None,
+        }
+    }
+
+    /// Room for the size of a clip of a `video`-sized screen: the widest any
+    /// width and height up to the screen's are set in (only the values with
+    /// the most digits can be widest), so the toolbar keeps its width.
+    pub fn with_size(mut self, fonts: &Fonts, video: (u32, u32)) -> Self {
+        let widest = |most: u32| {
+            let most = most.max(1);
+            let from = 10u32.pow(most.ilog10());
+            (from..=most)
+                .map(|n| fonts.width(READOUT, &n.to_string()))
+                .fold(0.0, f32::max)
+        };
+        let sign = fonts.width(READOUT, "\u{a0}×\u{a0}");
+        self.size = Some((widest(video.0) + sign + widest(video.1)).ceil());
+        self
+    }
+
+    fn width(&self, item: Item) -> Option<f32> {
+        match item {
+            Item::Control(i) => Some(self.widths[i]),
+            // The text, then `SIDE` before the edge, as a label ends.
+            Item::Size => self.size.map(|w| w + SIDE),
         }
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Layout {
-    pub columns: usize,
+    /// Which of the arrangements, 0 for one row with the size.
+    pub arrangement: usize,
     pub placement: Placement,
     pub bounds: Rect,
     /// Each control's surface.
     pub controls: [Rect; 4],
-    /// Each control's target: its surface plus half the gap to a neighbour
-    /// and the padding to the toolbar's edge, so the toolbar has no dead zone.
+    /// Each control's target: its surface plus half the gap to a neighbour,
+    /// out to the toolbar's edge where it has none, so no control has a dead
+    /// zone around it. The size is no control and takes no input.
     pub hits: [Rect; 4],
+    /// Where the size's text goes, its reserved width; none if it is left out.
+    pub size: Option<Rect>,
+    /// From a labelled control's left edge to its label.
+    pub text_offset: f32,
 }
 
 impl Layout {
@@ -55,6 +155,7 @@ impl Layout {
             bounds: shift(self.bounds),
             controls: self.controls.map(shift),
             hits: self.hits.map(shift),
+            size: self.size.map(shift),
             ..*self
         }
     }
@@ -65,58 +166,84 @@ impl Layout {
     }
 }
 
-/// The toolbar for `sel` inside `area`: one strip if it fits with `GAP_S`
-/// around it, else a 2×2 grid, else a single column; `None` when not even
-/// that fits or the selection is empty.
+/// The rows of an arrangement with what of it there is (the size only when
+/// the screen size is known).
+fn rows(arrangement: usize, metrics: &Metrics) -> Vec<Vec<(Item, f32)>> {
+    ARRANGEMENTS[arrangement]
+        .iter()
+        .map(|row| {
+            row.iter()
+                .filter_map(|&item| Some((item, metrics.width(item)?)))
+                .collect()
+        })
+        .collect()
+}
+
+/// Width and height of `rows` with `PAD` around them.
+fn extent(rows: &[Vec<(Item, f32)>]) -> (f32, f32) {
+    let width = rows
+        .iter()
+        .map(|row| {
+            let gaps: f32 = row.windows(2).map(|p| gap(p[0].0, p[1].0)).sum();
+            row.iter().map(|(_, w)| w).sum::<f32>() + gaps
+        })
+        .fold(0.0, f32::max);
+    let gaps: f32 = rows.windows(2).map(|p| gap(p[0][0].0, p[1][0].0)).sum();
+    (
+        width + 2.0 * PAD,
+        rows.len() as f32 * CTL_H + gaps + 2.0 * PAD,
+    )
+}
+
+/// The toolbar for `sel` inside `area`, `GAP_S` from its edges; `None` when
+/// not even three rows fit or the selection is empty.
 pub fn layout(sel: (f32, f32, f32, f32), area: Rect, metrics: &Metrics) -> Option<Layout> {
     let (sx, sy, sw, sh) = sel;
     if ![sx, sy, sw, sh].iter().all(|v| v.is_finite()) || sw < 1.0 || sh < 1.0 {
         return None;
     }
-    let (columns, widths) = [4usize, 2, 1].into_iter().find_map(|columns| {
-        let mut widths = [0.0f32; 4];
-        for (i, w) in metrics.widths.iter().enumerate() {
-            widths[i % columns] = widths[i % columns].max(*w);
-        }
-        let rows = 4 / columns;
-        let w = widths[..columns].iter().sum::<f32>() + (columns - 1) as f32 * PAD + 2.0 * PAD;
-        let h = rows as f32 * CTL_H + (rows - 1) as f32 * PAD + 2.0 * PAD;
-        (w + 2.0 * GAP_S <= area.w && h + 2.0 * GAP_S <= area.h).then_some((columns, widths))
+    let (arrangement, rows, (width, height)) = (0..ARRANGEMENTS.len()).find_map(|a| {
+        let rows = rows(a, metrics);
+        let (w, h) = extent(&rows);
+        (w + 2.0 * GAP_S <= area.w && h + 2.0 * GAP_S <= area.h).then_some((a, rows, (w, h)))
     })?;
-    let rows = 4 / columns;
-    let width = widths[..columns].iter().sum::<f32>() + (columns + 1) as f32 * PAD;
-    let height = rows as f32 * CTL_H + (rows + 1) as f32 * PAD;
     let (x, y, placement) = place(sel, (width, height), area);
     let bounds = Rect::new(x, y, width, height);
-    let column_x = |c: usize| x + PAD + widths[..c].iter().sum::<f32>() + c as f32 * PAD;
-    let row_y = |r: usize| y + PAD + r as f32 * (CTL_H + PAD);
-    let controls: [Rect; 4] = std::array::from_fn(|i| {
-        let (c, r) = (i % columns, i / columns);
-        Rect::new(column_x(c), row_y(r), widths[c], CTL_H)
-    });
-    let hits = std::array::from_fn(|i| {
-        let (c, r) = (i % columns, i / columns);
-        let rect = controls[i];
-        let left = if c == 0 { x } else { rect.x - PAD / 2.0 };
-        let right = if c + 1 == columns {
-            bounds.right()
-        } else {
-            rect.right() + PAD / 2.0
-        };
-        let top = if r == 0 { y } else { rect.y - PAD / 2.0 };
-        let bottom = if r + 1 == rows {
-            bounds.bottom()
-        } else {
-            rect.bottom() + PAD / 2.0
-        };
-        Rect::new(left, top, right - left, bottom - top)
-    });
+    let mut controls = [Rect::default(); 4];
+    let mut hits = [Rect::default(); 4];
+    let mut size = None;
+    let mut top = y + PAD;
+    for (r, row) in rows.iter().enumerate() {
+        let above = (r > 0).then(|| gap(rows[r - 1][0].0, row[0].0));
+        let below = rows.get(r + 1).map(|next| gap(row[0].0, next[0].0));
+        let mut left = x + PAD;
+        for (k, &(item, w)) in row.iter().enumerate() {
+            let rect = Rect::new(left, top, w, CTL_H);
+            let after = row.get(k + 1).map(|&(next, _)| gap(item, next));
+            match item {
+                Item::Control(i) => {
+                    let before = (k > 0).then(|| gap(row[k - 1].0, item));
+                    let l = before.map_or(bounds.x, |g| rect.x - g / 2.0);
+                    let rt = after.map_or(bounds.right(), |g| rect.right() + g / 2.0);
+                    let t = above.map_or(bounds.y, |g| rect.y - g / 2.0);
+                    let b = below.map_or(bounds.bottom(), |g| rect.bottom() + g / 2.0);
+                    controls[i] = rect;
+                    hits[i] = Rect::new(l, t, rt - l, b - t);
+                }
+                Item::Size => size = Some(Rect::new(rect.x, rect.y, w - SIDE, CTL_H)),
+            }
+            left += w + after.unwrap_or(0.0);
+        }
+        top += CTL_H + below.unwrap_or(0.0);
+    }
     Some(Layout {
-        columns,
+        arrangement,
         placement,
         bounds,
         controls,
         hits,
+        size,
+        text_offset: metrics.text_offset,
     })
 }
 
@@ -135,6 +262,8 @@ pub struct ControlLook {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Look {
     pub controls: [ControlLook; 4],
+    /// The clip's size in pixels, if the selection makes one.
+    pub size: Option<(u32, u32)>,
 }
 
 impl Look {
@@ -149,6 +278,7 @@ impl Look {
                 on: f((i == FRAME && frame) || (i == AUDIO && audio)),
                 enabled: f(i != CLIP || clip),
             }),
+            size: None,
         }
     }
 }
@@ -164,139 +294,76 @@ pub fn ladder(step: f32) -> Rgb {
     theme::mix(LADDER[low], LADDER[low + 1], step - low as f32)
 }
 
-/// A control's step: where it rests (Record on the control surface, a
-/// toggle that is on two steps up, like a segment's chosen part over its
-/// track), one more under the pointer, one more while pressed.
+/// A secondary control's step: Clip rests on none, a toggle that is on two
+/// steps up (like a segment's chosen part over its track); one more under
+/// the pointer, one more while pressed.
 pub fn step(index: usize, look: &ControlLook) -> f32 {
-    let rest = match index {
-        RECORD => 1.0,
-        CLIP => 0.0,
-        _ => 2.0 * look.on,
-    };
+    let rest = if index == CLIP { 0.0 } else { 2.0 * look.on };
     rest + (look.hover + look.press) * look.enabled
+}
+
+/// A control's surface, `None` where there is none.
+pub fn surface(index: usize, look: &ControlLook) -> Option<Rgb> {
+    if index == RECORD {
+        let toward = PRIMARY_STEP * (look.hover + look.press);
+        return Some(theme::mix(theme::ACCENT, theme::SUB, toward));
+    }
+    let step = step(index, look);
+    (step > 0.0).then(|| ladder(step))
 }
 
 /// The label's and icon's colour.
 pub fn ink(index: usize, look: &ControlLook) -> Rgb {
     match index {
-        RECORD => theme::TEXT,
+        RECORD => theme::ON_ACCENT,
         CLIP => theme::mix(theme::DIM, theme::TEXT, look.enabled),
         _ => theme::mix(theme::SUB, theme::TEXT, look.on.max(look.hover)),
     }
 }
 
-/// The icon box of a control: `SIDE` in, centred on the capitals' middle.
-pub fn icon_rect(control: Rect) -> Rect {
-    Rect::new(
-        control.x + SIDE,
-        control.y + (control.h - ICON) / 2.0,
-        ICON,
-        ICON,
-    )
-}
-
-/// Where a control's label starts.
-pub fn text_x(control: Rect) -> f32 {
-    control.x + SIDE + ICON + GAP_S
-}
-
-/// What `paint` draws inside `bounds`, at `alpha` as one layer: drawn on its
-/// own and laid over the frame, so surfaces inside it do not show through
-/// each other while it fades. `paint` gets `bounds`' origin to draw from.
-fn faded(canvas: &mut Canvas, bounds: Rect, alpha: f32, paint: impl FnOnce(&mut Canvas, f32, f32)) {
-    if alpha >= 1.0 {
-        paint(canvas, 0.0, 0.0);
-        return;
+/// A control's icon box: `SIDE` in for a labelled one, centred in an
+/// icon-only one; on whole pixels either way.
+pub fn icon_rect(index: usize, control: Rect) -> Rect {
+    let y = control.y + (control.h - ICON) / 2.0;
+    if index >= FRAME {
+        Rect::new(control.x + (control.w - ICON) / 2.0, y, ICON, ICON)
+    } else {
+        Rect::new(control.x + SIDE, y, ICON, ICON)
     }
-    let Some(mut layer) = Canvas::new(bounds.w.ceil() as u32, bounds.h.ceil() as u32, 1) else {
-        return;
-    };
-    paint(&mut layer, -bounds.x, -bounds.y);
-    canvas.pixmap.draw_pixmap(
-        bounds.x as i32,
-        bounds.y as i32,
-        layer.pixmap.as_ref(),
-        &tiny_skia::PixmapPaint {
-            opacity: alpha.clamp(0.0, 1.0),
-            ..Default::default()
-        },
-        tiny_skia::Transform::identity(),
-        None,
-    );
 }
 
-/// The toolbar at `alpha`, as one layer.
-pub fn draw_faded(canvas: &mut Canvas, fonts: &Fonts, layout: &Layout, look: &Look, alpha: f32) {
-    faded(canvas, layout.bounds, alpha, |canvas, dx, dy| {
-        draw(canvas, fonts, &layout.translated(dx, dy), look);
-    });
+/// The name an icon-only control shows under the pointer, with its state.
+pub fn name(index: usize, on: bool) -> Option<&'static str> {
+    match (index, on) {
+        (FRAME, true) => Some("Frame on"),
+        (FRAME, false) => Some("Frame off"),
+        (AUDIO, true) => Some("Audio on"),
+        (AUDIO, false) => Some("Audio off"),
+        _ => None,
+    }
 }
 
-/// Where the reason Clip cannot be pressed goes: left with the Clip control,
-/// `GAP_XS` beside the toolbar on the side away from the selection (above a
-/// toolbar above it, below one below or inside it), else the other side,
-/// `GAP_S` inside `area`; cut with an ellipsis when too long.
-pub fn hint_rect(fonts: &Fonts, layout: &Layout, text: &str, area: Rect) -> (Rect, String) {
-    let room = (area.w - 2.0 * GAP_S - 2.0 * SIDE).max(0.0);
-    let text = fonts.ellipsize(TextStyle::Label, text, room).into_owned();
-    let w = (2.0 * SIDE + fonts.width(TextStyle::Label, &text)).ceil();
-    let b = layout.bounds;
-    let above = b.y - GAP_XS - CTL_H;
-    let below = b.bottom() + GAP_XS;
-    let (top, bottom) = (area.y + GAP_S, area.bottom() - GAP_S - CTL_H);
-    let y = match layout.placement {
-        Placement::Above if above >= top => above,
-        Placement::Above if below <= bottom => below,
-        _ if below <= bottom => below,
-        _ if above >= top => above,
-        _ => below.clamp(top, bottom.max(top)),
-    };
-    let x = layout.controls[CLIP].x.clamp(
-        area.x + GAP_S,
-        (area.right() - GAP_S - w).max(area.x + GAP_S),
-    );
-    (Rect::new(x.round(), y.round(), w, CTL_H), text)
-}
-
-/// The reason, in a small surface of the toolbar's kind, at `alpha`.
-pub fn draw_hint(canvas: &mut Canvas, fonts: &Fonts, rect: Rect, text: &str, alpha: f32) {
-    faded(canvas, rect, alpha, |canvas, dx, dy| {
-        let rect = Rect::new(rect.x + dx, rect.y + dy, rect.w, rect.h);
-        canvas.fill(rect, RADIUS, theme::PANEL, 1.0);
-        let baseline = fonts.baseline(TextStyle::Label, rect.y, rect.h);
-        fonts.draw(
-            canvas,
-            TextStyle::Label,
-            text,
-            (rect.x + SIDE, baseline),
-            theme::SUB,
-            1.0,
-        );
-    });
-}
-
-/// The toolbar's surface, each control's surface, icon and label.
+/// The toolbar's surface, each control's surface, icon and label, the size.
 pub fn draw(canvas: &mut Canvas, fonts: &Fonts, layout: &Layout, look: &Look) {
-    draw_labelled(canvas, fonts, layout, look, LABELS);
+    draw_labelled(canvas, fonts, layout, look, [LABELS[0], LABELS[1]]);
 }
 
-/// [`draw`] with other words, for measuring capitals.
+/// [`draw`] with other words on the labelled controls, for measuring.
 pub fn draw_labelled(
     canvas: &mut Canvas,
     fonts: &Fonts,
     layout: &Layout,
     look: &Look,
-    labels: [&str; 4],
+    labels: [&str; 2],
 ) {
     canvas.fill(layout.bounds, RADIUS, theme::PANEL, 1.0);
     for (i, rect) in layout.controls.iter().enumerate() {
         let control = &look.controls[i];
-        let step = step(i, control);
-        if step > 0.0 {
-            canvas.fill(*rect, INNER_RADIUS, ladder(step), 1.0);
+        if let Some(fill) = surface(i, control) {
+            canvas.fill(*rect, INNER_RADIUS, fill, 1.0);
         }
         let ink = ink(i, control);
-        let icon = icon_rect(*rect);
+        let icon = icon_rect(i, *rect);
         match i {
             // The one colour on the toolbar: the primary action's mark.
             RECORD => Icon::Circle.fill(canvas, icon, theme::ERROR, 1.0),
@@ -308,14 +375,19 @@ pub fn draw_labelled(
                 Icon::VolumeX.draw(canvas, icon, ink, 1.0 - control.on);
             }
         }
-        let baseline = fonts.baseline(TextStyle::Label, rect.y, rect.h);
-        fonts.draw(
-            canvas,
-            TextStyle::Label,
-            labels[i],
-            (text_x(*rect), baseline),
-            ink,
-            1.0,
-        );
+        if i < FRAME {
+            let baseline = fonts.baseline(TextStyle::Label, rect.y, rect.h);
+            let at = (rect.x + layout.text_offset, baseline);
+            fonts.draw(canvas, TextStyle::Label, labels[i], at, ink, 1.0);
+        }
+    }
+    if let (Some(rect), Some(size)) = (layout.size, look.size) {
+        let baseline = fonts.baseline(READOUT, rect.y, rect.h);
+        // Drawn as the face sets it: Outfit's digits are proportional and
+        // ab_glyph applies no `tnum`, so equal cells would gape around a
+        // "1". The room is reserved for the widest (see `with_size`), so the
+        // toolbar never changes width; only the end of the text moves.
+        let at = (rect.x, baseline);
+        fonts.draw(canvas, READOUT, &size_text(size), at, theme::SUB, 1.0);
     }
 }
