@@ -308,29 +308,6 @@ fn three_monitors_in_a_row_and_two_stacked_keep_their_names_apart() {
     assert!(!names[0].overlaps(names[1]) && names[0].w == names[1].w);
 }
 
-#[test]
-fn a_whole_screen_is_told_from_an_area_and_pictures_fit_and_cover() {
-    use crate::app::shots::{cover, fit, same_shape, whole_screen};
-    assert!(whole_screen((1920, 1080)) && whole_screen((3840, 1080)));
-    assert!(!whole_screen((588, 375)) && !whole_screen((1920, 600)));
-    assert_eq!(fit((3840, 1080), (1600, 900)), (1600, 450));
-    assert_eq!(fit((1920, 1080), (1600, 900)), (1600, 900));
-    assert_eq!(fit((300, 200), (1600, 900)), (300, 200), "never grown");
-    let pair = Rect::new(0.0, 0.0, 569.0, 160.0);
-    assert!(same_shape((3840, 1080), pair) && !same_shape((1920, 1080), pair));
-    // Over both monitors onto a 16:9 screen: the left part, full height.
-    let screen = Rect::new(10.0, 20.0, 640.0, 360.0);
-    assert_eq!(
-        cover((3840, 1080), screen),
-        Rect::new(10.0, 20.0, 1280.0, 360.0)
-    );
-    // 4:3 onto 16:9: full width, the middle.
-    assert_eq!(
-        cover((1600, 1200), screen),
-        Rect::new(10.0, -40.0, 640.0, 480.0)
-    );
-}
-
 fn shelf_rect(app: &App, now: Instant) -> Rect {
     let index = app
         .page()
@@ -471,21 +448,9 @@ fn dragging_the_cards_edge_sets_card_size_in_steps_and_writes_like_the_slider() 
 }
 
 #[test]
-fn the_cards_show_the_newest_screenshots_on_the_darkened_screen() {
-    use crate::app::shots::Shots;
-    use crate::ui::picture::Picture;
+fn the_shelf_preview_is_surfaces_only_and_reads_no_pictures() {
     let now = Instant::now();
-    let mut app = app_on("shelf", SIZE, now);
-    let solid = |(w, h): (u32, u32), rgb: [u8; 3]| {
-        Picture::from_rgba(w, h, [rgb[0], rgb[1], rgb[2], 255].repeat((w * h) as usize)).unwrap()
-    };
-    app.set_shots(
-        Shots {
-            screen: Some(solid((1920, 1080), [255, 255, 255])),
-            cards: vec![solid((384, 267), [220, 30, 30])],
-        },
-        now,
-    );
+    let app = app_on("shelf", SIZE, now);
     let later = now + SETTLED;
     let mut canvas = crate::ui::Canvas::new(SIZE.0 as u32, SIZE.1 as u32, 1).unwrap();
     app.draw(&mut canvas, later);
@@ -495,18 +460,17 @@ fn the_cards_show_the_newest_screenshots_on_the_darkened_screen() {
         (d[i], d[i + 1], d[i + 2])
     };
     let rect = shelf_rect(&app, later);
-    let cards = app.preview_cards(rect, later);
     let middle = |r: Rect| (r.x + r.w / 2.0, r.y + r.h / 2.0);
-    let (x, y) = middle(cards[0].0);
-    assert_eq!(pixel(x, y), (220, 30, 30), "the newest on the front card");
-    let (x, y) = middle(cards[1].0);
-    assert_eq!(
-        pixel(x, y),
-        crate::ui::theme::SELECTED,
-        "no picture: a plain card"
-    );
-    // The white screen behind, 65 % of the way to WINDOW: 0.35 · 255 + 0.65 · 18.
+    for (card, _) in app.preview_cards(rect, later) {
+        let (x, y) = middle(card);
+        assert_eq!(
+            pixel(x, y),
+            crate::ui::theme::SELECTED,
+            "a card is a surface"
+        );
+    }
+    // The plain screen behind them, away from the cards and the measure.
     let screen = crate::app::preview_screen(rect);
-    let (r, _, _) = pixel(screen.x + screen.w / 2.0, screen.y + 20.0);
-    assert!((r as i32 - 101).abs() <= 2, "{r}");
+    let (x, y) = (screen.x + screen.w / 2.0, screen.y + 20.0);
+    assert_eq!(pixel(x, y), crate::ui::theme::WINDOW);
 }

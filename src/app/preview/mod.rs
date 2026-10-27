@@ -1,13 +1,12 @@
 //! Pictures of what a page's settings do, following its controls as they
 //! move (settings plan, 5d): the shelf on a screen (P1), the monitors a
-//! recording takes (P2), the replay buffer on a timeline (P3); with the
-//! newest screenshots where there are some (5e).
+//! recording takes (P2), the replay buffer on a timeline (P3). Surfaces
+//! only: the window shows none of the user's own pictures (5e V5).
 
 mod dims;
 mod displays;
 mod replay;
 mod shelf;
-pub mod shots;
 
 use std::time::Instant;
 
@@ -22,12 +21,11 @@ pub use displays::{
 pub use replay::{
     bar as replay_bar_rect, cells as replay_cells, head as replay_head_rect, step as replay_step,
 };
-pub use shelf::{BACKDROP_DARK, screen, shelf_cards};
+pub use shelf::{screen, shelf_cards};
 
 use super::pages::Screen;
 use crate::ui::motion::Spring;
 use crate::ui::text::Fonts;
-use crate::ui::theme::QUICK;
 
 /// What a preview block shows.
 #[derive(Clone, Debug, PartialEq)]
@@ -61,9 +59,6 @@ pub(super) struct State {
     bridge: Spring,
     /// The line under the monitors, the old one fading out.
     captions: Vec<(String, Spring)>,
-    /// The newest screenshots, and 0 to 1 while they come in.
-    shots: shots::Shots,
-    shots_in: Spring,
     /// 0 to 1: the front card's measure shows; the edge being dragged.
     dims: Spring,
     drag: Option<dims::Drag>,
@@ -86,8 +81,6 @@ impl State {
             lit: Vec::new(),
             bridge: Spring::settled(0.0, now),
             captions: Vec::new(),
-            shots: shots::Shots::default(),
-            shots_in: Spring::settled(0.0, now),
             dims: Spring::settled(0.0, now),
             drag: None,
             far: Spring::settled(0.0, now),
@@ -113,16 +106,7 @@ impl App {
         self.shelf_moving(now)
             || self.displays_moving(now)
             || self.replay_moving(now)
-            || !self.preview.shots_in.done(now)
             || !self.preview.dims.done(now)
-    }
-
-    /// The save folder's newest screenshots arrived: the previews show them,
-    /// fading in.
-    pub fn set_shots(&mut self, shots: shots::Shots, now: Instant) {
-        self.preview.shots = shots;
-        self.preview.shots_in.set(0.0, now);
-        self.preview.shots_in.retarget(1.0, QUICK, now);
     }
 
     pub(super) fn draw_preview(

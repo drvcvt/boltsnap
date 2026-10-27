@@ -1,12 +1,10 @@
-//! P1/V4: the shelf on a screen, to scale, following the page's controls;
-//! the newest screenshot of a whole screen behind it, darkened so the cards
-//! stand in front, and the newest others on the cards (settings plan, 5e).
+//! P1/V4: the shelf on a screen, to scale, following the page's controls:
+//! the cards as surfaces on a plain screen, the front one measured (5e).
 
 use std::time::Instant;
 
 use super::super::{App, Bind, Block};
 use super::Preview;
-use super::shots::cover;
 use crate::ui::motion::Spring;
 use crate::ui::theme::{self, GAP_M, GLIDE, PANEL_RADIUS, QUICK, SNAP};
 use crate::ui::widgets::Value;
@@ -25,9 +23,6 @@ pub(super) const CARD: (f32, f32) = (190.0, 132.0);
 const CARD_RADIUS: f32 = 10.0;
 /// The most cards the shelf shows (`shelf.visible_cards`, schema).
 pub const MOST: usize = 8;
-/// How far the screenshot behind the cards goes towards `WINDOW`: enough
-/// that `TEXT` on a white screen keeps 4.5:1 (it needs 62.5 %).
-pub const BACKDROP_DARK: f32 = 0.65;
 
 /// The shelf preview's height for a column `width` wide.
 pub fn height(width: f32) -> f32 {
@@ -227,20 +222,9 @@ impl App {
         let screen = screen(rect);
         // Inside a group whose padding equals its radius: the next step down.
         canvas.fill(screen, theme::RADIUS, theme::WINDOW, 1.0);
-        let pictures = self.preview.shots_in.value(now).clamp(0.0, 1.0);
-        if let Some(backdrop) = &self.preview.shots.screen {
-            let place = cover(backdrop.size(), screen);
-            canvas.picture(backdrop, place, screen, theme::RADIUS, pictures);
-            canvas.fill(
-                screen,
-                theme::RADIUS,
-                theme::WINDOW,
-                BACKDROP_DARK * pictures,
-            );
-        }
         let radius = CARD_RADIUS * screen.w / SCREEN.0;
         let slots = self.card_slots(rect, now);
-        for (index, (card, shown)) in slots.into_iter().enumerate() {
+        for (card, shown) in slots {
             // What runs past the screen's edge is cut there.
             let x = card.x.max(screen.x);
             let y = card.y.max(screen.y);
@@ -251,11 +235,6 @@ impl App {
             }
             let visible = Rect::new(x, y, right - x, bottom - y);
             canvas.fill(visible, radius, theme::SELECTED, shown);
-            // Newest first from the corner out: a card keeps its picture
-            // when the count changes.
-            if let Some(picture) = self.preview.shots.cards.get(index) {
-                canvas.picture(picture, card, visible, radius, shown * pictures);
-            }
         }
         self.draw_dims(canvas, rect, now);
     }

@@ -278,7 +278,7 @@ fn gate_groups_pad_equally_and_siblings_share_an_axis() {
             let layout = app.layout(now + SETTLED);
             for (block, rect) in app.page().blocks.iter().zip(&layout.blocks) {
                 if let Block::Preview(crate::app::Preview::Displays(screens)) = block {
-                    // Every monitor inside, the picture centred in the room.
+                    // Every monitor inside, the arrangement centred in the room.
                     let places = crate::app::display_places(*rect, screens);
                     let inner = rect.inset(GAP_M);
                     for place in &places {
@@ -395,13 +395,6 @@ fn gate_contrast_every_text_on_its_surface() {
         ("sub on control", SUB, RAISE),
         ("sub on hover", SUB, HOVER),
         ("accent text", ON_ACCENT, ACCENT),
-        // The shelf preview's numbers over the brightest screenshot there
-        // can be, darkened behind the cards.
-        (
-            "measure on a white screenshot",
-            TEXT,
-            mix((255, 255, 255), WINDOW, crate::app::BACKDROP_DARK),
-        ),
     ];
     let mut lowest = f64::MAX;
     for (what, fg, bg) in pairs {

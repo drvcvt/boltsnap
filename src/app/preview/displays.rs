@@ -1,7 +1,6 @@
 //! P2/V1: the monitors to scale in their real arrangement, each a monitor on
-//! its stand with its name under it. Those a recording takes are on and show
-//! their part of the newest screenshot of all of them (else a plain light);
-//! a line under them says what the recording makes. Follows the Display and
+//! its stand with its name under it. Those a recording takes are on (a
+//! lighter screen surface); a line under them says what the recording makes. Follows the Display and
 //! "Both displays as" rows.
 
 use std::time::Instant;
@@ -9,7 +8,6 @@ use std::time::Instant;
 use super::super::pages::Screen;
 use super::super::{App, Bind, Block};
 use super::Preview;
-use super::shots::same_shape;
 use crate::settings;
 use crate::ui::motion::Spring;
 use crate::ui::text::Fonts;
@@ -36,7 +34,7 @@ const NAME_H: f32 = 15.0;
 const PORT_H: f32 = 14.0;
 const LINE_H: f32 = 16.0;
 const MOST_LINES: usize = 2;
-/// A screen that is on without a screenshot: brighter than `SELECTED`, so
+/// A screen that is on: brighter than `SELECTED`, so
 /// half on (Focused) still stands apart from its `RAISE` frame.
 const LIT: f32 = 0.3;
 
@@ -349,20 +347,11 @@ impl App {
     pub(super) fn draw_displays(&self, canvas: &mut Canvas, rect: Rect, now: Instant) {
         canvas.fill(rect, PANEL_RADIUS, theme::PANEL, 1.0);
         let screens = self.screens().unwrap_or_default();
-        let (Some(bounds), Some((at, _))) = (bounds(screens), area(rect, screens)) else {
+        if bounds(screens).is_none() {
             return;
-        };
+        }
         let (lit, bridge) = self.display_lights(rect, now);
         let bodies: Vec<Rect> = lit.iter().map(|(place, _)| *place).collect();
-        // The newest screenshot of all of them, over all of them: each screen
-        // shows its own part of it.
-        let shown = self.preview.shots_in.value(now).clamp(0.0, 1.0);
-        let picture = self
-            .preview
-            .shots
-            .screen
-            .as_ref()
-            .filter(|picture| same_shape(picture.size(), bounds));
         let light = |canvas: &mut Canvas, clip: Rect, radius: f32, on: f32| {
             canvas.fill(
                 clip,
@@ -370,9 +359,6 @@ impl App {
                 theme::mix(theme::SELECTED, theme::SUB, LIT),
                 on,
             );
-            if let Some(picture) = picture {
-                canvas.picture(picture, at, clip, radius, on * shown);
-            }
         };
         for ((body, on), stand) in lit.iter().zip(stands(&bodies)) {
             canvas.fill(*body, BODY_RADIUS, theme::RAISE, 1.0);
