@@ -1090,3 +1090,20 @@ verglichen (0x22 und 0x0A), 0x22 las sich kaum anders als flach. Test
 `controls_buttons_are_pressed_in_and_the_title_has_no_dot` statt des
 Schatten-Tests. Checks: fmt, clippy, `cargo test` grün, `controls_shots`
 angesehen.
+
+Nachtrag 27.10., dritte Meldung: „die schrift noch so pixelig ist weil sie
+so klein ist [...] das soll besser werden definitiv“. Befund: die Steuerung
+zeichnet in festen px (16/14/12), die Versalhöhe der Desktop-Schrift liegt
+dann zwischen Pixelreihen (z. B. 9,8 px), jede waagerechte Kante
+verschmiert über zwei Reihen. Das Settings-Fenster wählt die Größe aus der
+Versalhöhe (`ui::text::Fonts::size`). Soll: dieselbe Regel, Versalien
+Titel 12, Labels 10 (wie die Zeilen im Fenster), Tasten 8 (wie `Key`);
+`30 − 10` und `30 − 8` gerade, `18 − 12` gerade, also exakt mittig. Abnahme:
+Test, dass die Versalien eines Labels genau 10 Pixelreihen decken (oberste
+und unterste Reihe voll), PNG 4× angesehen.
+Umgesetzt 27.10.: `controls::px` (Größe aus der Versalhöhe wie
+`Fonts::size`), `cap_baseline` aus der Versalhöhe; mit der Desktop-Schrift
+lagen die Versalien vorher bei rund 7 px (14 px Schrift), jetzt 10. Test
+`controls_capitals_fill_whole_pixel_rows` (Reihen 10–19 voll, 9 und 20
+leer). Checks: fmt, clippy, `cargo test` grün, `controls_shots` 1× und 3×
+gegen den alten Stand angesehen.

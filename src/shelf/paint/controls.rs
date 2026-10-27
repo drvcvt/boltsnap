@@ -3,7 +3,7 @@ use super::*;
 use crate::shelf::recording::PopupButton;
 
 // Linux recording controls, on the mt-ui-style scales: panel padding 16,
-// 30 px buttons with a 12 px inset, 8 px gaps, type at 16/14/12 px.
+// 30 px buttons with a 12 px inset, 8 px gaps, capitals 12/10/8 px tall.
 const CTL_PANEL: (u8, u8, u8) = (0x12, 0x12, 0x12);
 /// A button's face, pressed in: a shade below the panel, as the mark's
 /// `theme::PRESSED` below the sidebar.
@@ -19,9 +19,12 @@ const CTL_H: f32 = 30.0;
 const CTL_INSET: f32 = 12.0;
 const CTL_GAP: f32 = 8.0;
 const CTL_KEY_GAP: f32 = 6.0;
-const CTL_TITLE_PX: f32 = 16.0;
-const CTL_LABEL_PX: f32 = 14.0;
-const CTL_KEY_PX: f32 = 12.0;
+/// Type by the height of its capitals, as the settings window sets it
+/// (`ui::text::Fonts::size`): whole pixels, so their flat edges fall on
+/// pixel rows. Labels as the window's rows, keys as its `Key`.
+const CTL_TITLE_CAP: f32 = 12.0;
+const CTL_LABEL_CAP: f32 = 10.0;
+const CTL_KEY_CAP: f32 = 8.0;
 const CTL_RADIUS: f32 = 9.0;
 /// The rims of a pressed button, as the mark's against the sidebar
 /// (`theme::SHADE` 13 darker, `theme::LIP` 11 lighter than its ground):
@@ -61,10 +64,11 @@ pub fn controls_layout(font: &FontVec) -> ControlsLayout {
     let buttons = CONTROL_BUTTONS.map(|(button, labels, key)| {
         let label = labels
             .iter()
-            .map(|label| text_width(font, label, CTL_LABEL_PX))
+            .map(|label| text_width(font, label, px(font, CTL_LABEL_CAP)))
             .fold(0.0, f32::max);
         let width =
-            (CTL_INSET * 2.0 + label + CTL_KEY_GAP + text_width(font, key, CTL_KEY_PX)).ceil();
+            (CTL_INSET * 2.0 + label + CTL_KEY_GAP + text_width(font, key, px(font, CTL_KEY_CAP)))
+                .ceil();
         let rect = (x, y, width, CTL_H);
         x += width + CTL_GAP;
         (button, rect)
@@ -76,13 +80,19 @@ pub fn controls_layout(font: &FontVec) -> ControlsLayout {
     }
 }
 
-/// Baseline that centres the cap height in a box, on a whole pixel so
-/// the letters' flat edges stay sharp.
-fn cap_baseline(font: &FontVec, px: f32, top: f32, height: f32) -> f32 {
-    let cap = font
-        .outline_glyph(font.glyph_id('H').with_scale(px))
-        .map(|glyph| glyph.px_bounds().height())
-        .unwrap_or(px * 0.7);
+/// The size that makes `font`'s capitals `cap` pixels tall.
+pub(super) fn px(font: &FontVec, cap: f32) -> f32 {
+    let per_px = font
+        .outline(font.glyph_id('H'))
+        .map(|outline| outline.bounds.height().abs() / font.height_unscaled())
+        .filter(|per_px| *per_px > 0.0)
+        .unwrap_or(0.7);
+    cap / per_px
+}
+
+/// Baseline that centres capitals `cap` tall in a box: a whole pixel, as
+/// the box and the capitals are whole pixels with an even difference.
+fn cap_baseline(cap: f32, top: f32, height: f32) -> f32 {
     (top + (height + cap) / 2.0).round()
 }
 
@@ -140,7 +150,7 @@ pub fn draw_recording_controls(
         PublicRecordingState::Finalizing => (saving.as_str(), CTL_SUB),
         PublicRecordingState::Idle => ("Idle", CTL_SUB),
     };
-    let head = cap_baseline(strong, CTL_TITLE_PX, CTL_PAD, CTL_HEAD_H);
+    let head = cap_baseline(CTL_TITLE_CAP, CTL_PAD, CTL_HEAD_H);
     draw_font_text(
         canvas,
         w,
@@ -149,7 +159,7 @@ pub fn draw_recording_controls(
         CTL_PAD,
         head,
         title,
-        CTL_TITLE_PX,
+        px(strong, CTL_TITLE_CAP),
         tone,
     );
     draw_font_text(
@@ -157,10 +167,10 @@ pub fn draw_recording_controls(
         w,
         h,
         body,
-        (w as f32 - CTL_PAD - text_width(body, elapsed, CTL_TITLE_PX)).round(),
-        cap_baseline(body, CTL_TITLE_PX, CTL_PAD, CTL_HEAD_H),
+        (w as f32 - CTL_PAD - text_width(body, elapsed, px(body, CTL_TITLE_CAP))).round(),
+        head,
         elapsed,
-        CTL_TITLE_PX,
+        px(body, CTL_TITLE_CAP),
         CTL_SUB,
     );
 
@@ -196,9 +206,9 @@ pub fn draw_recording_controls(
             h,
             body,
             x + CTL_INSET,
-            cap_baseline(body, CTL_LABEL_PX, *y, *bh),
+            cap_baseline(CTL_LABEL_CAP, *y, *bh),
             label,
-            CTL_LABEL_PX,
+            px(body, CTL_LABEL_CAP),
             text,
         );
         draw_font_text(
@@ -206,10 +216,10 @@ pub fn draw_recording_controls(
             w,
             h,
             body,
-            (x + bw - CTL_INSET - text_width(body, key, CTL_KEY_PX)).round(),
-            cap_baseline(body, CTL_KEY_PX, *y, *bh),
+            (x + bw - CTL_INSET - text_width(body, key, px(body, CTL_KEY_CAP))).round(),
+            cap_baseline(CTL_KEY_CAP, *y, *bh),
             key,
-            CTL_KEY_PX,
+            px(body, CTL_KEY_CAP),
             hint,
         );
     }

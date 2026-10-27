@@ -541,6 +541,26 @@ mod tests {
         );
     }
 
+    #[test]
+    fn controls_capitals_fill_whole_pixel_rows() {
+        let font = crate::shelf::font::fallback_popup_font();
+        let (w, h) = (40u32, 30u32);
+        let mut buf = vec![0u8; (w * h * 4) as usize];
+        let px = controls::px(&font, 10.0);
+        draw_font_text(&mut buf, w, h, &font, 4.0, 20.0, "H", px, (255, 255, 255));
+        // The stem's column, the brightest in each row.
+        let row = |y: u32| {
+            (0..w)
+                .map(|x| buf[((y * w + x) * 4 + 3) as usize])
+                .max()
+                .unwrap()
+        };
+        for y in 10..20 {
+            assert!(row(y) >= 0xF0, "row {y} is {}", row(y));
+        }
+        assert!(row(9) <= 0x10 && row(20) <= 0x10, "{} {}", row(9), row(20));
+    }
+
     /// `CONTROLS_OUT=dir cargo test --bin boltsnap controls_shots -- --ignored`:
     /// the controls in their states with the desktop's UI font, as PNGs.
     #[cfg(target_os = "linux")]
