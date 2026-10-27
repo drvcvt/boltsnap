@@ -1,3 +1,5 @@
+mod focus;
+
 use super::cards::{
     animated_card_layout, animated_item_limit, decode_shelf_image, media_open_command,
     overflow_card_opacity, prepare_pixels_with,

@@ -35,6 +35,19 @@ pub(super) fn untilde(path: &str) -> std::path::PathBuf {
     }
 }
 
+/// The editors to offer: those the daemon, which starts them, can find; the
+/// window's own `PATH` when the daemon does not say.
+fn editors(from_daemon: Option<Vec<String>>) -> Vec<(String, String)> {
+    crate::platform::linux::shelf::EDITORS
+        .iter()
+        .filter(|editor| match &from_daemon {
+            Some(names) => names.iter().any(|name| name == editor.key),
+            None => crate::paths::has_cmd(editor.program),
+        })
+        .map(|editor| (editor.key.to_owned(), editor.label.to_owned()))
+        .collect()
+}
+
 pub fn load(displays: Vec<Screen>) -> Prefs {
     let cfg = Config::load();
     let shelf = cfg.shelf_prefs();
@@ -58,11 +71,7 @@ pub fn load(displays: Vec<Screen>) -> Prefs {
         copy_to_clipboard: cfg.copy_to_clipboard(),
         magnifier_always: cfg.magnifier_always(),
         open_with: cfg.shelf_open_with.clone(),
-        editors: crate::platform::linux::shelf::EDITORS
-            .iter()
-            .filter(|editor| crate::paths::has_cmd(editor.program))
-            .map(|editor| (editor.key.to_owned(), editor.label.to_owned()))
-            .collect(),
+        editors: editors(super::save::daemon_editors()),
         both_combined: recording.both_mode == RecordBothMode::Combined,
         display: match &recording.default_target {
             RecordDefaultTarget::Focused => Display::Focused,
@@ -107,5 +116,21 @@ pub fn load(displays: Vec<Screen>) -> Prefs {
         replay_fps: replay.fps,
         replay_output: replay.output.clone(),
         replay_encoder: replay.encoder.clone(),
+    }
+}
+
+#[cfg(test)]
+mod editor_tests {
+    #[test]
+    fn the_daemons_list_decides_which_editors_are_offered() {
+        let names = |list: Vec<(String, String)>| -> Vec<String> {
+            list.into_iter().map(|(name, _)| name).collect()
+        };
+        assert_eq!(
+            names(super::editors(Some(vec!["gimp".into(), "eddy".into()]))),
+            ["eddy", "gimp"],
+            "in the list's order, only what the daemon can start"
+        );
+        assert!(super::editors(Some(Vec::new())).is_empty());
     }
 }

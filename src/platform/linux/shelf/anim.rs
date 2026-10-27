@@ -6,7 +6,7 @@ use boltsnap::shelf_card::{self, ease_out_cubic};
 use super::cards::{self, animated_card_layout, animated_item_limit, overflow_card_opacity};
 use super::{Daemon, Layout, QueueHandle};
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum AnimKind {
     Appear,
     Disappear,
@@ -30,24 +30,43 @@ pub(super) struct CardAnim {
     pub(super) start: std::time::Instant,
 }
 
+/// What starting an animation does.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum Start {
+    Animate,
+    /// `[shelf] animations = false` and a dismissal: the card goes at once
+    /// and the stack closes up.
+    RemoveNow,
+    /// `animations = false` and an arrival: the card is simply there.
+    Nothing,
+}
+
+pub(super) fn anim_start(animations: bool, kind: AnimKind) -> Start {
+    match (animations, kind) {
+        (true, _) => Start::Animate,
+        (false, AnimKind::Disappear) => Start::RemoveNow,
+        (false, AnimKind::Appear) => Start::Nothing,
+    }
+}
+
 impl Daemon {
     /// Begin an appear/dismiss animation for card `id`, replacing any existing
     /// animation on that card.
     pub(super) fn start_anim(&mut self, id: u64, kind: AnimKind) {
         self.anims.retain(|a| a.id != id);
-        // `[shelf] animations = false`: a new card is simply there, a
-        // dismissed one goes at once and the stack closes up.
-        if !self.shelf_prefs.animations {
-            if kind == AnimKind::Disappear && self.remove_card_now(id) {
-                self.relayout();
+        match anim_start(self.shelf_prefs.animations, kind) {
+            Start::Animate => self.anims.push(CardAnim {
+                id,
+                kind,
+                start: std::time::Instant::now(),
+            }),
+            Start::RemoveNow => {
+                if self.remove_card_now(id) {
+                    self.relayout();
+                }
             }
-            return;
+            Start::Nothing => {}
         }
-        self.anims.push(CardAnim {
-            id,
-            kind,
-            start: std::time::Instant::now(),
-        });
     }
 
     /// (scale, opacity) for card `id` from its in-flight animation, or (1.0, 1.0)
@@ -190,5 +209,18 @@ impl Daemon {
             return layout;
         }
         cards::hold_size(layout, (self.width, self.height), top)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AnimKind, Start, anim_start};
+
+    #[test]
+    fn without_animations_a_dismissal_removes_at_once_and_an_arrival_just_appears() {
+        assert_eq!(anim_start(true, AnimKind::Appear), Start::Animate);
+        assert_eq!(anim_start(true, AnimKind::Disappear), Start::Animate);
+        assert_eq!(anim_start(false, AnimKind::Disappear), Start::RemoveNow);
+        assert_eq!(anim_start(false, AnimKind::Appear), Start::Nothing);
     }
 }

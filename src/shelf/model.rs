@@ -21,7 +21,8 @@ pub struct Thumb {
     pub kind: CardKind,
     pub lifetime: FileLifetime,
     /// When the file was last written as the card arrived: a later time
-    /// means an editor saved over it (`edited`).
+    /// means an editor saved over it (`edited`). Linux only.
+    #[cfg_attr(windows, allow(dead_code))]
     pub arrived: Option<std::time::SystemTime>,
 }
 

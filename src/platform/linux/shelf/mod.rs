@@ -3474,6 +3474,4 @@ delegate_data_device!(Daemon);
 delegate_registry!(Daemon);
 
 #[cfg(test)]
-mod focus_tests;
-#[cfg(test)]
 mod tests;

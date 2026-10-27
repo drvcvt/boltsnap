@@ -90,8 +90,10 @@ impl Default for RecordingPrefs {
 }
 
 /// `[shelf]`: how big the cards are, how many show, where, and how they
-/// look and move.
+/// look and move. The look and the animations are Linux's; the frozen
+/// Windows shelf reads none of them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(windows, allow(dead_code))]
 pub struct ShelfPrefs {
     pub card: crate::shelf::thumbnail::CardSize,
     pub visible: usize,
@@ -120,6 +122,7 @@ impl Default for ShelfPrefs {
 }
 
 impl ShelfPrefs {
+    #[cfg_attr(windows, allow(dead_code))]
     pub fn look(&self) -> boltsnap::shelf_card::CardLook {
         boltsnap::shelf_card::CardLook {
             opacity: f32::from(self.opacity) / 100.0,
@@ -160,7 +163,8 @@ pub struct Config {
     copy_to_clipboard: Option<bool>,
     selector_magnifier: Option<String>,
     /// `[shelf] open_with`: what opens an image card (`linux/shelf/cards.rs`
-    /// `EDITORS`); unset, the desktop's default app.
+    /// `EDITORS`); unset, the desktop's default app. Linux only.
+    #[cfg_attr(windows, allow(dead_code))]
     pub shelf_open_with: Option<String>,
     issues: Vec<settings::Issue>,
 }
@@ -304,7 +308,8 @@ impl Config {
     }
 
     /// `selector_magnifier = "always"`: the selector's loupe shows without
-    /// Alt held. Default "alt".
+    /// Alt held. Default "alt". Linux's selector only.
+    #[cfg_attr(windows, allow(dead_code))]
     pub fn magnifier_always(&self) -> bool {
         self.selector_magnifier.as_deref() == Some("always")
     }

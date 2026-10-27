@@ -7,7 +7,7 @@ use std::cell::{Cell, RefCell};
 use std::time::{Duration, Instant};
 
 use image::RgbaImage;
-use tiny_skia::{FillRule, IntSize, Mask, Pixmap, PixmapPaint, Transform};
+use tiny_skia::{FillRule, IntSize, Mask, Pixmap, PixmapPaint, PixmapRef, Transform};
 
 use super::super::{App, Bind, Block, Channel, Target};
 use super::Preview;
@@ -84,8 +84,10 @@ pub(super) struct Play {
     /// What the painter drew last, and how often it ran.
     painted: RefCell<Option<Painted>>,
     paints: Cell<usize>,
-    /// The block's outline, when the shelf runs past it.
-    mask: RefCell<Option<(MaskKey, Mask)>>,
+    /// The block's outline in its own size and scale, when the shelf runs
+    /// past it, and how often it was built.
+    mask: RefCell<Option<(BlockSize, Mask)>>,
+    masks: Cell<usize>,
 }
 
 impl Play {
@@ -103,6 +105,7 @@ impl Play {
             painted: RefCell::new(None),
             paints: Cell::new(0),
             mask: RefCell::new(None),
+            masks: Cell::new(0),
         }
     }
 
@@ -601,15 +604,7 @@ impl App {
                 &blended
             }
         };
-        let mask = self.clip_mask(canvas, rect, placed);
-        canvas.pixmap.draw_pixmap(
-            placed.origin.0,
-            placed.origin.1,
-            cards.as_ref(),
-            &PixmapPaint::default(),
-            Transform::identity(),
-            mask.as_deref(),
-        );
+        self.draw_clipped(canvas, rect, placed, cards.as_ref());
     }
 
     /// Have the painter's picture for every state in `wanted` (no hover,
@@ -661,38 +656,61 @@ impl App {
         }
     }
 
-    /// The block's outline as a mask, when the shelf runs past it (cards
-    /// bigger than the block); kept while the block stays where it is.
-    fn clip_mask(
-        &self,
-        canvas: &Canvas,
-        rect: Rect,
-        placed: &Placed,
-    ) -> Option<std::cell::Ref<'_, Mask>> {
+    /// The cards onto the canvas, cut at the block where they run past it:
+    /// drawn first into a block-sized picture through a block-sized mask of
+    /// its rounded outline, kept while the block keeps its size, so
+    /// scrolling the page (which only moves the block) builds nothing anew.
+    fn draw_clipped(&self, canvas: &mut Canvas, rect: Rect, placed: &Placed, cards: PixmapRef) {
         let s = canvas.scale;
         let (x, y) = placed.origin;
         let (w, h) = (placed.layout.width as i32, placed.layout.height as i32);
-        let inside = x >= (rect.x * s).round() as i32
-            && y >= (rect.y * s).round() as i32
-            && x + w <= (rect.right() * s).round() as i32
-            && y + h <= (rect.bottom() * s).round() as i32;
+        let (bx, by) = ((rect.x * s).round() as i32, (rect.y * s).round() as i32);
+        let (bw, bh) = ((rect.w * s).round() as u32, (rect.h * s).round() as u32);
+        let paint = PixmapPaint::default();
+        let inside = x >= bx && y >= by && x + w <= bx + bw as i32 && y + h <= by + bh as i32;
         if inside {
-            return None;
+            canvas
+                .pixmap
+                .draw_pixmap(x, y, cards, &paint, Transform::identity(), None);
+            return;
         }
-        let size = (canvas.pixmap.width(), canvas.pixmap.height());
-        let key = ([rect.x, rect.y, rect.w, rect.h, s], size);
+        let key = (bw, bh, s);
         let cache = &self.preview.play.mask;
         if cache.borrow().as_ref().is_none_or(|(kept, _)| *kept != key) {
-            let mut mask = Mask::new(size.0, size.1)?;
-            mask.fill_path(
-                &rounded_rect(rect, PANEL_RADIUS)?,
-                FillRule::Winding,
-                true,
-                canvas.transform(),
-            );
+            let (Some(mut mask), Some(outline)) = (
+                Mask::new(bw, bh),
+                rounded_rect(Rect::new(0.0, 0.0, rect.w, rect.h), PANEL_RADIUS),
+            ) else {
+                return;
+            };
+            mask.fill_path(&outline, FillRule::Winding, true, canvas.transform());
+            self.preview
+                .play
+                .masks
+                .set(self.preview.play.masks.get() + 1);
             *cache.borrow_mut() = Some((key, mask));
         }
-        std::cell::Ref::filter_map(cache.borrow(), |kept| kept.as_ref().map(|(_, mask)| mask)).ok()
+        let kept = cache.borrow();
+        let (Some((_, mask)), Some(mut block)) = (kept.as_ref(), Pixmap::new(bw, bh)) else {
+            return;
+        };
+        block.draw_pixmap(
+            x - bx,
+            y - by,
+            cards,
+            &paint,
+            Transform::identity(),
+            Some(mask),
+        );
+        canvas
+            .pixmap
+            .draw_pixmap(bx, by, block.as_ref(), &paint, Transform::identity(), None);
+    }
+
+    /// How often the block's mask was built, for the tests.
+    #[cfg(test)]
+    pub fn shelf_masks(&self) -> usize {
+        self.preview.play.masks.get()
     }
 
     /// How often the painter has run, for the tests.
@@ -719,8 +737,8 @@ fn blend_rect(out: &mut Pixmap, over: &Pixmap, (x, y, w, h): (u32, u32, u32, u32
     }
 }
 
-/// Where a kept mask is: the block (x, y, w, h, scale) and the canvas size.
-type MaskKey = ([f32; 5], (u32, u32));
+/// A kept mask's block: width and height in device pixels, and the scale.
+type BlockSize = (u32, u32, f32);
 
 /// What a kept picture of the painter shows.
 #[derive(Clone, PartialEq)]

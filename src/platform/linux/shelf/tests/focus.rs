@@ -1,5 +1,5 @@
 //! Monitor focus, recording targets and preference writes.
-use super::*;
+use super::super::*;
 
 #[test]
 fn area_uses_cached_monitor_layout() {

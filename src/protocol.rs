@@ -181,6 +181,9 @@ pub struct Response {
     pub snapshot: Option<RecordingSnapshot>,
     pub path: Option<PathBuf>,
     pub settings: Option<State>,
+    /// With `settings`: the editors the daemon can start (`[shelf]
+    /// open_with`), by name; `None` from a daemon that does not say.
+    pub editors: Option<Vec<String>>,
 }
 
 impl Response {
@@ -191,6 +194,7 @@ impl Response {
             snapshot,
             path: None,
             settings: None,
+            editors: None,
         }
     }
 
@@ -201,6 +205,14 @@ impl Response {
         }
     }
 
+    /// The settings with the editors the daemon finds.
+    pub fn ok_settings_with_editors(settings: State, editors: Vec<String>) -> Self {
+        Self {
+            editors: Some(editors),
+            ..Self::ok_settings(settings)
+        }
+    }
+
     pub fn ok_path(path: PathBuf) -> Self {
         Self {
             ok: true,
@@ -208,6 +220,7 @@ impl Response {
             snapshot: None,
             path: Some(path),
             settings: None,
+            editors: None,
         }
     }
 
@@ -218,6 +231,7 @@ impl Response {
             snapshot: None,
             path: None,
             settings: None,
+            editors: None,
         }
     }
 
@@ -228,6 +242,7 @@ impl Response {
             "snapshot": self.snapshot.as_ref().map(RecordingSnapshot::as_value),
             "path": self.path.as_ref().map(|path| path.to_string_lossy()),
             "settings": self.settings.as_ref().map(State::to_json),
+            "editors": self.editors,
         });
         let mut buf = Vec::new();
         write_frame(&mut buf, header.to_string().as_bytes(), &[]).unwrap();
@@ -263,12 +278,25 @@ impl Response {
             Some(Value::Null) | None => None,
             Some(settings) => Some(State::from_json(settings).map_err(invalid_data)?),
         };
+        // Missing from an older daemon: unknown, not none.
+        let editors = match value.get("editors") {
+            Some(Value::Null) | None => None,
+            Some(Value::Array(names)) => Some(
+                names
+                    .iter()
+                    .map(|name| name.as_str().map(str::to_owned))
+                    .collect::<Option<Vec<_>>>()
+                    .ok_or_else(|| invalid_data("response editors must be strings"))?,
+            ),
+            _ => return Err(invalid_data("response editors must be a list or null")),
+        };
         Ok(Self {
             ok,
             error,
             snapshot,
             path,
             settings,
+            editors,
         })
     }
 }
@@ -732,10 +760,21 @@ mod tests {
         );
 
         let state = State::read("/c/config.toml".into(), "record_fps = 120\n", None);
-        let response = Response::ok_settings(state);
+        let response = Response::ok_settings(state.clone());
         assert_eq!(
             Response::read(&mut Cursor::new(response.encode())).unwrap(),
             response
+        );
+        // The daemon's editors travel with them; a daemon that does not send
+        // the field reads as "not said", not as "none".
+        let with = Response::ok_settings_with_editors(state, vec!["eddy".into()]);
+        let read = Response::read(&mut Cursor::new(with.encode())).unwrap();
+        assert_eq!(read.editors.as_deref(), Some(&["eddy".to_owned()][..]));
+        let mut older = Vec::new();
+        write_frame(&mut older, br#"{"ok":true,"error":null}"#, &[]).unwrap();
+        assert_eq!(
+            Response::read(&mut Cursor::new(older)).unwrap().editors,
+            None
         );
     }
 

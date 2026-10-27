@@ -97,3 +97,32 @@ bei 12 Dateien: vor der nächsten Datei dort aufteilen).
 Checks nach den Fixes: `cargo fmt --check`, `cargo clippy --all-targets`
 ohne Warnung, `cargo test` grün (Zahlen im Commit). Live offen: Daemon-Neustart
 beim Nutzer, dann Kartenklick mit eddy, Bearbeiten und Schließen.
+
+## Zweiter Durchgang: die zurückgestellten Punkte (27.10., Wunsch des Nutzers)
+
+Wunsch: „dann plan und fix die findings und restarte meinen daemon“.
+
+| # | Plan | Tradeoff | Prüfung |
+| --- | --- | --- | --- |
+| B5 | Die Vorschau malt ihre Karten in eine Pixmap in Blockgröße und schneidet dort mit einer Maske in Blockgröße (abgerundete Ecken), behalten je (Breite, Höhe, Skala); Scrollen ändert nur die Lage, also kein Neubau. Erst danach auf die Leinwand. | eine Pixmap in Blockgröße je Frame mit überstehenden Karten (≈ 0,7 MB bei 1×) statt einer fensterweiten Maske | Test: zwei Frames an verschiedenen Scroll-Lagen bauen die Maske einmal (Zähler) |
+| A2 | `Response` bekommt `editors: Option<Vec<String>>`; der Daemon füllt es in der Antwort auf `GetSettings` aus `EDITORS` mit seinem eigenen `PATH`; das Fenster nimmt diese Liste, ohne Daemon oder bei einem älteren (Feld fehlt) seine eigene. | ein Feld im Protokoll, rückwärtsverträglich (fehlt = unbekannt) | Protokoll-Test hin und zurück, alter Header ohne Feld liest sich |
+| A6 | Die Entscheidung in `start_anim` wird eine reine Funktion `anim_start(animations, kind) -> Start { Animate, RemoveNow, Nothing }`, getestet; `start_anim` folgt ihr. | eine kleine Funktion mehr | Test der drei Fälle |
+| A8 | `#[cfg_attr(windows, allow(dead_code))]` an den Feldern und Gettern, die nur Linux liest (`ShelfPrefs`-Look-Felder, `look()`, `magnifier_always`, `shelf_open_with`). | keine Windows-Prüfung möglich (Ziel nicht installiert); Attribute ändern nichts am Verhalten | `cargo build`/`clippy` auf Linux unverändert |
+| A9 | `linux/shelf/` unter die Grenze: `tests.rs` und `focus_tests.rs` per `git mv` nach `linux/shelf/tests/{mod,focus}.rs`; 10 Dateien und ein Ordner. | nur Pfade | `cargo test` unverändert grün, gleiche Zahl |
+
+Danach: fmt, clippy, `cargo test`, Release, Installation, Daemon-Neustart.
+
+Stand zweiter Durchgang (27.10.): alle fünf umgesetzt. B5
+`preview/shelf.rs::draw_clipped` (Maske und Bild in Blockgröße, Schlüssel
+Breite, Höhe, Skala), Test
+`cards_past_the_block_are_cut_with_one_mask_however_the_page_scrolls` (drei
+Scroll-Lagen, eine Maske, unter dem Block der Seitengrund). A2
+`Response::editors`, `ok_settings_with_editors`, Daemon `send_settings`,
+Fenster `prefs::editors` mit Rückfall auf den eigenen `PATH`; Tests im
+Protokoll (hin und zurück, alter Header ohne Feld = `None`) und
+`the_daemons_list_decides_which_editors_are_offered`. A6 `anim::anim_start`
+mit Test. A8 `cfg_attr(windows, allow(dead_code))` an `ShelfPrefs`, `look`,
+`magnifier_always`, `shelf_open_with`, `Thumb::arrived` (nicht auf Windows
+kompiliert). A9 `linux/shelf/tests/{mod,focus}.rs`, 10 Dateien und ein Ordner,
+`mod.rs` 3477 Zeilen. Checks: fmt, clippy ohne Warnung, `cargo test` 155 +
+395 grün.

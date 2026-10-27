@@ -97,10 +97,20 @@ impl Daemon {
         self.publish_tray_snapshot();
     }
 
+    /// The settings, and which editors this daemon can start (its `PATH`
+    /// may differ from the settings window's).
     pub(super) fn send_settings(&self, stream: UnixStream) {
+        let editors = super::EDITORS
+            .iter()
+            .filter(|editor| crate::paths::has_cmd(editor.program))
+            .map(|editor| editor.key.to_owned())
+            .collect();
         self.write_response(
             stream,
-            crate::ipc::Response::ok_settings(crate::config::settings_state()),
+            crate::ipc::Response::ok_settings_with_editors(
+                crate::config::settings_state(),
+                editors,
+            ),
         );
     }
 

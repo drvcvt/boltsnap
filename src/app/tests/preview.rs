@@ -755,3 +755,49 @@ fn closing_a_card_that_is_still_arriving_takes_it_away_and_leaves_two() {
     assert_eq!(after.len(), 2);
     assert!(after.iter().all(|card| card.0 != new));
 }
+
+#[test]
+fn cards_past_the_block_are_cut_with_one_mask_however_the_page_scrolls() {
+    let now = Instant::now();
+    let mut app = app_on("shelf", SIZE, now);
+    focus(&mut app, "Corner", now);
+    key(&mut app, Key::Left, now);
+    focus(&mut app, "Card size", now);
+    for _ in 0..10 {
+        key(&mut app, Key::Right, now);
+    }
+    let mut canvas = crate::ui::Canvas::new(SIZE.0 as u32, SIZE.1 as u32, 1).unwrap();
+    let mut at = now + SETTLED;
+    let top = shelf_rect(&app, at).y;
+    let before = app.shelf_masks();
+    for _ in 0..3 {
+        app.draw(&mut canvas, at);
+        app.handle(
+            Input::Wheel {
+                notches: 1,
+                pixels: 0.0,
+            },
+            at,
+        );
+        at += SETTLED;
+    }
+    app.draw(&mut canvas, at);
+    assert_eq!(
+        app.shelf_masks(),
+        before + 1,
+        "built once, kept while scrolling"
+    );
+    assert!(shelf_rect(&app, at).y < top, "the page scrolled");
+    // Under the block, where the lower card would be, the page's own ground.
+    let rect = shelf_rect(&app, at);
+    let low = *cards(&app, at).last().unwrap();
+    assert!(low.1.bottom() > rect.bottom() + 20.0);
+    let (x, y) = (low.1.x + 30.0, rect.bottom() + 6.0);
+    let i = ((y as u32 * SIZE.0 as u32 + x as u32) * 4) as usize;
+    let d = canvas.pixmap.data();
+    assert_eq!(
+        (d[i], d[i + 1], d[i + 2]),
+        crate::ui::theme::WINDOW,
+        "cut at the block"
+    );
+}

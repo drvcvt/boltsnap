@@ -122,6 +122,12 @@ fn send(write: &Write) -> Result<(), String> {
     }
 }
 
+/// The editors the daemon can start, by name; `None` without a daemon or
+/// from one that does not say.
+pub(super) fn daemon_editors() -> Option<Vec<String>> {
+    call_daemon(Request::GetSettings).ok()?.editors
+}
+
 /// Why nothing can be saved right now, if something stops it.
 pub(super) fn notice() -> Option<Notice> {
     let locked = |text: String| Some(Notice { text, locked: true });
