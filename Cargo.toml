@@ -116,7 +116,9 @@ extended-description = """\
 boltsnap is a fast, in-process screenshot and screen-recording tool for Wayland
 (Hyprland, Sway, KDE) and X11. It captures full screens, regions and windows
 without external CLI helpers like maim, import, xdotool or xclip, keeps them on
-a screenshot shelf, and records the screen with pause, resume and replay clips."""
+a screenshot shelf on Wayland, and records the screen with pause and resume.
+Experimental replay clips (Hyprland) need the separate replay worker, which
+this package does not include."""
 section = "graphics"
 priority = "optional"
 assets = [

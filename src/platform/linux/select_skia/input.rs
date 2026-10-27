@@ -182,9 +182,9 @@ impl PointerHandler for Selector {
                                             self.clip_reported = true;
                                             crate::platform::replay::notify_error(
                                                 if self.replay_output.is_some() {
-                                                    "Replay preview is unavailable or still loading. REC remains available."
+                                                    "Replay preview is unavailable or still loading. Record remains available."
                                                 } else {
-                                                    "No replay buffer to clip from. Start it from the tray menu (Replay buffer \u{2192} Start) or with `boltsnap replay start`."
+                                                    "No replay buffer to clip from. Turn on Replay buffer in the tray menu or the settings, or run `boltsnap replay start`."
                                                 },
                                             );
                                         }

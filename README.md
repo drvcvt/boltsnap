@@ -21,7 +21,8 @@ artifacts and Windows behavior is not manually verified.
 
 ## Screenshots
 
-Drawn headless by Boltsnap itself with default settings: the settings window
+Drawn headless by Boltsnap itself with default settings and the desktop's UI
+font: the settings window
 with `boltsnap settings --render` at twice its size, the recording controls by
 their own painter at their real size. The cards in the shelf preview are
 painted by the shelf overlay's code.
@@ -231,7 +232,9 @@ The settings window also opens from the tray (**Settings…**) and from the app
 launcher (**Boltsnap**). See [Settings window](#settings-window).
 
 Boltsnap does not bundle an editor. Linux shelf images open in the desktop's
-default image app; pipe PNG output when an explicit editor is preferred:
+default image app, or in the editor set with `[shelf] open_with` (Settings →
+Screenshots → Open screenshots with). An image an editor saves over is kept in
+the save folder when its card goes. Any other editor reads piped PNG output:
 
 ```sh
 boltsnap area --no-copy -o - | eddy -f -
@@ -269,10 +272,12 @@ a reset to the default. Pages:
   Pinta), and the save folder.
 - **Recording**: display, frame rate, codec, cursor, frame, audio and where
   recordings go.
-- **Replay**: a timeline of what the buffer holds, its length and memory,
-  whether it starts with Boltsnap, and the display, frame rate, bitrate and
-  encoder it records with. Changes apply when the buffer restarts; the page
-  offers **Restart replay**.
+- **Replay**: a timeline of what the buffer holds, the buffer's switch, its
+  length and memory, whether it starts with Boltsnap, the display, frame
+  rate, bitrate and encoder it records with, and under **Load** the CPU and
+  memory the running buffer uses, measured. Changes apply when the buffer
+  restarts; while it runs with older settings the page offers **Restart
+  replay**.
 - **General**: the UI font.
 
 `boltsnap settings --render PAGE OUT.png [--scale N] [--size WxH]` draws a page
@@ -301,7 +306,7 @@ boltsnap window      # pick a window -> shelf
 
 Each thumbnail responds to:
 
-- **Click** — on Linux, open images and videos in the desktop's default app; on Windows, copy the image or video file reference.
+- **Click** — on Linux, open an image with `[shelf] open_with` (default: the desktop's default app) and a video in the default app; on Windows, copy the image or video file reference.
 - **Right-click** (Linux) — copy the image or video file reference.
 - **Drag** — start a drag-and-drop into another app; the drop offers both the
   image (`image/png`) and a file path (`text/uri-list`) for maximum
@@ -378,7 +383,7 @@ Override precedence for `save_dir` (highest to lowest):
 
 The daemon watches the file, so an edit applies as soon as it is saved: the
 tray follows, recording settings apply to the next recording and `[replay]`
-settings after a replay restart. The tray writes only the key it changed;
+settings after a replay restart (`autostart` at the next daemon start). The tray writes only the key it changed;
 comments, other keys and values it did not touch stay as they are.
 
 If an edit leaves the file unparsable while the daemon runs, the daemon keeps
@@ -395,7 +400,8 @@ card_width = 190        # 140 to 380 px; the height follows (190 x 132)
 visible_cards = 5       # 1 to 8; more cards stay cached below
 corner = "bottom-left"  # bottom-right, top-left or top-right
 open_with = "eddy"      # what opens an image card: eddy, satty, swappy, gimp,
-                        # krita, pinta; unset, the desktop's default app
+                        # krita, pinta or another program; unset or missing:
+                        # the desktop's default app (videos always)
 card_opacity = 80       # 30 to 100 %, a card at rest
 solid_on_hover = true   # the hovered card turns fully opaque
 card_shadow = true      # a soft shadow under each card
@@ -403,9 +409,10 @@ animations = true       # cards scale and fade as they come and go
 ```
 
 The newest card is on top of the stack in every corner. The Windows backend
-keeps 190 x 132, five cards, bottom left.
+ignores `[shelf]`: 190 x 132, five opaque cards, bottom left.
 
-Clicking a Linux image or video card opens it in the desktop's default app.
+Clicking a Linux image card opens it with `open_with`, a video card in the
+desktop's default app.
 Right-click copies the media. The **Save** button writes it to the
 configured save directory.
 

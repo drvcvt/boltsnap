@@ -25,7 +25,7 @@ bind = ALT SHIFT, Print, exec, boltsnap replay save
 
 The local Hyprland Lua configuration uses Alt+Shift+Print for this command.
 The Clip button is disabled when the replay buffer is stopped, warming up,
-exporting, or already held by another selection. Replay always contains system
+exporting, or already held by another selection; it then says why. Replay always contains system
 audio; the selector's recording audio toggle applies to new recordings.
 
 ## Prerequisites and build
@@ -151,6 +151,17 @@ motion judder. Region exports read a NUT copy of the buffer for the same
 reason. Saving a replay card moves its bytes unchanged and keeps the `.mp4`
 name; dragging it offers `video/mp4` next to the file reference. The daemon
 still accepts `.mkv` clips from an older worker.
+
+## Logs and load
+
+GPU Screen Recorder's output goes to `replay-capture.log` in Boltsnap's cache,
+every line with its local time, up to 4 MiB per session; the previous
+session's log stays as `replay-capture.log.old`. The worker's lines go to
+`daemon.log` with the time. A capture below 90 % of its frame rate for three
+reports in a row is noted in `daemon.log` ("replay capture slowed to …", then
+"back at …"). The settings window's Replay page shows under **Load** the CPU
+(percent of one core) and memory of the buffer's recorder, its helper and the
+worker, measured once a second.
 
 ## Verification and limits
 

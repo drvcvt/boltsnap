@@ -161,7 +161,7 @@ fn decide_post_capture(args: &Args, backend: Backend, copy_to_clipboard: bool) -
 fn usage() -> &'static str {
     "\
 Usage:
-  boltsnap [area|full|window|active-window] [-o PATH|-] [--save] [--no-copy] [--instant] [--backend auto|x11|wayland|windows]
+  boltsnap [area|full|window|active-window] [-o PATH|-] [--save] [--copy|--no-copy] [--instant] [--backend auto|x11|wayland|windows]
   boltsnap area --instant                 select a region, capture on release (no edit handles)
   boltsnap daemon [--save-dir DIR]        run the screenshot shelf
   boltsnap record                         select an area and screen-record it
@@ -172,6 +172,7 @@ Usage:
   boltsnap recording show-controls
   boltsnap recording pause|resume|save-shelf|save-disk|discard
   boltsnap stop                           compatibility alias for recording save-shelf
+  boltsnap settings [PAGE]                open the settings window (Linux)
   boltsnap settings --render PAGE OUT.png draw a page of the Boltsnap window to a PNG
   Config: platform config directory       (save_dir, record_codec, record_dir)
   boltsnap doctor
