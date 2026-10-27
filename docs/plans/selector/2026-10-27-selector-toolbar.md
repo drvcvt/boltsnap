@@ -440,3 +440,84 @@ noch kontrollieren sollte sind alle fine“: beide so abgenommen, keine
 Umgesetzt 27.10.: `toolbar::mark`, Record malt damit, `gates.rs` misst den
 Punkt mit seiner Farbe. Gate: 3,87:1 Ruhe, 3,95:1 Hover, 3,80:1 gedrückt
 (vorher 2,91:1). fmt, clippy, `cargo test` grün.
+
+## Nachtrag 27.10.: Clip fehlt ganz, wenn Replay aus ist (Wunsch des Nutzers)
+
+O-Ton: „wenn ich replay aus mache soll der Clip button aus dem selector UI
+verschwinden checkst du? also nicht nur grau sondern ganz raus. bitte plan
+diese aenderung erst so gut es geht damit da nichts schief geht.“
+
+**Verhalten:**
+- `ClipState::Off` (kein Puffer läuft oder niemand antwortet,
+  `replay::preview_target_from`): die Leiste ist [Record] · [Frame, Audio]
+  · Größe. Kein Clip-Knopf, keine Trefferfläche, kein Hinweis „Replay is
+  off“, keine Lücke: Record und Frame stehen im Gruppenabstand wie zwei
+  Gruppen sonst. Die Leiste ist entsprechend schmaler.
+- Alle anderen Zustände (Starting, Loading, Busy, Stalled, Failed, Ready)
+  wie bisher: Clip da, gedimmt mit Grund, oder bereit. Begründung: nur „aus“
+  ist eine Entscheidung des Nutzers; die anderen sind vorübergehend oder ein
+  Fehler, den der Hinweis erklärt.
+- Der Zustand steht vor dem ersten Bild fest: `run_select_record` fragt
+  `preview_target()` synchron, bevor das Overlay entsteht, und während der
+  Selector offen ist wird nicht neu gefragt. Die Leiste springt also nie
+  zwischen drei und vier Knöpfen; keine Animation nötig (nichts kommt oder
+  geht, solange man hinsieht).
+- Der Screenshot-Selector hat keine Leiste, unberührt.
+
+**Umsetzung:**
+1. `render/toolbar.rs`: `Metrics` bekommt `clip: bool` (Standard `true`) und
+   `without_clip()`; `Metrics::width(Control(CLIP))` ist dann `None`, und
+   `rows` lässt es weg wie heute die fehlende Größe; leere Reihen fallen weg
+   (Anordnung 3 wäre sonst [Record], [], [Frame, Audio] und `extent`
+   indiziert `row[0]`). `Layout` bekommt `shown: [bool; 4]`; `draw_labelled`
+   überspringt nicht gezeigte Knöpfe (sonst malte es eine Schere bei (0, 0)
+   in ein leeres Rechteck). `hits[CLIP]` bleibt `Rect::default()`, das
+   `contains` nie trifft (`ui/mod.rs:149`, halboffen).
+2. `select_skia/mod.rs`: ein Helfer baut `Chrome` mit `without_clip()`, wenn
+   `clip == ClipState::Off`, an beiden Stellen (Fallback-Schrift `:177`,
+   echte Schrift `:279`); `set_video` behält es (`with_size` ändert nur die
+   Größe).
+3. `motion.rs`/`scene.rs`: der Hinweis braucht `hovered == Some(CLIP)`, das
+   ohne Trefferfläche nie eintritt; zusätzlich `layout.shown[CLIP]` als
+   Bedingung, damit `hint_rect` nie an einem leeren Rechteck ankert.
+4. `gates.rs`: die Messung läuft auch für die Leiste ohne Clip und
+   überspringt nicht gezeigte Knöpfe.
+5. `shots.rs`: eine Aufnahme „replay off“ für den Blick.
+
+**Was brechen kann:** Schleifen über `layout.controls`, die alle vier
+annehmen (`draw_labelled`, `gates.rs`, Tests), Ankern des Hinweises,
+Anordnung mit leerer Reihe, Trefferflächen ohne Totzone zwischen Record und
+Frame.
+
+**Tests:** ohne Clip bei allen Bildschirmgrößen und Auswahl-Lagen der
+bisherigen Layout-Tests: keine leere Reihe, `shown[CLIP]` falsch, kein
+Punkt der Leiste trifft Clip, die übrigen Knöpfe überlappen nicht und haben
+`IN_GAP`/`GROUP_GAP`, Trefferflächen lückenlos; gezeichnet: außerhalb der
+Leiste kein Pixel verändert, keine Schere; `bar_targets`/Selector mit Off
+baut Metrics ohne Clip, mit Starting mit Clip; UI-Gates (Zentrierung,
+Ränder, Kontrast) für die Leiste ohne Clip.
+
+**Macht nicht:** kein Nachfragen des Replay-Zustands während der Selector
+offen ist, keine Änderung an den anderen Zuständen oder ihren Hinweisen,
+kein neuer Config-Key.
+
+**Live (mit Okay):** Replay aus, `boltsnap record`: Leiste ohne Clip; Replay
+an: Clip wie bisher.
+
+**Stand:** umgesetzt 27.10. wie geplant: `Metrics::without_clip`, `rows`
+ohne leere Reihen, `Layout::shown`, `draw_labelled` überspringt; Helfer
+`select_skia::chrome(fonts, clip)` an beiden Stellen; Hinweis nur bei
+`shown[CLIP]`; `gates::measure_with`; Shots `replay-off`,
+`replay-off-column` angesehen (Record · Frame im Gruppenabstand, Spalte ohne
+leere Reihe). Abweichung: die erste Testannahme „nie breiter als mit Clip“
+war falsch, ohne Clip passt bei 300×300 schon eine Reihe; geprüft wird
+jetzt „nie eine spätere Anordnung, in derselben schmaler oder niedriger“.
+Tests: `without_replay_the_toolbar_leaves_clip_out_entirely` (6 Bildschirme
+× 4 Lagen: `shown`, leere Rechtecke, keine leere Reihe, Gruppenabstand,
+kompakter, kein Pixel außerhalb der Leiste),
+`gate_capitals_padding_and_icons_measure_without_clip_too` (Versalien worst
+0,02 px, Icon-only 0,12 px, Rand 2,0 rundum),
+`with_replay_off_the_toolbar_has_no_clip_and_still_no_dead_zone` (jeder
+halbe Pixel trifft einen Knopf, nie Clip; alle anderen sechs Zustände
+behalten Clip). fmt, clippy `-D warnings`, `cargo test` 161 + 404 grün.
+Live offen (Replay aus, Selector öffnen).

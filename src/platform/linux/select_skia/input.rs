@@ -446,4 +446,34 @@ mod tests {
         }
         assert_eq!(hit(bounds.x - 1.0, bounds.y), None);
     }
+
+    #[test]
+    fn with_replay_off_the_toolbar_has_no_clip_and_still_no_dead_zone() {
+        use crate::selector::clip::ClipState;
+        let fonts = boltsnap::ui::text::Fonts::fallback;
+        let sel = (80.0, 80.0, 200.0, 120.0);
+        let area = boltsnap::ui::Rect::new(0.0, 0.0, 400.0, 300.0);
+        let off = super::super::chrome(fonts(), ClipState::Off);
+        let toolbar = render::toolbar::layout(sel, area, &off.toolbar).unwrap();
+        let hit = |x: f32, y: f32| record_control_hit(Some(&toolbar), (x as f64, y as f64));
+        let bounds = toolbar.bounds;
+        let mut y = bounds.y;
+        while y < bounds.bottom() {
+            let mut x = bounds.x;
+            while x < bounds.right() {
+                let control = hit(x, y);
+                assert!(control.is_some(), "dead zone at {x},{y}");
+                assert_ne!(control, Some(RecordControlHit::Clip), "Clip at {x},{y}");
+                x += 0.5;
+            }
+            y += 0.5;
+        }
+        // Only off leaves it out: a buffer starting, stalled or failing
+        // keeps Clip there to say why.
+        for state in ClipState::ALL.into_iter().filter(|s| *s != ClipState::Off) {
+            let chrome = super::super::chrome(fonts(), state);
+            let toolbar = render::toolbar::layout(sel, area, &chrome.toolbar).unwrap();
+            assert!(toolbar.shown[render::toolbar::CLIP], "{state:?}");
+        }
+    }
 }

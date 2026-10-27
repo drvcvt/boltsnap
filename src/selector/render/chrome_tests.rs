@@ -266,6 +266,106 @@ fn highlights_stay_inside_the_toolbars_contour() {
     }
 }
 
+/// Replay off: the same screens and selections as gate 1, the toolbar
+/// without Clip. No row left empty, nothing of Clip anywhere, Record and
+/// Frame a group apart, and only the toolbar drawn.
+#[test]
+fn without_replay_the_toolbar_leaves_clip_out_entirely() {
+    let fonts = Fonts::fallback();
+    let with = Metrics::new(&fonts).with_size(&fonts, gates::VIDEO);
+    let without = with.without_clip();
+    for (w, h) in [
+        (1920u32, 1080u32),
+        (400, 300),
+        (300, 300),
+        (200, 300),
+        (240, 200),
+        (160, 240),
+    ] {
+        let (wf, hf) = (w as f32, h as f32);
+        let area = Rect::new(0.0, 0.0, wf, hf);
+        for sel in [
+            (0.0, 0.0, wf, hf),
+            (wf - 30.0, hf - 30.0, 20.0, 20.0),
+            (20.25, 70.5, 80.0, 40.0),
+            (wf / 3.0, 2.0, 10.0, hf - 4.0),
+        ] {
+            let t = toolbar::layout(sel, area, &without).unwrap();
+            let b = t.bounds;
+            assert_eq!(t.shown, [true, false, true, true], "{w}x{h} {sel:?}");
+            assert_eq!(t.controls[toolbar::CLIP], Rect::default());
+            assert_eq!(t.hits[toolbar::CLIP], Rect::default());
+            // No empty row: the controls (and the size) reach the padding
+            // at the top and the bottom.
+            let shown: Vec<Rect> = [0, FRAME, AUDIO]
+                .iter()
+                .map(|&i| t.controls[i])
+                .chain(t.size)
+                .collect();
+            let top = shown.iter().map(|r| r.y).fold(f32::MAX, f32::min);
+            let bottom = shown.iter().map(|r| r.bottom()).fold(0.0, f32::max);
+            assert_eq!(
+                (top - b.y, b.bottom() - bottom),
+                (PAD, PAD),
+                "{w}x{h} {sel:?}"
+            );
+            let (record, frame) = (t.controls[0], t.controls[FRAME]);
+            if record.y == frame.y {
+                assert_eq!(frame.x - record.right(), toolbar::GROUP_GAP);
+            }
+            // Without Clip it fits at least as compactly: never a later
+            // arrangement, and in the same one narrower (Clip's room in a
+            // row) or lower (Clip's own row in the column).
+            let full = toolbar::layout(sel, area, &with).unwrap();
+            assert!(t.arrangement <= full.arrangement, "{w}x{h} {sel:?}");
+            if t.arrangement == full.arrangement {
+                let f = full.bounds;
+                assert!(
+                    b.w <= f.w && b.h <= f.h && (b.w < f.w || b.h < f.h),
+                    "{w}x{h} {sel:?}"
+                );
+            }
+            // Drawn, nothing lands outside the toolbar (an absent control
+            // must not paint at the origin).
+            let mut canvas = Canvas::new(w, h, 1).unwrap();
+            canvas.clear(theme::WINDOW);
+            let blank = canvas.pixmap.clone();
+            toolbar::draw(
+                &mut canvas,
+                &fonts,
+                &t,
+                &Look::at_rest(false, true, true, None),
+            );
+            for y in 0..h {
+                for x in 0..w {
+                    if !b.contains(x as f32 + 0.5, y as f32 + 0.5) {
+                        let i = ((y * w + x) * 4) as usize;
+                        assert_eq!(
+                            canvas.pixmap.data()[i..i + 4],
+                            blank.data()[i..i + 4],
+                            "{w}x{h} {sel:?}: painted at {x},{y}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn gate_capitals_padding_and_icons_measure_without_clip_too() {
+    let fonts = Fonts::fallback();
+    for ((w, h), sel) in gates::SHOTS {
+        for on in [true, false] {
+            let report = gates::measure_with(&fonts, (w, h), sel, on, false);
+            match gates::check(&report) {
+                Ok(line) => println!("gate geometry without Clip (on {on}): {line}"),
+                Err(error) => panic!("{w}x{h} on {on}: {error}"),
+            }
+        }
+    }
+}
+
 #[test]
 fn gate_capitals_padding_and_icons_measure_on_the_pixels() {
     let fonts = Fonts::fallback();

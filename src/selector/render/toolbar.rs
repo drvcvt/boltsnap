@@ -110,6 +110,8 @@ pub struct Metrics {
     text_offset: f32,
     /// The widest size the screen allows, digits in cells; `None` hides it.
     size: Option<f32>,
+    /// Clip is on the toolbar: not when no replay buffer runs.
+    clip: bool,
 }
 
 impl Metrics {
@@ -124,7 +126,15 @@ impl Metrics {
             widths: [labelled(LABELS[0]), labelled(LABELS[1]), CTL, CTL],
             text_offset,
             size: None,
+            clip: true,
         }
+    }
+
+    /// The toolbar without Clip: replay is off, so there is nothing to clip
+    /// from and no reason to offer it (selector plan, Nachtrag 27.10.).
+    pub fn without_clip(mut self) -> Self {
+        self.clip = false;
+        self
     }
 
     /// Room for the size of a clip of a `video`-sized screen: the widest any
@@ -145,6 +155,7 @@ impl Metrics {
 
     fn width(&self, item: Item) -> Option<f32> {
         match item {
+            Item::Control(CLIP) if !self.clip => None,
             Item::Control(i) => Some(self.widths[i]),
             // The text, then `SIDE` before the edge, as a label ends.
             Item::Size => self.size.map(|w| w + SIDE),
@@ -160,6 +171,9 @@ pub struct Layout {
     pub bounds: Rect,
     /// Each control's surface.
     pub controls: [Rect; 4],
+    /// Which controls are on the toolbar; the others have empty rectangles
+    /// and take no input.
+    pub shown: [bool; 4],
     /// Each control's target: its surface plus half the gap to a neighbour,
     /// out to the toolbar's edge where it has none, so no control has a dead
     /// zone around it. The size is no control and takes no input.
@@ -190,15 +204,17 @@ impl Layout {
 }
 
 /// The rows of an arrangement with what of it there is (the size only when
-/// the screen size is known).
+/// the screen size is known, Clip only with a replay buffer); a row left
+/// empty goes.
 fn rows(arrangement: usize, metrics: &Metrics) -> Vec<Vec<(Item, f32)>> {
     ARRANGEMENTS[arrangement]
         .iter()
         .map(|row| {
             row.iter()
                 .filter_map(|&item| Some((item, metrics.width(item)?)))
-                .collect()
+                .collect::<Vec<_>>()
         })
+        .filter(|row| !row.is_empty())
         .collect()
 }
 
@@ -233,6 +249,7 @@ pub fn layout(sel: (f32, f32, f32, f32), area: Rect, metrics: &Metrics) -> Optio
     let (x, y, placement) = place(sel, (width, height), area);
     let bounds = Rect::new(x, y, width, height);
     let mut controls = [Rect::default(); 4];
+    let mut shown = [false; 4];
     let mut hits = [Rect::default(); 4];
     let mut size = None;
     let mut top = y + PAD;
@@ -251,6 +268,7 @@ pub fn layout(sel: (f32, f32, f32, f32), area: Rect, metrics: &Metrics) -> Optio
                     let t = above.map_or(bounds.y, |g| rect.y - g / 2.0);
                     let b = below.map_or(bounds.bottom(), |g| rect.bottom() + g / 2.0);
                     controls[i] = rect;
+                    shown[i] = true;
                     hits[i] = Rect::new(l, t, rt - l, b - t);
                 }
                 Item::Size => size = Some(Rect::new(rect.x, rect.y, w - SIDE, CTL)),
@@ -264,6 +282,7 @@ pub fn layout(sel: (f32, f32, f32, f32), area: Rect, metrics: &Metrics) -> Optio
         placement,
         bounds,
         controls,
+        shown,
         hits,
         size,
         text_offset: metrics.text_offset,
@@ -395,6 +414,9 @@ pub fn draw_labelled(
 ) {
     canvas.fill(layout.bounds, BAR_RADIUS, theme::PANEL, 1.0);
     for (i, rect) in layout.controls.iter().enumerate() {
+        if !layout.shown[i] {
+            continue;
+        }
         let control = &look.controls[i];
         if let Some(fill) = surface(i, control) {
             canvas.fill(*rect, CTL_RADIUS, fill, 1.0);

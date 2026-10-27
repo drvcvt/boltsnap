@@ -197,7 +197,10 @@ impl BarMotion {
         self.update_tips(hovered, &targets.on, now);
         self.tips
             .retain(|tip| !tip.alpha.done(now) || tip.alpha.target() != 0.0);
-        let hint = targets.hovered == Some(CLIP) && !targets.enabled[CLIP] && layout.is_some();
+        // Only beside a Clip that is there: without replay it is not.
+        let hint = targets.hovered == Some(CLIP)
+            && !targets.enabled[CLIP]
+            && layout.is_some_and(|layout| layout.shown[CLIP]);
         let hint = hint.then_some(targets.reason).flatten();
         if hint.is_some() {
             self.hint_text = hint;

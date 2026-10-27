@@ -232,6 +232,32 @@ fn selector_shots() {
         paint(frame, &base, &scene, &chrome);
         save(&frame.pixmap, &out.join(format!("{name}.png")));
     }
+    // Replay off: the toolbar without Clip, at rest and with the pointer
+    // where Clip would be, on the full screen and in the narrow column.
+    chrome.toolbar = chrome.toolbar.without_clip();
+    let sel = (612.0, 300.0, 760.0, 430.0);
+    let column = (20.0, 180.0, 100.0, 40.0);
+    for (name, size, sel) in [
+        ("replay-off", (1920, 1080), sel),
+        ("replay-off-column", (160, 240), column),
+    ] {
+        let scene = scene(
+            sel,
+            true,
+            animated(
+                &chrome,
+                size,
+                &[step(sel, targets(None, false, true), 0)],
+                1000,
+            ),
+        );
+        let (w, h) = size;
+        let base = render::base_pixmap_from_image(&backdrop(w, h), w, h);
+        let mut overlay = render::CachedOverlay::new(&base);
+        let frame = overlay.reset(&base, scene.selection);
+        paint(frame, &base, &scene, &chrome);
+        save(&frame.pixmap, &out.join(format!("{name}.png")));
+    }
     // The gates with the user's face.
     for ((w, h), sel) in render::gates::SHOTS {
         for on in [true, false] {

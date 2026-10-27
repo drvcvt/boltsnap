@@ -104,8 +104,24 @@ pub struct Report {
 /// Draw the toolbar for `sel` in a `w`×`h` area with Clip there, Frame and
 /// Audio on (`on`) or off, the widest size, nothing under the pointer, and
 /// measure it.
-pub fn measure(fonts: &Fonts, (w, h): (u32, u32), sel: (f32, f32, f32, f32), on: bool) -> Report {
+pub fn measure(fonts: &Fonts, size: (u32, u32), sel: (f32, f32, f32, f32), on: bool) -> Report {
+    measure_with(fonts, size, sel, on, true)
+}
+
+/// [`measure`], the toolbar with Clip or, with replay off, without.
+pub fn measure_with(
+    fonts: &Fonts,
+    (w, h): (u32, u32),
+    sel: (f32, f32, f32, f32),
+    on: bool,
+    clip: bool,
+) -> Report {
     let metrics = toolbar::Metrics::new(fonts).with_size(fonts, VIDEO);
+    let metrics = if clip {
+        metrics
+    } else {
+        metrics.without_clip()
+    };
     let area = Rect::new(0.0, 0.0, w as f32, h as f32);
     let layout = toolbar::layout(sel, area, &metrics).expect("toolbar fits");
     let mut canvas = Canvas::new(w, h, 1).expect("canvas");
@@ -116,6 +132,9 @@ pub fn measure(fonts: &Fonts, (w, h): (u32, u32), sel: (f32, f32, f32, f32), on:
     let mut labelled = Vec::new();
     let mut icon_only = Vec::new();
     for (i, rect) in layout.controls.iter().enumerate() {
+        if !layout.shown[i] {
+            continue;
+        }
         let control = &look.controls[i];
         let surface = toolbar::surface(i, control).unwrap_or(theme::PANEL);
         let ink_rgb = toolbar::ink(i, control);
@@ -163,6 +182,7 @@ pub fn measure(fonts: &Fonts, (w, h): (u32, u32), sel: (f32, f32, f32, f32), on:
     };
     let b = layout.bounds;
     let lowest = (0..4)
+        .filter(|&i| layout.shown[i])
         .max_by(|&a, &c| layout.controls[a].y.total_cmp(&layout.controls[c].y))
         .unwrap_or(0);
     let (first, bottom) = (surface(0), surface(lowest));
@@ -221,13 +241,21 @@ pub fn check(report: &Report) -> Result<String, String> {
     }
     let l = &report.layout;
     let (controls, b) = (l.controls, l.bounds);
-    if controls.iter().any(|r| r.h != CTL) || controls[FRAME..].iter().any(|r| r.w != CTL) {
+    let shown = |i: usize| l.shown[i];
+    if (0..4).any(|i| shown(i) && controls[i].h != CTL)
+        || controls[FRAME..].iter().any(|r| r.w != CTL)
+    {
         return Err("controls of different heights, or an icon-only one not square".into());
     }
-    // Groups: GROUP_GAP between Clip and Frame when they share a row, PAD
-    // within a group; the size `SIDE` + PAD from the right edge.
-    if controls[1].y == controls[2].y && controls[2].x - controls[1].right() != GROUP_GAP {
-        return Err("Clip to Frame is not the group gap".into());
+    // Groups: GROUP_GAP between the first group's end (Clip, or Record
+    // without it) and Frame when they share a row, PAD within a group; the
+    // size `SIDE` + PAD from the right edge.
+    let end = if shown(1) { 1 } else { 0 };
+    if controls[end].y == controls[2].y && controls[2].x - controls[end].right() != GROUP_GAP {
+        return Err(format!(
+            "{} to Frame is not the group gap",
+            toolbar::LABELS[end]
+        ));
     }
     if controls[3].x - controls[2].right() != IN_GAP {
         return Err("Frame to Audio is not the inner gap".into());

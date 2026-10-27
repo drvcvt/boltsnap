@@ -174,7 +174,7 @@ fn run_selector(
         base: None,
         overlay: None,
         // The embedded face until the desktop's is loaded (before any frame).
-        chrome: render::Chrome::new(Fonts::fallback()),
+        chrome: chrome(Fonts::fallback(), clip),
         motion: BarMotion::new(
             &bar_targets(None, None, show_frame, audio_enabled, clip, None),
             Instant::now(),
@@ -276,7 +276,10 @@ fn run_selector(
             })
             .collect::<Result<Vec<_>, &str>>()?
     };
-    sel.chrome = render::Chrome::new(font_handle.join().map_err(|_| "font worker panicked")?);
+    sel.chrome = chrome(
+        font_handle.join().map_err(|_| "font worker panicked")?,
+        sel.clip,
+    );
     if let Some(video) = sel.video {
         sel.set_video(video);
     }
@@ -455,6 +458,16 @@ enum Mode {
     Drawing { anchor: (f64, f64), now: (f64, f64) },
     /// Committed, editable selection.
     Editing { rect: edit::Rect },
+}
+
+/// The chrome in `fonts`; with replay off the toolbar has no Clip at all
+/// (decided before the first frame and kept while the selector is open).
+fn chrome(fonts: Fonts, clip: ClipState) -> render::Chrome {
+    let mut chrome = render::Chrome::new(fonts);
+    if clip == ClipState::Off {
+        chrome.toolbar = chrome.toolbar.without_clip();
+    }
+    chrome
 }
 
 /// The toolbar's targets: what is under the pointer and held, the toggles,
