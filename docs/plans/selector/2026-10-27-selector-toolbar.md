@@ -434,7 +434,9 @@ hellt mit der Fläche auf, wie ein Licht, das beim Drücken angeht:
 3 (gedrückt) ein Viertel Richtung `TEXT`. Gate: Punkt ≥ 3:1 auf jeder
 Stufe der Leiter, mit dem Wert, den die Stufe malt. Die übrigen offenen
 Punkte: „Ohne Animation“-Liste (Mitziehen, Rahmen, Griffe) und der Hinweis
-bei 160 × 240 dem Nutzer genau erklärt (Antwort steht aus).
+bei 160 × 240 dem Nutzer genau erklärt. Antwort 27.10.: „die sachen die ich
+noch kontrollieren sollte sind alle fine“: beide so abgenommen, keine
+Änderung.
 Umgesetzt 27.10.: `toolbar::mark`, Record malt damit, `gates.rs` misst den
 Punkt mit seiner Farbe. Gate: 3,87:1 Ruhe, 3,95:1 Hover, 3,80:1 gedrückt
 (vorher 2,91:1). fmt, clippy, `cargo test` grün.
