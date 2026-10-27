@@ -293,6 +293,17 @@ impl App {
         Some(self.row_parts(rect, self.row(block)?).control)
     }
 
+    /// The pointer's look at `at`: sideways over the shelf preview's
+    /// measure and while it is dragged.
+    pub fn pointer_shape(&self, at: (f32, f32), now: Instant) -> crate::ui::PointerShape {
+        let on_edge = |target: Option<Target>| matches!(target, Some(Target::Preview(_)));
+        if on_edge(self.capture) || (self.capture.is_none() && on_edge(self.target_at(at, now))) {
+            crate::ui::PointerShape::ResizeX
+        } else {
+            crate::ui::PointerShape::Default
+        }
+    }
+
     fn target_at(&self, (x, y): (f32, f32), now: Instant) -> Option<Target> {
         if x < self.nav_w(now) {
             return (0..self.pages.len())

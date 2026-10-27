@@ -525,3 +525,51 @@ fn the_cards_are_the_shelfs_own_painting_with_the_look_of_the_page() {
     let empty = (rect.right() - 40.0, rect.y + 40.0);
     assert_eq!(pixel(&draw(&app, now + SETTLED), empty), PANEL);
 }
+
+#[test]
+fn the_whole_measure_drags_and_shows_the_sideways_pointer() {
+    use crate::ui::PointerShape;
+    let now = Instant::now();
+    let app = app_on("shelf", SIZE, now);
+    let rect = shelf_rect(&app, now);
+    let m = app.shelf_measure(rect, now).unwrap();
+    let front = cards(&app, now)[1].1;
+    // Just inside the card, the line, the numbers, just past them.
+    for at in [
+        (front.right() - 2.0, middle(front).1),
+        middle(m.height_line),
+        middle(m.chip),
+        (m.chip.right() + 2.0, middle(m.chip).1),
+    ] {
+        assert_eq!(app.pointer_shape(at, now), PointerShape::ResizeX, "{at:?}");
+    }
+    // The card itself and the free block beside the measure do not.
+    for at in [middle(front), (m.chip.right() + 20.0, middle(m.chip).1)] {
+        assert_eq!(app.pointer_shape(at, now), PointerShape::Default, "{at:?}");
+    }
+}
+
+#[test]
+fn hovering_a_card_blends_kept_pictures_instead_of_painting_again() {
+    let now = Instant::now();
+    let mut app = app_on("shelf", SIZE, now);
+    let mut canvas = crate::ui::Canvas::new(SIZE.0 as u32, SIZE.1 as u32, 1).unwrap();
+    app.draw(&mut canvas, now + SETTLED);
+    let at_rest = app.shelf_paints();
+    let (x, y) = middle(cards(&app, now)[0].1);
+    let later = now + SETTLED;
+    app.handle(Input::Move { x, y }, later);
+    for ms in [0, 16, 33, 50, 100, 400] {
+        app.draw(&mut canvas, later + Duration::from_millis(ms));
+    }
+    assert_eq!(
+        app.shelf_paints(),
+        at_rest + 1,
+        "the hovered state once, then kept"
+    );
+    // Back off the card and onto it again: nothing new to paint.
+    app.handle(Input::Move { x: 5.0, y: 5.0 }, later + SETTLED);
+    app.handle(Input::Move { x, y }, later + SETTLED);
+    app.draw(&mut canvas, later + SETTLED + Duration::from_millis(30));
+    assert_eq!(app.shelf_paints(), at_rest + 1);
+}

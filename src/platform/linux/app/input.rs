@@ -1,6 +1,6 @@
 //! Pointer and keyboard events, turned into the app's [`Input`].
 
-use boltsnap::ui::{Input, Key, Mods};
+use boltsnap::ui::{Input, Key, Mods, PointerShape};
 use smithay_client_toolkit::seat::{
     Capability, SeatHandler, SeatState,
     keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers},
@@ -121,16 +121,16 @@ impl PointerHandler for Win {
         _: &WlPointer,
         events: &[PointerEvent],
     ) {
+        let mut at = None;
         for event in events {
             if &event.surface != self.surface() {
                 continue;
             }
             let (x, y) = (event.position.0 as f32, event.position.1 as f32);
+            at = Some((x, y));
             let input = match event.kind {
                 PointerEventKind::Enter { .. } => {
-                    if let Some(pointer) = self.pointer.as_ref() {
-                        let _ = pointer.set_cursor(conn, CursorIcon::Default);
-                    }
+                    self.shape = None;
                     Input::Move { x, y }
                 }
                 PointerEventKind::Leave { .. } => Input::Leave,
@@ -158,6 +158,21 @@ impl PointerHandler for Win {
                 _ => continue,
             };
             self.input(input);
+        }
+        // The look for where the pointer is now, set only when it changes.
+        if let Some(at) = at {
+            let shape = self.app.pointer_shape(at, std::time::Instant::now());
+            if self.shape != Some(shape)
+                && let Some(pointer) = self.pointer.as_ref()
+            {
+                let icon = match shape {
+                    PointerShape::Default => CursorIcon::Default,
+                    PointerShape::ResizeX => CursorIcon::EwResize,
+                };
+                if pointer.set_cursor(conn, icon).is_ok() {
+                    self.shape = Some(shape);
+                }
+            }
         }
     }
 }

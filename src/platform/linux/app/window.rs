@@ -58,6 +58,8 @@ pub(super) struct Win {
     frame_pending: bool,
     dirty: bool,
     pub(super) pointer: Option<ThemedPointer>,
+    /// The look the pointer was last given; `None` after it entered.
+    pub(super) shape: Option<boltsnap::ui::PointerShape>,
     pub(super) keyboard: Option<WlKeyboard>,
     pub(super) mods: Mods,
     pub(super) clicks: Clicks,
@@ -132,6 +134,7 @@ impl Win {
             frame_pending: false,
             dirty: true,
             pointer: None,
+            shape: None,
             keyboard: None,
             mods: Mods::default(),
             clicks: Clicks::default(),

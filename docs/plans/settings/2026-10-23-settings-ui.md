@@ -2797,6 +2797,36 @@ Screenshot der Shelf-Seite (Ruhe, Hover, mitten in der Animation).
 echte Screenshots, weitere Animationsarten als an/aus, eigene Radien je
 Karte, Hyprlands eigene Layer-Animation, Windows.
 
+#### V6b Maß greifbar, Hover flüssig (27.10., Meldung des Nutzers)
+
+Meldung: „es nur so einen pixelstreifen gibt wo dieses maß ding greifbar
+wird und das ist nicht mal dort wo das maß ist sondern kurz vor anfang der
+shelf card [...] das hovern ueber die cards im preview reagiert sehr
+langsam also das muss performant und clean sein“.
+
+Befund am Code (`5200dc8`): `dims.rs::measure` legt `edge` 8 px breit um
+die Innenkante der Karte (`inner ± GRIP/2`); Linie und Zahl liegen 9 bis
+~90 px daneben und sind nicht greifbar. `preview/shelf.rs::paint_cards`
+malt jeden Frame den ganzen Shelf neu (Schatten-SDF je Pixel), bei Hover
+dreimal, wandelt alles in `f32` und legt eine fensterweite `Mask` an; bei
+jeder Mausbewegung über einer Karte also mehrere volle Painter-Läufe.
+
+Soll:
+- **Greifbar ist das ganze Maß:** von `GRIP/2` in der Karte über Linie und
+  Zahlenfläche bis `GAP_XS` dahinter, über die Kartenhöhe. Ohne Platz für
+  das Maß bleibt der Streifen an der Kante. Über dem Maß und beim Ziehen
+  zeigt der Zeiger `ew-resize` (`ui::PointerShape`, das Fenster setzt ihn
+  über den Cursor-Theme-Zeiger), sonst den Standardzeiger.
+- **Hover ohne Neumalen:** die Painter-Ausgabe wird je Zustand (kein Hover,
+  Hover auf Karte n) als `Pixmap` behalten, solange Lage, Größen,
+  Animationen, Look und Skala gleich sind; ein Hover blendet nur das
+  Kartenrechteck zwischen zwei behaltenen Bildern (`QUICK` wie bisher). Die
+  Maske nur, wenn die Fläche über den Block hinausragt, und dann behalten.
+
+Abnahme: Test, dass Linie und Zahl greifbar sind und der Zeiger dort
+`ResizeX` ist; Test, dass Hover-Frames keinen Painter-Lauf mehr auslösen
+(Zähler); bestehende Tests grün; Render Hover.
+
 ## 6. Reihenfolge
 
 Jede Phase ist ein eigener Commit (oder wenige), baut, testet und lässt den
@@ -2968,3 +2998,4 @@ Vom Nutzer am 24.10. so bestätigt:
 | 6 (Library) | Skizze im Library-Plan |
 | 5f | umgesetzt 27.10. nach „Phase 5f“ (zusammen mit Selector S4/S5, `docs/plans/selector/2026-10-27-selector-toolbar.md`): `ui::push_squircle`, `squircle_shape`, `SQUIRCLE_SCALE` 1,8408964, `SQUIRCLE_TOLERANCE` 0,025; `rounded_rect` (also `Canvas::fill`, `Canvas::picture`) und `Canvas::ring` nutzen sie, `push_rounded` nur noch für Lucide-`rect`. Abweichung: Polarform statt (cos^(2/n), sin^(2/n)), siehe Abschnitt. Gemessen: 45°-Punkt gleich dem Kreis ± 0,05 px bei r = 2, 4, 5, 9, 12, 16; Pille r = h/2 ergibt n = 2,0000, Punkte ± 0,03 px auf dem Kreis; r = 6/7,5/9 in 20 px Höhe geklemmt mit 2 < n < 4, 45°-Punkt ± 0,05; Sehnenfehler gegen die dichte Kurve 0,023 (r 4, 61 Punkte je Fläche), 0,024 (r 12, 93), 0,020 (r 40, 181), alle < 0,025; gerade Kanten pixelgleich zur eckigen Füllung. Gefunden und behoben (Zoom 4×, Skript für über zwei Reihen verschmierte gerade Kanten, Lauf ≥ 30 px): Segment-Teile lagen bei geteiltem Rest auf Bruchteilen (gewählte Fläche „Mic“ mit verschmierter linker Kante bei Skala 2), jetzt Grenzen gerundet, Summe gleich; Karten der Shelf-Vorschau lagen auf Bruchteilen (skaliert), jetzt Kanten gerundet. Danach keine verschmierte Flächenkante auf Shelf, Screenshots, Recording, Replay, General bei 760@2 und 360 (Treffer nur noch Lucide-Striche und Schrift). Gates unverändert grün: Padding 12 px (Abweichung 0,00), Achse 0,00; Kontrast 13 Paare, niedrigstes 4,83:1; Icons 24 Zeilen, Mitte 0,32, Achse 0,31, Kante 0,00, Abstand 0,37 (`--measure` Outfit: 26 Zeilen 0,31/0,31/0,00/0,37); Versalien 0,00 px je Control (eingebettet und Outfit); Überlauf 1067 Teile; Umbruch 376 Zeilen; Copy 170 Strings. Renders vorher/nachher in `scratchpad/s5/{before,after}/` (Shelf, Recording, General bei 760@2 und 360, dazu Screenshots und Replay nachher), Vergleich `scratchpad/s5/z-compare.png`. Checks: fmt, clippy ohne Warnung, `cargo test` 137 + 391 grün, `git diff --check`. |
 | 5g V6 | umgesetzt 27.10. nach „Phase 5g V6“, zwei Abweichungen: (1) die neue Karte kommt erst, wenn die alte weg ist (240 ms, dann 150 ms): gleichzeitig ließ die Shelf-Logik (`overflow_card_opacity`) die übrige Karte aus- und am Ende hart wieder einblenden, im Render bei 90 ms gesehen; (2) `--render` kann `--move X,Y`, `--click X,Y`, `--after MS`, für die Zustands-Screenshots. A: `src/shelf_card/` (Lib: `layout.rs` per `git mv` mit `animated_card_layout`, `animated_item_limit`, `overflow_card_opacity`, `hold_size`; `paint.rs` mit `Frame`, `draw_shelf(…, picture)`, Skala für Radius, Schatten, Striche; `CardKind`, `CardLook`, `APPEAR_MS`/`DISMISS_MS`, `appear`/`dismiss`), `shelf/paint.rs` 1197 → 501 Zeilen, `linux/shelf/anim.rs` (aus `mod.rs`, 3681 → 3494). B: Keys `shelf.card_opacity` (30–100), `shelf.solid_on_hover`, `shelf.card_shadow`, `shelf.animations`, `ShelfPrefs::look()`; Animations aus: kein Appear, Dismiss entfernt sofort. C: `app/preview/shelf.rs` (`Play`: zwei Platzhalter, Federn für Breite `SNAP`, Ecke `GLIDE`, zweite Karte `SNAP`; Malen über den Shelf-Painter in eine Pixmap, Maske auf den Block; Hover je Karte als Differenzbild mit `QUICK`), `dims.rs` (Höhenlinie plus „190 × 132 px“ am ruhenden Eckplatz), `Target::Card`, Überschrift „Look“ mit `blend`, `square-mouse-pointer`, `squares-unite`, `orbit`; Slider zeigt „80%“ ohne Leerzeichen. D: Ecken-Symbole G. Tests neu: `two_cards_rest_in_the_corner_at_their_real_size`, `a_new_corner_glides_the_cards_there`, `one_card_shown_folds_the_second_away`, `the_x_dismisses_a_card_and_a_new_one_arrives_on_top`, `without_animations_a_card_goes_and_comes_at_once`, `the_cards_are_the_shelfs_own_painting_with_the_look_of_the_page`, `the_look_sets_opacity_hover_and_shadow`, `the_preview_leaves_the_save_button_out`, Ecken-Symbol-Test mit Tinten-Mitte (± 1 px bei 48 px). Checks: `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test` 146 + 381 grün, Gates (Kontrast min. 4,83:1, Icons 0,31 px, Padding 0,00, Überlauf 1227 Teile bei 360–1400 px), `settings --measure` mit echter Schrift. Renders Ruhe, Hover, Dismiss-Folge, 2×, 360 px angesehen. Nicht geprüft: `cargo check --target x86_64-pc-windows-msvc` (Ziel nicht installiert; `draw_shelf_opaque` behält Signatur), live im Daemon (Installation und Neustart beim Nutzer). |
+| 5g V6b | umgesetzt 27.10. nach „V6b Maß greifbar, Hover flüssig“: `dims::measure` nimmt `shown`, `edge` reicht von `GRIP/2` in der Karte bis `GAP_XS` hinter die Zahl (ohne Maß der Streifen an der Kante); `ui::PointerShape`, `App::pointer_shape`, das Fenster setzt `ew-resize`/Standard nur bei Wechsel (`linux/app/input.rs`, nach jedem Pointer-Frame). `preview/shelf.rs`: Painter-Bilder je Hover-Zustand behalten (`PaintKey` aus Größe, Kartenrechtecken, Animationen, Look, Skala), Hover mischt nur das Kartenrechteck (`blend_rect`), Maske nur wenn die Fläche über den Block ragt und dann behalten. Tests `the_whole_measure_drags_and_shows_the_sideways_pointer`, `hovering_a_card_blends_kept_pictures_instead_of_painting_again` (ein Painter-Lauf für den Hover-Zustand, danach keiner). Checks: fmt, clippy ohne Warnung, `cargo test` 148 + 381 grün, Render Hover. Live beim Nutzer offen. |

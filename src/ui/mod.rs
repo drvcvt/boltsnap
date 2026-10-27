@@ -39,6 +39,16 @@ pub enum Key {
     Char(char),
 }
 
+/// The pointer's look the UI asks the window for.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PointerShape {
+    #[default]
+    Default,
+    /// Over something that drags sideways, such as the shelf preview's
+    /// measure.
+    ResizeX,
+}
+
 /// What the window hands the UI, in logical pixels.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Input {

@@ -3,7 +3,7 @@
 //! look the page sets is the look the shelf has. A card's X dismisses it the
 //! way the shelf does, and a new one arrives where the shelf puts new cards.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::time::{Duration, Instant};
 
 use image::RgbaImage;
@@ -81,6 +81,11 @@ pub(super) struct Play {
     pub(super) shape: Option<ShelfShape>,
     /// The placeholder picture for the last size drawn.
     picture: RefCell<Option<RgbaImage>>,
+    /// What the painter drew last, and how often it ran.
+    painted: RefCell<Option<Painted>>,
+    paints: Cell<usize>,
+    /// The block's outline, when the shelf runs past it.
+    mask: RefCell<Option<(MaskKey, Mask)>>,
 }
 
 impl Play {
@@ -95,6 +100,9 @@ impl Play {
             second: Spring::settled(1.0, now),
             shape: None,
             picture: RefCell::new(None),
+            painted: RefCell::new(None),
+            paints: Cell::new(0),
+            mask: RefCell::new(None),
         }
     }
 
@@ -477,7 +485,8 @@ impl App {
     }
 
     /// The cards as the overlay paints them, the hovered ones blended in by
-    /// how far their hover has come.
+    /// how far their hover has come. The painter runs only when what it
+    /// shows changes; a hover blends two kept pictures inside its card.
     fn paint_cards(
         &self,
         canvas: &mut Canvas,
@@ -487,77 +496,210 @@ impl App {
         now: Instant,
     ) {
         let layout = &placed.layout;
-        let (lw, lh) = (layout.width.max(1), layout.height.max(1));
-        let Some(first) = layout.thumbs.first() else {
-            return;
-        };
-        let Some(picture) = self.picture((first.w, first.h), placed.scale) else {
-            return;
-        };
-        let paint = |hovered: Option<u64>| {
-            let mut pixels = vec![0u8; (lw * lh * 4) as usize];
-            let frame = Frame {
-                layout,
-                cfg: &placed.cfg,
-                hovered,
-                anims: &placed.anims,
-                save_flash: None,
-                save_button: false,
-                look,
-                scale: placed.scale,
-            };
-            draw_shelf(&mut pixels, lw, lh, &frame, |_| {
-                Some((&*picture, CardKind::Image))
-            });
-            pixels
-        };
         let block = self.shelf_block();
-        let base = paint(None);
-        let mut pixels: Vec<f32> = base.iter().copied().map(f32::from).collect();
-        for thumb in &layout.thumbs {
-            let lift = block.map_or(0.0, |block| {
-                self.fade(Target::Card(block, thumb.id), Channel::Hover, now)
-            });
-            if lift <= 0.0 {
-                continue;
+        let lifts: Vec<(usize, f32)> = layout
+            .thumbs
+            .iter()
+            .enumerate()
+            .map(|(index, thumb)| {
+                let lift = block.map_or(0.0, |block| {
+                    self.fade(Target::Card(block, thumb.id), Channel::Hover, now)
+                });
+                (index, lift.clamp(0.0, 1.0))
+            })
+            .filter(|(_, lift)| *lift > 0.0)
+            .collect();
+        let key = PaintKey {
+            size: (layout.width.max(1), layout.height.max(1)),
+            thumbs: layout
+                .thumbs
+                .iter()
+                .map(|t| (t.id, t.x, t.y, t.w, t.h))
+                .collect(),
+            anims: placed.anims.clone(),
+            look,
+            scale: placed.scale,
+        };
+        let mut wanted = vec![None];
+        wanted.extend(
+            lifts
+                .iter()
+                .map(|(index, _)| Some(layout.thumbs[*index].id)),
+        );
+        self.keep_painted(&key, &wanted, placed);
+        let painted = self.preview.play.painted.borrow();
+        let Some(painted) = painted.as_ref() else {
+            return;
+        };
+        let state = |hovered: Option<u64>| {
+            painted
+                .states
+                .iter()
+                .find(|(id, _)| *id == hovered)
+                .map(|(_, pixmap)| pixmap)
+        };
+        let Some(base) = state(None) else {
+            return;
+        };
+        let blended;
+        let cards = match lifts.as_slice() {
+            [] => base,
+            [(index, lift)] if *lift >= 1.0 => {
+                state(Some(layout.thumbs[*index].id)).unwrap_or(base)
             }
-            // Painted apart from hover only at this card: the difference
-            // blends in.
-            let hovered = paint(Some(thumb.id));
-            for ((out, on), off) in pixels.iter_mut().zip(hovered).zip(&base) {
-                *out += lift * (f32::from(on) - f32::from(*off));
+            _ => {
+                let mut out = base.clone();
+                for (index, lift) in &lifts {
+                    let thumb = &layout.thumbs[*index];
+                    if let Some(hovered) = state(Some(thumb.id)) {
+                        blend_rect(
+                            &mut out,
+                            hovered,
+                            (thumb.x, thumb.y, thumb.w, thumb.h),
+                            *lift,
+                        );
+                    }
+                }
+                blended = out;
+                &blended
             }
-        }
-        // BGRA as the overlay's buffers hold it, to tiny-skia's RGBA.
-        let mut rgba = Vec::with_capacity(pixels.len());
-        for pixel in pixels.chunks_exact(4) {
-            let channel = |v: f32| v.round().clamp(0.0, 255.0) as u8;
-            rgba.extend([
-                channel(pixel[2]),
-                channel(pixel[1]),
-                channel(pixel[0]),
-                channel(pixel[3]),
-            ]);
-        }
-        let Some(cards) = IntSize::from_wh(lw, lh).and_then(|size| Pixmap::from_vec(rgba, size))
-        else {
-            return;
         };
-        // What runs past the block's edge is cut there.
-        let Some(mut mask) = Mask::new(canvas.pixmap.width(), canvas.pixmap.height()) else {
-            return;
-        };
-        let Some(outline) = rounded_rect(rect, PANEL_RADIUS) else {
-            return;
-        };
-        mask.fill_path(&outline, FillRule::Winding, true, canvas.transform());
+        let mask = self.clip_mask(canvas, rect, placed);
         canvas.pixmap.draw_pixmap(
             placed.origin.0,
             placed.origin.1,
             cards.as_ref(),
             &PixmapPaint::default(),
             Transform::identity(),
-            Some(&mask),
+            mask.as_deref(),
         );
     }
+
+    /// Have the painter's picture for every state in `wanted` (no hover,
+    /// hover on a card) at `key`, painting only what is missing.
+    fn keep_painted(&self, key: &PaintKey, wanted: &[Option<u64>], placed: &Placed) {
+        let play = &self.preview.play;
+        let mut painted = play.painted.borrow_mut();
+        if painted.as_ref().is_none_or(|painted| painted.key != *key) {
+            *painted = Some(Painted {
+                key: key.clone(),
+                states: Vec::new(),
+            });
+        }
+        let Some(painted) = painted.as_mut() else {
+            return;
+        };
+        let (lw, lh) = key.size;
+        let Some(first) = placed.layout.thumbs.first() else {
+            return;
+        };
+        for hovered in wanted {
+            if painted.states.iter().any(|(id, _)| id == hovered) {
+                continue;
+            }
+            let Some(picture) = self.picture((first.w, first.h), placed.scale) else {
+                return;
+            };
+            let mut pixels = vec![0u8; (lw * lh * 4) as usize];
+            let frame = Frame {
+                layout: &placed.layout,
+                cfg: &placed.cfg,
+                hovered: *hovered,
+                anims: &placed.anims,
+                save_flash: None,
+                save_button: false,
+                look: key.look,
+                scale: placed.scale,
+            };
+            draw_shelf(&mut pixels, lw, lh, &frame, |_| {
+                Some((&*picture, CardKind::Image))
+            });
+            play.paints.set(play.paints.get() + 1);
+            // BGRA as the overlay's buffers hold it, to tiny-skia's RGBA.
+            for pixel in pixels.chunks_exact_mut(4) {
+                pixel.swap(0, 2);
+            }
+            if let Some(pixmap) =
+                IntSize::from_wh(lw, lh).and_then(|size| Pixmap::from_vec(pixels, size))
+            {
+                painted.states.push((*hovered, pixmap));
+            }
+        }
+    }
+
+    /// The block's outline as a mask, when the shelf runs past it (cards
+    /// bigger than the block); kept while the block stays where it is.
+    fn clip_mask(
+        &self,
+        canvas: &Canvas,
+        rect: Rect,
+        placed: &Placed,
+    ) -> Option<std::cell::Ref<'_, Mask>> {
+        let s = canvas.scale;
+        let (x, y) = placed.origin;
+        let (w, h) = (placed.layout.width as i32, placed.layout.height as i32);
+        let inside = x >= (rect.x * s).round() as i32
+            && y >= (rect.y * s).round() as i32
+            && x + w <= (rect.right() * s).round() as i32
+            && y + h <= (rect.bottom() * s).round() as i32;
+        if inside {
+            return None;
+        }
+        let size = (canvas.pixmap.width(), canvas.pixmap.height());
+        let key = ([rect.x, rect.y, rect.w, rect.h, s], size);
+        let cache = &self.preview.play.mask;
+        if cache.borrow().as_ref().is_none_or(|(kept, _)| *kept != key) {
+            let mut mask = Mask::new(size.0, size.1)?;
+            mask.fill_path(
+                &rounded_rect(rect, PANEL_RADIUS)?,
+                FillRule::Winding,
+                true,
+                canvas.transform(),
+            );
+            *cache.borrow_mut() = Some((key, mask));
+        }
+        std::cell::Ref::filter_map(cache.borrow(), |kept| kept.as_ref().map(|(_, mask)| mask)).ok()
+    }
+
+    /// How often the painter has run, for the tests.
+    #[cfg(test)]
+    pub fn shelf_paints(&self) -> usize {
+        self.preview.play.paints.get()
+    }
+}
+
+/// `over` blended into `out` inside `(x, y, w, h)` by `t`, premultiplied
+/// channel by channel.
+fn blend_rect(out: &mut Pixmap, over: &Pixmap, (x, y, w, h): (u32, u32, u32, u32), t: f32) {
+    let width = out.width();
+    let (right, bottom) = ((x + w).min(width), (y + h).min(out.height()));
+    let t = (t * 256.0).round() as u32;
+    let from = over.data();
+    let data = out.data_mut();
+    for row in y..bottom {
+        let span = (row * width + x) as usize * 4..(row * width + right) as usize * 4;
+        for (to, on) in data[span.clone()].iter_mut().zip(&from[span]) {
+            let (to32, on32) = (u32::from(*to), u32::from(*on));
+            *to = ((to32 * (256 - t) + on32 * t) >> 8) as u8;
+        }
+    }
+}
+
+/// Where a kept mask is: the block (x, y, w, h, scale) and the canvas size.
+type MaskKey = ([f32; 5], (u32, u32));
+
+/// What a kept picture of the painter shows.
+#[derive(Clone, PartialEq)]
+pub(super) struct PaintKey {
+    size: (u32, u32),
+    thumbs: Vec<(u64, u32, u32, u32, u32)>,
+    anims: Vec<(u64, f32, f32)>,
+    look: CardLook,
+    scale: f32,
+}
+
+/// The painter's pictures at one key, by hovered card.
+pub(super) struct Painted {
+    key: PaintKey,
+    states: Vec<(Option<u64>, Pixmap)>,
 }

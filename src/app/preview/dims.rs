@@ -27,13 +27,15 @@ pub struct Measure {
     pub height_line: Rect,
     /// The numbers' surface, at the middle of the line.
     pub chip: Rect,
-    /// The card's inner edge, to drag.
+    /// What drags the card's inner edge: from just inside the card over
+    /// the line and the numbers.
     pub edge: Rect,
 }
 
 /// The measure of `front` in a left (`right` false) or right corner; `chip`
-/// is the numbers' surface's width.
-pub fn measure(front: Rect, right: bool, chip: f32) -> Measure {
+/// is the numbers' surface's width. `shown` false: only the strip along
+/// the edge drags, the measure is not there.
+pub fn measure(front: Rect, right: bool, chip: f32, shown: bool) -> Measure {
     let (x, y) = (front.x.round(), front.y.round());
     let (r, b) = (front.right().round(), front.bottom().round());
     let inner = if right { x } else { r };
@@ -47,10 +49,21 @@ pub fn measure(front: Rect, right: bool, chip: f32) -> Measure {
     } else {
         line_x + 1.0 + GAP_XS
     };
+    // From `GRIP / 2` inside the card to `GAP_XS` past the numbers.
+    let reach = if shown {
+        GAP_S + 1.0 + GAP_XS + chip + GAP_XS
+    } else {
+        GRIP / 2.0
+    };
+    let (from, to) = if right {
+        (inner - reach, inner + GRIP / 2.0)
+    } else {
+        (inner - GRIP / 2.0, inner + reach)
+    };
     Measure {
         height_line: Rect::new(line_x, y, 1.0, b - y),
         chip: Rect::new(chip_x, ((y + b - CHIP_H) / 2.0).round(), chip, CHIP_H),
-        edge: Rect::new(inner - GRIP / 2.0, y, GRIP, b - y),
+        edge: Rect::new(from, y, to - from, b - y),
     }
 }
 
@@ -98,7 +111,12 @@ impl App {
     pub fn shelf_measure(&self, rect: Rect, now: Instant) -> Option<Measure> {
         let shape = self.preview.play.shape?;
         let front = self.front_card(rect, now)?;
-        Some(measure(front, shape.corner % 2 == 1, self.chip_width()))
+        Some(measure(
+            front,
+            shape.corner % 2 == 1,
+            self.chip_width(),
+            self.preview.dims.target() > 0.0,
+        ))
     }
 
     fn chip_width(&self) -> f32 {
