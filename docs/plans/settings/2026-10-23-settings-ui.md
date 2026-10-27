@@ -3062,6 +3062,32 @@ im Blenden), Config-Test, Zeilen-Zählung, Gates, Render.
 **Macht nicht:** andere Hover-Effekte (Größe, Schatten), andere Dauer als
 Einstellung.
 
+### Phase 5k: Kartenschatten ohne Streifen (27.10., Meldung des Nutzers)
+
+Meldung (Bild): „der schatten bei den shelf cards hat so blur stripes, das
+issue taucht generell oft bei blur effekten auf, in termo ist das aber nicht
+so“.
+
+Befund: termo blurt nicht selbst, es ist durchsichtig und Hyprland blurt
+dahinter, mit Rauschen gegen Stufen (`decoration:blur:noise`). Der Kartenschatten
+(`shelf_card/paint.rs::draw_card_shadow`) ist ein CPU-Verlauf: Alpha
+`0,24 · (1 − d/16)` linear über 16 px, auf 8 Bit gerundet. Gemessen im
+Render über Grau 64: eine Stufe je Pixel (glatt). Über einem dunklen Desktop
+(≈ 0x12) macht der Compositor daraus `18 · (1 − a)`, also nur 18 → 14: vier
+bis fünf Stufen über 16 px, je 3–4 px breit, die Streifen. Der Knick am Rand
+der linearen Rampe wird als Kante gesehen (Mach-Band).
+
+Soll: (1) weicher Abfall: `smoothstep` der Rampe (keine Ecke an Anfang und
+Ende, Steigung 0); (2) Dithering beim Runden: Alpha × 255 plus eine Schwelle
+aus „interleaved gradient noise“ (Jimenez 2014) je Pixel, abgerundet; im
+Mittel exakt, als Rauschen unter einer Stufe statt als Band. Gleiche Stärke
+(0,24), Lage (3 px tiefer) und Reichweite (16 px).
+
+Abnahme: Test, dass das gerundete Alpha im Mittel über einen Streifen der
+Rampe dem Sollwert auf ±0,5/255 entspricht und kein Lauf gleicher Werte
+länger als 3 px ist; Bild über 0x12, Kontrast × 8 gestreckt, vorher und
+nachher angesehen.
+
 ## 6. Reihenfolge
 
 Jede Phase ist ein eigener Commit (oder wenige), baut, testet und lässt den
@@ -3239,3 +3265,4 @@ Vom Nutzer am 24.10. so bestätigt:
 | 5h | umgesetzt 27.10. nach „Phase 5h“, Entscheidung (a) nur öffnen. Abweichungen: (1) Segment „Alt held / Always“ statt „With Alt“ (Copy-Gate: Title Case); (2) die Lupe ist nicht im Scene-Test, `Selector::magnifier_on` braucht Wayland-Objekte, getestet ist das Lesen der Config; (3) beim Bauen gefunden und behoben: ein Reset oder Entfernen eines Replay-Keys (auch der Reset-Knopf bei Frame rate) markierte die laufende Session nicht als veraltet, „Restart replay“ kam nicht (`linux/app/save.rs::send`); (4) `open_media_card` mit `media_open_command` aus `linux/shelf/mod.rs` nach `cards.rs` (`mod.rs` 3494 → 3479); (5) Display, Bitrate, Encoder unter eigener Überschrift „Video“ statt „Buffer“; (6) ein Wert, den die Liste nicht anbietet, steht als „NAME (not installed)“ da; (7) kein `ShelfPrefs::open_with`, sondern `Config::shelf_open_with`, beim Klick neu gelesen (ShelfPrefs ist `Copy`). Neu: Keys `copy_to_clipboard`, `selector_magnifier`, `shelf.open_with`; `EDITORS` (eddy, Satty, swappy, GIMP, Krita, Pinta), fehlender Editor → `xdg-open` und einmal eine Meldung; Replay-Zeilen Display („Like recordings“ entfernt den Key), Bitrate (Auto, 10–80 Mbit/s), Encoder (ohne CPU) unter „Video“; Icons `clipboard-copy`, `zoom-in`, `app-window`, `activity`, `cpu`; `rows::choices`. Tests `a_wayland_shelf_capture_copies_by_the_config_unless_a_flag_says`, `copy_magnifier_and_open_with_read_with_their_defaults`, `an_image_card_opens_with_the_chosen_editor_and_a_video_with_the_default_app`, `like_recordings_and_auto_remove_their_replay_key_and_a_monitor_sets_it`, Zählung der schreibenden Zeilen 26. Checks: fmt, clippy ohne Warnung, `cargo test` 151 + 389 grün; Gates: Kontrast min. 4,83:1, Copy 242 Texte, Icons 0,32 px, Padding 0,00, Überlauf 1467 Teile bei 360–1400 px; `settings --measure` 36 Zeilen 0,31 px. Renders Screenshots (760, 360, offenes Dropdown) und Replay angesehen. Live offen (Daemon-Neustart für „Open with“). |
 | 5i | umgesetzt 27.10. nach „Phase 5i“, Abweichung: der Block bekommt die Überschrift „Load“ (wie jede Gruppe) und bricht in schmalen Spalten die Zahlen in eine zweite Zeile (Höhe aus der breitesten Form, springt nicht). `linux/app/load.rs` (`Meter`, Prozesse aus `/proc` über die Session-PID, CPU aus `utime + stime`, RSS aus `statm`), `poll_replay` schickt `(held, load)`, `preview/load.rs` (`Preview::Load { stale }`, `ReplayLoad`, „Off, nothing in use“ / „In use now“ / „Before your changes“), `save.rs::refusal` („Boltsnap is older than this window. Restart it to save this“). Tests: `/proc/stat` mit Klammern im Namen, Prozessbaum (gsr, kms-Helfer, Worker, kein fremdes Kind), Texte, Refusal; ignoriert `replay_load_now` gegen den laufenden Buffer: 36 % eines Kerns, 424 MB (`ps`: RSS 210 + 203 + 1,7 MB). Checks: fmt, clippy, `cargo test` 152 + 392 grün, Gates (Kontrast 4,83:1, Copy 242, Padding 0,00, Überlauf 1467). Render nur „Off“ (der Poll läuft nur im Fenster); live offen. |
 | 5j | umgesetzt 27.10. nach „Phase 5j“, Abweichung: die Vorschau blendet mit der Feder `QUICK` (≈ 150 ms) statt linear 120 ms, weil ihre Hover über die App-Fades laufen; aus ist sie wie der Overlay sofort (`App::hover_at_once`). Key `shelf.hover_fade` (Standard aus), Zeile „Fade on hover“ (Icon `clock-fading`, Hinweis „Over 120 ms instead of at once“); `shelf_card::HOVER_MS = 120`; Painter `Frame::hovered: &[(id, Stärke)]` (Deckkraft gemischt, Knöpfe mit Alpha × Stärke); Overlay `AnimKind::HoverIn/HoverOut`, `Daemon::set_hovered`, `hover_lifts`, `hover_lift`/`hover_begun` (linear, Umkehr von der erreichten Stärke); Windows-Wrapper behält `Option<u64>`. Tests: `half_a_hover_fade_is_half_way_to_solid_with_half_its_buttons`, `a_hover_fade_goes_both_ways_and_turns_around_where_it_stands`, `a_preview_card_hovers_at_once_unless_the_hover_fade_is_on`, Config-Standard, Zählung 27. Checks: fmt, clippy ohne Warnung, `cargo test` 157 + 396 grün, Gates (Copy 248, Icons 0,32 px, Padding 0,00, Überlauf 1507). Live offen. |
+| 5k | umgesetzt 27.10. nach „Phase 5k“, Abweichung nach Messung: Dithering um 1 Stufe reicht nicht, die Bänder entstehen im Ergebnis des Compositors (über 18 ändert 1/255 Alpha das Ergebnis um 0,07 Stufen); jetzt `SHADOW_SPREAD` ±3,5 Alpha-Stufen (über 18: ±0,25 Ausgabestufe, bricht jede Bandkante; über Weiß ±3,5 Stufen Korn, etwa Hyprlands Blur-Rauschen), nur im Abfall, nahe 0 schmaler (Mittel bleibt). ±7 verglichen: füllt auch die Bänder, aber deutlich körnig auf hellem Grund. `shelf_card/paint.rs` `smoothstep`, `dithered`; Test `the_shadow_is_dithered_its_average_kept_and_free_of_bands` (Gegenprobe ohne Rauschen: 21 Streifen-Spalten), ignoriert `shadow_shot`. Grenze: über sehr dunklem Grund bleiben 4–5 Helligkeitsstufen, nur ihre Kanten sind weg. Checks: fmt, clippy, `cargo test` grün; Render über 18 und 200 (× 4 gestreckt) vorher/nachher angesehen. Live offen (Daemon-Neustart). |
