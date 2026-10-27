@@ -3,7 +3,7 @@ use super::*;
 use crate::shelf::recording::PopupButton;
 
 // Linux recording controls, on the mt-ui-style scales: panel padding 16,
-// 30 px buttons with a 12 px inset, 8 px gaps, type at 15/13/11 px.
+// 30 px buttons with a 12 px inset, 8 px gaps, type at 16/14/12 px.
 const CTL_PANEL: (u8, u8, u8) = (0x12, 0x12, 0x12);
 const CTL_RAISE: (u8, u8, u8) = (0x22, 0x22, 0x22);
 const CTL_FG: (u8, u8, u8) = (0xEC, 0xEC, 0xEC);
@@ -17,9 +17,15 @@ const CTL_H: f32 = 30.0;
 const CTL_INSET: f32 = 12.0;
 const CTL_GAP: f32 = 8.0;
 const CTL_KEY_GAP: f32 = 6.0;
-const CTL_TITLE_PX: f32 = 15.0;
-const CTL_LABEL_PX: f32 = 13.0;
-const CTL_KEY_PX: f32 = 11.0;
+const CTL_TITLE_PX: f32 = 16.0;
+const CTL_LABEL_PX: f32 = 14.0;
+const CTL_KEY_PX: f32 = 12.0;
+const CTL_RADIUS: f32 = 9.0;
+/// A button's depth: its drop shadow (down, soft, how dark), how much
+/// lighter its top and darker its bottom than its colour, its top light.
+const SHADOW: (f32, f32, f32) = (2.0, 6.0, 0.5);
+const SHADE: (i16, i16) = (6, -4);
+const TOP_LIGHT: f32 = 0.08;
 
 /// Every label a button can show, and its key.
 const CONTROL_BUTTONS: [(PopupButton, &[&str], &str); 4] = [
@@ -69,13 +75,79 @@ pub fn controls_layout(font: &FontVec) -> ControlsLayout {
     }
 }
 
-/// Baseline that centres the cap height in a box.
+/// Baseline that centres the cap height in a box, on a whole pixel so
+/// the letters' flat edges stay sharp.
 fn cap_baseline(font: &FontVec, px: f32, top: f32, height: f32) -> f32 {
     let cap = font
         .outline_glyph(font.glyph_id('H').with_scale(px))
         .map(|glyph| glyph.px_bounds().height())
         .unwrap_or(px * 0.7);
-    top + (height + cap) / 2.0
+    (top + (height + cap) / 2.0).round()
+}
+
+fn shade((r, g, b): (u8, u8, u8), by: i16) -> (u8, u8, u8) {
+    let step = |c: u8| (i16::from(c) + by).clamp(0, 255) as u8;
+    (step(r), step(g), step(b))
+}
+
+/// A raised button at (x, y): a soft shadow under it, its face a little
+/// lighter at the top than at the bottom, and a thin light along its top.
+#[allow(clippy::too_many_arguments)]
+fn raised_button(
+    canvas: &mut [u8],
+    cw: u32,
+    ch: u32,
+    (x, y, w, h): (f32, f32, f32, f32),
+    color: (u8, u8, u8),
+    alpha: f32,
+) {
+    let (drop, blur, dark) = SHADOW;
+    let r = CTL_RADIUS;
+    for py in (y - blur).floor() as i32..=(y + h + drop + blur).ceil() as i32 {
+        for px in (x - blur).floor() as i32..=(x + w + blur).ceil() as i32 {
+            let (lx, ly) = (px as f32 + 0.5 - x, py as f32 + 0.5 - y - drop);
+            // Signed distance to the button's outline, moved down.
+            let dx = (lx - w / 2.0).abs() - (w / 2.0 - r);
+            let dy = (ly - h / 2.0).abs() - (h / 2.0 - r);
+            let outside = (dx.max(0.0).powi(2) + dy.max(0.0).powi(2)).sqrt();
+            let sdf = outside + dx.max(dy).min(0.0) - r;
+            let cov = (1.0 - sdf / blur).clamp(0.0, 1.0);
+            if cov > 0.0 {
+                blend_px(canvas, cw, ch, px, py, 0, 0, 0, dark * alpha * cov * cov);
+            }
+        }
+    }
+    let (top, bottom) = (shade(color, SHADE.0), shade(color, SHADE.1));
+    for py in y.floor() as i32..(y + h).ceil() as i32 {
+        let t = ((py as f32 + 0.5 - y) / h).clamp(0.0, 1.0);
+        let mix = |a: u8, b: u8| (f32::from(a) + (f32::from(b) - f32::from(a)) * t).round() as u8;
+        let (cr, cg, cb) = (
+            mix(top.0, bottom.0),
+            mix(top.1, bottom.1),
+            mix(top.2, bottom.2),
+        );
+        for px in x.floor() as i32..(x + w).ceil() as i32 {
+            let cov = rr_coverage(px as f32 + 0.5 - x, py as f32 + 0.5 - y, w, h, r);
+            if cov > 0.0 {
+                blend_px(canvas, cw, ch, px, py, cr, cg, cb, alpha * cov);
+            }
+        }
+    }
+    // The light along the top, between the corners.
+    let top_row = y.round() as i32;
+    for px in (x + r).round() as i32..(x + w - r).round() as i32 {
+        blend_px(
+            canvas,
+            cw,
+            ch,
+            px,
+            top_row,
+            255,
+            255,
+            255,
+            TOP_LIGHT * alpha,
+        );
+    }
 }
 
 /// The Linux recording controls. `recovery`: a save failed, Resume is inert.
@@ -107,41 +179,33 @@ pub fn draw_recording_controls(
         "…"
     };
     let saving = format!("Saving{ellipsis}");
-    let (title, dot) = match state {
-        PublicRecordingState::Recording => ("Recording", REC_RGB),
-        PublicRecordingState::Paused if recovery => ("Save failed", CTL_SUB),
+    // The state is the title and its brightness: running bright, the
+    // rest dimmed.
+    let (title, tone) = match state {
+        PublicRecordingState::Recording => ("Recording", CTL_FG),
+        PublicRecordingState::Paused if recovery => ("Save failed", CTL_FG),
         PublicRecordingState::Paused => (notice.unwrap_or("Paused"), CTL_SUB),
         PublicRecordingState::Finalizing => (saving.as_str(), CTL_SUB),
         PublicRecordingState::Idle => ("Idle", CTL_SUB),
     };
-    fill_circle(
-        canvas,
-        w,
-        h,
-        CTL_PAD + 4.0,
-        CTL_PAD + CTL_HEAD_H / 2.0,
-        4.0,
-        dot,
-        1.0,
-    );
     let head = cap_baseline(strong, CTL_TITLE_PX, CTL_PAD, CTL_HEAD_H);
     draw_font_text(
         canvas,
         w,
         h,
         strong,
-        CTL_PAD + 16.0,
+        CTL_PAD,
         head,
         title,
         CTL_TITLE_PX,
-        CTL_FG,
+        tone,
     );
     draw_font_text(
         canvas,
         w,
         h,
         body,
-        w as f32 - CTL_PAD - text_width(body, elapsed, CTL_TITLE_PX),
+        (w as f32 - CTL_PAD - text_width(body, elapsed, CTL_TITLE_PX)).round(),
         cap_baseline(body, CTL_TITLE_PX, CTL_PAD, CTL_HEAD_H),
         elapsed,
         CTL_TITLE_PX,
@@ -173,7 +237,7 @@ pub fn draw_recording_controls(
             (true, false) => (CTL_RAISE, CTL_FG, CTL_KEY),
             (false, _) => (CTL_RAISE, CTL_KEY, CTL_KEY),
         };
-        fill_round_rect(canvas, w, h, *x, *y, *bw, *bh, 9.0, fill, 1.0);
+        raised_button(canvas, w, h, (*x, *y, *bw, *bh), fill, 1.0);
         draw_font_text(
             canvas,
             w,
@@ -190,7 +254,7 @@ pub fn draw_recording_controls(
             w,
             h,
             body,
-            x + bw - CTL_INSET - text_width(body, key, CTL_KEY_PX),
+            (x + bw - CTL_INSET - text_width(body, key, CTL_KEY_PX)).round(),
             cap_baseline(body, CTL_KEY_PX, *y, *bh),
             key,
             CTL_KEY_PX,

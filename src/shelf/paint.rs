@@ -498,4 +498,69 @@ mod tests {
         );
         assert!(buf.chunks_exact(4).any(|pixel| pixel[3] != 0));
     }
+
+    fn controls_pixels(
+        font: &FontVec,
+        state: crate::record::session::PublicRecordingState,
+        armed: bool,
+    ) -> (Vec<u8>, controls::ControlsLayout) {
+        let layout = controls::controls_layout(font);
+        let mut buf = vec![0u8; (layout.width * layout.height * 4) as usize];
+        controls::draw_recording_controls(
+            &mut buf,
+            &layout,
+            state,
+            true,
+            false,
+            None,
+            armed,
+            "01:23",
+            (font, font),
+        );
+        (buf, layout)
+    }
+
+    #[test]
+    fn controls_buttons_cast_a_shadow_and_the_title_has_no_dot() {
+        use crate::record::session::PublicRecordingState;
+        let font = crate::shelf::font::fallback_popup_font();
+        let (buf, layout) = controls_pixels(&font, PublicRecordingState::Recording, false);
+        let at = |x: f32, y: f32| ((y as u32 * layout.width + x as u32) * 4) as usize;
+        let (x, y, w, h) = layout.buttons[2].1;
+        // Under a button, darker than the panel (0x12).
+        assert!(buf[at(x + w / 2.0, y + h + 2.0)] < 0x10, "a shadow");
+        // No red dot before the title: nothing on the panel is red.
+        assert!(
+            buf.chunks_exact(4).all(|p| p[2] <= p[1].saturating_add(20)),
+            "no red"
+        );
+        // The face is lighter at the top than at the bottom.
+        let (top, bottom) = (buf[at(x + 4.0, y + 3.0)], buf[at(x + 4.0, y + h - 3.0)]);
+        assert!(top > bottom, "{top} over {bottom}");
+    }
+
+    /// `CONTROLS_OUT=dir cargo test --bin boltsnap controls_shots -- --ignored`:
+    /// the controls in their states with the desktop's UI font, as PNGs.
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore]
+    fn controls_shots() {
+        use crate::record::session::PublicRecordingState;
+        let out = std::path::PathBuf::from(std::env::var("CONTROLS_OUT").expect("CONTROLS_OUT"));
+        let (body, _) = crate::platform::shelf::font::load_ui_font_weights(None, (500.0, 600.0));
+        for (name, state, armed) in [
+            ("recording", PublicRecordingState::Recording, false),
+            ("paused", PublicRecordingState::Paused, false),
+            ("confirm", PublicRecordingState::Paused, true),
+        ] {
+            let (buf, layout) = controls_pixels(&body, state, armed);
+            let mut image = RgbaImage::new(layout.width, layout.height);
+            for (pixel, bgra) in image.pixels_mut().zip(buf.chunks_exact(4)) {
+                *pixel = image::Rgba([bgra[2], bgra[1], bgra[0], bgra[3]]);
+            }
+            image
+                .save(out.join(format!("controls-{name}.png")))
+                .unwrap();
+        }
+    }
 }

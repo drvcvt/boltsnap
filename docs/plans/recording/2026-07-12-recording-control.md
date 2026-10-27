@@ -1038,3 +1038,42 @@ Recording is red; paused is dim amber with frozen time; finalizing says `Saving�
 - [ ] Watch IPC is nonblocking and Quickshell is only a client.
 - [ ] Tray recording continues without Quickshell.
 - [ ] All Rust tests, clippy, qmllint, real tray checks, and manual multi-monitor checks pass.
+
+## Nachtrag 27.10.: Look der Steuerung (Wunsch des Nutzers)
+
+Meldung: „die font ist etwas zu klein was sie pixelig macht in den buttons
+und geb den buttons so einen guten schatten damit es etwas mehr "3d"
+aussieht [...] auch vielleicht das selbe fuer den punkt oder ganz entfernen
+[...] also der punkt oben links“.
+
+Befund (`src/shelf/paint/controls.rs`): Labels 13 px, Tasten 11 px, Titel
+15 px, Grundlinien aus `cap_baseline` gebrochen (verschmierte Kanten), die
+Buttons flach in `CTL_RAISE` bzw. `CTL_FG`, der Statuspunkt (4 px, rot bei
+Aufnahme) vor dem Titel; Punkte vor Labels verbietet der ui-Skill ohnehin.
+
+Soll:
+- Schrift eine Stufe größer: Titel 16, Labels 14, Tasten 12 (30 px Knopf
+  ≈ 2 × 14). Grundlinien und Textanfänge auf ganzen Pixeln.
+- Knöpfe mit Tiefe: weicher Schlagschatten (2 px nach unten, 6 px weich,
+  Schwarz zu 50 %), die Fläche von oben nach unten leicht dunkler (oben
+  +6, unten −4 gegenüber der Grundfarbe; beim hellen Primärknopf ebenso),
+  oben innen eine Lichtkante (1 px, Weiß zu 8 %, nur gerade Strecke).
+- Der Punkt fällt weg; der Titel beginnt am Rand (`CTL_PAD`). Aufnahme läuft
+  steht im Text („Recording“ hell, Pause gedimmt).
+
+Abnahme: bestehende Tests (`controls_layout_keeps_one_padding_and_one_row`,
+`controls_paint_states_primary_and_confirm`) grün; Test, dass unter einem
+Knopf Schatten liegt und links neben dem Titel kein Punkt mehr; PNG der
+Zustände Recording, Paused, Confirm angesehen (`controls_shots`, ignoriert,
+`CONTROLS_OUT=dir`).
+
+Macht nicht: Größe der Knöpfe (30 px) oder Abstände, Farben der Fläche, das
+Windows-Popup (`draw_recording_popup_with`).
+
+Stand 27.10.: umgesetzt wie geplant (`controls.rs`: `raised_button`,
+Schriften 16/14/12, Grundlinien und rechtsbündige Texte gerundet, Punkt
+entfernt, Titel `CTL_FG` bei Aufnahme und „Save failed“, sonst `CTL_SUB`).
+Tests `controls_buttons_cast_a_shadow_and_the_title_has_no_dot` neu, die
+beiden bestehenden grün; `controls_shots` mit der Desktop-Schrift
+angesehen (Recording, Paused, Confirm). Checks: fmt, clippy ohne Warnung,
+`cargo test` 149 + 382 grün. Live beim Nutzer offen.
