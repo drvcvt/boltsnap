@@ -14,6 +14,8 @@ const GRID: f32 = 24.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Icon {
+    Activity,
+    AppWindow,
     ArrowDownLeft,
     ArrowDownRight,
     ArrowUpLeft,
@@ -22,8 +24,10 @@ pub enum Icon {
     Check,
     ChevronDown,
     Circle,
+    ClipboardCopy,
     Clock,
     Columns2,
+    Cpu,
     Film,
     Folder,
     FolderOpen,
@@ -60,10 +64,13 @@ pub enum Icon {
     Video,
     Volume2,
     VolumeX,
+    ZoomIn,
 }
 
 impl Icon {
-    pub const ALL: [Icon; 46] = [
+    pub const ALL: [Icon; 51] = [
+        Icon::Activity,
+        Icon::AppWindow,
         Icon::ArrowDownLeft,
         Icon::ArrowDownRight,
         Icon::ArrowUpLeft,
@@ -72,8 +79,10 @@ impl Icon {
         Icon::Check,
         Icon::ChevronDown,
         Icon::Circle,
+        Icon::ClipboardCopy,
         Icon::Clock,
         Icon::Columns2,
+        Icon::Cpu,
         Icon::Film,
         Icon::Folder,
         Icon::FolderOpen,
@@ -110,11 +119,17 @@ impl Icon {
         Icon::Video,
         Icon::Volume2,
         Icon::VolumeX,
+        Icon::ZoomIn,
     ];
 
     /// The symbol id in the sprite.
     pub fn id(self) -> &'static str {
         match self {
+            Icon::Activity => "activity",
+            Icon::AppWindow => "app-window",
+            Icon::ClipboardCopy => "clipboard-copy",
+            Icon::Cpu => "cpu",
+            Icon::ZoomIn => "zoom-in",
             Icon::ArrowDownLeft => "arrow-down-left",
             Icon::ArrowDownRight => "arrow-down-right",
             Icon::ArrowUpLeft => "arrow-up-left",

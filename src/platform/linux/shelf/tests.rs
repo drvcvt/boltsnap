@@ -1,6 +1,6 @@
 use super::cards::{
-    animated_card_layout, animated_item_limit, decode_shelf_image, overflow_card_opacity,
-    prepare_pixels_with,
+    animated_card_layout, animated_item_limit, decode_shelf_image, media_open_command,
+    overflow_card_opacity, prepare_pixels_with,
 };
 use super::*;
 use crate::shelf::thumbnail::CardSize;
@@ -193,10 +193,38 @@ fn media_card_opener_uses_desktop_default() {
         "/tmp/clip.webm",
     ] {
         let path = std::path::Path::new(name);
-        let command = media_open_command(path);
+        let (command, _) = media_open_command(path, CardKind::Image, None, |_| true);
         assert_eq!(command.get_program(), "xdg-open");
         assert_eq!(command.get_args().collect::<Vec<_>>(), [path.as_os_str()]);
     }
+}
+
+#[test]
+fn an_image_card_opens_with_the_chosen_editor_and_a_video_with_the_default_app() {
+    let path = std::path::Path::new("/tmp/shot with spaces.png");
+    fn args(command: &std::process::Command) -> Vec<String> {
+        command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    }
+    let (command, _) = media_open_command(path, CardKind::Image, Some("eddy"), |_| true);
+    assert_eq!(command.get_program(), "eddy");
+    assert_eq!(args(&command), ["-f", "/tmp/shot with spaces.png"]);
+    let (command, _) = media_open_command(path, CardKind::Image, Some("satty"), |_| true);
+    assert_eq!(args(&command), ["--filename", "/tmp/shot with spaces.png"]);
+    // A name the list does not know runs as a program with the file.
+    let (command, _) = media_open_command(path, CardKind::Image, Some("my-editor"), |_| true);
+    assert_eq!(command.get_program(), "my-editor");
+    assert_eq!(args(&command), ["/tmp/shot with spaces.png"]);
+    // Videos, and an editor that is not installed: the default app.
+    let video = std::path::Path::new("/tmp/clip.mp4");
+    let (command, _) = media_open_command(video, CardKind::Video, Some("eddy"), |_| true);
+    assert_eq!(command.get_program(), "xdg-open");
+    let (command, missing) = media_open_command(path, CardKind::Image, Some("eddy"), |_| false);
+    assert_eq!(command.get_program(), "xdg-open");
+    assert_eq!(missing, Some("eddy"), "told once by the caller");
+    assert_eq!(args(&command), ["/tmp/shot with spaces.png"]);
 }
 
 fn import_dir(name: &str) -> std::path::PathBuf {

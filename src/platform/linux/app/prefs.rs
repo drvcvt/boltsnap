@@ -55,6 +55,14 @@ pub fn load(displays: Vec<Screen>) -> Prefs {
             layout::Corner::BottomRight => Corner::BottomRight,
         },
         save_dir: tilde(&resolve_save_dir(None, &cfg)),
+        copy_to_clipboard: cfg.copy_to_clipboard(),
+        magnifier_always: cfg.magnifier_always(),
+        open_with: cfg.shelf_open_with.clone(),
+        editors: crate::platform::linux::shelf::EDITORS
+            .iter()
+            .filter(|editor| crate::paths::has_cmd(editor.program))
+            .map(|editor| (editor.key.to_owned(), editor.label.to_owned()))
+            .collect(),
         both_combined: recording.both_mode == RecordBothMode::Combined,
         display: match &recording.default_target {
             RecordDefaultTarget::Focused => Display::Focused,
@@ -97,5 +105,7 @@ pub fn load(displays: Vec<Screen>) -> Prefs {
         replay_memory_mib: replay.memory_mib,
         replay_bitrate: replay.bitrate_kbps,
         replay_fps: replay.fps,
+        replay_output: replay.output.clone(),
+        replay_encoder: replay.encoder.clone(),
     }
 }

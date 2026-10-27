@@ -190,6 +190,7 @@ fn run_selector(
         interaction: None,
         cursor: (0.0, 0.0),
         alt_held: false,
+        magnifier_always: crate::config::Config::load().magnifier_always(),
         result: None,
         done: false,
         qh: qh.clone(),
@@ -416,6 +417,8 @@ struct Selector {
     cursor: (f64, f64),
     /// Alt is held → show the magnifier (consumed in Task 11).
     alt_held: bool,
+    /// `selector_magnifier = "always"`: the magnifier shows without Alt.
+    magnifier_always: bool,
     result: Option<RgbaImage>,
     done: bool,
     /// QueueHandle for requesting frame callbacks from `draw`.
@@ -491,6 +494,12 @@ fn video_size(info: &smithay_client_toolkit::output::OutputInfo) -> Option<(u32,
 }
 
 impl Selector {
+    /// The magnifier follows the pointer: with Alt held, or always when
+    /// set; never while recording a region.
+    fn magnifier_on(&self) -> bool {
+        (self.alt_held || self.magnifier_always) && !self.record_mode
+    }
+
     /// Hand the toolbar what it should show now: there once a selection is
     /// drawn (not while it is first dragged out), following it as it changes.
     fn sync_bar(&mut self, now: Instant) {

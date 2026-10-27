@@ -535,3 +535,20 @@ fn shelf_prefs_read_the_shelf_table_and_fall_back_per_key() {
     assert_eq!(top.shelf_prefs(), super::ShelfPrefs::default());
     assert_eq!(top.issues.len(), 2);
 }
+
+#[test]
+fn copy_magnifier_and_open_with_read_with_their_defaults() {
+    let unset = Config::parse("");
+    assert!(!unset.copy_to_clipboard());
+    assert!(!unset.magnifier_always());
+    assert_eq!(unset.shelf_open_with, None);
+    let set = Config::parse(
+        "copy_to_clipboard = true\nselector_magnifier = \"always\"\n[shelf]\nopen_with = \"eddy\"\n",
+    );
+    assert!(set.copy_to_clipboard() && set.magnifier_always());
+    assert_eq!(set.shelf_open_with.as_deref(), Some("eddy"));
+    assert!(set.issues.is_empty());
+    let wrong = Config::parse("selector_magnifier = \"sometimes\"\n");
+    assert!(!wrong.magnifier_always());
+    assert_eq!(wrong.issues.len(), 1);
+}

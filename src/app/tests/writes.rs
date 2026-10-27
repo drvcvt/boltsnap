@@ -158,7 +158,9 @@ fn every_bound_row_writes_a_value_its_key_accepts() {
         // Nothing has changed yet, so nothing went out.
         assert!(changed(&app.finish(now)).is_empty());
     }
-    assert_eq!(checked, 23, "every row but the replay buffer has a key");
+    // Rows on their default with nothing to write (open with, replay display
+    // and bitrate) remove their key instead and are not counted.
+    assert_eq!(checked, 26, "every row but the replay buffer has a key");
 }
 
 #[test]
@@ -501,4 +503,35 @@ fn a_folder_field_asks_for_the_dialog_and_saves_what_it_picks() {
     let mut app = App::new(Fonts::fallback(), pages::pages(&p, None, now), SIZE, now);
     app.show_named("screenshots", now);
     assert!(!press(&mut app, button, now).contains(&Effect::PickFolder(folder)));
+}
+
+#[test]
+fn like_recordings_and_auto_remove_their_replay_key_and_a_monitor_sets_it() {
+    let now = Instant::now();
+    let mut set = prefs();
+    set.replay_output = Some("DP-1".into());
+    set.replay_bitrate = Some(40_000);
+    let mut app = App::new(Fonts::fallback(), pages::pages(&set, None, now), SIZE, now);
+    assert!(app.show_named("Replay", now));
+    for (label, removed) in [
+        ("Display", "replay.output"),
+        ("Bitrate", "replay.bitrate_kbps"),
+    ] {
+        let row = super::block(&app, label);
+        let control = app.control(row).unwrap();
+        // The first entry: "Like recordings", "Auto".
+        control.adopt(&crate::ui::widgets::Value::Choice(0), now);
+        assert_eq!(app.write(row), Some(Write::Reset(removed)), "{label}");
+    }
+    let row = super::block(&app, "Display");
+    app.control(row)
+        .unwrap()
+        .adopt(&crate::ui::widgets::Value::Choice(1), now);
+    assert_eq!(
+        app.write(row),
+        Some(Write::Key(
+            "replay.output",
+            settings::Value::Text("DP-3".into())
+        ))
+    );
 }

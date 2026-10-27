@@ -9,6 +9,7 @@ mod thumbnail;
 mod watch;
 
 use anim::{AnimKind, CardAnim};
+pub(crate) use cards::EDITORS;
 use cards::{prepare_add, prepare_pixels, visible_cards};
 use limits::{ClientLimits, Limit, Permit};
 
@@ -364,12 +365,6 @@ pub(crate) fn notify(body: &str) {
                 .stderr(std::process::Stdio::null()),
         );
     }
-}
-
-fn media_open_command(path: &std::path::Path) -> std::process::Command {
-    let mut command = std::process::Command::new("xdg-open");
-    command.arg(path);
-    command
 }
 
 fn prepare_recording_cache() -> Result<(), String> {
@@ -1601,16 +1596,6 @@ impl Daemon {
             if let Err(e) = crate::clipboard::copy_to_clipboard(&path, crate::Backend::Wayland) {
                 eprintln!("boltsnap daemon: copy failed: {e}");
             }
-        }
-    }
-
-    fn open_media_card(&self, id: u64) {
-        let Some(card) = self.model.get(id) else {
-            return;
-        };
-        let mut command = media_open_command(&card.png_path);
-        if let Err(error) = crate::paths::spawn_reaped(&mut command) {
-            eprintln!("boltsnap daemon: open media failed: {error}");
         }
     }
 

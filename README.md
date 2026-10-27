@@ -263,11 +263,16 @@ a reset to the default. Pages:
   shelf; drag the measure beside the front card to change the card size. Below
   are card size, how many cards show, the corner, and the cards' opacity,
   whether they turn solid on hover, their shadow and their animations.
-- **Screenshots**: the save folder.
+- **Screenshots**: whether every screenshot also goes to the clipboard, the
+  selector's magnifier (with Alt held, or always), what opens an image card
+  (the default app or an installed editor: eddy, Satty, swappy, GIMP, Krita,
+  Pinta), and the save folder.
 - **Recording**: display, frame rate, codec, cursor, frame, audio and where
   recordings go.
-- **Replay**: a timeline of what the buffer holds, its length, memory and frame
-  rate, and whether it starts with Boltsnap.
+- **Replay**: a timeline of what the buffer holds, its length and memory,
+  whether it starts with Boltsnap, and the display, frame rate, bitrate and
+  encoder it records with. Changes apply when the buffer restarts; the page
+  offers **Restart replay**.
 - **General**: the UI font.
 
 `boltsnap settings --render PAGE OUT.png [--scale N] [--size WxH]` draws a page
@@ -355,7 +360,16 @@ Create `~/.config/boltsnap/config.toml` on Linux or
 save_dir = "~/Bilder/boltsnap"
 ```
 
-Override precedence (highest to lowest):
+Two more top-level keys shape a capture (Linux, Wayland):
+
+```toml
+copy_to_clipboard = false     # also copy every screenshot, not only onto the shelf
+selector_magnifier = "alt"    # "always": the selector's loupe shows without Alt
+```
+
+`--copy` / `--no-copy` on the command line go before `copy_to_clipboard`.
+
+Override precedence for `save_dir` (highest to lowest):
 
 1. CLI flag — `--save-dir DIR`
 2. Environment variable — `$BOLTSNAP_SAVE_DIR`
@@ -380,6 +394,8 @@ apply live to the cards already showing:
 card_width = 190        # 140 to 380 px; the height follows (190 x 132)
 visible_cards = 5       # 1 to 8; more cards stay cached below
 corner = "bottom-left"  # bottom-right, top-left or top-right
+open_with = "eddy"      # what opens an image card: eddy, satty, swappy, gimp,
+                        # krita, pinta; unset, the desktop's default app
 card_opacity = 80       # 30 to 100 %, a card at rest
 solid_on_hover = true   # the hovered card turns fully opaque
 card_shadow = true      # a soft shadow under each card

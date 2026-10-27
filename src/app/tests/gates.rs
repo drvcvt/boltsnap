@@ -457,6 +457,8 @@ fn gate_copy_reads_like_a_person_wrote_it() {
     ];
     // Names and units that keep their capitals mid-sentence.
     const PROPER: [&str; 7] = ["Boltsnap", "CPU", "GiB", "MiB", "Mbit/s", "Off", "Vulkan"];
+    // Programs whose own name is lower case (the editors to open with).
+    const LOWER_NAMES: [&str; 2] = ["eddy", "swappy"];
     for text in &strings {
         assert!(!text.contains(['!', '\u{2014}', '\u{2013}']), "{text}");
         assert!(!text.ends_with('.'), "a label, not a sentence: {text}");
@@ -466,7 +468,10 @@ fn gate_copy_reads_like_a_person_wrote_it() {
         }
         let first = text.chars().next().expect("no empty strings");
         assert!(
-            first.is_uppercase() || first.is_ascii_digit() || first == '~',
+            first.is_uppercase()
+                || first.is_ascii_digit()
+                || first == '~'
+                || LOWER_NAMES.iter().any(|name| text.starts_with(name)),
             "{text}"
         );
         // Sentence case: no capital after the first word, but for names.

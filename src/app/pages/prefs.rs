@@ -12,6 +12,14 @@ pub struct Prefs {
     pub card_shadow: bool,
     pub card_animations: bool,
     pub save_dir: String,
+    /// `copy_to_clipboard`: screenshots also go to the clipboard.
+    pub copy_to_clipboard: bool,
+    /// `selector_magnifier = "always"`.
+    pub magnifier_always: bool,
+    /// `[shelf] open_with`, unset the default app.
+    pub open_with: Option<String>,
+    /// The editors installed here, as (name in the file, how people know it).
+    pub editors: Vec<(String, String)>,
     pub both_combined: bool,
     pub display: Display,
     /// The connected monitors.
@@ -50,6 +58,10 @@ pub struct Prefs {
     /// `replay.bitrate_kbps`; unset, the bitrate follows length and memory.
     pub replay_bitrate: Option<u32>,
     pub replay_fps: u32,
+    /// `[replay] output`; unset, like recordings.
+    pub replay_output: Option<String>,
+    /// `[replay] encoder`, `auto` when unset.
+    pub replay_encoder: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

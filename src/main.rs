@@ -134,7 +134,9 @@ enum PostCapture {
 }
 
 /// Decide the post-capture sink. `backend` is already resolved (no Auto).
-fn decide_post_capture(args: &Args, backend: Backend) -> PostCapture {
+/// `copy_to_clipboard` is the config's wish for Wayland shelf captures; a
+/// `--copy`/`--no-copy` flag goes first.
+fn decide_post_capture(args: &Args, backend: Backend, copy_to_clipboard: bool) -> PostCapture {
     if is_stdout_target(args) {
         return PostCapture::Stdout;
     }
@@ -142,7 +144,14 @@ fn decide_post_capture(args: &Args, backend: Backend) -> PostCapture {
         return PostCapture::File { copy: args.copy };
     }
     match backend {
-        Backend::Wayland | Backend::Windows => PostCapture::Shelf {
+        Backend::Wayland => PostCapture::Shelf {
+            copy: if args.copy_explicit {
+                args.copy
+            } else {
+                copy_to_clipboard
+            },
+        },
+        Backend::Windows => PostCapture::Shelf {
             copy: args.copy_explicit && args.copy,
         },
         _ => PostCapture::CopyOnly,
@@ -559,7 +568,7 @@ fn capture_flow(args: &Args) -> DynResult<()> {
         let (resolved, capture_output, image) =
             crate::capture::capture_image(mode, args.backend, args.instant, true)?;
         let copy = matches!(
-            decide_post_capture(args, resolved),
+            decide_post_capture(args, resolved, config::Config::load().copy_to_clipboard()),
             PostCapture::Shelf { copy: true }
         );
         let image = image.into_rgb8();
@@ -640,7 +649,7 @@ fn capture_flow(args: &Args) -> DynResult<()> {
         .then(|| fs::read(&output))
         .transpose()?;
 
-    match decide_post_capture(args, resolved) {
+    match decide_post_capture(args, resolved, config::Config::load().copy_to_clipboard()) {
         PostCapture::Stdout => unreachable!("handled above"),
         PostCapture::File { copy } => {
             if copy {
@@ -849,6 +858,43 @@ mod tests {
         let args = parse_args(&["boltsnap".into()]).unwrap();
         assert_eq!(args.command, "area");
         assert!(args.copy);
+    }
+
+    #[test]
+    fn a_wayland_shelf_capture_copies_by_the_config_unless_a_flag_says() {
+        let args = |flag: Option<bool>| Args {
+            copy: flag.unwrap_or(true),
+            copy_explicit: flag.is_some(),
+            ..Args::default()
+        };
+        let shelf = |copy| PostCapture::Shelf { copy };
+        // No flag: the config decides on Wayland.
+        assert_eq!(
+            decide_post_capture(&args(None), Backend::Wayland, false),
+            shelf(false)
+        );
+        assert_eq!(
+            decide_post_capture(&args(None), Backend::Wayland, true),
+            shelf(true)
+        );
+        // A flag goes first.
+        assert_eq!(
+            decide_post_capture(&args(Some(false)), Backend::Wayland, true),
+            shelf(false)
+        );
+        assert_eq!(
+            decide_post_capture(&args(Some(true)), Backend::Wayland, false),
+            shelf(true)
+        );
+        // Windows and X11 as before.
+        assert_eq!(
+            decide_post_capture(&args(None), Backend::Windows, true),
+            shelf(false)
+        );
+        assert_eq!(
+            decide_post_capture(&args(None), Backend::X11, true),
+            PostCapture::CopyOnly
+        );
     }
 
     #[test]

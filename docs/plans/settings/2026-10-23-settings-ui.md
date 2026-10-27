@@ -2849,6 +2849,128 @@ Abnahme: Test, dass bei „Combined“ die Innenkante beider Bildschirme
 (Mitte der Fuge ± BEZEL) Rahmenfarbe hat und die Fuge selbst `RAISE` ist,
 bei „Separate“ Panel-Grund; Render mit zwei Monitoren nebeneinander.
 
+### Phase 5h: Screenshots-Seite füllen, Replay vervollständigen (27.10., Wunsch des Nutzers)
+
+Meldung: „der screenshots tab ist fast komplett leer bis auf einen pfad,
+entweder paar mehr optionen rein oder das noch woanders mit bei packen“; auf
+den Vorschlag: „die einstellungen passen so und die fehlenden replay sachen
+auch noch bitte. erst vorher alles planen“.
+
+#### Befund am Code (HEAD `54d72ea`)
+
+| Punkt | Heute | Beleg |
+| --- | --- | --- |
+| In die Zwischenablage | Wayland: aufs Shelf, kopiert nur mit `--copy`; X11 kopiert immer | `main.rs::decide_post_capture` (`copy: args.copy_explicit && args.copy`), `capture_flow` |
+| Lupe | nur solange Alt gehalten wird, nicht im Aufnahme-Modus | `select_skia/present.rs:106`, `input.rs:289–297, 396` |
+| Kartenklick | `xdg-open <datei>` für Bild und Video | `linux/shelf/mod.rs::media_open_command`, `open_media_card` |
+| eddy | seit 21.07. bewusst entkoppelt: kein `--edit`, `replace` über den Socket abgelehnt, „Do not add a replacement editor integration“ | `docs/plans/platform/2026-07-21-decouple-eddy.md`, Test `removed_editor_backchannel_commands_are_rejected` |
+| Replay-Monitor | `replay.output` (strict); ohne: wie das Aufnahmeziel, sonst der fokussierte | `replay/monitor.rs::replay_monitor` |
+| Replay-Bitrate | `replay.bitrate_kbps` (strict, 500–200 000); ohne: aus Länge und Speicher, 2–80 Mbit/s | `replay/settings.rs::video_kbps` |
+| Replay-Encoder | `replay.encoder` (strict Text), Namen wie `record_codec`, CPU abgelehnt | `linux/replay/mod.rs:394–397`, `gsr::choose` |
+
+Zwei Abweichungen vom Vorschlag im Chat: (1) Die Lupe ist nicht dauernd an,
+also kein an/aus, sondern „With Alt / Always“. (2) „Open with eddy“ mit
+Ersetzen der Karte beim Speichern bräuchte den 21.07. absichtlich entfernten
+`replace`-Kanal: **Entscheidung des Nutzers nötig** (siehe unten). Bis dahin
+plane ich die entkoppelte Variante.
+
+#### Verhalten
+
+**Screenshots-Seite**, drei Gruppen:
+
+1. **Capture**
+   - *Copy to clipboard* (Schalter, neu `copy_to_clipboard`, Standard aus =
+     heute): unter Wayland geht jeder Screenshot aufs Shelf *und* in die
+     Zwischenablage. `--copy`/`--no-copy` auf der Kommandozeile gehen vor.
+     X11 kopiert wie bisher immer; Windows unberührt (eingefroren).
+   - *Magnifier* (Segment, neu `selector_magnifier` = `alt` | `always`,
+     Standard `alt` = heute): „With Alt“ wie heute, „Always“ zeigt die Lupe
+     beim Auswählen ohne Taste. Im Aufnahme-Modus nie (wie heute).
+2. **Opening**
+   - *Open screenshots with* (Dropdown, neu `shelf.open_with`, Standard
+     unset = Standard-App): ein Klick auf eine **Bild**karte öffnet sie mit
+     dem gewählten Programm; Videokarten bleiben bei der Standard-App. Angeboten
+     werden „Default app“ und die installierten aus einer festen Liste
+     (Programm im `PATH`): eddy (`eddy -f`), Satty (`satty --filename`),
+     swappy (`swappy -f`), GIMP, Krita, Pinta (Datei als Argument). Ein Wert
+     aus der Datei, den die Liste nicht kennt, steht unter seinem Namen da
+     (wie bei `choose_text`). Gestartet ohne Shell, die Datei als eigenes
+     Argument. Das Bearbeitete speichert das Programm selbst; die Karte bleibt
+     wie sie ist (kein Rückkanal, Entscheidung vom 21.07.).
+3. **Saving**: *Save folder* wie bisher.
+
+**Replay-Seite**, neue Zeilen unter „Buffer“ (alle `ReplayRestart`, die
+vorhandene Zeile „Restart replay“ erscheint dann wie bei Länge und Speicher):
+
+- *Display* (Dropdown über `Bind::Choices`): „Like recordings“ (Key
+  entfernt, heutiges Verhalten ohne Eintrag), jeder angeschlossene Monitor
+  mit Namen wie in Recording (`Screen::entry`), ein eingetragener, der nicht
+  angeschlossen ist, als „NAME (disconnected)“.
+- *Bitrate* (Dropdown): „Auto“ (Key entfernt) und 10, 20, 30, 40, 60, 80
+  Mbit/s; der Memory-Hinweis rechnet schon mit fester Bitrate
+  („Only about N s fit“).
+- *Encoder* (Dropdown): wie Codec unter Recording (`codec_entries`) ohne
+  „H.264 on the CPU“ (Replay lehnt die CPU ab).
+
+#### Code
+
+- `settings/schema.rs`: `copy_to_clipboard` Bool Live,
+  `selector_magnifier` Choice Live, `shelf.open_with` Text Live; die drei
+  Replay-Keys gibt es schon.
+- `config.rs`: Felder und Getter, `ShelfPrefs::open_with: Option<String>`
+  (der Name aus der Liste). Die Liste `EDITORS` (Name, Programm, Argumente
+  vor der Datei) ist Linux-Sache und liegt in `linux/shelf/cards.rs`, dort
+  auch `media_open_command` (aus `mod.rs` hierher, damit `mod.rs` mit 3494
+  Zeilen nicht wächst); das Fenster liest dieselbe Liste für sein Dropdown.
+- `main.rs::decide_post_capture`: Wayland-Zweig liest
+  `copy_to_clipboard`, wenn kein Flag gesetzt ist; Windows-Zweig wie heute.
+- `select_skia`: `Selector` bekommt `magnifier_always`; `present.rs`
+  `(self.alt_held || always) && !record_mode`; Redraw bei Bewegung auch ohne
+  Alt, wenn `always`.
+- App: `pages/prefs.rs` Felder `copy_to_clipboard`, `magnifier_always`,
+  `open_with: Option<String>`, `editors: Vec<(String, String)>` (installiert),
+  `replay_output: Option<String>`, `replay_encoder: String`;
+  `linux/app/prefs.rs` füllt sie (`paths::has_cmd`); `pages/mod.rs`
+  Zeilen; Icons aus Lucide 1.54 (`clipboard-copy`, `zoom-in`, `app-window`,
+  `monitor`, `gauge`/`activity`, `cpu`), vorher geprüft, dass sie rendern.
+
+#### Kanten
+
+- Kein Editor installiert: nur „Default app“, die Zeile bleibt (zeigt, was
+  passiert).
+- Eingetragener Editor deinstalliert: Klick fällt auf `xdg-open` zurück und
+  meldet einmal „NAME not found, opened with the default app“.
+- Replay-Display auf einen abgesteckten Monitor: wie heute (strict, der
+  Replay-Start meldet den Fehler); die Zeile zeigt „(disconnected)“.
+- Bitrate über dem, was der Speicher hält: der Hinweis sagt es (vorhanden).
+
+#### Abnahme
+
+Tests: Copy-Entscheidung (Flag schlägt Config, Config schlägt Standard, X11
+und Windows unverändert); Editor-Befehl (Argumente, Datei als letztes
+Argument, unbekannter Name, fehlendes Programm → `xdg-open`); Lupe „always“
+im Scene-Test; jede neue Zeile schreibt einen Wert, den ihr Key annimmt
+(`every_bound_row_writes_a_value_its_key_accepts` zählt mit); Replay-Display
+„Like recordings“ entfernt den Key. Gates der App (Überlauf 360 und Desktop,
+Padding, Kontrast, Icons, Versalien, Copy). Screenshot der Screenshots- und
+der Replay-Seite. README (Konfiguration, Settings-Abschnitt), Inventar.
+
+**Macht nicht:** Karten nach dem Bearbeiten ersetzen (siehe Entscheidung),
+Dateiformat oder Dateinamen beim Speichern, Windows, eine frei eintippbare
+Befehlszeile (nur die Liste; ein Eintrag in der Datei wird angezeigt und
+benutzt).
+
+#### Offene Entscheidung
+
+eddy kann über `--boltsnap-card-id` und den Socket-Befehl `replace` die
+Karte nach dem Speichern ersetzen; Boltsnap hat das am 21.07. bewusst
+entfernt. Optionen: (a) entkoppelt wie oben (Empfehlung: kein eddy-Vertrag,
+jeder Editor gleich, nichts kann den Daemon über den Socket umschreiben);
+(b) den `replace`-Kanal für Bildkarten wieder annehmen, eddy bekäme dann
+`--boltsnap-card-id`. (b) dreht die Entkopplung zurück.
+
+**Entschieden 27.10. (Nutzer): (a) nur öffnen.** Die Entkopplung bleibt.
+
 ## 6. Reihenfolge
 
 Jede Phase ist ein eigener Commit (oder wenige), baut, testet und lässt den
@@ -3023,3 +3145,4 @@ Vom Nutzer am 24.10. so bestätigt:
 | 5g V6b | umgesetzt 27.10. nach „V6b Maß greifbar, Hover flüssig“: `dims::measure` nimmt `shown`, `edge` reicht von `GRIP/2` in der Karte bis `GAP_XS` hinter die Zahl (ohne Maß der Streifen an der Kante); `ui::PointerShape`, `App::pointer_shape`, das Fenster setzt `ew-resize`/Standard nur bei Wechsel (`linux/app/input.rs`, nach jedem Pointer-Frame). `preview/shelf.rs`: Painter-Bilder je Hover-Zustand behalten (`PaintKey` aus Größe, Kartenrechtecken, Animationen, Look, Skala), Hover mischt nur das Kartenrechteck (`blend_rect`), Maske nur wenn die Fläche über den Block ragt und dann behalten. Tests `the_whole_measure_drags_and_shows_the_sideways_pointer`, `hovering_a_card_blends_kept_pictures_instead_of_painting_again` (ein Painter-Lauf für den Hover-Zustand, danach keiner). Checks: fmt, clippy ohne Warnung, `cargo test` 148 + 381 grün, Render Hover. Live beim Nutzer offen. |
 | 5g V6c | Fix 27.10. (Meldung mit Aufnahme `boltsnap-final-3573342-1.mp4`: „die animation wenn man die obere card im preview wegclickt ist tot broken“): das Platzhalterbild kam aus der Größe der ersten Karte im Layout; geht die obere, ist das die schrumpfende, und jede Karte bekam ihr gestauchtes Bild (die untere wurde von oben her leer, dann sprang sie zurück). Jetzt aus der Kartengröße (`Placed::card`). Test `the_card_left_behind_keeps_its_picture_while_the_top_one_goes`, schlägt mit dem alten Code an (21 statt 52 bei 30 ms). Checks: fmt, clippy, `cargo test` grün, Render-Folge 30–260 ms. |
 | 5g V7 | umgesetzt 27.10. nach „V7 Zwei Monitore als ein Clip“: `displays.rs` `joins` statt `seams` (Fuge plus `BODY_RADIUS` in beide Gehäuse in `RAISE`, über die gemeinsame Höhe bzw. Breite), Bildschirme danach obendrauf, also mit Rahmen und Ecken. Test `one_clip_joins_the_monitors_bodies_and_keeps_their_screens_whole` (Fuge Panel bei zwei Clips, `RAISE` bei einem, Innenrahmen bleibt, keine Kerbe oben und unten); `display_shots` (ignoriert) für die Bilder. Checks: fmt, clippy, `cargo test` grün, Render beider Zustände in 2× angesehen. |
+| 5h | umgesetzt 27.10. nach „Phase 5h“, Entscheidung (a) nur öffnen. Abweichungen: (1) Segment „Alt held / Always“ statt „With Alt“ (Copy-Gate: Title Case); (2) die Lupe ist nicht im Scene-Test, `Selector::magnifier_on` braucht Wayland-Objekte, getestet ist das Lesen der Config; (3) beim Bauen gefunden und behoben: ein Reset oder Entfernen eines Replay-Keys (auch der Reset-Knopf bei Frame rate) markierte die laufende Session nicht als veraltet, „Restart replay“ kam nicht (`linux/app/save.rs::send`); (4) `open_media_card` mit `media_open_command` aus `linux/shelf/mod.rs` nach `cards.rs` (`mod.rs` 3494 → 3479). Neu: Keys `copy_to_clipboard`, `selector_magnifier`, `shelf.open_with`; `EDITORS` (eddy, Satty, swappy, GIMP, Krita, Pinta), fehlender Editor → `xdg-open` und einmal eine Meldung; Replay-Zeilen Display („Like recordings“ entfernt den Key), Bitrate (Auto, 10–80 Mbit/s), Encoder (ohne CPU) unter „Video“; Icons `clipboard-copy`, `zoom-in`, `app-window`, `activity`, `cpu`; `rows::choices`. Tests `a_wayland_shelf_capture_copies_by_the_config_unless_a_flag_says`, `copy_magnifier_and_open_with_read_with_their_defaults`, `an_image_card_opens_with_the_chosen_editor_and_a_video_with_the_default_app`, `like_recordings_and_auto_remove_their_replay_key_and_a_monitor_sets_it`, Zählung der schreibenden Zeilen 26. Checks: fmt, clippy ohne Warnung, `cargo test` 151 + 389 grün; Gates: Kontrast min. 4,83:1, Copy 242 Texte, Icons 0,32 px, Padding 0,00, Überlauf 1467 Teile bei 360–1400 px; `settings --measure` 36 Zeilen 0,31 px. Renders Screenshots (760, 360, offenes Dropdown) und Replay angesehen. Live offen (Daemon-Neustart für „Open with“). |

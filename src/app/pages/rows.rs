@@ -214,3 +214,40 @@ pub(super) fn folder(
 pub(super) fn fps_value(fps: u32) -> settings::Value {
     settings::Value::Int(fps.into())
 }
+
+/// A dropdown over (value, label) entries, `None` removing the key so the
+/// default applies; `current` not among them is added under `label_of`, so
+/// the page never shows a value that is not the real one.
+pub(super) fn choices(
+    key: &'static str,
+    mut entries: Vec<(Option<settings::Value>, String)>,
+    current: Option<settings::Value>,
+    label_of: impl FnOnce(&settings::Value) -> String,
+    now: Instant,
+) -> (Box<dyn Widget>, Bind) {
+    if !entries.iter().any(|(value, _)| *value == current)
+        && let Some(value) = &current
+    {
+        let label = label_of(value);
+        entries.push((current.clone(), label));
+    }
+    let chosen = entries
+        .iter()
+        .position(|(value, _)| *value == current)
+        .unwrap_or(0);
+    let labels = entries.iter().map(|(_, label)| label.clone()).collect();
+    let values = entries.into_iter().map(|(value, _)| value).collect();
+    (
+        Box::new(Dropdown::new(labels, chosen, now)),
+        Bind::Choices { key, values },
+    )
+}
+
+/// The replay buffer's bitrate as the row says it.
+pub(super) fn mbit(kbps: i64) -> String {
+    if kbps % 1000 == 0 {
+        format!("{}\u{a0}Mbit/s", kbps / 1000)
+    } else {
+        format!("{:.1}\u{a0}Mbit/s", kbps as f64 / 1000.0)
+    }
+}

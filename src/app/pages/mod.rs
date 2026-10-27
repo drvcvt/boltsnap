@@ -10,8 +10,8 @@ mod rows;
 pub use prefs::{AudioSource, Corner, Cursor, Display, Notice, Prefs, Screen, monitor_name};
 
 use rows::{
-    choose, choose_text, codec_entries, display_entries, duration, folder, fps, fps_value, int,
-    key, mebibytes, row, segment, switch,
+    choices, choose, choose_text, codec_entries, display_entries, duration, folder, fps, fps_value,
+    int, key, mbit, mebibytes, row, segment, switch,
 };
 
 use super::{Bind, Block, Page};
@@ -24,6 +24,8 @@ const FRAME_RATES: [u32; 5] = [30, 60, 120, 144, 240];
 const SHELF_TO_DISK: [Option<u64>; 5] = [None, Some(30), Some(60), Some(300), Some(900)];
 const REPLAY_MEMORY_MIB: [usize; 5] = [256, 512, 1024, 2048, 4096];
 const REPLAY_SECONDS: [u64; 6] = [15, 30, 60, 120, 300, 600];
+/// Fixed replay bitrates, kbit/s; "Auto" sizes it to length and memory.
+const REPLAY_KBPS: [i64; 6] = [10_000, 20_000, 30_000, 40_000, 60_000, 80_000];
 
 /// What the memory buys at this length, from the recorder's own formula
 /// (`replay::settings::video_kbps`): the video's bitrate, or, where even the
@@ -136,10 +138,53 @@ fn shelf(prefs: &Prefs, now: Instant) -> Page {
 }
 
 fn screenshots(prefs: &Prefs, now: Instant) -> Page {
+    let mut editors = vec![(None, "Default app".to_owned())];
+    editors.extend(
+        prefs
+            .editors
+            .iter()
+            .map(|(name, label)| (Some(settings::Value::Text(name.clone())), label.clone())),
+    );
+    let open_with = prefs.open_with.clone().map(settings::Value::Text);
     Page {
         name: "Screenshots".into(),
         icon: Icon::Image,
         blocks: vec![
+            Block::Heading("Capture".into()),
+            row(
+                Icon::ClipboardCopy,
+                "Copy to clipboard",
+                Some("Every screenshot, not only onto the shelf"),
+                switch("copy_to_clipboard", prefs.copy_to_clipboard, now),
+            ),
+            row(
+                Icon::ZoomIn,
+                "Magnifier",
+                Some("While you select an area"),
+                segment(
+                    "selector_magnifier",
+                    vec![Part::text("Alt held"), Part::text("Always")],
+                    &["alt", "always"],
+                    usize::from(prefs.magnifier_always),
+                    now,
+                ),
+            ),
+            Block::Heading("Opening".into()),
+            row(
+                Icon::AppWindow,
+                "Open screenshots with",
+                Some("Videos open in the default app"),
+                choices(
+                    "shelf.open_with",
+                    editors,
+                    open_with,
+                    |value| match value {
+                        settings::Value::Text(name) => format!("{name} (not installed)"),
+                        _ => String::new(),
+                    },
+                    now,
+                ),
+            ),
             Block::Heading("Saving".into()),
             row(
                 Icon::Folder,
@@ -339,6 +384,8 @@ fn replay(prefs: &Prefs, now: Instant) -> Page {
                 now,
             ),
         ),
+        Block::Heading("Video".into()),
+        row(Icon::Monitor, "Display", None, replay_display(prefs, now)),
         row(
             Icon::Gauge,
             "Frame rate",
@@ -349,6 +396,44 @@ fn replay(prefs: &Prefs, now: Instant) -> Page {
                 prefs.replay_fps,
                 fps,
                 fps_value,
+                now,
+            ),
+        ),
+        row(
+            Icon::Activity,
+            "Bitrate",
+            None,
+            choices(
+                "replay.bitrate_kbps",
+                std::iter::once((None, "Auto".to_owned()))
+                    .chain(
+                        REPLAY_KBPS
+                            .iter()
+                            .map(|kbps| (Some(settings::Value::Int(*kbps)), mbit(*kbps))),
+                    )
+                    .collect(),
+                prefs
+                    .replay_bitrate
+                    .map(|kbps| settings::Value::Int(i64::from(kbps))),
+                |value| match value {
+                    settings::Value::Int(kbps) => mbit(*kbps),
+                    _ => String::new(),
+                },
+                now,
+            ),
+        ),
+        row(
+            Icon::Cpu,
+            "Encoder",
+            None,
+            choose_text(
+                "replay.encoder",
+                // Replay refuses the CPU (`linux/replay` start).
+                codec_entries(prefs)
+                    .into_iter()
+                    .filter(|(codec, _)| codec != "libx264")
+                    .collect(),
+                &prefs.replay_encoder,
                 now,
             ),
         ),
@@ -377,6 +462,28 @@ fn replay(prefs: &Prefs, now: Instant) -> Page {
         icon: Icon::RotateCcwClock,
         blocks,
     }
+}
+
+/// Like recordings (the key removed), each connected monitor, and one the
+/// file names that is not connected.
+fn replay_display(prefs: &Prefs, now: Instant) -> (Box<dyn crate::ui::widgets::Widget>, Bind) {
+    let mut entries = vec![(None, "Like recordings".to_owned())];
+    entries.extend(prefs.displays.iter().map(|screen| {
+        (
+            Some(settings::Value::Text(screen.name.clone())),
+            screen.entry(),
+        )
+    }));
+    choices(
+        "replay.output",
+        entries,
+        prefs.replay_output.clone().map(settings::Value::Text),
+        |value| match value {
+            settings::Value::Text(name) => format!("{name} (disconnected)"),
+            _ => String::new(),
+        },
+        now,
+    )
 }
 
 /// The face the shelf, the selector, the recording controls and this window

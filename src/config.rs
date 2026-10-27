@@ -157,6 +157,11 @@ pub struct Config {
     shelf_solid_on_hover: Option<bool>,
     shelf_card_shadow: Option<bool>,
     shelf_animations: Option<bool>,
+    copy_to_clipboard: Option<bool>,
+    selector_magnifier: Option<String>,
+    /// `[shelf] open_with`: what opens an image card (`linux/shelf/cards.rs`
+    /// `EDITORS`); unset, the desktop's default app.
+    pub shelf_open_with: Option<String>,
     issues: Vec<settings::Issue>,
 }
 
@@ -260,6 +265,9 @@ impl Config {
             shelf_solid_on_hover: doc.bool("shelf.solid_on_hover"),
             shelf_card_shadow: doc.bool("shelf.card_shadow"),
             shelf_animations: doc.bool("shelf.animations"),
+            copy_to_clipboard: doc.bool("copy_to_clipboard"),
+            selector_magnifier: text("selector_magnifier"),
+            shelf_open_with: text("shelf.open_with"),
             issues,
         }
     }
@@ -287,6 +295,18 @@ impl Config {
             Some(seconds) if seconds > 0 => Some(std::time::Duration::from_secs(seconds as u64)),
             Some(_) => None,
         }
+    }
+
+    /// `copy_to_clipboard`: a Wayland screenshot also goes to the clipboard,
+    /// not only to the shelf. Default false.
+    pub fn copy_to_clipboard(&self) -> bool {
+        self.copy_to_clipboard.unwrap_or(false)
+    }
+
+    /// `selector_magnifier = "always"`: the selector's loupe shows without
+    /// Alt held. Default "alt".
+    pub fn magnifier_always(&self) -> bool {
+        self.selector_magnifier.as_deref() == Some("always")
     }
 
     pub fn shelf_prefs(&self) -> ShelfPrefs {

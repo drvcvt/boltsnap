@@ -25,6 +25,87 @@ pub(super) fn card_size() -> CardSize {
     CardSize::from_width(CARD_WIDTH.load(Ordering::Relaxed).into()).unwrap_or(CardSize::DEFAULT)
 }
 
+/// A program an image card can open with (`[shelf] open_with`): its name in
+/// the file, how people know it, the program, and what goes before the file.
+pub(crate) struct Editor {
+    pub key: &'static str,
+    pub label: &'static str,
+    pub program: &'static str,
+    pub args: &'static [&'static str],
+}
+
+/// The editors the settings window offers when they are installed. Each
+/// only gets the file; what it saves stays its own (no way back to the
+/// card, settings plan 5h).
+pub(crate) const EDITORS: [Editor; 6] = [
+    Editor {
+        key: "eddy",
+        label: "eddy",
+        program: "eddy",
+        args: &["-f"],
+    },
+    Editor {
+        key: "satty",
+        label: "Satty",
+        program: "satty",
+        args: &["--filename"],
+    },
+    Editor {
+        key: "swappy",
+        label: "swappy",
+        program: "swappy",
+        args: &["-f"],
+    },
+    Editor {
+        key: "gimp",
+        label: "GIMP",
+        program: "gimp",
+        args: &[],
+    },
+    Editor {
+        key: "krita",
+        label: "Krita",
+        program: "krita",
+        args: &[],
+    },
+    Editor {
+        key: "pinta",
+        label: "Pinta",
+        program: "pinta",
+        args: &[],
+    },
+];
+
+/// What opens a card's file: an image with `open_with` when that program is
+/// `installed`, otherwise (and every video) the desktop's default app. A name
+/// the list does not know is run as a program with the file. Never through a
+/// shell; the file is its own last argument. Also the configured program
+/// when it is missing.
+pub(super) fn media_open_command<'a>(
+    path: &std::path::Path,
+    kind: CardKind,
+    open_with: Option<&'a str>,
+    installed: impl Fn(&str) -> bool,
+) -> (std::process::Command, Option<&'a str>) {
+    let editor = open_with.filter(|_| kind == CardKind::Image).map(|name| {
+        EDITORS
+            .iter()
+            .find(|editor| editor.key == name)
+            .map_or((name, &[][..]), |editor| (editor.program, editor.args))
+    });
+    let (mut command, missing) = match editor {
+        Some((program, args)) if installed(program) => {
+            let mut command = std::process::Command::new(program);
+            command.args(args);
+            (command, None)
+        }
+        Some(_) => (std::process::Command::new("xdg-open"), open_with),
+        None => (std::process::Command::new("xdg-open"), None),
+    };
+    command.arg(path);
+    (command, missing)
+}
+
 /// Gap between the shelf and both screen edges of its corner.
 const EDGE_MARGIN: i32 = 24;
 
@@ -40,6 +121,30 @@ pub(super) fn anchor(corner: Corner) -> (Anchor, [i32; 4]) {
 }
 
 impl Daemon {
+    /// Open card `id`'s file (`media_open_command`).
+    pub(super) fn open_media_card(&self, id: u64) {
+        let Some(card) = self.model.get(id) else {
+            return;
+        };
+        let open_with = crate::config::Config::load().shelf_open_with;
+        let (mut command, missing) = media_open_command(
+            &card.png_path,
+            card.kind,
+            open_with.as_deref(),
+            crate::paths::has_cmd,
+        );
+        // Once per daemon: the configured editor is gone.
+        static TOLD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if let Some(name) = missing
+            && !TOLD.swap(true, std::sync::atomic::Ordering::Relaxed)
+        {
+            super::notify(&format!("{name} not found, opened with the default app"));
+        }
+        if let Err(error) = crate::paths::spawn_reaped(&mut command) {
+            eprintln!("boltsnap daemon: open media failed: {error}");
+        }
+    }
+
     /// Takes `[shelf]` as it is now. A new corner needs a new layer surface;
     /// the cards stay.
     pub(super) fn apply_shelf_prefs(&mut self, prefs: ShelfPrefs) {

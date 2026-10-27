@@ -30,6 +30,13 @@ pub fn prefs() -> Prefs {
         card_animations: true,
         corner: Corner::BottomLeft,
         save_dir: "~/Pictures/boltsnap".into(),
+        copy_to_clipboard: false,
+        magnifier_always: false,
+        open_with: None,
+        editors: vec![
+            ("eddy".into(), "eddy".into()),
+            ("gimp".into(), "GIMP".into()),
+        ],
         both_combined: false,
         display: pages::Display::Focused,
         displays: vec![
@@ -93,6 +100,8 @@ pub fn prefs() -> Prefs {
         ),
         replay_seconds: 60,
         replay_memory_mib: 512,
+        replay_output: None,
+        replay_encoder: "auto".into(),
         replay_bitrate: None,
         replay_fps: 60,
     }

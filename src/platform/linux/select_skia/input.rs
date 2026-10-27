@@ -286,12 +286,12 @@ impl PointerHandler for Selector {
                             }
                             Some(Interaction::ClickInside { .. }) | None => {}
                         }
-                        if self.alt_held {
+                        if self.magnifier_on() {
                             redraw = true;
                         }
                     }
                     Mode::Idle => {
-                        if self.alt_held {
+                        if self.magnifier_on() {
                             redraw = true;
                         }
                     }

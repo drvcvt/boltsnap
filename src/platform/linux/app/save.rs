@@ -86,9 +86,14 @@ fn send(write: &Write) -> Result<(), String> {
             replay("stop")?;
             replay("start").map(|_| ())
         }
-        Write::Reset(key) => patch(key, Change::Remove),
-        Write::Key(key, value) => {
-            let saved = patch(key, Change::Set(value.clone()));
+        // Setting a key or removing it (a reset, "Auto", "Like recordings"):
+        // either way the running buffer keeps its old settings.
+        Write::Reset(key) | Write::Key(key, _) => {
+            let change = match write {
+                Write::Key(_, value) => Change::Set(value.clone()),
+                _ => Change::Remove,
+            };
+            let saved = patch(key, change);
             if saved.is_ok() && RESTART_ONLY.contains(key) {
                 let session = replay("status")
                     .ok()

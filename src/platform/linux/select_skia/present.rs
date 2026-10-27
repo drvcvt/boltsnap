@@ -69,6 +69,7 @@ impl Selector {
         {
             return;
         }
+        let magnifier = self.magnifier_on().then_some(self.cursor);
         let (Some(base), Some(overlay)) = (self.base.as_ref(), self.overlay.as_mut()) else {
             return;
         };
@@ -103,7 +104,7 @@ impl Selector {
                 } else {
                     Default::default()
                 },
-                magnifier: (self.alt_held && !self.record_mode).then_some(self.cursor),
+                magnifier,
             },
             &self.chrome,
         );
