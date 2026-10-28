@@ -67,7 +67,7 @@ Erklärung im UI, kein Sparen (das ist Teil 2).
 
 ## Teil 2: Konstante Qualität mit Bitrate-Deckel
 
-Stand: **geplant 28.10., Proben P1–P3 offen, nichts gebaut.**
+Stand: **P1 und P2 gemessen 28.10. (unten), Heap-Trim im Worker gebaut; Schritt 1, 3, 4 und P3 offen.**
 
 ### Befund
 
@@ -128,6 +128,56 @@ Stand: **geplant 28.10., Proben P1–P3 offen, nichts gebaut.**
   Bau Replay neu starten (Knopf in den Einstellungen), `replay-capture.log`
   ohne Fehler zu `rc`/`cq`, Last-Zeile ruhig und bei Bewegung, ein
   Vollbild-Clip: `ffprobe` Bitrate und Länge 30 s.
+
+### P1, gemessen 28.10.
+
+`h264_nvenc` (System-FFmpeg 8.1.3) mit gsrs Optionen (`tune ll`,
+`forced-idr`, GOP 60, `bf=0`, `+cgop`, CABAC, High), 5 s 3840 × 1080 @ 60,
+`maxrate = bufsize = 41435k`; Skript `probes/p1.py` im Scratchpad der
+Session (nicht im Repo). PSNR/SSIM gegen dieselbe Quelle neu erzeugt.
+
+| Quelle | Modus | Mbit/s | größte 1-s-GOP | PSNR | SSIM |
+| --- | --- | --- | --- | --- | --- |
+| ruhig (2 Screenshots + bewegtes 160-px-Feld) | CBR | 41,43 | 41,43 | 50,46 | 0,99983 |
+| | VBR cq 19 | 2,31 | 2,48 | 50,16 | 0,99932 |
+| | VBR cq 23 | 1,99 | 2,13 | 49,76 | 0,99877 |
+| | VBR cq 26 | 1,71 | 1,83 | 49,23 | 0,99839 |
+| Schwenk (240 px/s) | CBR | 41,43 | 41,43 | 44,67 | 0,99968 |
+| | VBR cq 19 | 1,33 | 1,43 | 44,66 | 0,99967 |
+| | VBR cq 23 | 1,21 | 1,30 | 44,62 | 0,99960 |
+| | VBR cq 26 | 1,11 | 1,20 | 44,55 | 0,99946 |
+| Rauschen (Worst Case) | CBR | 41,55 | 44,47 | 35,54 | 0,7919 |
+| | VBR cq 19 | 40,37 | 44,71 | 35,52 | 0,7920 |
+| | VBR cq 23 | 40,37 | 44,71 | 35,52 | 0,7920 |
+| | VBR cq 26 | 40,11 | 42,44 | 35,52 | 0,7918 |
+
+Der Deckel hält: die größte Sekunde (44,71) bleibt wie bei CBR (44,47)
+unter 1,1 × 41,4 = 45,6 Mbit/s. **Abweichung vom Kriterium:** gewählt ist
+cq **19**, nicht das größte zulässige (26): 26 spart auf ruhigem Bild nur
+0,6 Mbit/s (~2 MB auf 30 s) und kostet 0,9 dB; 19 liegt ruhig 0,3 dB und
+im Schwenk 0,01 dB unter CBR.
+
+### P2, gemessen 28.10.
+
+Skript `probes/p2.py` (Scratchpad): FFmpeg speist den Worker (`live … 30
+512 h264_nvenc`) in Echtzeit, 12 s Rauschen 1920 × 1080 (VBR cq 23 unter
+41,4M), dann 45 s ruhige Fläche; je Sekunde `Anonymous` aus
+`smaps_rollup` und `bytes` aus dem Status.
+
+| t | ohne Trim: anonym / Ring | mit Trim: anonym / Ring |
+| --- | --- | --- |
+| 12 s (Spitze) | 56,0 / 53,0 MB | 56,0 / 53,0 MB |
+| 35 s | 56,6 / 28,3 MB | 31,9 / 28,3 MB |
+| 41 s (Spitze ausgeräumt) | 56,6 / 2,1 MB | 7,3 / 2,1 MB |
+| 56 s | 56,6 / 2,1 MB | 7,3 / 2,1 MB |
+
+Ohne Trim behält glibc den Speicher der ausgeräumten GOPs. **Gebaut:**
+`worker/src/live.rs` `capture`: nach dem Push, außerhalb des Locks, einmal
+je Sekunde `libc::malloc_trim(0)`, wenn der Ring seit dem letzten Trim um
+mehr als `TRIM_AFTER` (4 MiB) unter seinen Höchststand fiel. Worker-Tests
+27 grün, `cargo fmt --check`, clippy `-D warnings` ohne eigene Meldung
+(die vorhandene `dead_code`-Meldung zu `process.rs` `output_setup` stammt
+nicht von hier, mit `git stash` gegengeprüft). Nicht installiert.
 
 ### Code (nach den Proben)
 

@@ -37,6 +37,8 @@ fn capture(state: &Mutex<State>, duration: i64, budget: usize) -> Result<(), Str
         ring: Ring::new(duration, budget)?,
         packets_read: 0,
     });
+    // The ring's bytes at their highest since the heap was last trimmed.
+    let (mut high, mut trimmed) = (0, Instant::now());
     loop {
         let mut packet = Packet::empty();
         packet
@@ -51,11 +53,24 @@ fn capture(state: &Mutex<State>, duration: i64, budget: usize) -> Result<(), Str
             index == video_index,
         )?;
         recording.packets_read += 1;
+        let held = recording.ring.bytes();
         if index == video_index {
             state.updated = Instant::now();
         }
+        drop(state);
+        // Evicted GOPs leave holes low in the heap that glibc keeps (replay
+        // memory plan, P2): after a burst the ring shrinks, the process does
+        // not. Once a second, after it shrank by a few GOPs, give them back.
+        if held + TRIM_AFTER < high && trimmed.elapsed() >= Duration::from_secs(1) {
+            unsafe { libc::malloc_trim(0) };
+            (high, trimmed) = (held, Instant::now());
+        }
+        high = high.max(held);
     }
 }
+
+/// How far the ring shrinks before the heap is trimmed.
+const TRIM_AFTER: usize = 4 << 20;
 
 /// The video stopped arriving, or the input failed.
 fn input_lost(state: &State) -> bool {
