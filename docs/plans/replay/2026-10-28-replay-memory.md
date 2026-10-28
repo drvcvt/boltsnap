@@ -9,6 +9,8 @@ Nutzer 28.10.: „okay dann machen wir 1 und planen danach 2“.
    geplant, dann geprobt).
 3. Weniger Treiber-Speicher in gsr (Teil 3, Nutzer 28.10.: „koennen wir
    irgendwie noch weiter die usage runterdruecken?“).
+4. Suche nach weiterer Last und Fehlern, die Leistung kosten (Teil 4,
+   Nutzer 28.10.: „wir quetschen den saft raus wo es geht“).
 
 ## Teil 1: Speicher als privater Speicher
 
@@ -323,3 +325,73 @@ Was bleibt, ist der Boden: CUDA-Kontext und GL in gsr (~55 MB Treiber,
 ~35 MB Heap und anonym), Worker mit Ring (~26 MB auf ruhigem Bild). NVENC
 geht unter FFmpeg nur über CUDA; weniger bräuchte einen anderen Encoder-Weg
 (gsrs Vulkan-Encoder hing hier schon bei Aufnahmen), nicht vorgesehen.
+
+## Teil 4: Was sonst noch kostet
+
+Stand: **gebaut 28.10., wie geplant.** `load.rs` `children`, Prozessbaum-
+Test mit `task/<tid>/children` (zwei Daemon-Threads); fmt, clippy
+`-D warnings`, `cargo test` 164 + 416 grün. `replay_load_now` findet gsr,
+kms-Helfer und Worker wie vorher (21 % eines Kerns, 134 MB). Die
+Kinder-Liste des Daemons zu lesen kostet 0,09 ms statt ~5 ms für den Scan
+(Python-Messung, beides). Offen: Mess-Thread im neu geöffneten Fenster über
+30 s (das laufende Fenster hat noch das alte Binary).
+
+### Befund (gemessen 28.10., nur `/proc`, Skripte `probes/p5/` im Scratchpad)
+
+CPU je Prozess, ruhiger Desktop, Replay beide Monitore 60 fps, Settings-
+Fenster offen:
+
+| Prozess | CPU (eines Kerns) | privat |
+| --- | --- | --- |
+| gsr | 19 % ruhig, 35–46 % bei Bewegung im Browser | 89–118 MB |
+| `gsr-kms-server` | 2,4 % | |
+| Worker | 0,4 % | 26–40 MB (Ring) |
+| Settings-Fenster | **1,5 %** (30 s gemessen) | 24 MB |
+| Daemon | 0,1 % | 4 MB |
+
+- **gsr:** Hauptthread 12,8 % (~2 ms CPU je Frame für zwei Monitore, 485
+  freiwillige Wechsel/s: wartet, dreht nicht), Audio-Thread 6,2 % (97
+  Wechsel/s, zwei je AAC-Frame bei 48 kHz). `perf` darf gsr nicht ansehen
+  (`yama ptrace_scope` 1, kein Kind). Die Schleife schläft bis zum nächsten
+  Frame (`src/recorder/recorder.c` `recorder_sleep_until_next_frame`).
+  Hebel nur über andere Formate (`-fm content`: Clips mit wechselnder
+  Bildrate, `opus` statt AAC: MP4-Kompatibilität); nicht vorgesehen.
+- **Cursor:** `record_cursor = "system"`, Plugin läuft nicht. Der Tracker
+  (`linux/cursor_track.rs` `run`) wartet mit `poll_event(50 ms)` auf
+  Events, keine Schleife; das Plugin läuft nur bei Smooth-Cursor-Aufnahmen
+  (nicht messbar ohne Aufnahme).
+- **Settings-Fenster, Fehler:** die ganze CPU liegt im Mess-Thread
+  (`linux/app/save.rs` `poll_replay`, 46 Ticks in 30 s, 3 Wechsel/s), der
+  Hauptthread zeichnet nichts nach. `load.rs` `replay_pids` liest dafür
+  **jede Sekunde `/proc/*/stat` aller Prozesse** (480 hier), um die Kinder
+  des Daemons zu finden; läuft, solange das Fenster offen ist, auf jeder
+  Seite.
+
+### Verhalten
+
+- Die Kinder des Daemons kommen aus `/proc/<daemon>/task/*/children`
+  (jeder Thread listet die Prozesse, die er gestartet hat; stirbt der
+  startende Thread, gehen sie an einen anderen Thread derselben Gruppe),
+  ihre Kinder ebenso. Gelesen werden nur noch die Dateien dieser paar
+  Prozesse. Erwartet: Mess-Thread unter 0,2 %.
+- Kernel ohne `CONFIG_PROC_CHILDREN`: keine Liste, die Zeile sagt
+  „Running, not measured“ (ehrlich statt falsch). Gentoo, Arch, Debian,
+  Fedora haben es an.
+- Auswahl wie heute: `boltsnap-replay…` und der gsr, der nach
+  `/dev/stdout` schreibt, plus deren Kinder.
+
+### Code
+
+1. `src/platform/linux/app/load.rs`: `fn children(proc, pid)`;
+   `replay_pids` nutzt sie statt `processes`, das wegfällt. Test: die
+   Fixture bekommt `task/<tid>/children` (zwei Threads beim Daemon, einer
+   mit dem gsr, einer mit dem Worker), Erwartung wie heute.
+2. Dieser Plan; `docs/replay.md` braucht nichts (Text bleibt).
+
+### Abnahme
+
+fmt, clippy, `cargo test`; `replay_load_now` gleiche Zahl wie vorher;
+Settings-Fenster neu geöffnet, Mess-Thread über 30 s.
+
+**Macht nicht:** kein anderer Takt, kein Messen nur auf der Replay-Seite,
+nichts an gsr, Worker, Cursor.

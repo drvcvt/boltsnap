@@ -12,46 +12,46 @@ use boltsnap::app::ReplayLoad;
 /// recording's GPU Screen Recorder is the daemon's child too; the replay's is
 /// the one writing to its stdout (`linux/replay` start, `-o /dev/stdout`).
 fn replay_pids(proc: &Path, daemon: u32) -> Vec<u32> {
-    let parents = processes(proc);
+    let read = |pid: u32, file: &str| std::fs::read(proc.join(pid.to_string()).join(file));
     let feeds_worker = |pid: u32| {
-        std::fs::read(proc.join(pid.to_string()).join("cmdline"))
-            .is_ok_and(|args| args.windows(15).any(|w| w == b"-o\0/dev/stdout\0"))
+        read(pid, "cmdline").is_ok_and(|args| args.windows(15).any(|w| w == b"-o\0/dev/stdout\0"))
     };
-    let mut pids: Vec<u32> = parents
-        .iter()
-        .filter(|(pid, parent, comm)| {
-            *parent == daemon
-                && (comm.starts_with("boltsnap-replay")
-                    || comm.starts_with("gpu-screen-reco") && feeds_worker(*pid))
+    let mut pids: Vec<u32> = children(proc, daemon)
+        .into_iter()
+        .filter(|&pid| {
+            let Ok(stat) = read(pid, "stat") else {
+                return false;
+            };
+            let stat = String::from_utf8_lossy(&stat);
+            split_stat(&stat).is_some_and(|(comm, _)| {
+                comm.starts_with("boltsnap-replay")
+                    || comm.starts_with("gpu-screen-reco") && feeds_worker(pid)
+            })
         })
-        .map(|(pid, ..)| *pid)
         .collect();
     let mut index = 0;
     while index < pids.len() {
-        let parent = pids[index];
-        pids.extend(
-            parents
-                .iter()
-                .filter(|(_, p, _)| *p == parent)
-                .map(|(pid, ..)| *pid),
-        );
+        pids.extend(children(proc, pids[index]));
         index += 1;
     }
     pids
 }
 
-/// Every process as (pid, parent, comm).
-fn processes(proc: &Path) -> Vec<(u32, u32, String)> {
-    let Ok(entries) = std::fs::read_dir(proc) else {
+/// The children of `pid`, from each of its threads' `children` list (a
+/// thread lists what it started; when it ends they go to another thread of
+/// the process). Not a scan of every process in `/proc`: that cost the
+/// settings window 15 ms a second (replay memory plan, part 4).
+fn children(proc: &Path, pid: u32) -> Vec<u32> {
+    let Ok(tasks) = std::fs::read_dir(proc.join(pid.to_string()).join("task")) else {
         return Vec::new();
     };
-    entries
+    tasks
         .flatten()
-        .filter_map(|entry| {
-            let pid: u32 = entry.file_name().to_str()?.parse().ok()?;
-            let stat = std::fs::read_to_string(entry.path().join("stat")).ok()?;
-            let (comm, fields) = split_stat(&stat)?;
-            Some((pid, fields.first()?.parse().ok()?, comm.to_owned()))
+        .filter_map(|task| std::fs::read_to_string(task.path().join("children")).ok())
+        .flat_map(|list| {
+            list.split_whitespace()
+                .filter_map(|child| child.parse().ok())
+                .collect::<Vec<u32>>()
         })
         .collect()
 }
@@ -187,6 +187,21 @@ mod tests {
     #[test]
     fn the_replay_processes_are_the_daemons_recorder_and_worker_and_their_children() {
         let proc = crate::paths::temp_file("load-proc", "d");
+        let mut made = Vec::new();
+        let mut kids = |pid: u32, task: u32, list: &str| {
+            let dir = proc
+                .join(pid.to_string())
+                .join("task")
+                .join(task.to_string());
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("children"), list).unwrap();
+            made.push(dir);
+        };
+        // The daemon started its children from two threads; 105 is not its.
+        kids(100, 100, "104 106 ");
+        kids(100, 107, "101 103 ");
+        kids(101, 101, "102 ");
+        kids(105, 105, "");
         let stat = |pid: u32, comm: &str, parent: u32| {
             let dir = proc.join(pid.to_string());
             std::fs::create_dir_all(&dir).unwrap();
@@ -221,6 +236,14 @@ mod tests {
         std::fs::write(&rollup, "Private_Clean: 2 kB\nPrivate_Dirty: 3 kB\n").unwrap();
         assert_eq!(private(&proc, 103, 4096), Some(5 * 1024));
         std::fs::remove_file(rollup).unwrap();
+        for task in made {
+            std::fs::remove_file(task.join("children")).unwrap();
+            std::fs::remove_dir(&task).unwrap();
+            let tasks = task.parent().unwrap();
+            if std::fs::read_dir(tasks).unwrap().next().is_none() {
+                std::fs::remove_dir(tasks).unwrap();
+            }
+        }
         for pid in 100..=106 {
             let dir = proc.join(pid.to_string());
             for file in ["stat", "statm", "cmdline"] {
