@@ -123,10 +123,19 @@ impl App {
         }
     }
 
-    /// The buffer holds `seconds` now, or is not running.
+    /// The buffer holds `seconds` now, or is not running. A full buffer
+    /// drops its oldest one-second GOP at a time and so swings within its
+    /// last second; that shows as full, not as the oldest cell dimming and
+    /// lighting again every few seconds (each a glide redrawn at the
+    /// display's rate).
     pub fn set_replay_held(&mut self, seconds: Option<f32>, now: Instant) {
         self.preview.running = seconds.is_some();
-        let to = seconds.unwrap_or(0.0);
+        let full = self
+            .preview
+            .length
+            .target()
+            .min(self.preview.holds.target());
+        let to = seconds.map_or(0.0, |s| if s > full - 1.0 && s < full { full } else { s });
         if self.reduced_motion {
             self.preview.held.set(to, now);
         } else {

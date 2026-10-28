@@ -333,8 +333,8 @@ Test mit `task/<tid>/children` (zwei Daemon-Threads); fmt, clippy
 `-D warnings`, `cargo test` 164 + 416 grün. `replay_load_now` findet gsr,
 kms-Helfer und Worker wie vorher (21 % eines Kerns, 134 MB). Die
 Kinder-Liste des Daemons zu lesen kostet 0,09 ms statt ~5 ms für den Scan
-(Python-Messung, beides). Offen: Mess-Thread im neu geöffneten Fenster über
-30 s (das laufende Fenster hat noch das alte Binary).
+(Python-Messung, beides). Neu geöffnetes Fenster (Replay-Seite, DP-3 mit
+240 Hz), 30 s: Mess-Thread **0,5 %** (vorher 1,5 %).
 
 ### Befund (gemessen 28.10., nur `/proc`, Skripte `probes/p5/` im Scratchpad)
 
@@ -395,3 +395,38 @@ Settings-Fenster neu geöffnet, Mess-Thread über 30 s.
 
 **Macht nicht:** kein anderer Takt, kein Messen nur auf der Replay-Seite,
 nichts an gsr, Worker, Cursor.
+
+### Nachtrag 29.10.: der Balken zuckt
+
+Im selben Fenster lief der Hauptthread nach dem Start weiter. `perf`
+(`cpu-clock`, ungestrippter Build in `target/prof`, Fenster als Kind
+gestartet, 20 s nach 5 s Anlauf): jede Sekunde ~3 ms (ein Bild für die neue
+Load-Zahl), dazu **alle ~6,5 s ~110 ms über 300 ms**, die Gleitbewegung des
+Balkens, bei 240 Hz Bild für Bild neu gezeichnet (`tiny_skia`
+`fill_path_impl`, `Pixmap::fill`, `Fonts::draw_clipped` vorn). Im Mittel
+~1,8 % eines Kerns, der größte Teil davon dieser Burst.
+
+Ursache: der volle Ring wirft ganze GOPs von einer Sekunde heraus, die
+gehaltene Dauer pendelt in der letzten Sekunde (29,0–30,0 s bei 30 s,
+`duration_us` im Status). `set_replay_held` (`app/preview/replay.rs`)
+gleitet jedes Mal dorthin: die älteste Zelle wird dunkler und wieder hell,
+„Holds 29 s“ und „Holds 30 s“ wechseln.
+
+**Verhalten:** eine Dauer innerhalb der letzten Sekunde vor voll
+(`min(length, holds)`) zeigt voll. Füllen beim Start gleitet wie bisher
+Zelle um Zelle; ein Puffer, der mehr hält als die Seite sagt (alte
+Einstellungen), bleibt unberührt.
+
+**Code:** `set_replay_held`; Test in `app/tests/preview.rs`: 59,03 und
+59,53 s bei 60 s zeigen voll, ohne zu gleiten.
+
+**Gebaut 29.10.**, Test grün und ohne den Fix rot (Gegenprobe per
+Stash); fmt, clippy `--all-targets -D warnings`, `cargo test` 165 + 416.
+Gleiches Profil danach, 35 s: die ersten 20 s (Fenster offen, unbedient)
+2–4 Samples je Sekunde, also ~0,3 % eines Kerns, kein Burst mehr. Danach
+Bedienung mit der Maus: bis zu einem ganzen Kern bei 240 Hz, je Bild
+Formen (`tiny_skia`) 50 %, Glyphen-Umrisse 20 %, libc-Kopien 17 %, libm
+10 %. Das ist der nächste Hebel, siehe Tempo-Durchsicht.
+
+**Macht nicht:** kein Teil-Neuzeichnen des Fensters (jedes Bild malt alles;
+eigener Umbau, nicht hier).

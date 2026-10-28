@@ -304,6 +304,27 @@ fn the_replay_head_says_what_it_holds_and_the_bar_is_cells() {
 }
 
 #[test]
+fn a_full_buffer_swinging_within_its_last_second_stands_still() {
+    let now = Instant::now();
+    let mut app = app_on("replay", SIZE, now);
+    // 60 s: the ring drops one-second GOPs, so once full it holds 59 to
+    // 60 s.
+    app.set_replay_held(Some(60.0), now);
+    for (at, held) in [(1, 59.03), (2, 59.53), (3, 59.2)] {
+        let at = now + SETTLED * at;
+        app.set_replay_held(Some(held), at);
+        assert_eq!(app.replay_bar(at).0, 1.0, "{held} s is full");
+        assert!(!app.animating(at), "{held} s glides nowhere");
+        assert_eq!(app.replay_head(at).0, "Holds 1\u{a0}min");
+    }
+    // Filling up still glides, and less than the last second shows as is.
+    app.set_replay_held(Some(58.5), now + SETTLED * 4);
+    assert!(app.animating(now + SETTLED * 4));
+    let (filled, _) = app.replay_bar(now + SETTLED * 5);
+    assert!((filled - 58.5 / 60.0).abs() < 0.001, "{filled}");
+}
+
+#[test]
 fn monitors_are_named_by_maker_and_model() {
     use crate::app::pages::monitor_name as name;
     assert_eq!(name("BNQ", "ZOWIE XL LCD", "DP-3"), "BenQ ZOWIE XL LCD");
