@@ -1,7 +1,7 @@
 //! What the running replay buffer costs, measured (settings plan, 5i): the
 //! CPU of GPU Screen Recorder with its helpers and of the worker, and their
-//! memory, read from `/proc`. No estimate: one measured point here is not
-//! enough to say what other settings would cost.
+//! private memory, read from `/proc`. No estimate: one measured point here is
+//! not enough to say what other settings would cost.
 
 use std::path::Path;
 
@@ -74,10 +74,29 @@ fn ticks(proc: &Path, pid: u32) -> Option<u64> {
     Some(fields.get(10)?.parse::<u64>().ok()? + fields.get(11)?.parse::<u64>().ok()?)
 }
 
-/// Resident memory of `pid` in bytes.
-fn resident(proc: &Path, pid: u32, page: u64) -> Option<u64> {
-    let statm = std::fs::read_to_string(proc.join(pid.to_string()).join("statm")).ok()?;
-    Some(statm.split_whitespace().nth(1)?.parse::<u64>().ok()? * page)
+/// Private memory of `pid` in bytes: what goes when it ends (replay memory
+/// plan, part 1). Shared libraries other processes map too do not count. A
+/// process whose `smaps_rollup` is closed to us (`gsr-kms-server` has
+/// capabilities) counts its anonymous pages from `statm`.
+fn private(proc: &Path, pid: u32, page: u64) -> Option<u64> {
+    let dir = proc.join(pid.to_string());
+    if let Ok(rollup) = std::fs::read_to_string(dir.join("smaps_rollup")) {
+        return private_of_rollup(&rollup);
+    }
+    let statm = std::fs::read_to_string(dir.join("statm")).ok()?;
+    let mut fields = statm.split_whitespace().skip(1);
+    let resident: u64 = fields.next()?.parse().ok()?;
+    let shared: u64 = fields.next()?.parse().ok()?;
+    Some(resident.saturating_sub(shared) * page)
+}
+
+/// `Private_Clean + Private_Dirty` of a `smaps_rollup`, in bytes.
+fn private_of_rollup(rollup: &str) -> Option<u64> {
+    let kib = |name: &str| -> Option<u64> {
+        let line = rollup.lines().find(|line| line.starts_with(name))?;
+        line[name.len()..].split_whitespace().next()?.parse().ok()
+    };
+    Some((kib("Private_Clean:")? + kib("Private_Dirty:")?) * 1024)
 }
 
 /// Measures the replay processes between two calls.
@@ -118,7 +137,7 @@ impl Meter {
         let ticks: u64 = pids.iter().filter_map(|pid| ticks(proc, *pid)).sum();
         let memory: u64 = pids
             .iter()
-            .filter_map(|pid| resident(proc, *pid, self.page))
+            .filter_map(|pid| private(proc, *pid, self.page))
             .sum();
         // Only against a reading of the same session: a restarted buffer
         // starts its count anew.
@@ -153,6 +172,19 @@ mod tests {
     }
 
     #[test]
+    fn private_memory_is_the_clean_and_dirty_pages_no_one_else_maps() {
+        let rollup = "55d0-7ffd ---p 00000000 00:00 0 [rollup]\n\
+            Rss:              250180 kB\n\
+            Pss:              169462 kB\n\
+            Shared_Clean:      91148 kB\n\
+            Private_Clean:     85844 kB\n\
+            Private_Dirty:     73188 kB\n\
+            Anonymous:         18916 kB\n";
+        assert_eq!(private_of_rollup(rollup), Some((85844 + 73188) * 1024));
+        assert_eq!(private_of_rollup("Rss: 1 kB\n"), None);
+    }
+
+    #[test]
     fn the_replay_processes_are_the_daemons_recorder_and_worker_and_their_children() {
         let proc = crate::paths::temp_file("load-proc", "d");
         let stat = |pid: u32, comm: &str, parent: u32| {
@@ -169,7 +201,7 @@ mod tests {
                 format!("{pid} ({comm}) S {parent} 0 0 0 0 0 0 0 0 0 7 3 0 0 0"),
             )
             .unwrap();
-            std::fs::write(dir.join("statm"), "100 25 0 0 0 0 0").unwrap();
+            std::fs::write(dir.join("statm"), "100 25 10 0 0 0 0").unwrap();
         };
         stat(100, "boltsnap", 1);
         stat(101, "gpu-screen-reco", 100);
@@ -183,7 +215,12 @@ mod tests {
         pids.sort();
         assert_eq!(pids, [101, 102, 103]);
         assert_eq!(ticks(&proc, 101), Some(10));
-        assert_eq!(resident(&proc, 101, 4096), Some(25 * 4096));
+        // Without a readable rollup: 25 resident pages, 10 of them shared.
+        assert_eq!(private(&proc, 101, 4096), Some(15 * 4096));
+        let rollup = proc.join("103").join("smaps_rollup");
+        std::fs::write(&rollup, "Private_Clean: 2 kB\nPrivate_Dirty: 3 kB\n").unwrap();
+        assert_eq!(private(&proc, 103, 4096), Some(5 * 1024));
+        std::fs::remove_file(rollup).unwrap();
         for pid in 100..=106 {
             let dir = proc.join(pid.to_string());
             for file in ["stat", "statm", "cmdline"] {

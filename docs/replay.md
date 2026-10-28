@@ -173,7 +173,8 @@ session's log stays as `replay-capture.log.old`. The worker's lines go to
 `daemon.log` with the time. A capture below 90 % of its frame rate for three
 reports in a row is noted in `daemon.log` ("replay capture slowed to …", then
 "back at …"). The settings window's Replay page shows under **Load** the CPU
-(percent of one core) and memory of the buffer's recorder, its helper and the
+(percent of one core) and private memory (what would be freed if it stopped;
+shared libraries do not count) of the buffer's recorder, its helper and the
 worker, measured once a second.
 
 ## Verification and limits
