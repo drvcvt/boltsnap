@@ -430,3 +430,29 @@ Formen (`tiny_skia`) 50 %, Glyphen-Umrisse 20 %, libc-Kopien 17 %, libm
 
 **Macht nicht:** kein Teil-Neuzeichnen des Fensters (jedes Bild malt alles;
 eigener Umbau, nicht hier).
+
+### Tempo-Durchsicht 29.10.
+
+Nutzer 29.10.: „lass nochmal schauen wie wir alles schneller machen
+koennen“. Nur gemessen, nichts gebaut.
+
+- **Clip-Export** (Vollbild aus beiden Monitoren, NVDEC `-crop` plus NVENC
+  `-qp 18`, `worker/src/crop.rs` `encode`): live 4,4 s für 30 s (~400 fps).
+  Synthetisch (`probes/p6`, 600 Frames 3840 × 1080 nach 1920 × 1080, je
+  zweimal): p4 wie heute 2,4–3,0 s, `-tune ll` 2,6 s, p1 2,4–2,5 s bei
+  0,6 dB weniger PSNR. Kein verlässlicher Gewinn, bleibt.
+- **Shelf** (`shelf/cards/actions.rs`): malt je Bild die ganze Fläche neu
+  und meldet sie ganz als Schaden; die Fläche ist nur die Kartenspalte.
+  Nicht gemessen, kein Befund.
+- **Selector**: seit 21.09. regional (nur geänderte Bereiche,
+  `docs/screenshot-performance.md`), hier nicht neu gemessen.
+- **Settings-Fenster** beim Bedienen (Profil oben): bis zu einem ganzen Kern
+  bei 240 Hz; jedes Bild malt das ganze Fenster. Hebel, nach Wirkung:
+  1. nur geänderte Bereiche neu malen (wie der Selector; der Vergleich mit
+     dem letzten Bild in `window.rs` `changed` gibt es schon, er spart nur
+     das Senden, nicht das Malen);
+  2. Glyphen einmal rastern und wiederverwenden (20 %: `ttf_parser`
+     liest Umrisse und Variationen jedes Bild neu);
+  3. Squircle-Pfade je Größe merken (`ui::push_squircle`, `hypotf`,
+     `roundf`: ein Teil der 50 % Formen und 10 % libm).
+  Offen, Entscheidung beim Nutzer.
