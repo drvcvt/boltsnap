@@ -106,3 +106,18 @@ Hälfte.
 
 Keine zwei Puffer, keine höhere Bitrate oder mehr Speicher, keine Auswahl
 über beide Monitore hinweg in einem Bereichs-Clip.
+
+## Nachtrag 28.10.: kein Neustart angeboten (live)
+
+Der Nutzer stellte „Both displays“ um 10:48 im alten Einstellungsfenster
+ein; der Puffer lief weiter auf DP-3 (Session seit 10:47, `gsr -w DP-3`).
+Das neue Fenster (11:39) bot „Restart replay“ nicht an: es kannte den
+Wechsel nur, wenn es ihn selbst geschrieben hatte (`STALE_SESSION`), und
+verglich sonst nur Länge und Speicher. **Fix:** `save::replay_state`
+vergleicht auch den Monitor (`other_display`): mit dem, wofür die Session
+gestartet wurde (`asked`, neu im Status), sonst (älterer Daemon) mit dem,
+den sie aufnimmt. Läuft „both“ wegen verschiedener Skalierungen absichtlich
+auf einem, bleibt die Zeile weg (ein Neustart änderte nichts). Test
+`a_buffer_on_another_display_than_the_file_asks_for_a_restart`. Nebenbei
+gemessen: die Last-Anzeige (40 % eines Kerns, 556 MB) war noch die von
+einem Monitor, gsr allein ~34 %.

@@ -53,7 +53,8 @@ pub fn load(displays: Vec<Screen>) -> Prefs {
     let shelf = cfg.shelf_prefs();
     let recording = cfg.recording_prefs();
     let replay = Config::replay_settings().unwrap_or_default();
-    let buffer = super::save::replay_state(replay.seconds, replay.memory_mib);
+    let buffer =
+        super::save::replay_state(replay.seconds, replay.memory_mib, replay.output.as_deref());
     Prefs {
         card_width: shelf.card.w,
         visible_cards: shelf.visible as u32,

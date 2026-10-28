@@ -280,7 +280,10 @@ pub(super) struct ReplayState {
     pub stale: bool,
 }
 
-pub(super) fn replay_state(seconds: u64, memory_mib: usize) -> ReplayState {
+/// What the buffer runs with, against what the file asks for: `output` is
+/// `[replay] output` (`None`: like recordings, which the buffer resolved
+/// itself and is not compared).
+pub(super) fn replay_state(seconds: u64, memory_mib: usize, output: Option<&str>) -> ReplayState {
     let Ok(status) = replay("status") else {
         return ReplayState::default();
     };
@@ -296,11 +299,31 @@ pub(super) fn replay_state(seconds: u64, memory_mib: usize) -> ReplayState {
     let stale = running
         && (status["seconds"].as_u64().is_some_and(|s| s != seconds)
             || status["budget_bytes"].as_u64().is_some_and(|b| b != budget)
+            || other_display(&status, output)
             || session.is_some() && STALE_SESSION.lock().unwrap().as_deref() == session);
     ReplayState {
         running,
         stalled,
         stale,
+    }
+}
+
+/// The buffer captures another display than the file names: changed in
+/// another window, or before this one opened, it would otherwise look current
+/// (Nutzer 28.10.: both displays set, the buffer kept DP-3, no restart offered).
+/// Compared with what the session was started for (`asked`), not with what
+/// it captures: "both" on displays of different scales runs on one on
+/// purpose, and a restart would not change that. An older daemon says only
+/// what it captures.
+fn other_display(status: &serde_json::Value, output: Option<&str>) -> bool {
+    let started = match status.get("asked") {
+        Some(asked) => asked.as_str(),
+        None => status["output"].as_str(),
+    };
+    match (output, started) {
+        (Some(wanted), Some(started)) => wanted != started,
+        (Some(_), None) => status.get("asked").is_some_and(serde_json::Value::is_null),
+        _ => false,
     }
 }
 
@@ -314,6 +337,24 @@ pub(super) fn recording() -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_buffer_on_another_display_than_the_file_asks_for_a_restart() {
+        let running = |output: &str| serde_json::json!({"output": output});
+        assert!(super::other_display(&running("DP-3"), Some("both")));
+        assert!(super::other_display(&running("both"), Some("DP-3")));
+        assert!(!super::other_display(&running("both"), Some("both")));
+        assert!(!super::other_display(&running("DP-3"), Some("DP-3")));
+        // Like recordings: the buffer chose, nothing to compare.
+        assert!(!super::other_display(&running("DP-3"), None));
+        assert!(!super::other_display(&serde_json::json!({}), Some("DP-3")));
+        // Asked for both, running on one (different scales): no restart helps.
+        let fell_back = serde_json::json!({"output": "DP-1", "asked": "both"});
+        assert!(!super::other_display(&fell_back, Some("both")));
+        // Started like recordings, the file now names a display.
+        let inherited = serde_json::json!({"output": "DP-3", "asked": null});
+        assert!(super::other_display(&inherited, Some("DP-3")));
+    }
+
     #[test]
     fn a_key_only_an_older_daemon_lacks_asks_for_a_restart() {
         assert_eq!(

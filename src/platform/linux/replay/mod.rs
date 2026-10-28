@@ -32,6 +32,9 @@ struct Session {
     /// With `[replay] output = "both"`: where each monitor lies on the
     /// canvas; empty for one monitor.
     layout: Vec<monitor::Placed>,
+    /// `[replay] output` as it was when the session started (it may capture
+    /// another display, with a notice): what the settings window compares.
+    asked: Option<String>,
     output_limit: u64,
     parent_thread: Option<std::sync::mpsc::Sender<()>>,
     /// Why the session captures another monitor than configured; the caller
@@ -555,6 +558,7 @@ fn start_capture(settings: Settings, cancel: &AtomicBool) -> Result<Session, Str
         name,
         output: target.output(),
         layout: target.layout(),
+        asked: settings.output.clone(),
         output_limit: (settings.memory_mib * 1024 * 1024 / 3) as u64,
         parent_thread: None,
         notice,
@@ -707,7 +711,7 @@ pub(crate) fn serve(sender: calloop::channel::Sender<DaemonEvent>) -> Result<Ser
                         let _ = sender.send(DaemonEvent::ReplayStateChanged);
                         return Ok((json!({"ok":true}), Vec::new()));
                     }
-                    let (name, output, output_limit, layout) = {
+                    let (name, output, output_limit, layout, asked) = {
                         let owner = owner.lock().unwrap();
                         if command == "status" && owner.is_none() {
                             return Ok((
@@ -723,6 +727,7 @@ pub(crate) fn serve(sender: calloop::channel::Sender<DaemonEvent>) -> Result<Ser
                             session.output.clone(),
                             session.output_limit,
                             session.layout.clone(),
+                            session.asked.clone(),
                         )
                     };
                     if request.get("session").is_some()
@@ -769,6 +774,7 @@ pub(crate) fn serve(sender: calloop::channel::Sender<DaemonEvent>) -> Result<Ser
                         card::remember(snapshot, &preview);
                     }
                     response["output"] = json!(output);
+                    response["asked"] = json!(asked);
                     response["session"] = json!(name);
                     if !layout.is_empty() {
                         response["layout"] = layout.iter().map(monitor::Placed::to_value).collect();
