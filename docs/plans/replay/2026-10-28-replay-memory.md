@@ -67,7 +67,9 @@ Erklärung im UI, kein Sparen (das ist Teil 2).
 
 ## Teil 2: Konstante Qualität mit Bitrate-Deckel
 
-Stand: **P1 und P2 gemessen 28.10. (unten), Heap-Trim im Worker gebaut; Schritt 1, 3, 4 und P3 offen.**
+Stand: **gebaut 28.10., wie geplant, P3 live auf ruhigem Bild bestanden
+(unten).** Offen: Last-Zeile bei viel Bewegung live (der Deckel ist nur
+synthetisch in P1 gemessen).
 
 ### Befund
 
@@ -179,6 +181,24 @@ mehr als `TRIM_AFTER` (4 MiB) unter seinen Höchststand fiel. Worker-Tests
 (die vorhandene `dead_code`-Meldung zu `process.rs` `output_setup` stammt
 nicht von hier, mit `git stash` gegengeprüft). Nicht installiert.
 
+### P3, live 28.10.
+
+Gebaut und installiert: `video_opts` in `replay/mod.rs` (Test
+`only_nvenc_trades_constant_bitrate_for_quality_under_the_cap`), Hinweis „Video
+at up to about“, Worker mit Heap-Trim. fmt, clippy `-D warnings`, `cargo test`
+164 + 416 grün. Daemon neu, beide Monitore, gsr läuft mit
+`-ffmpeg-video-opts bf=0;flags=+cgop;rc=vbr;cq=19;b=0`.
+
+- `replay-capture.log`: keine Meldung zu `rc`, `cq` oder `b`; 60–61 fps.
+- Nach 29 s ruhigem Desktop: Ring **17,1 MB** (vorher ~155 MB, ≈ 4,7 Mbit/s
+  für beide Monitore), Worker privat 22,7 MB (vorher 170).
+- `replay_load_now`: 21 % eines Kerns, **223 MB** (vorher 336 MB); der Rest
+  ist fast ganz gsr (~195 MB privat, überwiegend Treiber-Speicher).
+- `boltsnap replay save` (Vollbild, Monitor unter dem Zeiger): 1920 × 1080,
+  60 fps, 1772 Frames, **29,57 s**, 0,62 Mbit/s, Export 4,4 s.
+- Nicht live gemessen: Last-Zeile bei viel Bewegung (Desktop-Probe, nicht
+  ohne Anlass); P1 zeigt, dass die größte Sekunde dann wie bei CBR bleibt.
+
 ### Code (nach den Proben)
 
 1. `src/platform/linux/replay/mod.rs`: `fn video_opts(encoder: &str) ->
@@ -199,8 +219,8 @@ nicht von hier, mit `git stash` gegengeprüft). Nicht installiert.
 - NVENC überschreitet `maxrate` kurz (VBV): P1 misst die größte Sekunde;
   die 10 % Reserve in `video_kbps` fängt kleine Spitzen.
 - Region-Clips kodieren im Worker neu (`crop.rs`) mit eigener Rate:
-  prüfen, dass sie nicht die Quell-Bitrate übernehmen (sonst wird ein Clip
-  aus ruhigem Bild mit niedriger Rate neu kodiert, was dort aber passt).
+  geprüft 28.10., `worker/src/crop.rs` setzt für NVENC und Vulkan fest
+  `-qp 18` (VAAPI `-global_quality 18`) und übernimmt keine Quell-Bitrate.
 - Thumbnails, Vorschau, Vollbild-Saves kopieren nur: unberührt.
 
 ### Abnahme

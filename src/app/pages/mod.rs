@@ -54,7 +54,7 @@ fn memory_hint(prefs: &Prefs) -> String {
         } else {
             format!("{mbit:.0}")
         };
-        format!("Video at about {rate}\u{a0}Mbit/s")
+        format!("Video at up to about {rate}\u{a0}Mbit/s")
     }
 }
 

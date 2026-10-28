@@ -313,7 +313,7 @@ fn replay_length_steps_and_what_the_memory_buys() {
     // recorder starts with (`gsr … -q 20994`).
     assert_eq!(
         row(&app, "Memory").1.as_deref(),
-        Some("Video at about 21\u{a0}Mbit/s")
+        Some("Video at up to about 21\u{a0}Mbit/s")
     );
     // A length from the file that is no step stays a choice of its own.
     let odd = page_with(&|p| p.replay_seconds = 45);
@@ -333,7 +333,7 @@ fn replay_length_steps_and_what_the_memory_buys() {
     let fixed = page_with(&|p| p.replay_bitrate = Some(4000));
     assert_eq!(
         row(&fixed, "Memory").1.as_deref(),
-        Some("Video at about 4.0\u{a0}Mbit/s")
+        Some("Video at up to about 4.0\u{a0}Mbit/s")
     );
     // Choosing a step writes its seconds.
     let mut app = page_with(&|_| {});
