@@ -524,9 +524,20 @@ fn like_recordings_and_auto_remove_their_replay_key_and_a_monitor_sets_it() {
         assert_eq!(app.write(row), Some(Write::Reset(removed)), "{label}");
     }
     let row = super::block(&app, "Display");
+    // With two monitors: both displays on one canvas, then each one.
     app.control(row)
         .unwrap()
         .adopt(&crate::ui::widgets::Value::Choice(1), now);
+    assert_eq!(
+        app.write(row),
+        Some(Write::Key(
+            "replay.output",
+            settings::Value::Text("both".into())
+        ))
+    );
+    app.control(row)
+        .unwrap()
+        .adopt(&crate::ui::widgets::Value::Choice(2), now);
     assert_eq!(
         app.write(row),
         Some(Write::Key(

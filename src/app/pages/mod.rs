@@ -475,10 +475,17 @@ fn replay(prefs: &Prefs, now: Instant) -> Page {
     }
 }
 
-/// Like recordings (the key removed), each connected monitor, and one the
-/// file names that is not connected.
+/// Like recordings (the key removed), both displays on one canvas (with
+/// two or more, or when the file says so), each connected monitor, and one
+/// the file names that is not connected.
 fn replay_display(prefs: &Prefs, now: Instant) -> (Box<dyn crate::ui::widgets::Widget>, Bind) {
     let mut entries = vec![(None, "Like recordings".to_owned())];
+    if prefs.displays.len() > 1 || prefs.replay_output.as_deref() == Some("both") {
+        entries.push((
+            Some(settings::Value::Text("both".into())),
+            "Both displays".to_owned(),
+        ));
+    }
     entries.extend(prefs.displays.iter().map(|screen| {
         (
             Some(settings::Value::Text(screen.name.clone())),

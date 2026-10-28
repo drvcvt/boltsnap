@@ -370,7 +370,7 @@ struct SmoothCursor {
 }
 
 /// Logical origin and width of `monitors` laid out together.
-fn logical_frame(monitors: &[Monitor]) -> ((f64, f64), f64) {
+pub(crate) fn logical_frame(monitors: &[Monitor]) -> ((f64, f64), f64) {
     let left = monitors
         .iter()
         .map(|m| f64::from(m.x))

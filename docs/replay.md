@@ -1,6 +1,12 @@
 # Replay clips (experimental, Linux / Hyprland)
 
-The replay service continuously captures one display and system output audio.
+The replay service continuously captures one display, or with `[replay]
+output = "both"` (Settings → Replay → Display → Both displays) every display on
+one canvas, and system output audio. Both displays share the one encoder,
+bitrate and memory budget: the buffer holds as long as before, each display
+gets about half the bitrate. A region clip comes from the display the selector
+opens on (the one under the pointer); a full-screen clip from the display under
+the pointer, cut from the canvas on the GPU.
 It keeps encoded packets in memory. Full-display exports copy these packets to
 MP4 without re-encoding. Region exports with NVENC decode and crop in NVDEC
 and stay on the GPU; with VAAPI or Vulkan they decode and crop on the CPU,

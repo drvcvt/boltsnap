@@ -206,7 +206,8 @@ fn run_selector(
         frozen: None,
         clip_reported: false,
         output_origin: None,
-        target_name: replay.as_ref().map(|r| r.output.clone()),
+        // With both displays the selector opens where the pointer is.
+        target_name: replay.as_ref().and_then(|r| r.monitor().map(String::from)),
         failure: None,
         snap: Default::default(),
     };
@@ -243,6 +244,10 @@ fn run_selector(
             .info(&output)
             .map(|i| i.logical_position.unwrap_or(i.location));
         sel.video = sel.output_state.info(&output).and_then(|i| video_size(&i));
+        // Both displays: the frozen frame comes cut to this monitor.
+        if replay.as_ref().is_some_and(|r| r.monitor().is_none()) {
+            sel.replay_output = sel.output_state.info(&output).and_then(|i| i.name);
+        }
         vec![(output, (0, 0, 1, 1))]
     } else {
         let regions: Vec<_> = sel
@@ -362,8 +367,12 @@ fn run_selector(
                 sel.request_redraw();
             })
             .map_err(|e| format!("replay preview source: {e}"))?;
+        let on = sel.replay_output.clone();
         thread::spawn(move || {
-            let _ = sender.send(super::replay::FrozenSelection::prepare(&target));
+            let _ = sender.send(super::replay::FrozenSelection::prepare(
+                &target,
+                on.as_deref(),
+            ));
         });
     }
     while !sel.done {

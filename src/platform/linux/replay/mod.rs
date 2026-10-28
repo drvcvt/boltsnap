@@ -1,6 +1,7 @@
 use std::io::Write;
 mod capture_log;
 mod card;
+mod cursor;
 mod monitor;
 pub(crate) mod process;
 mod socket;
@@ -23,11 +24,14 @@ use super::timing;
 struct Session {
     capture: Child,
     worker: Child,
-    /// Feeds the smooth-cursor plugin in `capture`; stops with the session.
+    /// Feed the smooth-cursor plugin in `capture`; stop with the session.
     #[allow(dead_code)]
-    cursor: Option<super::cursor_track::Tracker>,
+    cursor: Vec<super::cursor_track::Tracker>,
     name: String,
     output: String,
+    /// With `[replay] output = "both"`: where each monitor lies on the
+    /// canvas; empty for one monitor.
+    layout: Vec<monitor::Placed>,
     output_limit: u64,
     parent_thread: Option<std::sync::mpsc::Sender<()>>,
     /// Why the session captures another monitor than configured; the caller
@@ -39,7 +43,7 @@ impl Session {
     /// Ends the capture and keeps the worker, whose ring stays saveable.
     fn stop_capture(&mut self) {
         process::terminate(&mut self.capture);
-        self.cursor = None;
+        self.cursor.clear();
     }
 }
 
@@ -150,6 +154,9 @@ pub struct FrozenSelection {
     pub preview: Option<image::RgbaImage>,
     width: u32,
     height: u32,
+    /// Where the selector's monitor lies on a both-displays canvas; a crop
+    /// of it moves by this much (zero for one monitor).
+    offset: (u32, u32),
 }
 
 use crate::selector::clip::ClipState;
@@ -157,6 +164,16 @@ use crate::selector::clip::ClipState;
 pub struct PreviewTarget {
     pub output: String,
     session: String,
+    /// With both displays: where each lies on the canvas.
+    layout: Vec<monitor::Placed>,
+}
+
+impl PreviewTarget {
+    /// The monitor the selector opens on: the buffer's own, or with both
+    /// displays `None`, the focused one like any recording.
+    pub fn monitor(&self) -> Option<&str> {
+        self.layout.is_empty().then_some(self.output.as_str())
+    }
 }
 
 /// The replay control's status, asked directly with short timeouts: never
@@ -201,13 +218,29 @@ fn preview_target_from(status: Option<&Value>) -> Result<PreviewTarget, ClipStat
     }
     let field = |name: &str| response[name].as_str().map(String::from);
     match (field("output"), field("session")) {
-        (Some(output), Some(session)) => Ok(PreviewTarget { output, session }),
+        (Some(output), Some(session)) => {
+            let layout = match response["layout"].as_array() {
+                None => Vec::new(),
+                Some(values) => values
+                    .iter()
+                    .map(monitor::Placed::from_value)
+                    .collect::<Option<Vec<_>>>()
+                    .ok_or(ClipState::Failed)?,
+            };
+            Ok(PreviewTarget {
+                output,
+                session,
+                layout,
+            })
+        }
         _ => Err(ClipState::Failed),
     }
 }
 
 impl FrozenSelection {
-    pub fn prepare(target: &PreviewTarget) -> Option<Self> {
+    /// Freeze the buffer for a selector on monitor `on`; with both displays
+    /// the frame is cut to that monitor's part of the canvas.
+    pub fn prepare(target: &PreviewTarget, on: Option<&str>) -> Option<Self> {
         let (response, bytes) = socket_call(
             "control",
             &json!({"version":1,"command":"freeze","session":target.session}),
@@ -220,6 +253,7 @@ impl FrozenSelection {
             preview: None,
             width: u32::try_from(response["width"].as_u64()?).ok()?,
             height: u32::try_from(response["height"].as_u64()?).ok()?,
+            offset: (0, 0),
         };
         let mut reader =
             image::ImageReader::with_format(std::io::Cursor::new(bytes), image::ImageFormat::Png);
@@ -232,7 +266,20 @@ impl FrozenSelection {
         if preview.dimensions() != (selection.width, selection.height) {
             return None;
         }
-        selection.preview = Some(preview);
+        if target.layout.is_empty() {
+            selection.preview = Some(preview);
+            return Some(selection);
+        }
+        let part = target.layout.iter().find(|p| Some(p.name.as_str()) == on)?;
+        if part.x + part.width > selection.width || part.y + part.height > selection.height {
+            return None;
+        }
+        selection.preview = Some(
+            image::imageops::crop_imm(&preview, part.x, part.y, part.width, part.height).to_image(),
+        );
+        selection.output = part.name.clone();
+        (selection.width, selection.height) = (part.width, part.height);
+        selection.offset = (part.x, part.y);
         Some(selection)
     }
 
@@ -251,9 +298,11 @@ impl FrozenSelection {
             (width, height),
             (self.width, self.height),
         )?;
+        let (dx, dy) = self.offset;
         call(
             &json!({"version":1,"command":"save","snapshot":self.id,"session":self.session,
-            "crop":{"x":crop.x,"y":crop.y,"width":crop.width,"height":crop.height}}),
+            "output":self.output,
+            "crop":{"x":crop.x + dx,"y":crop.y + dy,"width":crop.width,"height":crop.height}}),
         )?;
         Ok(())
     }
@@ -320,53 +369,11 @@ fn start(settings: Settings, cancel: Arc<AtomicBool>) -> Result<Session, String>
     result.recv().map_err(|_| "replay startup thread exited")?
 }
 
-/// For smooth cursor modes: leave out the system pointer, load the gsr plugin
-/// and feed it from a tracker of `output`. The feeds must live until gsr is
-/// spawned.
-fn smooth_cursor(
-    command: &mut Command,
-    cursor: crate::config::RecordCursor,
-    output: &str,
-) -> Result<Option<(super::cursor_track::Tracker, super::cursor_track::Feeds)>, String> {
-    use super::cursor_track;
-    use crate::record::cursor_motion::{PLUGIN_ENV, PluginConfig, cursor_size};
-    use std::os::fd::AsRawFd;
-    use std::os::unix::process::CommandExt;
-    if cursor == crate::config::RecordCursor::System {
-        return Ok(None);
-    }
-    let plugin = cursor_track::plugin_path()?;
-    let feeds = cursor_track::Feeds::new(1)?;
-    let (tracker, area) =
-        cursor_track::start(cursor_track::Source::Output(output.into()), 0, None, &feeds)?;
-    let fd = feeds.readers[0].as_raw_fd();
-    let config = PluginConfig {
-        fd,
-        preset: cursor.key().into(),
-        size: cursor_size(),
-        origin: (area.x, area.y),
-        width: area.width,
-    };
-    command
-        .args(["-cursor", "no", "-p"])
-        .arg(plugin)
-        .env(PLUGIN_ENV, config.to_env());
-    unsafe {
-        command.pre_exec(move || {
-            if libc::fcntl(fd, libc::F_SETFD, 0) != 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
-    Ok(Some((tracker, feeds)))
-}
-
 fn start_capture(settings: Settings, cancel: &AtomicBool) -> Result<Session, String> {
     let video_kbps = settings.video_kbps().to_string();
     let info = super::hypr::json("monitors").ok_or("could not query replay monitor")?;
     let monitors = crate::record::parse_hyprland_monitors(&info)?;
-    let (monitor, notice) = monitor::replay_monitor(
+    let (target, notice) = monitor::replay_capture(
         settings.output.as_deref(),
         &crate::config::Config::load()
             .recording_prefs()
@@ -441,9 +448,8 @@ fn start_capture(settings: Settings, cancel: &AtomicBool) -> Result<Session, Str
     crate::record::finalize::check_recording_reserve(&directory)?;
     let mut command = Command::new(companion_path("gpu-screen-recorder"));
     command
+        .args(["-w", &target.source()])
         .args([
-            "-w",
-            &monitor.name,
             "-f",
             &settings.fps.to_string(),
             "-fm",
@@ -484,14 +490,14 @@ fn start_capture(settings: Settings, cancel: &AtomicBool) -> Result<Session, Str
         // GPU Screen Recorder's diagnostics to `/dev/null`.
         .stderr(Stdio::piped());
     let cursor = crate::config::Config::load().recording_prefs().cursor;
-    let smooth = smooth_cursor(&mut command, cursor, &monitor.name)?;
+    let smooth = cursor::smooth(&mut command, cursor, &target)?;
     if cancel.load(Ordering::Relaxed) {
         return Err("replay start cancelled".into());
     }
     let mut capture = process::spawn(&mut command, None)
         .map_err(|e| format!("GPU Screen Recorder unavailable: {e}"))?;
     // gsr holds its own copy of the feed now.
-    let cursor = smooth.map(|(tracker, _feeds)| tracker);
+    let cursor = smooth.map_or_else(Vec::new, |(trackers, _feeds)| trackers);
     // One session's log in `replay-capture.log`, the one before in `.old`,
     // each line with its time.
     if let Some(stderr) = capture.stderr.take() {
@@ -547,7 +553,8 @@ fn start_capture(settings: Settings, cancel: &AtomicBool) -> Result<Session, Str
         worker,
         cursor,
         name,
-        output: monitor.name.clone(),
+        output: target.output(),
+        layout: target.layout(),
         output_limit: (settings.memory_mib * 1024 * 1024 / 3) as u64,
         parent_thread: None,
         notice,
@@ -617,8 +624,8 @@ pub(crate) fn serve(sender: calloop::channel::Sender<DaemonEvent>) -> Result<Ser
                 // The save whose card shows already; its failure takes it.
                 let mut pending = None;
                 let result = (|| {
-                    let request = wire::read(&mut stream).map_err(|e| e.to_string())?;
-                    let command = wire::command(&request)?;
+                    let mut request = wire::read(&mut stream).map_err(|e| e.to_string())?;
+                    let command = wire::command(&request)?.to_owned();
                     if command == "start" {
                         let mut guard = owner.lock().unwrap();
                         if starting.load(Ordering::Relaxed) {
@@ -700,7 +707,7 @@ pub(crate) fn serve(sender: calloop::channel::Sender<DaemonEvent>) -> Result<Ser
                         let _ = sender.send(DaemonEvent::ReplayStateChanged);
                         return Ok((json!({"ok":true}), Vec::new()));
                     }
-                    let (name, output, output_limit) = {
+                    let (name, output, output_limit, layout) = {
                         let owner = owner.lock().unwrap();
                         if command == "status" && owner.is_none() {
                             return Ok((
@@ -715,6 +722,7 @@ pub(crate) fn serve(sender: calloop::channel::Sender<DaemonEvent>) -> Result<Ser
                             session.name.clone(),
                             session.output.clone(),
                             session.output_limit,
+                            session.layout.clone(),
                         )
                     };
                     if request.get("session").is_some()
@@ -729,11 +737,22 @@ pub(crate) fn serve(sender: calloop::channel::Sender<DaemonEvent>) -> Result<Ser
                             output_limit,
                         )?;
                         crate::record::finalize::check_recording_reserve(&crate::paths::rec_dir())?;
+                        // Both displays: a full-screen save is the monitor
+                        // under the pointer, cut from the canvas.
+                        if !layout.is_empty() && request["crop"].is_null() {
+                            let focused = super::shelf::focused_monitor_name();
+                            let monitor = monitor::chosen(&layout, focused.as_deref())
+                                .ok_or("replay has no display to clip")?;
+                            request["crop"] = monitor.crop_value();
+                            request["output"] = json!(monitor.name);
+                        }
                         let token = card::token();
                         let thumb = card::picture(&request, super::shelf::card_size().dims());
+                        // The card goes to the monitor the clip shows.
+                        let shows = request["output"].as_str().unwrap_or(&output);
                         let _ = sender.send(DaemonEvent::ReplayClipPending {
                             token,
-                            output: output.clone(),
+                            output: shows.to_owned(),
                             thumb,
                         });
                         pending = Some(token);
@@ -751,6 +770,9 @@ pub(crate) fn serve(sender: calloop::channel::Sender<DaemonEvent>) -> Result<Ser
                     }
                     response["output"] = json!(output);
                     response["session"] = json!(name);
+                    if !layout.is_empty() {
+                        response["layout"] = layout.iter().map(monitor::Placed::to_value).collect();
+                    }
                     if command == "status" {
                         // A running session whose video has stopped arriving is
                         // not the same as a healthy one; say so, because every
@@ -833,6 +855,49 @@ pub(crate) fn serve(sender: calloop::channel::Sender<DaemonEvent>) -> Result<Ser
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn both_displays_open_the_selector_where_the_pointer_is() {
+        let running = |extra: Value| {
+            let mut status = json!({"ok":true,"ready":true,"busy":false,"state":"running",
+                "output":"DP-3","session":"worker-1"});
+            for (key, value) in extra.as_object().unwrap() {
+                status[key] = value.clone();
+            }
+            preview_target_from(Some(&status))
+        };
+        // One monitor: the selector opens on the buffer's.
+        let one = running(json!({})).ok().unwrap();
+        assert_eq!(one.monitor(), Some("DP-3"));
+        // Both: the focused one, and each monitor's place on the canvas.
+        let both = running(json!({"output":"both","layout":[
+            {"name":"DP-3","x":0,"y":0,"width":1920,"height":1080},
+            {"name":"DP-1","x":1920,"y":0,"width":1920,"height":1080}]}))
+        .ok()
+        .unwrap();
+        assert_eq!(both.monitor(), None);
+        assert_eq!(both.layout[1].x, 1920);
+        // A full-screen save takes the focused monitor's part, else the first.
+        assert_eq!(monitor::chosen(&both.layout, Some("DP-1")).unwrap().x, 1920);
+        assert_eq!(
+            monitor::chosen(&both.layout, Some("HDMI-A-1"))
+                .unwrap()
+                .name,
+            "DP-3"
+        );
+        assert_eq!(monitor::chosen(&both.layout, None).unwrap().name, "DP-3");
+        assert_eq!(
+            monitor::chosen(&both.layout, Some("DP-1"))
+                .unwrap()
+                .crop_value(),
+            json!({"x":1920,"y":0,"width":1920,"height":1080})
+        );
+        // A layout the selector cannot read is no target.
+        assert_eq!(
+            running(json!({"layout":[{"name":"DP-3"}]})).err(),
+            Some(ClipState::Failed)
+        );
+    }
 
     #[test]
     fn clip_says_why_the_buffer_is_not_there() {
