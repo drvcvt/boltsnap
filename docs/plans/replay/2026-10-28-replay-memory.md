@@ -65,6 +65,99 @@ speicher; sie zählen als privat mit (der Treiber gibt sie beim Beenden frei).
 **Macht nicht:** keine andere CPU-Messung, kein VRAM, keine neue Zeile oder
 Erklärung im UI, kein Sparen (das ist Teil 2).
 
-## Teil 2: Konstante Qualität mit Byte-Deckel
+## Teil 2: Konstante Qualität mit Bitrate-Deckel
 
-Stand: **zu planen** (nach Teil 1).
+Stand: **geplant 28.10., Proben P1–P3 offen, nichts gebaut.**
+
+### Befund
+
+- Heute: `-bm cbr -q <video_kbps>` (`replay/mod.rs` `start_capture`;
+  `replay/settings.rs` `video_kbps`, bei 30 s und 512 MiB 41,4 Mbit/s). CBR
+  füllt auch ein ruhiges Bild auf die volle Rate auf; der Ring hält deshalb
+  immer ~155 MB (Worker 166 MB anonym, Teil 1). Der Kommentar dort lehnt
+  konstante Qualität ab: „grows with motion and silently shortens the clip
+  once the byte budget evicts“. Das gilt für reines QP ohne Deckel.
+- gsr 6.1.6 (`src/recorder/video_codec.c`, Quelle `099a55b`): bei CBR setzt
+  es `bit_rate = rc_max_rate = rc_buffer_size = video_bitrate` (Z. 90–95)
+  und `rc=cbr` in die Optionen (`video_set_rc`, Z. 297); danach liest es
+  `-ffmpeg-video-opts` **in dasselbe Dictionary** (Z. 414 f.,
+  `av_dict_parse_string`, Flags 0 = überschreibt). Eigene `rc`, `cq`, `b`
+  ersetzen also gsrs Werte; `maxrate` und `bufsize` bleiben auf unserer Rate.
+- FFmpeg 8.1 `h264_nvenc`: `-rc vbr` plus `-cq` (0–51, „target quality
+  level … for constant quality mode in VBR rate control“).
+- Der Encoder ist `Codec::encoder` aus `gsr::choose` (`h264_nvenc` usw. bei
+  NVIDIA, `*_vulkan`/`*_vaapi` sonst).
+- Ring-Nutzlast `Arc<[u8]>` je Paket über glibc-malloc (`replay/ring.rs`);
+  ob der Worker nach einer Bewegungs-Spitze Speicher zurückgibt, ist
+  ungemessen (FIFO-Freigabe lässt Löcher unten im Heap).
+
+### Verhalten
+
+- Bei NVENC nimmt gsr **VBR mit Zielqualität** (`rc=vbr;cq=<N>;b=0`) unter
+  der heutigen Rate als Deckel (`maxrate = bufsize = video_kbps`, wie heute
+  von gsr gesetzt). Ruhiges Bild (Desktop, viele Anime-Szenen): wenige
+  Mbit/s, der Ring belegt entsprechend wenig. Volle Bewegung: der Deckel
+  greift, Größe und Qualität wie heute. Die gehaltenen Sekunden bleiben
+  `seconds` (der Ring evictiert nie früher als heute, weil keine Sekunde
+  größer wird als heute).
+- `memory_mib` bleibt die Obergrenze und das Budget des Rings; die Seite
+  sagt „Video at up to about 41 Mbit/s“ statt „at about“ (gilt auch für
+  CBR, bleibt also wahr).
+- Die Last-Zeile zeigt den echten, jetzt wechselnden Verbrauch.
+- Vulkan, VAAPI (AMD/Intel): unverändert CBR (andere Optionsnamen, hier
+  nicht prüfbar).
+
+### Proben vorher (Abbruch, wenn eine scheitert)
+
+- **P1, synthetisch, nur FFmpeg mit `h264_nvenc`** (kein Desktop, keine
+  gsr-Aufnahme; je Lauf 5 s, 3840 × 1080 bei 60 fps, Dateien im Scratchpad,
+  danach per `safe-rm` weg, zusammen < 200 MB): Quellen ruhig (ein echter
+  Screenshot, still, plus ein kleiner bewegter Teil) und viel Bewegung
+  (`testsrc2` mit Rauschen). Je CBR 41,4 Mbit/s gegen VBR mit `cq` 19, 23,
+  26 und `b=0`, `maxrate = bufsize = 41,4M`, sonst die Optionen von gsr
+  (`bf=0`, `+cgop`, GOP 60, Preset wie `-tune performance`). Messen: Bytes
+  je Sekunde, größte 1-s-GOP (**muss ≤ 1,1 × CBR-Sekunde** sein, sonst
+  kürzt der Ring), PSNR/SSIM gegen die Quelle. Wahl von `cq`: das größte,
+  bei dem ruhig PSNR ≥ 45 dB und bewegt PSNR ≥ CBR − 0,3 dB.
+- **P2, Worker-Speicher nach einer Spitze, synthetisch** (bestehender
+  Live-Test `worker/tests/live.py` mit eigener Quelle): 10 s viel Bewegung,
+  dann 40 s ruhig; Worker-RSS (anonym) folgen. Fällt sie nach dem Ausräumen
+  nicht, nach jedem Evict eines GOP `malloc_trim(0)` (höchstens einmal je
+  Sekunde; libc, kein neues Crate) und P2 noch einmal.
+- **P3, echt mit gsr, nur mit Okay des Nutzers** (Desktop-Probe): nach dem
+  Bau Replay neu starten (Knopf in den Einstellungen), `replay-capture.log`
+  ohne Fehler zu `rc`/`cq`, Last-Zeile ruhig und bei Bewegung, ein
+  Vollbild-Clip: `ffprobe` Bitrate und Länge 30 s.
+
+### Code (nach den Proben)
+
+1. `src/platform/linux/replay/mod.rs`: `fn video_opts(encoder: &str) ->
+   String` (`bf=0;flags=+cgop`, bei `*_nvenc` dazu `;rc=vbr;cq=<N>;b=0`),
+   Kommentar an `-bm cbr` neu (CBR setzt den Deckel, die Optionen machen
+   daraus VBR mit Zielqualität). Test: NVENC bekommt VBR, Vulkan und VAAPI
+   nicht.
+2. Je nach P2: `worker/src/live.rs` (oder `ring.rs` im Worker-Pfad)
+   `malloc_trim` nach Evicts.
+3. `src/app/pages/mod.rs` `memory_hint`: „up to about“; Copy-Gate.
+4. `docs/replay.md` (Bitrate-Abschnitt), README falls dort CBR steht, dieser
+   Plan mit Messwerten.
+
+### Was brechen könnte
+
+- gsrs FFmpeg (eigene Version) lehnt `b=0` mit VBR ab oder ignoriert `cq`:
+  P3 sieht es im Log und an der Rate; dann `b` weglassen und neu messen.
+- NVENC überschreitet `maxrate` kurz (VBV): P1 misst die größte Sekunde;
+  die 10 % Reserve in `video_kbps` fängt kleine Spitzen.
+- Region-Clips kodieren im Worker neu (`crop.rs`) mit eigener Rate:
+  prüfen, dass sie nicht die Quell-Bitrate übernehmen (sonst wird ein Clip
+  aus ruhigem Bild mit niedriger Rate neu kodiert, was dort aber passt).
+- Thumbnails, Vorschau, Vollbild-Saves kopieren nur: unberührt.
+
+### Abnahme
+
+P1-Tabelle hier eingetragen; P2 RSS-Verlauf; Test `video_opts`; fmt,
+clippy, `cargo test`; P3 mit Last-Zeile ruhig und bewegt und einem Clip.
+
+**Macht nicht:** keinen Schalter in den Einstellungen, nichts für Vulkan,
+VAAPI oder CPU, keine Änderung an Aufnahmen, Länge oder Speicher-Budget,
+keinen Ring auf der Platte.
