@@ -10,6 +10,7 @@ mod keys;
 mod layout;
 pub mod measure;
 pub mod pages;
+mod presence;
 mod preview;
 mod writes;
 
@@ -104,6 +105,11 @@ pub struct App {
     nav_open: Spring,
     /// Per block of the current page: 0 beside its name, 1 stacked.
     stacked: Vec<Spring>,
+    /// Per block of the current page: how much of its room it takes, 0 to 1
+    /// while it comes (`presence.rs`).
+    rooms: Vec<Spring>,
+    /// Blocks that left the current page, their room closing.
+    gone: Vec<presence::Gone>,
     /// 0 to 1: the scroll thumb, there while the page is longer than the window.
     thumb: Spring,
     /// The mark in the sidebar's corner, and 0 to 1 for whether there is room
@@ -147,6 +153,8 @@ impl App {
                 now,
             ),
             stacked: Vec::new(),
+            rooms: Vec::new(),
+            gone: Vec::new(),
             thumb: Spring::settled(0.0, now),
             keyed: Spring::settled(0.0, now),
             mark: brand::Mark::default(),
@@ -256,8 +264,10 @@ impl App {
         self.fades
             .to(Target::Nav(index), Channel::Current, 1.0, now);
         self.current = index;
-        // The new page's rows start where they belong.
+        // The new page's rows start where they belong, all of them there.
         self.stacked.clear();
+        self.rooms.clear();
+        self.gone.clear();
         self.nav.retarget(index as f32, SNAP, now);
         self.page_in.set(0.0, now);
         self.page_in.retarget(1.0, GLIDE, now);
@@ -323,7 +333,8 @@ impl App {
             .iter()
             .enumerate()
             .find_map(|(index, block)| match block {
-                Block::Row(row) if row.enabled && row.reset => self
+                // A row still opening takes nothing yet.
+                Block::Row(row) if row.enabled && row.reset && self.room(index, now) >= 1.0 => self
                     .row_parts(rects[index], row)
                     .reset
                     .filter(|rect| rect.contains(x, y))
@@ -340,6 +351,7 @@ impl App {
             .find_map(|(index, block)| match block {
                 Block::Row(row)
                     if row.enabled
+                        && self.room(index, now) >= 1.0
                         && (self.row_parts(rects[index], row).control.contains(x, y)
                             || row.control.row_click() && rects[index].contains(x, y)) =>
                 {
@@ -568,6 +580,7 @@ impl App {
             || !self.mark_room.done(now)
             || self.preview_moving(now)
             || self.stacked.iter().any(|spring| !spring.done(now))
+            || self.rooms_moving(now)
             || self.scroll.moving(now)
             || self.fades.moving(now)
             || self.page().blocks.iter().any(|block| match block {

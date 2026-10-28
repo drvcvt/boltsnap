@@ -218,6 +218,8 @@ impl App {
         self.capture = None;
         self.fades.forget_controls();
         self.current = self.current.min(pages.len() - 1);
+        // Blocks that came or went on the shown page open or close their room.
+        self.arrive(&pages, now);
         self.pages = pages;
         self.stacked.clear();
         self.resize(self.size, now);

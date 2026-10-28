@@ -103,8 +103,15 @@ impl RowParts {
 #[derive(Clone, Debug, Default)]
 pub struct Layout {
     pub title: Rect,
-    /// One per block: a heading's line, a banner, a row.
+    /// One per block: a heading's line, a banner, a row; its whole size, also
+    /// while its room opens (`row_parts` reads how far a row has stacked from
+    /// its height).
     pub blocks: Vec<Rect>,
+    /// One per block: how much of its height takes room on the page now.
+    pub visible: Vec<f32>,
+    /// Blocks leaving the page: which (`App::gone`), their whole rectangle,
+    /// how much of it still takes room.
+    pub gone: Vec<(usize, Rect, f32)>,
     /// The surface behind each run of rows.
     pub panels: Vec<Rect>,
     /// From the top of the page to below its last block, unscrolled.
@@ -330,8 +337,32 @@ impl App {
         };
         let mut panel: Option<f32> = None;
         let mut first = true;
+        let mut after_heading = false;
         let blocks = &self.page().blocks;
-        for (index, block) in blocks.iter().enumerate() {
+        // The page's blocks, with those leaving it where they were:
+        // (page index, or the leaving block's index in `gone`).
+        let mut slots: Vec<(Option<usize>, Option<usize>)> = Vec::new();
+        for index in 0..=blocks.len() {
+            for (gi, _) in
+                self.gone.iter().enumerate().filter(|(_, g)| {
+                    g.at == index || (index == blocks.len() && g.at > blocks.len())
+                })
+            {
+                slots.push((None, Some(gi)));
+            }
+            if index < blocks.len() {
+                slots.push((Some(index), None));
+            }
+        }
+        for (page_index, gone_index) in slots {
+            let (block, room) = match (page_index, gone_index) {
+                (Some(index), _) => (&blocks[index], self.room(index, now)),
+                (None, Some(gi)) => {
+                    let gone = &self.gone[gi];
+                    (&gone.block, gone.room.value(now).clamp(0.0, 1.0))
+                }
+                _ => continue,
+            };
             let in_panel = matches!(block, Block::Row(_));
             if !in_panel && let Some(start) = panel.take() {
                 y += GAP_XS;
@@ -339,9 +370,9 @@ impl App {
             }
             if !first && panel.is_none() {
                 // A heading sits close to its group; everything else is a
-                // group apart.
-                let after_heading = matches!(blocks[index - 1], Block::Heading(_));
-                y += if after_heading { GAP_S } else { GAP_XL };
+                // group apart. A block coming or going takes its gap along.
+                let gap = if after_heading { GAP_S } else { GAP_XL };
+                y += (gap * room).round();
             }
             let h = match block {
                 Block::Heading(_) => LINE,
@@ -352,15 +383,30 @@ impl App {
                         panel = Some(y);
                         y += GAP_XS;
                     }
-                    let t = self.stacked.get(index).map_or(0.0, |s| s.value(now));
                     let probe = Rect::new(x, 0.0, w, 0.0);
+                    // A leaving row keeps the arrangement it has.
+                    let t = match page_index {
+                        Some(index) => self.stacked.get(index).map_or(0.0, |s| s.value(now)),
+                        None if beside(row, &self.fonts, inner(probe)).is_some() => 0.0,
+                        None => 1.0,
+                    };
                     let (side, stacked) = (self.side(row, probe), self.stacked(row, probe));
                     lerp(side.height, stacked.height, t.clamp(0.0, 1.0)).round()
                 }
             };
-            layout.blocks.push(Rect::new(x, top + y, w, h));
-            y += h;
+            let visible = (h * room).round();
+            let rect = Rect::new(x, top + y, w, h);
+            match (page_index, gone_index) {
+                (Some(_), _) => {
+                    layout.blocks.push(rect);
+                    layout.visible.push(visible);
+                }
+                (None, Some(gi)) => layout.gone.push((gi, rect, visible)),
+                _ => {}
+            }
+            y += visible;
             first = false;
+            after_heading = matches!(block, Block::Heading(_));
         }
         if let Some(start) = panel {
             y += GAP_XS;

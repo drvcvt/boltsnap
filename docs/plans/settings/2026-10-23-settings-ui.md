@@ -3266,3 +3266,63 @@ Vom Nutzer am 24.10. so bestätigt:
 | 5i | umgesetzt 27.10. nach „Phase 5i“, Abweichung: der Block bekommt die Überschrift „Load“ (wie jede Gruppe) und bricht in schmalen Spalten die Zahlen in eine zweite Zeile (Höhe aus der breitesten Form, springt nicht). `linux/app/load.rs` (`Meter`, Prozesse aus `/proc` über die Session-PID, CPU aus `utime + stime`, RSS aus `statm`), `poll_replay` schickt `(held, load)`, `preview/load.rs` (`Preview::Load { stale }`, `ReplayLoad`, „Off, nothing in use“ / „In use now“ / „Before your changes“), `save.rs::refusal` („Boltsnap is older than this window. Restart it to save this“). Tests: `/proc/stat` mit Klammern im Namen, Prozessbaum (gsr, kms-Helfer, Worker, kein fremdes Kind), Texte, Refusal; ignoriert `replay_load_now` gegen den laufenden Buffer: 36 % eines Kerns, 424 MB (`ps`: RSS 210 + 203 + 1,7 MB). Checks: fmt, clippy, `cargo test` 152 + 392 grün, Gates (Kontrast 4,83:1, Copy 242, Padding 0,00, Überlauf 1467). Render nur „Off“ (der Poll läuft nur im Fenster); live offen. |
 | 5j | umgesetzt 27.10. nach „Phase 5j“, Abweichung: die Vorschau blendet mit der Feder `QUICK` (≈ 150 ms) statt linear 120 ms, weil ihre Hover über die App-Fades laufen; aus ist sie wie der Overlay sofort (`App::hover_at_once`). Key `shelf.hover_fade` (Standard aus), Zeile „Fade on hover“ (Icon `clock-fading`, Hinweis „Over 120 ms instead of at once“); `shelf_card::HOVER_MS = 120`; Painter `Frame::hovered: &[(id, Stärke)]` (Deckkraft gemischt, Knöpfe mit Alpha × Stärke); Overlay `AnimKind::HoverIn/HoverOut`, `Daemon::set_hovered`, `hover_lifts`, `hover_lift`/`hover_begun` (linear, Umkehr von der erreichten Stärke); Windows-Wrapper behält `Option<u64>`. Tests: `half_a_hover_fade_is_half_way_to_solid_with_half_its_buttons`, `a_hover_fade_goes_both_ways_and_turns_around_where_it_stands`, `a_preview_card_hovers_at_once_unless_the_hover_fade_is_on`, Config-Standard, Zählung 27. Checks: fmt, clippy ohne Warnung, `cargo test` 157 + 396 grün, Gates (Copy 248, Icons 0,32 px, Padding 0,00, Überlauf 1507). Live offen. |
 | 5k | umgesetzt 27.10. nach „Phase 5k“, Abweichung nach Messung: Dithering um 1 Stufe reicht nicht, die Bänder entstehen im Ergebnis des Compositors (über 18 ändert 1/255 Alpha das Ergebnis um 0,07 Stufen); jetzt `SHADOW_SPREAD` ±3,5 Alpha-Stufen (über 18: ±0,25 Ausgabestufe, bricht jede Bandkante; über Weiß ±3,5 Stufen Korn, etwa Hyprlands Blur-Rauschen), nur im Abfall, nahe 0 schmaler (Mittel bleibt). ±7 verglichen: füllt auch die Bänder, aber deutlich körnig auf hellem Grund. `shelf_card/paint.rs` `smoothstep`, `dithered`; Test `the_shadow_is_dithered_its_average_kept_and_free_of_bands` (Gegenprobe ohne Rauschen: 21 Streifen-Spalten), ignoriert `shadow_shot`. Grenze: über sehr dunklem Grund bleiben 4–5 Helligkeitsstufen, nur ihre Kanten sind weg. Checks: fmt, clippy, `cargo test` grün; Render über 18 und 200 (× 4 gestreckt) vorher/nachher angesehen. Live offen (Daemon-Neustart). |
+
+## Phase 5l: Zeilen kommen und gehen weich (28.10.)
+
+O-Ton: „manchmal wenn man was einstellst verrueckt sich die annordnung so
+etwas, entweder machen dass es nicht mehr verrueckt oder das verruecken kurz
+mit einer animation und guten kurve animierst damit es besser und
+lebendiger wirkt“.
+
+**Befund:** Kommt ein Block dazu oder geht einer (die Zeile „Restart
+replay“ unter „Replay buffer“, sobald eine Replay-Einstellung einen
+Neustart braucht; der Aufnahme-Banner; der Fehler-Banner), ändert sich die
+Form der Seite, `App::update` ruft `reload` (`writes.rs:160`), und alles
+darunter springt. Animiert ist bisher nur das Stapeln einer Zeile
+(`stacked`-Federn, `layout.rs:reshape`).
+
+**Verhalten:** Ein neuer Block öffnet seinen Platz auf `GLIDE` (die Feder
+des Fensters für Wege, die man als Weg liest), alles darunter gleitet mit;
+sein Inhalt blendet im letzten Viertel des Öffnens ein. Ein Block, der geht,
+blendet im ersten Viertel aus, dann schließt sich sein Platz auf `GLIDE`.
+Der Abstand vor dem Block wächst und schrumpft mit. Während ein Block nicht
+ganz da ist, nimmt er keine Eingaben an. Reduced Motion: sofort. Gilt für
+jeden Block (Zeile, Überschrift, Banner, Vorschau), auf der sichtbaren
+Seite; ein Seitenwechsel zeigt die Seite fertig.
+
+**Umsetzung:**
+- `src/app/presence.rs` (neu): Schlüssel je Block (Art und Name, Vorschau
+  nach ihrer Art), Abgleich alt/neu beim Neuladen: gleiche Schlüssel
+  behalten ihre Feder, neue beginnen bei 0 → 1, fehlende werden „Gone“
+  (Block, Lage zwischen den neuen, Feder 1 → 0). Ein Neuladen mitten in einer
+  Animation lässt Gone-Blöcke sofort gehen.
+- `layout.rs` `layout_at`: über die Folge aus echten und gegangenen Blöcken;
+  jeder Block behält sein volles Rechteck (`row_parts` liest daraus, wie weit
+  er gestapelt ist), vorgerückt wird um Höhe × Raum; `Layout` bekommt den
+  sichtbaren Anteil je Block und die Rechtecke der gegangenen.
+- `draw.rs`: ein Block mit Raum < 1 wird in eine eigene Fläche seiner Größe
+  gezeichnet und nur sein sichtbarer Teil mit der Deckkraft übertragen.
+- `mod.rs`: Felder, `animating`, Seitenwechsel räumt auf, `target_at`
+  überspringt Blöcke mit Raum < 1; `writes.rs` `reload` gleicht ab.
+
+**Tests:** Abgleich (neu, weg, gleich, Reihenfolge); eine eingefügte Zeile
+schiebt die folgenden gleitend (Lage in der Mitte der Animation zwischen
+alt und neu, am Ende genau neu); eine weggenommene gleitet zurück; während
+der Animation kein Treffer auf dem kommenden Block; Reduced Motion springt;
+Shots vorher/nachher; UI-Gates bleiben grün.
+
+**Macht nicht:** keine Animation beim Seitenwechsel über das bestehende
+Einblenden hinaus, keine geänderte Reihenfolge von Blöcken.
+
+**Stand 5l (28.10.):** umgesetzt wie geplant: `app/presence.rs` (Schlüssel,
+`arrive` beim Neuladen, `Gone`, `ink`), `layout_at` über die Folge aus echten
+und gehenden Blöcken (volles Rechteck, vorgerückt um Höhe × Raum, Abstand ×
+Raum), `draw_part` zeichnet einen nicht ganz offenen Block in eigene Pixel und
+überträgt nur den offenen Teil mit der Deckkraft, `target_at` nimmt Blöcke mit
+Raum < 1 aus, `animating` zählt die Federn. Tests
+`app::tests::presence` (kommt: zuerst kein Platz, dann monoton bis zum Ende,
+kein Treffer beim Öffnen, Treffer danach; geht: sofort kein Ziel, gleitet
+zurück; Reduced Motion: sofort) und der Shot `presence_shots` (0/60/120/200 ms,
+Ruhe: Platz öffnet, dann blendet die Zeile ein) angesehen. `cargo test`
+164 + 413 grün, clippy `-D warnings` still. Live offen (Fenster neu öffnen,
+eine Replay-Einstellung ändern).

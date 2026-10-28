@@ -49,12 +49,77 @@ impl App {
             canvas.fill(*panel, PANEL_RADIUS, theme::PANEL, 1.0);
         }
         for (index, block) in self.page().blocks.iter().enumerate() {
-            let rect = layout.blocks[index];
-            if rect.bottom() < 0.0 || rect.y > self.size.1 {
+            let (rect, visible) = (layout.blocks[index], layout.visible[index]);
+            if rect.y + visible < 0.0 || rect.y > self.size.1 {
                 continue;
             }
-            self.draw_block(canvas, index, block, rect, now);
+            if visible >= rect.h {
+                self.draw_block(canvas, index, block, rect, now);
+            } else {
+                self.draw_part(canvas, index, block, rect, visible, now);
+            }
         }
+        // Leaving blocks are no target any more: drawn as nobody's.
+        for &(gone, rect, visible) in &layout.gone {
+            self.draw_part(
+                canvas,
+                usize::MAX,
+                &self.gone[gone].block,
+                rect,
+                visible,
+                now,
+            );
+        }
+    }
+
+    /// A block whose room is opening or closing: only its top `visible`
+    /// pixels show, and its content only over the last quarter of its room
+    /// (`presence::ink`). Drawn whole into its own pixels first, so nothing
+    /// of it lands on the blocks below.
+    fn draw_part(
+        &self,
+        canvas: &mut Canvas,
+        index: usize,
+        block: &Block,
+        rect: Rect,
+        visible: f32,
+        now: Instant,
+    ) {
+        let ink = super::presence::ink(if rect.h > 0.0 { visible / rect.h } else { 0.0 });
+        let scale = canvas.scale;
+        let rows = (visible * scale).round() as u32;
+        if ink <= 0.0 || rows == 0 {
+            return;
+        }
+        let Some(mut own) = Canvas::new(rect.w.ceil() as u32, rect.h.ceil() as u32, scale as u32)
+        else {
+            return;
+        };
+        self.draw_block(
+            &mut own,
+            index,
+            block,
+            Rect::new(0.0, 0.0, rect.w, rect.h),
+            now,
+        );
+        let rows = rows.min(own.pixmap.height());
+        let Some(part) = tiny_skia::IntRect::from_xywh(0, 0, own.pixmap.width(), rows)
+            .and_then(|cut| own.pixmap.clone_rect(cut))
+        else {
+            return;
+        };
+        let paint = tiny_skia::PixmapPaint {
+            opacity: ink,
+            ..Default::default()
+        };
+        canvas.pixmap.draw_pixmap(
+            (rect.x * scale).round() as i32,
+            (rect.y * scale).round() as i32,
+            part.as_ref(),
+            &paint,
+            tiny_skia::Transform::identity(),
+            None,
+        );
     }
 
     /// Where the page is in its length, on the window's right edge; it
