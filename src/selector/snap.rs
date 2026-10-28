@@ -92,8 +92,8 @@ impl Edges {
     /// The boxes (left, top, right, bottom; right and bottom exclusive) the
     /// long edges enclose around `(x, y)`, innermost first: a panel in a
     /// page, the video around a sharp shape in it. Each is at least
-    /// [`MIN_SIDE`] a side; the whole image is not one (the screen is its
-    /// own level).
+    /// [`MIN_SIDE`] a side and has a real edge on all four sides (the
+    /// screen is its own level).
     pub fn around(&self, (x, y): (u32, u32)) -> Vec<Box> {
         let (w, h) = (self.w, self.h);
         let mut boxes = Vec::new();
@@ -111,7 +111,7 @@ impl Edges {
                 (l.saturating_sub(1), t.saturating_sub(1), r + 1, b + 1),
                 inner,
             );
-            if next == (0, 0, w, h) || next == inner {
+            if next == inner || !self.closed(next) {
                 break;
             }
             inner = next;
@@ -134,12 +134,9 @@ impl Edges {
         );
         loop {
             let found = self.settle((x, y, x + 1, y + 1), start);
-            if found == (0, 0, w, h) {
-                return None;
-            }
             let (left, top, right, bottom) = found;
             if right - left >= MIN_SIDE && bottom - top >= MIN_SIDE {
-                return Some(found);
+                return self.closed(found).then_some(found);
             }
             let grown = (
                 left.saturating_sub(MIN_SIDE),
@@ -152,6 +149,14 @@ impl Edges {
             }
             start = grown;
         }
+    }
+
+    /// Every side of `found` is a real edge, none the image's border: a
+    /// band between two lines that run across a window (a terminal's
+    /// rules) is no rectangle, and through a translucent window's sides it
+    /// would reach the screen's edge (snap plan, Nachtrag 28.10.).
+    fn closed(&self, (left, top, right, bottom): Box) -> bool {
+        left > 0 && top > 0 && right < self.w && bottom < self.h
     }
 
     /// Walk the left and top sides out from boundaries `from.0`, `from.1`
@@ -197,21 +202,27 @@ fn same(a: &Rect, b: &Rect) -> bool {
 /// The levels at `point`, innermost first: what the edges enclose, the
 /// windows, the screen; only those holding the point, each once, by size.
 pub fn levels(inner: &[Rect], windows: &[Rect], screen: Rect, point: (f64, f64)) -> Vec<Rect> {
-    let mut all: Vec<Rect> = inner
+    // (rect, known exactly): windows and the screen are, the edges' boxes
+    // are a reading of the picture.
+    let mut all: Vec<(Rect, bool)> = inner
         .iter()
-        .copied()
-        .chain(windows.iter().copied())
-        .chain(std::iter::once(screen))
-        .filter(|r| r.w > 0.0 && r.h > 0.0 && r.contains(point))
+        .map(|&r| (r, false))
+        .chain(windows.iter().map(|&r| (r, true)))
+        .chain(std::iter::once((screen, true)))
+        .filter(|(r, _)| r.w > 0.0 && r.h > 0.0 && r.contains(point))
         .collect();
-    all.sort_by(|a, b| (a.w * a.h).total_cmp(&(b.w * b.h)));
-    let mut out: Vec<Rect> = Vec::new();
-    for r in all {
-        if !out.iter().any(|kept| same(kept, &r)) {
-            out.push(r);
+    all.sort_by(|(a, _), (b, _)| (a.w * a.h).total_cmp(&(b.w * b.h)));
+    let mut out: Vec<(Rect, bool)> = Vec::new();
+    for (r, exact) in all {
+        match out.iter_mut().find(|(kept, _)| same(kept, &r)) {
+            // The same to the eye: a window's own rectangle beats the
+            // picture's reading of its edges.
+            Some(kept) if exact && !kept.1 => *kept = (r, true),
+            Some(_) => {}
+            None => out.push((r, exact)),
         }
     }
-    out
+    out.into_iter().map(|(r, _)| r).collect()
 }
 
 #[cfg(test)]

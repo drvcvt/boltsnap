@@ -100,6 +100,21 @@ fn a_border_too_dark_to_see_never_cuts_into_the_video() {
     }
 }
 
+/// A terminal: rules across its whole width, its sides too faint to see
+/// (a translucent window over the wallpaper). Bands between the rules are no
+/// rectangles, so nothing inner is offered and the window comes first.
+#[test]
+fn bands_between_lines_across_the_window_are_no_rectangle() {
+    let mut image = RgbaImage::from_fn(1920, 1080, |x, y| grey(30 + noise(x, y) / 4));
+    for y in [300, 609, 889] {
+        fill(&mut image, (0, y, 1920, y + 1), grey(200));
+    }
+    let edges = Edges::new(&image).unwrap();
+    for point in [(400, 200), (960, 600), (1800, 900)] {
+        assert!(edges.around(point).is_empty(), "from {point:?}");
+    }
+}
+
 fn rect(x: f64, y: f64, w: f64, h: f64) -> Rect {
     Rect { x, y, w, h }
 }
@@ -123,6 +138,10 @@ fn levels_go_from_inside_out_each_once_and_only_where_the_pointer_is() {
     // A window as large as the screen (within 4 px) is one level.
     let full = rect(2.0, 0.0, 1918.0, 1078.0);
     assert_eq!(levels(&[], &[full], screen, at), [full]);
+    // The picture's reading of a window's edges, 2 px inside it: the
+    // window's own rectangle is what shows.
+    let read = rect(12.0, 40.0, 1896.0, 1028.0);
+    assert_eq!(levels(&[read], &[window], screen, at), [window, screen]);
     // Nothing inside, no windows: the screen alone.
     assert_eq!(levels(&[], &[], screen, at), [screen]);
 }

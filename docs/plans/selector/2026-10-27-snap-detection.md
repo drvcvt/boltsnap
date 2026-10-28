@@ -208,3 +208,26 @@ findet, keine in den neuen Dateien; behoben im eigenen Commit `1efa6b2`
 (`as_chunks::<N>()` statt `chunks_exact(N)`, ein `match` als `?`), clippy
 `-D warnings` wieder still, Tests unverändert grün.
 Offen: live (Strg über einem eingebetteten Video, Mausrad, Klick, Clip).
+
+## Nachtrag 28.10.: Fenster kam nie (Nutzer, live)
+
+O-Ton: „detected es oft den fensterrand von termo nicht richtig und das
+ganze fenster hat es nicht ein mal selected“.
+
+**Gemessen** (ignorierter Test `select_skia::snap::tests::snap_probe` auf
+einer stillen Aufnahme von DP-3 mit `hyprctl -j clients/monitors`): termo
+ist halbtransparent, seine Seiten haben gegen die Lücke keine Kante über
+90 %. Die Suche fand stattdessen die waagerechten Linien im Terminal und
+lieferte Streifen bis an den Bildschirmrand, z. B. `(0, 28)–(1910, 608)`,
+`(0, 0)–(1920, 609)`: fünf solche Ebenen vor dem Fenster (`(10, 38) 1900 ×
+1032`, Ebene 4), alle über den Fensterrand hinaus.
+
+**Fix:** ein Kanten-Rechteck zählt nur mit echten Kanten an allen vier
+Seiten (`Edges::closed`; ein Streifen zwischen zwei Linien hat zwei), auch
+für jede äußere Stufe der Kette; und ein Fenster oder der Bildschirm ersetzt
+ein Kanten-Rechteck, das ihm gleicht (≤ 4 px), statt umgekehrt. Ergebnis auf
+derselben Aufnahme: oben und Mitte `[Fenster, Bildschirm]`, im unteren
+Bereich `[(10, 889) 1900 × 181 (Eingabe und Statuszeile), Fenster,
+Bildschirm]`. Tests: `bands_between_lines_across_the_window_are_no_rectangle`,
+`levels` mit einer Fensterlesung 2 px innen → das Fenster. `cargo test`
+161 + 411 grün, clippy `-D warnings` still.

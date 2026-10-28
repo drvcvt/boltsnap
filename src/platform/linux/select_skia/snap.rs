@@ -268,4 +268,57 @@ mod tests {
             ]
         );
     }
+
+    /// `SNAP_PNG=desktop.png SNAP_DIR=dir cargo test --bin boltsnap snap_probe
+    /// -- --ignored --nocapture`: the levels at a few points of a real
+    /// screen (its left 1920 x 1080), with `clients.json` and
+    /// `monitors.json` from `hyprctl -j` in `SNAP_DIR`.
+    #[test]
+    #[ignore = "reads a screen capture from SNAP_PNG"]
+    fn snap_probe() {
+        use crate::selector::snap::{Edges, levels};
+        let dir = std::path::PathBuf::from(std::env::var("SNAP_DIR").expect("SNAP_DIR"));
+        let image = image::open(std::env::var("SNAP_PNG").expect("SNAP_PNG"))
+            .unwrap()
+            .crop_imm(0, 0, 1920, 1080)
+            .into_rgba8();
+        let read = |name: &str| -> serde_json::Value {
+            serde_json::from_slice(&std::fs::read(dir.join(name)).unwrap()).unwrap()
+        };
+        let windows = visible_windows(
+            &read("clients.json"),
+            &read("monitors.json"),
+            (0, 0),
+            (1920, 1080),
+        );
+        println!("windows: {windows:?}");
+        let edges = Edges::new(&image).unwrap();
+        let screen = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 1920.0,
+            h: 1080.0,
+        };
+        for point in [
+            (400u32, 300u32),
+            (960, 600),
+            (1800, 900),
+            (100, 1000),
+            (960, 62),
+        ] {
+            let inner: Vec<Rect> = edges
+                .around(point)
+                .into_iter()
+                .map(|(x0, y0, x1, y1)| Rect {
+                    x: f64::from(x0),
+                    y: f64::from(y0),
+                    w: f64::from(x1 - x0),
+                    h: f64::from(y1 - y0),
+                })
+                .collect();
+            let at = (f64::from(point.0), f64::from(point.1));
+            println!("{point:?}: inner {inner:?}");
+            println!("   levels {:?}", levels(&inner, &windows, screen, at));
+        }
+    }
 }
