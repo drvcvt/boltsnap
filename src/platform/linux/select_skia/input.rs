@@ -158,12 +158,30 @@ impl PointerHandler for Selector {
                     != self.views.iter().position(|v| v.contains((x, y)));
             }
             self.cursor = (x, y);
+            if matches!(ev.kind, PointerEventKind::Motion { .. }) {
+                redraw |= self.update_snap();
+            }
             if self.record_mode {
                 let toolbar = self.motion.layout();
                 redraw |= record_control_hit(toolbar, previous_cursor)
                     != record_control_hit(toolbar, self.cursor);
             }
             match ev.kind {
+                // Ctrl held: the rectangle on offer becomes the selection.
+                PointerEventKind::Press { button, .. }
+                    if button == BTN_LEFT && self.snap_shown().is_some() =>
+                {
+                    if let Some(rect) = self.take_snap() {
+                        if self.instant {
+                            self.confirm_rect(rect);
+                            return;
+                        }
+                        redraw = true;
+                    }
+                }
+                PointerEventKind::Axis { vertical, .. } => {
+                    redraw |= self.scroll_snap(vertical.discrete, vertical.absolute);
+                }
                 PointerEventKind::Press { button, .. } if button == BTN_LEFT => {
                     match self.mode {
                         Mode::Editing { rect } => {
@@ -399,6 +417,9 @@ impl KeyboardHandler for Selector {
     ) {
         if self.alt_held != modifiers.alt {
             self.alt_held = modifiers.alt;
+            self.request_redraw();
+        }
+        if self.set_snap_held(modifiers.ctrl) {
             self.request_redraw();
         }
     }

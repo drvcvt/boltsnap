@@ -208,6 +208,12 @@ The saved image uses the highest output scale; gaps between monitors are black.
 Recording and replay selection remain on their target monitor. If an output is
 connected, disconnected, or rearranged during selection, retry the capture.
 
+Hold **Ctrl** in the selector to snap: the rectangle under the pointer shows as
+the selection would, the wheel steps a level out (up) or in (down), a click
+takes it. The levels, innermost first: what the picture's own long straight
+edges enclose (an embedded video, a panel; from the screenshot, or from the
+frozen replay frame when clipping), the visible windows (Hyprland), the screen.
+
 Screenshot capture and clipboard handling need no CLI helpers. `hyprctl` is
 optional and supplies active-window geometry on Hyprland; other Wayland
 compositors fall back to the in-process selector for window mode. Recording

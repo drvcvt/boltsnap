@@ -36,6 +36,7 @@ use crate::DynResult;
 
 mod input;
 mod present;
+mod snap;
 
 use input::{Interaction, MIN_SEL, contains};
 use present::OutputView;
@@ -207,6 +208,7 @@ fn run_selector(
         output_origin: None,
         target_name: replay.as_ref().map(|r| r.output.clone()),
         failure: None,
+        snap: Default::default(),
     };
 
     // Discover outputs (names) so we can target the focused monitor. This
@@ -448,6 +450,8 @@ struct Selector {
     output_origin: Option<(i32, i32)>,
     target_name: Option<String>,
     failure: Option<String>,
+    /// Ctrl's rectangles to snap to (`snap.rs`).
+    snap: snap::Snap,
 }
 
 #[derive(Clone, Copy)]
@@ -521,7 +525,8 @@ impl Selector {
             return;
         }
         let layout = match self.mode {
-            Mode::Editing { rect } => render::toolbar::layout(
+            // No toolbar under a rectangle that is only being offered.
+            Mode::Editing { rect } if self.snap_shown().is_none() => render::toolbar::layout(
                 (rect.x as f32, rect.y as f32, rect.w as f32, rect.h as f32),
                 boltsnap::ui::Rect::new(0.0, 0.0, self.surf_w as f32, self.surf_h as f32),
                 &self.chrome.toolbar,

@@ -70,10 +70,15 @@ impl Selector {
             return;
         }
         let magnifier = self.magnifier_on().then_some(self.cursor);
+        let snapped = self.snap_shown();
         let (Some(base), Some(overlay)) = (self.base.as_ref(), self.overlay.as_mut()) else {
             return;
         };
         let sel = match self.mode {
+            // Ctrl offers a rectangle: it shows as the selection would.
+            _ if snapped.is_some() => {
+                snapped.map(|r| (r.x as f32, r.y as f32, r.w as f32, r.h as f32))
+            }
             Mode::Idle => None,
             Mode::Drawing { anchor, now } => {
                 let r = edit::Rect::from_corners(anchor, now);
@@ -97,7 +102,7 @@ impl Selector {
                     })
                     .flatten(),
                 selection: sel,
-                editing: matches!(self.mode, Mode::Editing { .. }),
+                editing: snapped.is_none() && matches!(self.mode, Mode::Editing { .. }),
                 record: self.record_mode,
                 bar: if self.record_mode {
                     self.motion.sample(now)
