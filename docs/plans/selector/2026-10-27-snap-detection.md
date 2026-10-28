@@ -204,5 +204,7 @@ Kanten für 1920 × 1080 187 ms (einmal beim ersten Strg), fünf Suchen
 0,66 ms. Release nicht gemessen (live nachholen). `cargo test` 161 + 410
 grün, fmt sauber; clippy `-D warnings` scheitert an 33 Stellen, die der neue
 Toolchain (1.98.1, Lint `chunks_exact_to_as_chunks`) im übrigen Repo
-findet, keine in den neuen Dateien; eigener Commit danach.
+findet, keine in den neuen Dateien; behoben im eigenen Commit `1efa6b2`
+(`as_chunks::<N>()` statt `chunks_exact(N)`, ein `match` als `?`), clippy
+`-D warnings` wieder still, Tests unverändert grün.
 Offen: live (Strg über einem eingebetteten Video, Mausrad, Klick, Clip).
