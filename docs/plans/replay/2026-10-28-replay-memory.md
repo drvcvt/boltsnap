@@ -7,6 +7,8 @@ Nutzer 28.10.: „okay dann machen wir 1 und planen danach 2“.
 1. Die Last-Anzeige zählt nur, was dem Puffer gehört (dieser Plan, Teil 1).
 2. Konstante Qualität mit Byte-Deckel statt konstanter Bitrate (Teil 2, erst
    geplant, dann geprobt).
+3. Weniger Treiber-Speicher in gsr (Teil 3, Nutzer 28.10.: „koennen wir
+   irgendwie noch weiter die usage runterdruecken?“).
 
 ## Teil 1: Speicher als privater Speicher
 
@@ -231,3 +233,93 @@ clippy, `cargo test`; P3 mit Last-Zeile ruhig und bewegt und einem Clip.
 **Macht nicht:** keinen Schalter in den Einstellungen, nichts für Vulkan,
 VAAPI oder CPU, keine Änderung an Aufnahmen, Länge oder Speicher-Budget,
 keinen Ring auf der Platte.
+
+## Teil 3: NVENC-Sitzung schlanker
+
+Stand: **gebaut 28.10., wie geplant, live bei 60 fps bestanden (unten).**
+Offen: hohe Replay-fps (bis 240) live; nur synthetisch ohne Verlust.
+
+### Befund
+
+Nach Teil 2 (ruhiger Desktop, beide Monitore): Last 223 MB. gsr privat
+154 MB, davon `/dev/nvidiactl` 121 MB (vom Treiber eingeblendeter Host-
+Speicher für CUDA und NVENC), anonym 14 MB, `libcuda` 9 MB; Worker 23 MB,
+kms-Helfer 0,4 MB. gsr nutzt die System-Libs (`libavcodec.so.62`, dieselben
+wie `ffmpeg` 8.1.3), einen CUDA-Kontext (`src/cuda.c` `cuCtxCreate_v2`) und
+setzt für NVIDIA weder `surfaces` noch `async_depth`
+(`src/recorder/video_codec.c` ab Z. 311).
+
+**P4, synthetisch 28.10.** (`probes/p4/p4.sh`, `speed.sh` im Scratchpad):
+`ffmpeg` mit `hwupload_cuda` und gsrs NVENC-Optionen (VBR cq 19 unter
+41,4M), 3840 × 1080 @ 60, `/dev/nvidiactl` privat nach 5 s:
+
+| Variante | `/dev/nvidiactl` |
+| --- | --- |
+| nur CUDA-Kontext (kein NVENC) | 61,9 MB |
+| NVENC Standard | 113,0 MB |
+| `surfaces=4` / `3` / `2` / `1` | 113,0 / 100,5 / 88,0 / 75,6 MB |
+| `delay=0`, `CUDA_MODULE_LOADING` lazy/eager | 113,0 MB (kein Effekt) |
+| `CUDA_DEVICE_MAX_CONNECTIONS=1` | 72,0 MB |
+| beides (`connections 1`, `surfaces=2`) | **47,0 MB** |
+
+Der Standard sind 4 Surfaces (~12,5 MB je Surface bei 3840 × 1080). CUDA legt
+je Hardware-Queue Befehlspuffer an (Standard 8); gsr kodiert über einen
+einzigen Stream, mehr Queues bringen ihm nichts. Durchsatz so schnell es geht
+(1200 Frames, Schwenk): Standard 215, `surfaces=2` 208, beides 210 fps
+(Grenze ist dort das CPU-Upload von `ffmpeg`, nicht NVENC; kein messbarer
+Verlust).
+
+### Verhalten
+
+- Bei NVENC startet Replays gsr mit `CUDA_DEVICE_MAX_CONNECTIONS=1` und
+  `surfaces=2` in `-ffmpeg-video-opts` (FFmpeg setzt damit `async_depth` 1:
+  ein Frame in Arbeit, einer im Flug). Erwartet: gsr ~66 MB weniger, Last
+  ~160 MB auf ruhigem Bild.
+- Vulkan, VAAPI, Aufnahmen: unverändert.
+- `surfaces=1` nicht: dann kodiert FFmpeg synchron (`async_depth` 0).
+
+### Code
+
+1. Neu `src/platform/linux/replay/encode.rs`: `video_opts` (aus `mod.rs`
+   verschoben, bei `*_nvenc` dazu `;surfaces=2`) und `fn nvenc(command,
+   encoder)`, das die Umgebung setzt; Test aus `mod.rs` mit.
+   `mod.rs` sinkt dadurch unter 980 Zeilen (vorher 993).
+2. `mod.rs` `start_capture`: ruft beide.
+3. Doku: `docs/replay.md` Bitrate-Abschnitt, dieser Plan.
+
+### Was brechen könnte
+
+- Bei hohen fps (Replay bis 240) staut NVENC mit nur einem Frame im Flug:
+  `daemon.log` meldet dann „replay capture slowed“. P4 sah keinen Verlust,
+  live ist es nur bei 60 fps prüfbar ohne Desktop-Last; bleibt als Risiko
+  stehen.
+- Die Variable greift nur, wenn gsr CUDA nach dem Start lädt (tut es,
+  `gsr_cuda_load` lädt `libcuda` per `dlopen`).
+
+### Abnahme
+
+Test `video_opts`; fmt, clippy, `cargo test`; live (Daemon-Neustart):
+`/dev/nvidiactl` von gsr per `smaps`, `replay_load_now`, `update fps` im
+Capture-Log bei 60 fps.
+
+**Macht nicht:** nichts an Aufnahmen-gsr, Vulkan, VAAPI; kein `surfaces=1`;
+kein Schalter.
+
+### Live 28.10.
+
+`encode.rs` mit Test
+`only_nvenc_trades_constant_bitrate_for_quality_and_a_lean_session`; fmt,
+clippy `-D warnings`, `cargo test` 164 + 416 grün; `mod.rs` 972 Zeilen.
+Daemon neu, beide Monitore, 60 fps; gsr läuft mit `surfaces=2` und
+`CUDA_DEVICE_MAX_CONNECTIONS=1` (in `/proc/<pid>/environ`).
+
+- gsr `/dev/nvidiactl` **54,8 MB** (vorher 120,8), wie P4 vorhersagte.
+- `replay_load_now` nach 36 s ruhigem Desktop: 19 % eines Kerns, **146 MB**
+  (vorher 223, vor Teil 2 336). Ring 19,7 MB, Worker 26 MB.
+- `replay-capture.log`: 60–61 fps, keine neue Meldung; `daemon.log` ohne
+  „replay capture slowed“.
+
+Was bleibt, ist der Boden: CUDA-Kontext und GL in gsr (~55 MB Treiber,
+~35 MB Heap und anonym), Worker mit Ring (~26 MB auf ruhigem Bild). NVENC
+geht unter FFmpeg nur über CUDA; weniger bräuchte einen anderen Encoder-Weg
+(gsrs Vulkan-Encoder hing hier schon bei Aufnahmen), nicht vorgesehen.

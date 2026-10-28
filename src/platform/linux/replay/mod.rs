@@ -2,6 +2,7 @@ use std::io::Write;
 mod capture_log;
 mod card;
 mod cursor;
+mod encode;
 mod monitor;
 pub(crate) mod process;
 mod socket;
@@ -462,7 +463,8 @@ fn start_capture(settings: Settings, cancel: &AtomicBool) -> Result<Session, Str
             // CBR sets the cap: gsr makes the buffer-sized rate maxrate and
             // bufsize. Plain constant quality would grow with motion and
             // silently shorten the clip once the byte budget evicts;
-            // `video_opts` turns NVENC into target quality under that cap.
+            // `encode::video_opts` turns NVENC into target quality under
+            // that cap.
             "-bm",
             "cbr",
             "-q",
@@ -486,8 +488,9 @@ fn start_capture(settings: Settings, cancel: &AtomicBool) -> Result<Session, Str
             "-ffmpeg-opts",
             "write_index=0;syncpoints=none;strict=experimental;flush_packets=1",
             "-ffmpeg-video-opts",
-            &video_opts(&capture.encoder),
+            &encode::video_opts(&capture.encoder),
         ])
+        .envs(encode::env(&capture.encoder).iter().copied())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         // Through `capture_log`: inheriting the daemon's stderr would send
@@ -588,19 +591,6 @@ fn start_capture(settings: Settings, cancel: &AtomicBool) -> Result<Session, Str
         std::thread::sleep(Duration::from_millis(50));
     }
     Err("replay did not receive a decodable video frame within sixty seconds".into())
-}
-
-/// gsr's `-ffmpeg-video-opts` for replay. They overwrite gsr's own encoder
-/// options, so on NVENC `rc=vbr` with a target quality replaces CBR while
-/// maxrate and bufsize stay at the rate (replay memory plan, part 2): a calm
-/// picture takes a few Mbit/s, full motion the same as CBR. Vulkan and VAAPI
-/// name these options differently and keep CBR.
-fn video_opts(encoder: &str) -> String {
-    let mut opts = "bf=0;flags=+cgop".to_owned();
-    if encoder.ends_with("_nvenc") {
-        opts.push_str(";rc=vbr;cq=19;b=0");
-    }
-    opts
 }
 
 pub(crate) fn serve(sender: calloop::channel::Sender<DaemonEvent>) -> Result<Service, String> {
@@ -875,17 +865,6 @@ pub(crate) fn serve(sender: calloop::channel::Sender<DaemonEvent>) -> Result<Ser
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn only_nvenc_trades_constant_bitrate_for_quality_under_the_cap() {
-        assert_eq!(
-            video_opts("h264_nvenc"),
-            "bf=0;flags=+cgop;rc=vbr;cq=19;b=0"
-        );
-        assert_eq!(video_opts("av1_nvenc"), "bf=0;flags=+cgop;rc=vbr;cq=19;b=0");
-        assert_eq!(video_opts("h264_vulkan"), "bf=0;flags=+cgop");
-        assert_eq!(video_opts("hevc_vaapi"), "bf=0;flags=+cgop");
-    }
 
     #[test]
     fn both_displays_open_the_selector_where_the_pointer_is() {

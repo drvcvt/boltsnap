@@ -92,8 +92,11 @@ Duration accepts 1–600 seconds, FPS 1–240, packet memory 64–4096 MiB and
 and bufsize), so no second of video gets larger with motion and the history
 never gets shorter. With NVENC the capture encodes to a target quality under
 that cap (`rc=vbr;cq=19;b=0` in `-ffmpeg-video-opts`): a calm picture takes a
-few Mbit/s and holds that little memory, full motion takes the cap. Vulkan and
-VAAPI fill the cap at a constant bitrate. Without `bitrate_kbps` the cap is
+few Mbit/s and holds that little memory, full motion takes the cap. NVENC also
+runs with two surfaces and one CUDA hardware queue (`CUDA_DEVICE_MAX_CONNECTIONS=1`),
+which saves about 65 MB of driver memory in gsr. Vulkan and VAAPI fill the cap
+at a constant bitrate. These options live in
+[`linux/replay/encode.rs`](../src/platform/linux/replay/encode.rs). Without `bitrate_kbps` the cap is
 sized to the live third of `memory_mib`: `duration_seconds`
 plus one second of video and 128 kbps audio, with a tenth to spare, clamped to
 2–80 Mbps. The defaults give about 21 Mbps, which fits 60 seconds in 512 MiB.
@@ -190,7 +193,7 @@ clips (every video packet on the `1/fps` grid). Hardware encoding was first
 tested locally with H.264 Vulkan on an RTX 4060 / FFmpeg 8.1.2; the machine has
 used NVENC since. Target quality under the bitrate cap ran live on
 2026-10-28 with both displays: 30 s of a calm desktop held 17 MB instead of
-about 155 MB and a full-screen clip came out at 29.6 s; heavy motion under the
+about 155 MB, the Load line fell from 336 MB to 146 MB and a full-screen clip came out at 29.6 s; heavy motion under the
 cap is measured only synthetically ([replay memory plan](plans/replay/2026-10-28-replay-memory.md)).
 
 The supervisor-to-shelf path also passed with a synthetic capture executable.
