@@ -113,10 +113,8 @@ pub fn cli(args: &[String]) -> DynResult<()> {
                 settings_pages(None, Vec::new(), now),
                 (1000.0, 900.0),
             );
-            match boltsnap::app::measure::icon_gate(&rows) {
-                Ok(worst) => println!("icons        {} rows, {worst}", rows.len()),
-                Err(failure) => return Err(failure.into()),
-            }
+            let worst = boltsnap::app::measure::icon_gate(&rows)?;
+            println!("icons        {} rows, {worst}", rows.len());
             Ok(())
         }
         [] => run(None),

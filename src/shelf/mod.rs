@@ -59,7 +59,7 @@ pub fn debug_render(output: &std::path::Path) -> DynResult<()> {
 
     let background = 64_u32;
     let mut image = RgbaImage::new(width, height);
-    for (index, pixel) in canvas.chunks_exact(4).enumerate() {
+    for (index, pixel) in canvas.as_chunks::<4>().0.iter().enumerate() {
         let (blue, green, red, alpha) = (
             pixel[0] as u32,
             pixel[1] as u32,

@@ -41,7 +41,7 @@ fn the_border_rings_the_crop_on_whole_pixels_and_redraws_to_the_same_pixels() {
     assert_eq!(at(&pm, 30, 51), WHITE);
     assert_eq!(at(&pm, 30, 21), [0, 0, 0, 255]);
     // Nothing in between: every pixel is ring, contour or untouched.
-    for pixel in pm.data().chunks_exact(4) {
+    for &pixel in pm.data().as_chunks::<4>().0.iter() {
         assert!(pixel == WHITE || pixel == CONTOUR || pixel == [0, 0, 0, 255]);
     }
     let once = pm.clone();

@@ -17,7 +17,13 @@ fn fnv(hash: u64, bytes: &[u8]) -> u64 {
 fn windows_pixels_stay_pinned() {
     let (w, h) = (400u32, 300u32);
     let mut base = Pixmap::new(w, h).unwrap();
-    for (i, pixel) in base.data_mut().chunks_exact_mut(4).enumerate() {
+    for (i, pixel) in base
+        .data_mut()
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .enumerate()
+    {
         let (x, y) = ((i as u32 % w), (i as u32 / w));
         pixel.copy_from_slice(&[(x * 255 / w) as u8, (y * 255 / h) as u8, 90, 255]);
     }
@@ -122,7 +128,7 @@ fn render_overlay_dims_outside_keeps_inside_bright() {
     use tiny_skia::Pixmap;
     // Opaque red base.
     let mut pm = Pixmap::new(200, 100).unwrap();
-    for px in pm.data_mut().chunks_exact_mut(4) {
+    for px in pm.data_mut().as_chunks_mut::<4>().0.iter_mut() {
         px.copy_from_slice(&[255, 0, 0, 255]);
     }
     dim_and_restore(&mut pm, Some((40.0, 30.0, 60.0, 20.0)));
@@ -174,7 +180,7 @@ fn windows_record_overlay_dims_selection_less_than_overview() {
     let mut default = Pixmap::new(100, 100).unwrap();
     let mut windows = Pixmap::new(100, 100).unwrap();
     for pixmap in [&mut default, &mut windows] {
-        for pixel in pixmap.data_mut().chunks_exact_mut(4) {
+        for pixel in pixmap.data_mut().as_chunks_mut::<4>().0.iter_mut() {
             pixel.copy_from_slice(&[255, 255, 255, 255]);
         }
     }
@@ -194,7 +200,7 @@ fn windows_record_overlay_dims_selection_less_than_overview() {
 #[test]
 fn windows_record_border_is_single_and_handles_use_neutral_accent() {
     let mut pm = Pixmap::new(120, 120).unwrap();
-    for pixel in pm.data_mut().chunks_exact_mut(4) {
+    for pixel in pm.data_mut().as_chunks_mut::<4>().0.iter_mut() {
         pixel.copy_from_slice(&[64, 64, 64, 255]);
     }
     let selection = (30.0, 30.0, 60.0, 60.0);
@@ -215,7 +221,7 @@ fn windows_record_border_is_single_and_handles_use_neutral_accent() {
 fn render_overlay_none_dims_everything() {
     use tiny_skia::Pixmap;
     let mut pm = Pixmap::new(20, 20).unwrap();
-    for px in pm.data_mut().chunks_exact_mut(4) {
+    for px in pm.data_mut().as_chunks_mut::<4>().0.iter_mut() {
         px.copy_from_slice(&[255, 0, 0, 255]);
     }
     dim_and_restore(&mut pm, None);
@@ -227,7 +233,7 @@ fn render_overlay_none_dims_everything() {
 fn render_overlay_dim_has_no_undimmed_row_seam() {
     use tiny_skia::Pixmap;
     let mut pm = Pixmap::new(200, 100).unwrap();
-    for px in pm.data_mut().chunks_exact_mut(4) {
+    for px in pm.data_mut().as_chunks_mut::<4>().0.iter_mut() {
         px.copy_from_slice(&[255, 0, 0, 255]);
     }
     // Fractional *.5 edges are the worst case for non-AA rect tiling: the
@@ -246,7 +252,7 @@ fn render_overlay_dim_has_no_undimmed_row_seam() {
 fn draw_rec_pill_paints_red_dot_and_pill() {
     use tiny_skia::Pixmap;
     let mut pm = Pixmap::new(400, 300).unwrap();
-    for px in pm.data_mut().chunks_exact_mut(4) {
+    for px in pm.data_mut().as_chunks_mut::<4>().0.iter_mut() {
         px.copy_from_slice(&[0, 0, 0, 255]); // opaque black backdrop
     }
     // Selection well clear of the top so the pill sits above it on-screen.

@@ -95,7 +95,9 @@ fn an_icon_draws_only_inside_its_box() {
     let lit: Vec<(usize, usize)> = canvas
         .pixmap
         .data()
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .enumerate()
         .filter(|(_, px)| px[0] > 0x12)
         .map(|(i, _)| (i % width, i / width))
@@ -285,7 +287,10 @@ fn cached_glyphs_draw_the_same_pixels_as_the_first_time() {
     };
     let first = draw();
     let second = draw();
-    assert!(first.chunks_exact(4).any(|px| px[0] > 0xC0), "text drew");
+    assert!(
+        first.as_chunks::<4>().0.iter().any(|px| px[0] > 0xC0),
+        "text drew"
+    );
     assert_eq!(first, second);
 }
 

@@ -836,7 +836,14 @@ mod tests {
         // Opaque body just inside the tip, transparent far corner, soft edges.
         assert_eq!(alpha(tx + 2, ty + 6), 255);
         assert_eq!(alpha(arrow.width - 1, 0), 0);
-        assert!(arrow.rgba.chunks_exact(4).any(|p| p[3] > 0 && p[3] < 255));
+        assert!(
+            arrow
+                .rgba
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .any(|p| p[3] > 0 && p[3] < 255)
+        );
         let body = ((ty + 6) * arrow.width + tx + 2) as usize * 4;
         assert!(arrow.rgba[body] < 40, "dark fill");
         assert!(super::arrow(48.0).height > arrow.height);

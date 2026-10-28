@@ -532,7 +532,7 @@ mod tests {
             18.0,
             GLYPH_RGB,
         );
-        assert!(buf.chunks_exact(4).any(|pixel| pixel[3] != 0));
+        assert!(buf.as_chunks::<4>().0.iter().any(|pixel| pixel[3] != 0));
     }
 
     fn controls_pixels(
@@ -572,7 +572,10 @@ mod tests {
         assert_eq!(buf[at(mid, y + h + 2.0)], 0x12, "no shadow beyond");
         // No red dot before the title: nothing on the panel is red.
         assert!(
-            buf.chunks_exact(4).all(|p| p[2] <= p[1].saturating_add(20)),
+            buf.as_chunks::<4>()
+                .0
+                .iter()
+                .all(|p| p[2] <= p[1].saturating_add(20)),
             "no red"
         );
     }
@@ -705,7 +708,7 @@ mod tests {
         ] {
             let (buf, layout) = controls_pixels(&body, state, armed);
             let mut image = RgbaImage::new(layout.width, layout.height);
-            for (pixel, bgra) in image.pixels_mut().zip(buf.chunks_exact(4)) {
+            for (pixel, bgra) in image.pixels_mut().zip(buf.as_chunks::<4>().0.iter()) {
                 *pixel = image::Rgba([bgra[2], bgra[1], bgra[0], bgra[3]]);
             }
             image

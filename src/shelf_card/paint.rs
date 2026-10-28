@@ -854,7 +854,7 @@ mod tests {
         let thumb = plain(190, 132, [60, 60, 60, 255]);
         let (canvas, layout) = shelf_of(&thumb, CardKind::Image, false, CardLook::default());
         let mut image = RgbaImage::new(layout.width, layout.height);
-        for (pixel, bgra) in image.pixels_mut().zip(canvas.chunks_exact(4)) {
+        for (pixel, bgra) in image.pixels_mut().zip(canvas.as_chunks::<4>().0.iter()) {
             // Premultiplied BGRA to straight RGBA.
             let a = bgra[3];
             let straight = |c: u8| {

@@ -662,7 +662,7 @@ impl App {
             });
             play.paints.set(play.paints.get() + 1);
             // BGRA as the overlay's buffers hold it, to tiny-skia's RGBA.
-            for pixel in pixels.chunks_exact_mut(4) {
+            for pixel in pixels.as_chunks_mut::<4>().0.iter_mut() {
                 pixel.swap(0, 2);
             }
             if let Some(pixmap) =

@@ -569,7 +569,15 @@ fn every_page_and_the_fixture_draw_at_every_width_and_scale() {
                 for scale in [1, 2] {
                     let mut canvas = Canvas::new(size.0 as u32, size.1 as u32, scale).unwrap();
                     app.draw(&mut canvas, now + SETTLED);
-                    assert!(canvas.pixmap.data().chunks_exact(4).any(|px| px[0] > 0xE0));
+                    assert!(
+                        canvas
+                            .pixmap
+                            .data()
+                            .as_chunks::<4>()
+                            .0
+                            .iter()
+                            .any(|px| px[0] > 0xE0)
+                    );
                 }
             }
         }

@@ -264,7 +264,7 @@ mod tests {
         let (w, h) = (shots[0].1.width, shots[0].1.height);
         let mut strip = RgbaImage::new(w * states.len() as u32, h);
         for (n, (canvas, _)) in shots.iter().enumerate() {
-            for (i, bgra) in canvas.chunks_exact(4).enumerate() {
+            for (i, bgra) in canvas.as_chunks::<4>().0.iter().enumerate() {
                 // Premultiplied BGRA over 0x12.
                 let under = |c: u8| (u32::from(c) + 18 * (255 - u32::from(bgra[3])) / 255) as u8;
                 let (x, y) = (i as u32 % w, i as u32 / w);

@@ -340,8 +340,15 @@ impl SceneCache {
                 let end = start + (x1 - x0) as usize * 4;
                 let dest = (y as usize * width as usize + x0 as usize) * 4;
                 for (src, dst) in self.frame().data()[start..end]
-                    .chunks_exact(4)
-                    .zip(canvas[dest..dest + end - start].chunks_exact_mut(4))
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .zip(
+                        canvas[dest..dest + end - start]
+                            .as_chunks_mut::<4>()
+                            .0
+                            .iter_mut(),
+                    )
                 {
                     dst.copy_from_slice(&[src[2], src[1], src[0], src[3]]);
                 }
@@ -399,7 +406,13 @@ mod tests {
     fn regional_frames_and_rotating_buffers_match_full_render() {
         for alpha in [0, 127, 255] {
             let mut base = Pixmap::new(640, 360).unwrap();
-            for (i, pixel) in base.data_mut().chunks_exact_mut(4).enumerate() {
+            for (i, pixel) in base
+                .data_mut()
+                .as_chunks_mut::<4>()
+                .0
+                .iter_mut()
+                .enumerate()
+            {
                 let (x, y) = ((i % 640) as u32, (i / 640) as u32);
                 pixel.copy_from_slice(&[
                     (x % 256 * u32::from(alpha) / 255) as u8,

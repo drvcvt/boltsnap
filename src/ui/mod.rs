@@ -223,10 +223,12 @@ impl Canvas {
         let target = [color.0, color.1, color.2, 255];
         let data = self.pixmap.data_mut();
         for row in top..bottom {
-            for pixel in
-                data[(row * width + left) * 4..(row * width + right) * 4].chunks_exact_mut(4)
+            for pixel in data[(row * width + left) * 4..(row * width + right) * 4]
+                .as_chunks_mut::<4>()
+                .0
+                .iter_mut()
             {
-                if pixel == target {
+                if *pixel == target {
                     continue;
                 }
                 for (channel, to) in pixel.iter_mut().zip(target) {

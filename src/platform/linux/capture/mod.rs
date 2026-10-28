@@ -183,7 +183,7 @@ fn x11_capture_root(rect: Option<(i16, i16, u16, u16)>) -> DynResult<RgbaImage> 
         .into());
     }
     let mut rgba = Vec::with_capacity(w as usize * h as usize * 4);
-    for chunk in reply.data.chunks_exact(4) {
+    for chunk in reply.data.as_chunks::<4>().0 {
         rgba.push(chunk[2]);
         rgba.push(chunk[1]);
         rgba.push(chunk[0]);

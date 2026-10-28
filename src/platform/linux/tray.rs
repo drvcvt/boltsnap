@@ -30,7 +30,7 @@ fn decode(pngs: &[&[u8]]) -> Vec<ksni::Icon> {
                 .expect("embedded Boltsnap tray icon must be valid PNG");
             let (width, height) = (image.width(), image.height());
             let mut data = image.into_rgba8().into_raw();
-            for pixel in data.chunks_exact_mut(4) {
+            for pixel in data.as_chunks_mut::<4>().0 {
                 pixel.rotate_right(1);
             }
             ksni::Icon {
@@ -846,8 +846,10 @@ mod tests {
                 assert!(
                     tinted
                         .data
-                        .chunks_exact(4)
-                        .zip(plain.data.chunks_exact(4))
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .zip(plain.data.as_chunks::<4>().0.iter())
                         .all(|(a, b)| a[0] == b[0])
                 );
             }

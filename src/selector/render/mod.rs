@@ -161,7 +161,13 @@ fn selection_bounds(
 /// same pixel count as the pixmap (4 bytes per pixel).
 #[allow(dead_code)] // Windows and full-frame reference.
 pub fn pixmap_to_argb8888(pm: &Pixmap, canvas: &mut [u8]) {
-    for (src, dst) in pm.data().chunks_exact(4).zip(canvas.chunks_exact_mut(4)) {
+    for (src, dst) in pm
+        .data()
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(canvas.as_chunks_mut::<4>().0.iter_mut())
+    {
         dst[0] = src[2]; // B
         dst[1] = src[1]; // G
         dst[2] = src[0]; // R
