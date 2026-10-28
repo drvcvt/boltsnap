@@ -199,13 +199,22 @@ fn same(a: &Rect, b: &Rect) -> bool {
         && (a.bottom() - b.bottom()).abs() <= 4.0
 }
 
-/// The levels at `point`, innermost first: what the edges enclose, the
-/// windows, the screen; only those holding the point, each once, by size.
+/// A box inside a window has to be this share of the screen's width and of
+/// its height to be offered: a video, a mini player, a dialog or a panel
+/// are; a button, a text field, a tab or a thin bar are not (Nutzer 28.10.:
+/// „nicht so viel bullshit … mit so einem threshhold (kein hoher)“).
+const MIN_SHARE: f64 = 0.1;
+
+/// The levels at `point`, innermost first: what the edges enclose (if large
+/// enough on this screen), the windows, the screen; only those holding the
+/// point, each once, by size.
 pub fn levels(inner: &[Rect], windows: &[Rect], screen: Rect, point: (f64, f64)) -> Vec<Rect> {
     // (rect, known exactly): windows and the screen are, the edges' boxes
     // are a reading of the picture.
+    let large = |r: &&Rect| r.w >= screen.w * MIN_SHARE && r.h >= screen.h * MIN_SHARE;
     let mut all: Vec<(Rect, bool)> = inner
         .iter()
+        .filter(large)
         .map(|&r| (r, false))
         .chain(windows.iter().map(|&r| (r, true)))
         .chain(std::iter::once((screen, true)))

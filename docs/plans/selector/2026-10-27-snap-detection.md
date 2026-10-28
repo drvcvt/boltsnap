@@ -231,3 +231,15 @@ Bereich `[(10, 889) 1900 × 181 (Eingabe und Statuszeile), Fenster,
 Bildschirm]`. Tests: `bands_between_lines_across_the_window_are_no_rectangle`,
 `levels` mit einer Fensterlesung 2 px innen → das Fenster. `cargo test`
 161 + 411 grün, clippy `-D warnings` still.
+
+## Nachtrag 28.10.: Mindestgröße am Bildschirm (Nutzer)
+
+O-Ton: „kann man das noch ein wenig mehr optimieren so das nicht so viel
+bullshit oder unnoetiger kram detected wird? … mit so einem threshhold (kein
+hoher)“. `levels` bietet ein Kanten-Rechteck nur an, wenn es mindestens ein
+Zehntel der Breite und der Höhe des Bildschirms unter dem Zeiger hat
+(`MIN_SHARE` 0,1; 1080p: 192 × 108). Videos, Mini-Player, Dialoge, Panels
+bleiben; Knöpfe, Eingabefelder, Reiter, schmale Leisten fallen weg. Fenster
+und Bildschirm bleiben immer. Test: Eingabefeld 600 × 40 und Knopf 120 × 120
+fallen weg, das Video bleibt. Auf der termo-Aufnahme unverändert (Fenster
+zuerst, unten der Eingabebereich 1900 × 181).

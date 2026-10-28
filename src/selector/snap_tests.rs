@@ -142,6 +142,13 @@ fn levels_go_from_inside_out_each_once_and_only_where_the_pointer_is() {
     // window's own rectangle is what shows.
     let read = rect(12.0, 40.0, 1896.0, 1028.0);
     assert_eq!(levels(&[read], &[window], screen, at), [window, screen]);
+    // Too small for this screen (a text field, a button): not offered.
+    let field = rect(400.0, 480.0, 600.0, 40.0);
+    let button = rect(1000.0, 480.0, 120.0, 120.0);
+    assert_eq!(
+        levels(&[field, button, video], &[window], screen, (1050.0, 500.0)),
+        [video, window, screen]
+    );
     // Nothing inside, no windows: the screen alone.
     assert_eq!(levels(&[], &[], screen, at), [screen]);
 }
