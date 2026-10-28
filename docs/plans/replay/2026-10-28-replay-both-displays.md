@@ -121,3 +121,30 @@ auf einem, bleibt die Zeile weg (ein Neustart änderte nichts). Test
 `a_buffer_on_another_display_than_the_file_asks_for_a_restart`. Nebenbei
 gemessen: die Last-Anzeige (40 % eines Kerns, 556 MB) war noch die von
 einem Monitor, gsr allein ~34 %.
+
+## Nachtrag 28.10.: Speicher im Vergleich mit Rewa
+
+Anlass: ein Bekannter des Nutzers nennt 60 MB für Rewa unter Windows
+(`github.com/mikaeww/Rewa`, Stand `54909b2`, 2.2.5). Gelesen, nicht gebaut:
+
+- Rewa nimmt **einen** Monitor auf (`CaptureSource::Monitor`, eine Quelle;
+  `capture.monitor` oder das Spiel), nicht beide auf einer Leinwand.
+- Bitrate aus Pixeln: `rewa-core/src/replay.rs` `target_bitrate_kbps`,
+  Voreinstellung 1080p60, H.264, `quality` 75 → rund 15 Mbit/s; 30 s →
+  ~56 MB Ring (`EncodedReplayBuffer`, nach Dauer gekürzt). Das sind die 60 MB.
+- Windows' Task-Manager zeigt den privaten Working Set; Treiber- und
+  DLL-Seiten zählen dort kaum.
+
+Hier, live mit beiden Monitoren (`smaps_rollup`, 28.10.): gsr RSS 250 MB,
+davon nur 19 MB anonym, 121 MB `/dev/nvidiactl`-Mappings und ~70 MB
+Bibliotheken (NVIDIA, LLVM); Worker 166 MB anonym = der Ring (41 Mbit/s ×
+30 s ≈ 155 MB). Die Last-Anzeige summiert RSS (`app/load.rs` `resident`,
+`statm`), zählt also geteilte Bibliotheken und Treiber-Mappings mit; PSS
+beider Prozesse ~340 MB.
+
+Hebel, keiner gebaut: Anzeige auf PSS oder privat umstellen (ehrlicherer
+Vergleich, spart nichts); `-bm qp` mit dem heutigen Byte-Deckel im Ring
+(ruhige Bilder kosten fast nichts, im Worst Case wie heute, bei viel
+Bewegung kann der Deckel den Clip unter 30 s kürzen: vorher proben);
+weniger Bitrate (Nutzer will 40 Mbit/s behalten); Ring auf Platte
+(`-replay-storage disk`, ~5 MB/s Dauerschreiben, verworfen).
