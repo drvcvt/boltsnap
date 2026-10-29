@@ -381,28 +381,54 @@ pub fn push_squircle(pb: &mut PathBuilder, rect: Rect, radius: f32) {
         ((x + big, y + big), (-1.0, 0.0), (0.0, -1.0), (0.0, half_pi)),
     ];
     pb.move_to(x + big, y);
-    for ((cx, cy), (ax, ay), (bx, by), (from, to)) in corners {
-        // Polar form: the ray at angle t meets the curve at
-        // R / (cosⁿ t + sinⁿ t)^(1/n); smooth in t, unlike cos^(2/n) t.
-        let at = |t: f32| {
-            let (sin, cos) = t.sin_cos();
-            let (cos, sin) = (cos.max(0.0), sin.max(0.0));
-            let k = big / (cos.powf(n) + sin.powf(n)).powf(1.0 / n);
-            let (u, v) = (cos * k, sin * k);
-            (cx + u * ax + v * bx, cy + u * ay + v * by)
-        };
-        let start = at(from);
-        pb.line_to(start.0, start.1);
-        flatten(pb, &at, (from, start), (to, at(to)), 0);
-    }
+    CORNERS.with_borrow_mut(|corners_of| {
+        // Animated sizes make new shapes every frame; they do not pile up.
+        if corners_of.len() > 256 {
+            corners_of.clear();
+        }
+        for ((cx, cy), (ax, ay), (bx, by), (from, to)) in corners {
+            let points = corners_of
+                .entry((big.to_bits(), n.to_bits(), from > to))
+                .or_insert_with(|| corner(big, n, from, to));
+            for (u, v) in points.iter() {
+                pb.line_to(cx + u * ax + v * bx, cy + u * ay + v * by);
+            }
+        }
+    });
     pb.close();
 }
 
-/// Lines along `at` from `a` to `b` (parameter and point), halving until the
-/// curve's middle is within the tolerance of the chord. At least four pieces,
-/// so a quadrant cannot pass as straight from its ends and middle alone.
+thread_local! {
+    /// Each corner shape once, by R, n and direction (settings paint speed
+    /// plan, stage C).
+    static CORNERS: std::cell::RefCell<std::collections::HashMap<(u32, u32, bool), Vec<(f32, f32)>>> =
+        Default::default();
+}
+
+/// One quadrant of the superellipse with half axis `big` and exponent `n`,
+/// from angle `from` to `to`, flattened (see [`push_squircle`]): its points
+/// from the corner's centre, along the two axes it runs between.
+fn corner(big: f32, n: f32, from: f32, to: f32) -> Vec<(f32, f32)> {
+    // Polar form: the ray at angle t meets the curve at
+    // R / (cosⁿ t + sinⁿ t)^(1/n); smooth in t, unlike cos^(2/n) t.
+    let at = |t: f32| {
+        let (sin, cos) = t.sin_cos();
+        let (cos, sin) = (cos.max(0.0), sin.max(0.0));
+        let k = big / (cos.powf(n) + sin.powf(n)).powf(1.0 / n);
+        (cos * k, sin * k)
+    };
+    let start = at(from);
+    let mut points = vec![start];
+    flatten(&mut points, &at, (from, start), (to, at(to)), 0);
+    points
+}
+
+/// Points along `at` from `a` to `b` (parameter and point), halving until
+/// the curve's middle is within the tolerance of the chord. At least four
+/// pieces, so a quadrant cannot pass as straight from its ends and middle
+/// alone.
 fn flatten(
-    pb: &mut PathBuilder,
+    points: &mut Vec<(f32, f32)>,
     at: &impl Fn(f32) -> (f32, f32),
     a: (f32, (f32, f32)),
     b: (f32, (f32, f32)),
@@ -413,11 +439,11 @@ fn flatten(
     let chord = ((a.1.0 + b.1.0) / 2.0, (a.1.1 + b.1.1) / 2.0);
     let off = (mid.0 - chord.0).hypot(mid.1 - chord.1);
     if depth >= 14 || (depth >= 2 && off <= SQUIRCLE_TOLERANCE) {
-        pb.line_to(b.1.0, b.1.1);
+        points.push(b.1);
         return;
     }
-    flatten(pb, at, a, (t, mid), depth + 1);
-    flatten(pb, at, (t, mid), b, depth + 1);
+    flatten(points, at, a, (t, mid), depth + 1);
+    flatten(points, at, (t, mid), b, depth + 1);
 }
 
 /// Circular corners as cubics, for Lucide's `<rect rx>` in `icons.rs`: icons
