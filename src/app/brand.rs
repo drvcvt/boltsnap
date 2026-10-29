@@ -47,8 +47,8 @@ impl Mark {
         let Some((_, pixmap)) = drawn.as_ref() else {
             return;
         };
-        let x = (at.x * canvas.scale).round() as i32 - PAD as i32;
-        let y = (at.y * canvas.scale).round() as i32 - PAD as i32;
+        let x = (at.x * canvas.scale).round() as i32 - PAD as i32 - canvas.origin.0;
+        let y = (at.y * canvas.scale).round() as i32 - PAD as i32 - canvas.origin.1;
         let paint = PixmapPaint {
             opacity: alpha.clamp(0.0, 1.0),
             ..PixmapPaint::default()

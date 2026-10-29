@@ -69,4 +69,12 @@ impl Fades {
     pub fn moving(&self, now: Instant) -> bool {
         self.0.iter().any(|(_, _, spring)| !spring.done(now))
     }
+
+    /// The targets with a fade that moves at `now`.
+    pub fn running(&self, now: Instant) -> impl Iterator<Item = Target> + '_ {
+        self.0
+            .iter()
+            .filter(move |(_, _, spring)| !spring.done(now))
+            .map(|(target, _, _)| *target)
+    }
 }

@@ -57,6 +57,9 @@ pub(super) struct Win {
     /// A frame callback is in flight; the next draw waits for it.
     frame_pending: bool,
     dirty: bool,
+    /// Something but a pointer move or a running animation asked for this
+    /// frame: it is painted whole (`App::damage`).
+    full: bool,
     pub(super) pointer: Option<ThemedPointer>,
     /// The look the pointer was last given; `None` after it entered.
     pub(super) shape: Option<boltsnap::ui::PointerShape>,
@@ -133,6 +136,7 @@ impl Win {
             rgba,
             frame_pending: false,
             dirty: true,
+            full: true,
             pointer: None,
             shape: None,
             keyboard: None,
@@ -212,6 +216,7 @@ impl Win {
     /// The app has something new to show.
     pub(super) fn changed(&mut self) {
         self.dirty = true;
+        self.full = true;
         self.redraw();
     }
 
@@ -311,7 +316,20 @@ impl Win {
             return;
         };
         let now = Instant::now();
-        self.app.draw(canvas, now);
+        let full = std::mem::take(&mut self.full) || self.last.is_none();
+        match (self.app.damage(now, full), self.last.as_ref()) {
+            // Only where something changed; the rest is the last frame's.
+            (Some(rects), Some(last)) => {
+                canvas.pixmap.data_mut().copy_from_slice(last.pixmap.data());
+                for rect in rects {
+                    if let Some(mut part) = canvas.part(rect) {
+                        self.app.draw(&mut part, now);
+                        canvas.paste(&part);
+                    }
+                }
+            }
+            _ => self.app.draw(canvas, now),
+        }
         self.dirty = self.app.animating(now);
         let data = canvas.pixmap.data();
         let surface = self.window.wl_surface();
@@ -375,6 +393,7 @@ impl Win {
         self.configured = false;
         self.frame_pending = false;
         self.dirty = true;
+        self.full = true;
     }
 }
 
@@ -443,6 +462,7 @@ impl WindowHandler for Win {
         // event, and drawing each at once floods the compositor.
         self.last = None;
         self.dirty = true;
+        self.full = true;
         self.redraw();
     }
 }
@@ -458,6 +478,7 @@ impl CompositorHandler for Win {
         if surface == self.window.wl_surface() {
             self.scale = factor.max(1) as u32;
             self.dirty = true;
+            self.full = true;
             self.redraw();
         }
     }

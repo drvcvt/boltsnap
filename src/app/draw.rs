@@ -13,7 +13,90 @@ use crate::ui::{Canvas, Rect};
 /// The scroll thumb never gets shorter than this.
 const THUMB_MIN: f32 = 24.0;
 
+/// What the last frame showed that the next may have to paint over.
+pub(super) struct Painted {
+    hover: Option<Target>,
+    /// Something was moving that can change any part of the window.
+    anywhere: bool,
+    /// Where something stayed in its own rectangle while it moved.
+    rects: Vec<Rect>,
+}
+
 impl App {
+    /// Where the frame at `now` can differ from the last one painted, or
+    /// `None` when it has to be painted whole: the first frame, after `full`
+    /// (any input but a pointer move, new values, a new size), and while or
+    /// right after something moved that can change any part of the window
+    /// (`moving_anywhere`, a drag, an open list, blocks leaving). Otherwise
+    /// the rectangles of the fades and controls that move now or moved for
+    /// the last frame, and of both ends of a hover that changed: the whole
+    /// block or navigation entry each, never one box around several, whose
+    /// edges would cut through other icons (tiny-skia strokes a curve cut
+    /// by the pixmap's edge a little differently; settings paint speed
+    /// plan, stage D). Call it once for every frame painted.
+    pub fn damage(&mut self, now: Instant, full: bool) -> Option<Vec<Rect>> {
+        let last = self.painted.take();
+        let layout = self.layout(now);
+        let anywhere = self.moving_anywhere(now)
+            || self.capture.is_some()
+            || self.visible_overlay(now).is_some()
+            || !layout.gone.is_empty();
+        let mut lost = false;
+        let mut rects = Vec::new();
+        let mut place = |target: Option<Target>| {
+            let rect = match target {
+                None => return,
+                Some(Target::Nav(index)) if index < self.pages.len() => {
+                    Some(self.nav_rect(index, now))
+                }
+                Some(Target::Nav(_)) => None,
+                Some(
+                    Target::Control(block)
+                    | Target::Reset(block)
+                    | Target::Preview(block)
+                    | Target::Card(block, _),
+                ) => layout.blocks.get(block).copied(),
+            };
+            match rect {
+                Some(rect) => rects.push(rect),
+                None => lost = true,
+            }
+        };
+        for target in self.fades.running(now) {
+            place(Some(target));
+        }
+        for (index, block) in self.page().blocks.iter().enumerate() {
+            if let Block::Row(row) = block
+                && row.control.animating(now)
+            {
+                place(Some(Target::Control(index)));
+            }
+        }
+        if let Some(last) = &last
+            && last.hover != self.hover
+        {
+            place(last.hover);
+            place(self.hover);
+        }
+        let hover = self.hover;
+        self.painted = Some(Painted {
+            hover,
+            anywhere,
+            rects: rects.clone(),
+        });
+        let last = last?;
+        if full || anywhere || last.anywhere || lost {
+            return None;
+        }
+        let mut damage: Vec<Rect> = Vec::new();
+        for rect in rects.into_iter().chain(last.rects) {
+            if !damage.contains(&rect) {
+                damage.push(rect);
+            }
+        }
+        Some(damage)
+    }
+
     pub fn draw(&self, canvas: &mut Canvas, now: Instant) {
         canvas.clear(theme::WINDOW);
         self.draw_page(canvas, now);
@@ -113,8 +196,8 @@ impl App {
             ..Default::default()
         };
         canvas.pixmap.draw_pixmap(
-            (rect.x * scale).round() as i32,
-            (rect.y * scale).round() as i32,
+            (rect.x * scale).round() as i32 - canvas.origin.0,
+            (rect.y * scale).round() as i32 - canvas.origin.1,
             part.as_ref(),
             &paint,
             tiny_skia::Transform::identity(),

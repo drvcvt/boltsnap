@@ -495,6 +495,7 @@ impl App {
             let mut canvas = Canvas {
                 pixmap: Pixmap::new(w, h)?,
                 scale,
+                origin: (0, 0),
             };
             canvas.clear(theme::SELECTED);
             let size = Rect::new(0.0, 0.0, w as f32 / scale, h as f32 / scale);
@@ -685,10 +686,11 @@ impl App {
         let (bw, bh) = ((rect.w * s).round() as u32, (rect.h * s).round() as u32);
         let paint = PixmapPaint::default();
         let inside = x >= bx && y >= by && x + w <= bx + bw as i32 && y + h <= by + bh as i32;
+        let (ox, oy) = canvas.origin;
         if inside {
             canvas
                 .pixmap
-                .draw_pixmap(x, y, cards, &paint, Transform::identity(), None);
+                .draw_pixmap(x - ox, y - oy, cards, &paint, Transform::identity(), None);
             return;
         }
         let key = (bw, bh, s);
@@ -700,7 +702,9 @@ impl App {
             ) else {
                 return;
             };
-            mask.fill_path(&outline, FillRule::Winding, true, canvas.transform());
+            // The block's own pixels: scaled, not shifted by a part's origin.
+            let scale = Transform::from_scale(s, s);
+            mask.fill_path(&outline, FillRule::Winding, true, scale);
             self.preview
                 .play
                 .masks
@@ -719,9 +723,14 @@ impl App {
             Transform::identity(),
             Some(mask),
         );
-        canvas
-            .pixmap
-            .draw_pixmap(bx, by, block.as_ref(), &paint, Transform::identity(), None);
+        canvas.pixmap.draw_pixmap(
+            bx - ox,
+            by - oy,
+            block.as_ref(),
+            &paint,
+            Transform::identity(),
+            None,
+        );
     }
 
     /// How often the block's mask was built, for the tests.

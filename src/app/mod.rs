@@ -134,6 +134,8 @@ pub struct App {
     sent_at: Option<Instant>,
     /// Spatial motion off: the navigation and rows change shape at once.
     pub reduced_motion: bool,
+    /// What the last frame showed, for the next one's damage.
+    painted: Option<draw::Painted>,
 }
 
 impl App {
@@ -170,6 +172,7 @@ impl App {
             sent: Vec::new(),
             sent_at: None,
             reduced_motion: false,
+            painted: None,
         };
         app.fades.set(Target::Nav(0), Channel::Current, 1.0, now);
         app.resize(size, now);
@@ -588,6 +591,17 @@ impl App {
     }
 
     pub fn animating(&self, now: Instant) -> bool {
+        self.moving_anywhere(now)
+            || self.fades.moving(now)
+            || self.page().blocks.iter().any(|block| match block {
+                Block::Row(row) => row.control.animating(now),
+                _ => false,
+            })
+    }
+
+    /// What moves and can change any part of the window, unlike a fade or a
+    /// control, which stay in their own rectangle (`App::damage`).
+    fn moving_anywhere(&self, now: Instant) -> bool {
         !self.nav.done(now)
             || !self.page_in.done(now)
             || !self.nav_open.done(now)
@@ -598,10 +612,5 @@ impl App {
             || self.stacked.iter().any(|spring| !spring.done(now))
             || self.rooms_moving(now)
             || self.scroll.moving(now)
-            || self.fades.moving(now)
-            || self.page().blocks.iter().any(|block| match block {
-                Block::Row(row) => row.control.animating(now),
-                _ => false,
-            })
     }
 }

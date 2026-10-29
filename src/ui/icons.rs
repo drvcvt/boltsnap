@@ -203,8 +203,8 @@ impl Icon {
             0.0,
             0.0,
             k,
-            (rect.x * canvas.scale).round(),
-            (rect.y * canvas.scale).round(),
+            (rect.x * canvas.scale).round() - canvas.origin.0 as f32,
+            (rect.y * canvas.scale).round() - canvas.origin.1 as f32,
         )
     }
 

@@ -41,8 +41,9 @@ struct Render {
     hover: Option<(f32, f32)>,
     click: Option<(f32, f32)>,
     after: u64,
-    /// Draw this many frames 1/240 s apart from then on and print how long
-    /// each took (settings paint speed plan, stage 0).
+    /// Draw this many frames 1/240 s apart from then on as the window does,
+    /// print how long each took and whether each matches a whole frame
+    /// (settings paint speed plan, stages 0 and D).
     frames: u32,
 }
 
@@ -179,19 +180,38 @@ fn render(page: &str, out: &Path, render: Render) -> DynResult<()> {
     }
     let mut canvas = Canvas::new(w, h, render.scale).ok_or("empty canvas")?;
     let mut took = Vec::with_capacity(render.frames as usize);
+    let (mut parts, mut identical) = (0, 0);
     for frame in 0..render.frames {
         let at = settled + std::time::Duration::from_secs_f64(f64::from(frame) / 240.0);
         let start = Instant::now();
-        app.draw(&mut canvas, at);
+        // As the window paints: whole first, then where `damage` says.
+        match app.damage(at, frame == 0) {
+            Some(rects) => {
+                parts += 1;
+                for rect in rects {
+                    if let Some(mut part) = canvas.part(rect) {
+                        app.draw(&mut part, at);
+                        canvas.paste(&part);
+                    }
+                }
+            }
+            None => app.draw(&mut canvas, at),
+        }
         took.push(start.elapsed().as_secs_f64() * 1000.0);
+        if render.frames > 1 {
+            let mut whole = Canvas::new(w, h, render.scale).ok_or("empty canvas")?;
+            app.draw(&mut whole, at);
+            identical += usize::from(whole.pixmap.data() == canvas.pixmap.data());
+        }
     }
     if render.frames > 1 {
         took.sort_by(f64::total_cmp);
         println!(
-            "{} frames: median {:.3} ms, max {:.3} ms",
+            "{} frames: median {:.3} ms, max {:.3} ms, {parts} parts, identical {identical}/{}",
             took.len(),
             took[took.len() / 2],
-            took[took.len() - 1]
+            took[took.len() - 1],
+            took.len()
         );
     }
     canvas

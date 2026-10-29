@@ -80,6 +80,7 @@ impl CachedOverlay {
             frame: Canvas {
                 pixmap: dimmed.clone(),
                 scale: 1.0,
+                origin: (0, 0),
             },
             dimmed,
         }

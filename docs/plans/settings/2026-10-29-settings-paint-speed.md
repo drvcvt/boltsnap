@@ -125,26 +125,42 @@ ganze Gerätepixel gerundet. Alles andere (Scrollen, Seiten- und
 Navigationsfedern, `keyed`, Räume auf/zu, Vorschau in Bewegung, offene Liste,
 Ziehen, Tasten, Klicks, Daten vom Daemon, neue Größe) malt voll.
 
-- `src/ui/mod.rs`: `Canvas` bekommt einen Clip (Rechteck plus wiederverwendete
-  `tiny_skia::Mask`). `clear`, `fill`, `ring`, `fade` halten sich daran und
-  steigen aus, wenn ihre Fläche ihn nicht trifft.
-- `src/ui/text.rs` `draw_clipped`, `src/ui/icons.rs` (fill und stroke),
-  `src/app/brand.rs` und `src/app/draw.rs` `draw_part` (`draw_pixmap`), die
-  Vorschau-Blits in `src/app/preview/`: Clip beachten. Liste vorher per
-  `grep pixmap` vollständig machen.
-- `src/app/draw.rs`: `App::damage(now, full) -> Option<Rect>` (Teilbild oder
-  `None` für voll) mit den Zielen des letzten Bilds; `App::draw` malt mit
-  gesetztem Clip.
+**Abweichung 29.10. (gemessen, vor dem Bau):** Die Maske von tiny-skia malt
+nicht byte-gleich. Probe (Wegwerf-Test in `ui/tests.rs`, nicht committet):
+deckende Kantenpixel von `fill_path` und `stroke_path` weichen mit Maske um 1
+von 255 ab (154 und 476 Bytes je Form), mit Alpha unter 1 und bei
+`draw_pixmap` und `fill_rect` nichts. Ein Teilbild in eigener Pixmap, um ganze
+Gerätepixel verschoben, ist dagegen exakt: 0 abweichende Pixel bei Skala 1
+und 2, auch bei Schnitten mitten durch Formen. D malt deshalb so:
+
+- `src/ui/mod.rs`: `Canvas` bekommt einen Ursprung in Gerätepixeln.
+  `transform` verschiebt um ihn, `fade` und eine neue `bounds` rechnen mit
+  ihm. `Canvas::part(rect)` gibt die Leinwand nur für ein Rechteck (um 2
+  Gerätepixel vergrößert, auf ganze Pixel gerundet), `Canvas::paste` setzt
+  sie zurück ins ganze Bild.
+- Ursprung beachten: `ui/text.rs` `draw`/`draw_clipped`, `ui/icons.rs`
+  `transform`, `app/brand.rs`, `app/draw.rs` `draw_part`,
+  `app/preview/shelf.rs` `draw_clipped` (dort die Blockmaske nur skaliert,
+  nicht verschoben). Gefunden per `grep` nach `canvas.scale`, `draw_pixmap`,
+  `.transform()`, `canvas.width()`.
+- `src/app/mod.rs`: `animating` teilt sich in das, was überall wirken kann
+  (Navigation, Seite, Daumen, `keyed`, Marke, Vorschau, Räume, Scrollen, offene
+  Liste, Ziehen, Blöcke im Kommen oder Gehen) und das Örtliche (Blenden,
+  Controls). Was künftig dazukommt, landet damit von selbst im vollen Bild.
+- `src/app/draw.rs`: `App::damage(now, full) -> Option<Rect>` mit dem, was
+  beim letzten Bild lief (Ziele, Hover, ob Globales lief).
 - `src/platform/linux/app/window.rs`: jede Auslösung außer Bewegung und
   laufender Animation setzt `full`. Für ein Teilbild kopiert das Fenster das
-  letzte Bild in die Leinwand, malt den Schaden und meldet ihn als Damage.
-- Tor (fail-closed): neuer Test `src/app/tests/damage.rs` fährt Hover über
-  mehrere Zeilen, Navigation, Reset-Knopf, Segment-Teile und Wechsel mitten in
-  der Blende, Bild für Bild als Teilbild und als volles Bild, und verlangt
-  **byte-gleiche** Pixel. Gegenprobe: mit absichtlich zu kleinem Schaden
-  schlägt er fehl. Mit der echten Schrift dasselbe über `--frames`
-  (`identical N/N`). Malt die Maske von tiny-skia an den Kanten anders als
-  ohne Maske, wird D nicht gebaut und das hier eingetragen.
+  letzte Bild in die Leinwand und setzt das Teilbild hinein; `changed` findet
+  danach wie bisher den Damage.
+- Tor (fail-closed): Test in `src/app/tests/paint.rs` fährt Hover über
+  mehrere Zeilen, Teile eines Segments und die Navigation, Wechsel mitten in
+  der Blende, auf zwei Seiten und der Galerie bei Skala 2, Bild für Bild als
+  Teilbild und als volles Bild, und verlangt byte-gleiche Pixel und echte
+  Teilbilder. Gegenprobe: ohne ein Ziel (die Navigation) schlägt er fehl.
+- Nachtrag beim Bau: ein Teilbild je Ziel statt einer Box um alle (siehe
+  Stand).
+  Mit der echten Schrift dasselbe über `--frames` (`identical N/N`).
 
 ## Macht nicht
 
@@ -154,6 +170,13 @@ Ziehen, Tasten, Klicks, Daten vom Daemon, neue Größe) malt voll.
 - Keine Teil-Kopie in den Wayland-Puffer; der Upload bleibt ganz.
 - Selector, Shelf und Aufnahme-Leiste bleiben unberührt.
 - Federn, Zeiten, Rundungen in der Textmischung (`roundf`) bleiben.
+
+## Ergebnis
+
+Volles Bild (Scrollen, Seitenwechsel): −17 % (Shelf) und −26 % (Recording)
+durch B und C. Mausbewegung ohne Wirkung: kein Bild mehr (A). Hover-Blende:
+etwa ein Zehntel (Zeile) bis ein Drittel (Navigation) eines vollen Bilds (D).
+Pixel überall byte-gleich zum Stand vor dem Plan.
 
 ## Prüfungen
 
@@ -170,4 +193,4 @@ Hyprland nicht als Motion an).
 | B | gebaut 29.10. | 23 Referenzbilder (fünf Seiten × Skala 1 und 2, Hover auf Zeile und Navigation, Galerie × 3) byte-gleich; Shelf 0,96–1,02 ms (−10 %), Recording 1,16–1,27 ms (−14 %); `cargo test` grün |
 | C | gebaut 29.10. | 23 Referenzbilder byte-gleich (der Grenzfall in der Teilung kam nicht vor); Shelf 0,89–0,93 ms (−6 % zu B), Recording 1,01–1,02 ms (−13 % zu B); zusammen mit B −17 % und −26 % zum Ausgangswert; `cargo test` grün |
 | A | gebaut 29.10. | `tests/paint.rs`: Bewegung auf demselben Control ohne Feder malt nicht, Zeilenwechsel, Teil-Hover, Ziehen und offene Liste malen; Gegenprobe ohne die `animating`-Bedingung lässt den Teil-Hover-Test fehlschlagen. Live offen (Fenster mit bewegter Maus, perf) |
-| D | geplant | |
+| D | gebaut 29.10. | Erste Fassung mit einer Box um alle Ziele fiel im eigenen Test durch: deren Kante schnitt das Replay-Icon der Navigation, und eine gestrichene Kurve malt tiny-skia an der Pixmap-Kante leicht anders. Seitdem ein Teilbild je Ziel (Zeile, Navigationseintrag), Kanten nur an Element-Grenzen. `tests/paint.rs`: vier Tests, Bild für Bild Teilbild gegen volles Bild byte-gleich (Recording mit Wechseln mitten in der Blende, Shelf und General mit jedem Control und Eintrag nacheinander, Galerie bei Skala 2, Galerie mit Klick auf jedes Control: 66 von 153 Bildern Teilbilder, Schalter, Segmente, Fokus). Gegenprobe ohne Navigationsziele: die drei Hover-Tests schlagen fehl. Ohne die Ziele des letzten Bilds schlägt nichts fehl: eine Feder ist erst fertig, wenn ihr Wert schon pixelgleich am Ziel ist (`motion.rs` `done`); sie bleiben als Sicherheitsnetz. Echte Schrift (`--frames 240`, fünf Seiten × drei Mauspunkte): 240/240 identisch. 23 Referenzbilder byte-gleich. Während der Blende (24 Bilder): Zeilen-Hover Shelf 0,08–0,09 ms, Recording 0,11–0,12 ms (vorher ~1,0–1,3 ms), Navigations-Hover 0,26–0,47 ms. `cargo test` grün (Lib-Suite ~12 s statt ~2 s durch diese Tests im Debug-Build), clippy sauber |

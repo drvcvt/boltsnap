@@ -429,7 +429,7 @@ Formen (`tiny_skia`) 50 %, Glyphen-Umrisse 20 %, libc-Kopien 17 %, libm
 10 %. Das ist der nächste Hebel, siehe Tempo-Durchsicht.
 
 **Macht nicht:** kein Teil-Neuzeichnen des Fensters (jedes Bild malt alles;
-eigener Umbau, nicht hier).
+eigener Umbau, nicht hier). Nachtrag 29.10.: inzwischen gebaut, [settings paint speed](../settings/2026-10-29-settings-paint-speed.md).
 
 ### Tempo-Durchsicht 29.10.
 

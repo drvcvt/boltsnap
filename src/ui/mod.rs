@@ -182,6 +182,9 @@ impl Rect {
 pub struct Canvas {
     pub pixmap: Pixmap,
     pub scale: f32,
+    /// Where the pixmap's first pixel is in the window, in device pixels:
+    /// (0, 0) but for a [`Canvas::part`].
+    pub origin: (i32, i32),
 }
 
 impl Canvas {
@@ -191,7 +194,53 @@ impl Canvas {
         Some(Self {
             pixmap: Pixmap::new(width * scale, height * scale)?,
             scale: scale as f32,
+            origin: (0, 0),
         })
+    }
+
+    /// A canvas for `rect` of this one alone, 2 device pixels larger on
+    /// every side and on whole device pixels; `None` when that misses this
+    /// canvas. Shifted by whole pixels only, what is drawn into it comes out
+    /// as the same pixels it would here (settings paint speed plan, stage D);
+    /// [`Canvas::paste`] puts it back.
+    pub fn part(&self, rect: Rect) -> Option<Canvas> {
+        let (w, h) = (self.pixmap.width() as i32, self.pixmap.height() as i32);
+        let device = |v: f32| v * self.scale;
+        let left = (device(rect.x).floor() as i32 - 2 - self.origin.0).max(0);
+        let top = (device(rect.y).floor() as i32 - 2 - self.origin.1).max(0);
+        let right = (device(rect.right()).ceil() as i32 + 2 - self.origin.0).min(w);
+        let bottom = (device(rect.bottom()).ceil() as i32 + 2 - self.origin.1).min(h);
+        if right <= left || bottom <= top {
+            return None;
+        }
+        Some(Canvas {
+            pixmap: Pixmap::new((right - left) as u32, (bottom - top) as u32)?,
+            scale: self.scale,
+            origin: (self.origin.0 + left, self.origin.1 + top),
+        })
+    }
+
+    /// `part`'s pixels in place of these where it lies.
+    pub fn paste(&mut self, part: &Canvas) {
+        let dx = (part.origin.0 - self.origin.0) as usize;
+        let dy = (part.origin.1 - self.origin.1) as usize;
+        let width = self.pixmap.width() as usize;
+        let span = part.pixmap.width() as usize * 4;
+        let data = self.pixmap.data_mut();
+        for (row, line) in part.pixmap.data().chunks_exact(span).enumerate() {
+            let at = ((dy + row) * width + dx) * 4;
+            data[at..at + span].copy_from_slice(line);
+        }
+    }
+
+    /// What the pixmap covers, in logical pixels of the window.
+    pub fn bounds(&self) -> Rect {
+        Rect::new(
+            self.origin.0 as f32 / self.scale,
+            self.origin.1 as f32 / self.scale,
+            self.width(),
+            self.height(),
+        )
     }
 
     pub fn width(&self) -> f32 {
@@ -217,9 +266,15 @@ impl Canvas {
         }
         let width = self.pixmap.width() as usize;
         let height = self.pixmap.height() as usize;
-        let device = |v: f32, max: usize| ((v * self.scale).round().max(0.0) as usize).min(max);
-        let (left, right) = (device(rect.x, width), device(rect.right(), width));
-        let (top, bottom) = (device(rect.y, height), device(rect.bottom(), height));
+        let device = |v: f32, origin: i32, max: usize| {
+            (((v * self.scale).round() - origin as f32).max(0.0) as usize).min(max)
+        };
+        let (ox, oy) = self.origin;
+        let (left, right) = (device(rect.x, ox, width), device(rect.right(), ox, width));
+        let (top, bottom) = (
+            device(rect.y, oy, height),
+            device(rect.bottom(), oy, height),
+        );
         let target = [color.0, color.1, color.2, 255];
         let data = self.pixmap.data_mut();
         for row in top..bottom {
@@ -239,7 +294,11 @@ impl Canvas {
     }
 
     pub(crate) fn transform(&self) -> Transform {
-        Transform::from_scale(self.scale, self.scale)
+        let scale = Transform::from_scale(self.scale, self.scale);
+        match self.origin {
+            (0, 0) => scale,
+            (x, y) => scale.post_translate(-x as f32, -y as f32),
+        }
     }
 
     /// A band `width` wide just inside `rect`'s rounded outline.
@@ -398,11 +457,13 @@ pub fn push_squircle(pb: &mut PathBuilder, rect: Rect, radius: f32) {
     pb.close();
 }
 
+/// Flattened corners by R, n and direction (see [`corner`]).
+type Corners = std::collections::HashMap<(u32, u32, bool), Vec<(f32, f32)>>;
+
 thread_local! {
     /// Each corner shape once, by R, n and direction (settings paint speed
     /// plan, stage C).
-    static CORNERS: std::cell::RefCell<std::collections::HashMap<(u32, u32, bool), Vec<(f32, f32)>>> =
-        Default::default();
+    static CORNERS: std::cell::RefCell<Corners> = Default::default();
 }
 
 /// One quadrant of the superellipse with half axis `big` and exponent `n`,

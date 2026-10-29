@@ -18,7 +18,7 @@ use crate::ui::theme::{
 use crate::ui::widgets::Value;
 use crate::ui::{Canvas, Effect, Input, Key, Mods};
 
-const SIZE: (f32, f32) = (760.0, 520.0);
+pub const SIZE: (f32, f32) = (760.0, 520.0);
 /// Long enough for every spring in the window to have settled.
 pub const SETTLED: Duration = Duration::from_secs(1);
 

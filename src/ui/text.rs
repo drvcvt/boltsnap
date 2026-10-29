@@ -337,7 +337,7 @@ impl Fonts {
         color: Rgb,
         alpha: f32,
     ) {
-        let all = Rect::new(0.0, 0.0, canvas.width(), canvas.height());
+        let all = canvas.bounds();
         self.draw_clipped(canvas, style, text, at, color, alpha, all);
     }
 
@@ -356,15 +356,16 @@ impl Fonts {
         let face = self.face(style);
         let scale = PxScale::from(self.size(style) * canvas.scale);
         let width = canvas.pixmap.width() as i32;
+        let (ox, oy) = canvas.origin;
         let device = |v: f32| (v * canvas.scale).round() as i32;
-        let (left, top) = (device(clip.x).max(0), device(clip.y).max(0));
-        let right = device(clip.right()).min(width);
-        let bottom = device(clip.bottom()).min(canvas.pixmap.height() as i32);
+        let (left, top) = ((device(clip.x) - ox).max(0), (device(clip.y) - oy).max(0));
+        let right = (device(clip.right()) - ox).min(width);
+        let bottom = (device(clip.bottom()) - oy).min(canvas.pixmap.height() as i32);
         let data = canvas.pixmap.data_mut();
         // Start and baseline on whole device pixels: a fractional baseline
         // smears every horizontal edge over two rows.
         let mut caret = (x * canvas.scale).round();
-        let baseline = (baseline * canvas.scale).round() as i32;
+        let baseline = (baseline * canvas.scale).round() as i32 - oy;
         let mut glyphs = self.glyphs.borrow_mut();
         for (_, id, kern, advance) in self.advances(style, scale.x, text) {
             caret += kern;
@@ -392,14 +393,14 @@ impl Fonts {
                 })
             });
             let Some(coverage) = coverage else { continue };
-            let (ox, oy) = (whole as i32 + coverage.x, baseline + coverage.y);
+            let (gx, gy) = (whole as i32 - ox + coverage.x, baseline + coverage.y);
             for (row, line) in coverage.alpha.chunks_exact(coverage.w.max(1)).enumerate() {
-                let py = oy + row as i32;
+                let py = gy + row as i32;
                 if py < top || py >= bottom {
                     continue;
                 }
                 for (col, c) in line.iter().enumerate() {
-                    let px = ox + col as i32;
+                    let px = gx + col as i32;
                     if *c <= 0.0 || px < left || px >= right {
                         continue;
                     }
