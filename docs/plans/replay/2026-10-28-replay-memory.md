@@ -455,4 +455,5 @@ koennen“. Nur gemessen, nichts gebaut.
      liest Umrisse und Variationen jedes Bild neu);
   3. Squircle-Pfade je Größe merken (`ui::push_squircle`, `hypotf`,
      `roundf`: ein Teil der 50 % Formen und 10 % libm).
-  Offen, Entscheidung beim Nutzer.
+  Nutzer 29.10.: alle drei, solange nichts hässlicher wird. Plan und Stand:
+  [settings paint speed](../settings/2026-10-29-settings-paint-speed.md).

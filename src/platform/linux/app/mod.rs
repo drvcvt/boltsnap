@@ -28,7 +28,7 @@ use crate::DynResult;
 use window::{OPEN_SIZE as SIZE, Parts, Win};
 const USAGE: &str = "usage: boltsnap settings [PAGE]\n       \
      boltsnap settings --render PAGE OUT.png [--scale N] [--size WxH] [--fixture]\n       \
-                                [--move X,Y] [--click X,Y] [--after MS]\n       \
+                                [--move X,Y] [--click X,Y] [--after MS] [--frames N]\n       \
      boltsnap settings --measure";
 
 /// How `--render` draws.
@@ -41,6 +41,9 @@ struct Render {
     hover: Option<(f32, f32)>,
     click: Option<(f32, f32)>,
     after: u64,
+    /// Draw this many frames 1/240 s apart from then on and print how long
+    /// each took (settings paint speed plan, stage 0).
+    frames: u32,
 }
 
 fn render_options(mut rest: &[String]) -> DynResult<Render> {
@@ -51,6 +54,7 @@ fn render_options(mut rest: &[String]) -> DynResult<Render> {
         hover: None,
         click: None,
         after: 2000,
+        frames: 1,
     };
     let point = |value: &str| {
         value
@@ -62,12 +66,19 @@ fn render_options(mut rest: &[String]) -> DynResult<Render> {
         rest = more;
         match flag.as_str() {
             "--fixture" => render.fixture = true,
-            "--move" | "--click" | "--after" => {
+            "--move" | "--click" | "--after" | "--frames" => {
                 let (value, more) = rest.split_first().ok_or(USAGE)?;
                 rest = more;
                 match flag.as_str() {
                     "--move" => render.hover = Some(point(value)?),
                     "--click" => render.click = Some(point(value)?),
+                    "--frames" => {
+                        render.frames = value
+                            .parse()
+                            .ok()
+                            .filter(|n| (1..=100_000).contains(n))
+                            .ok_or("--frames takes 1 to 100000")?;
+                    }
                     _ => render.after = value.parse().map_err(|_| "--after takes ms")?,
                 }
             }
@@ -167,7 +178,22 @@ fn render(page: &str, out: &Path, render: Render) -> DynResult<()> {
         settled += std::time::Duration::from_millis(render.after);
     }
     let mut canvas = Canvas::new(w, h, render.scale).ok_or("empty canvas")?;
-    app.draw(&mut canvas, settled);
+    let mut took = Vec::with_capacity(render.frames as usize);
+    for frame in 0..render.frames {
+        let at = settled + std::time::Duration::from_secs_f64(f64::from(frame) / 240.0);
+        let start = Instant::now();
+        app.draw(&mut canvas, at);
+        took.push(start.elapsed().as_secs_f64() * 1000.0);
+    }
+    if render.frames > 1 {
+        took.sort_by(f64::total_cmp);
+        println!(
+            "{} frames: median {:.3} ms, max {:.3} ms",
+            took.len(),
+            took[took.len() / 2],
+            took[took.len() - 1]
+        );
+    }
     canvas
         .pixmap
         .save_png(out)

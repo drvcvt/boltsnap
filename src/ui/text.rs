@@ -4,7 +4,7 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use ab_glyph::{Font, FontVec, GlyphId, PxScale, ScaleFont, point};
+use ab_glyph::{Font, FontVec, GlyphId, PxScale, point};
 
 use super::theme::TextStyle;
 use super::{Canvas, Rect, Rgb};
@@ -23,20 +23,37 @@ fn glyph(face: &FontVec, c: char) -> GlyphId {
     }
 }
 
-/// Advance of every glyph in `text`, kerned against the one before, with
-/// the byte index each starts at.
-fn advances<'a>(
-    face: &'a FontVec,
-    scaled: &'a impl ScaleFont<&'a FontVec>,
-    text: &'a str,
-) -> impl Iterator<Item = (usize, GlyphId, f32)> + 'a {
-    let mut previous: Option<GlyphId> = None;
-    text.char_indices().map(move |(index, c)| {
-        let id = glyph(face, c);
-        let kern = previous.map_or(0.0, |previous| scaled.kern(previous, id));
-        previous = Some(id);
-        (index, id, kern)
-    })
+/// What a face measures without a size, read from the font once: every
+/// `h_advance` or `kern` through ab_glyph reads the variable font's height
+/// and deltas again (settings paint speed plan, stage B).
+struct Metrics {
+    /// Ascent − descent, what ab_glyph scales by.
+    height: f32,
+    /// How tall the `H`'s outline is.
+    cap: Option<f32>,
+    /// Glyph and advance of each character met so far.
+    chars: RefCell<HashMap<char, (GlyphId, f32)>>,
+    /// Kerning of each pair met so far.
+    kerns: RefCell<HashMap<(u16, u16), f32>>,
+}
+
+impl Metrics {
+    fn new(face: &FontVec) -> Self {
+        Self {
+            height: face.height_unscaled(),
+            cap: face
+                .outline(face.glyph_id('H'))
+                .map(|outline| outline.bounds.height().abs()),
+            chars: RefCell::default(),
+            kerns: RefCell::default(),
+        }
+    }
+
+    /// ab_glyph's `h_scale_factor` and `v_scale_factor` for `px`: the same
+    /// division, so what it scales comes out to the same bits.
+    fn factor(&self, px: f32) -> f32 {
+        px / self.height
+    }
 }
 
 /// Glyph origins are placed to a quarter of a device pixel horizontally;
@@ -61,6 +78,7 @@ pub struct Fonts {
     demibold: FontVec,
     /// Capital height per unit of `PxScale`, for each face.
     caps: [f32; 2],
+    metrics: [Metrics; 2],
     /// Every glyph is rasterized once per size and offset, not every frame.
     glyphs: RefCell<HashMap<GlyphKey, Option<Coverage>>>,
     /// A number of its own: what was measured with one `Fonts` can be kept
@@ -79,11 +97,13 @@ fn cap_ratio(face: &FontVec) -> f32 {
 impl Fonts {
     pub fn new(medium: FontVec, demibold: FontVec) -> Self {
         let caps = [cap_ratio(&medium), cap_ratio(&demibold)];
+        let metrics = [Metrics::new(&medium), Metrics::new(&demibold)];
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         Self {
             medium,
             demibold,
             caps,
+            metrics,
             glyphs: RefCell::new(HashMap::new()),
             id: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         }
@@ -115,21 +135,49 @@ impl Fonts {
         }
     }
 
+    /// Glyph, kerning against the one before and advance of every character
+    /// of `text` at `px`, with the byte index each starts at.
+    fn advances<'a>(
+        &'a self,
+        style: TextStyle,
+        px: f32,
+        text: &'a str,
+    ) -> impl Iterator<Item = (usize, GlyphId, f32, f32)> + 'a {
+        let face = self.face(style);
+        let metrics = &self.metrics[usize::from(style.strong())];
+        let factor = metrics.factor(px);
+        let mut previous: Option<GlyphId> = None;
+        text.char_indices().map(move |(index, c)| {
+            let (id, advance) = *metrics.chars.borrow_mut().entry(c).or_insert_with(|| {
+                let id = glyph(face, c);
+                (id, face.h_advance_unscaled(id))
+            });
+            let kern = previous.map_or(0.0, |previous| {
+                factor
+                    * *metrics
+                        .kerns
+                        .borrow_mut()
+                        .entry((previous.0, id.0))
+                        .or_insert_with(|| face.kern_unscaled(previous, id))
+            });
+            previous = Some(id);
+            (index, id, kern, factor * advance)
+        })
+    }
+
     /// Advance width of `text`.
     pub fn width(&self, style: TextStyle, text: &str) -> f32 {
-        let face = self.face(style);
-        let scaled = face.as_scaled(PxScale::from(self.size(style)));
-        advances(face, &scaled, text)
-            .map(|(_, id, kern)| kern + scaled.h_advance(id))
+        self.advances(style, self.size(style), text)
+            .map(|(_, _, kern, advance)| kern + advance)
             .sum()
     }
 
     /// Height of a capital (an `H` sits on the baseline).
     pub fn cap_height(&self, style: TextStyle) -> f32 {
-        let face = self.face(style);
-        let scaled = face.as_scaled(PxScale::from(self.size(style)));
-        face.outline(face.glyph_id('H'))
-            .map(|outline| outline.bounds.height().abs() * scaled.v_scale_factor())
+        let metrics = &self.metrics[usize::from(style.strong())];
+        metrics
+            .cap
+            .map(|cap| cap * metrics.factor(self.size(style)))
             .unwrap_or(style.cap())
     }
 
@@ -268,14 +316,12 @@ impl Fonts {
 
     /// The x of every caret position in `text`, as (byte index, x).
     pub fn carets(&self, style: TextStyle, text: &str) -> Vec<(usize, f32)> {
-        let face = self.face(style);
-        let scaled = face.as_scaled(PxScale::from(self.size(style)));
         let mut x = 0.0;
         let mut carets = Vec::with_capacity(text.len() + 1);
-        for (index, id, kern) in advances(face, &scaled, text) {
+        for (index, _, kern, advance) in self.advances(style, self.size(style), text) {
             x += kern;
             carets.push((index, x));
-            x += scaled.h_advance(id);
+            x += advance;
         }
         carets.push((text.len(), x));
         carets
@@ -309,7 +355,6 @@ impl Fonts {
     ) {
         let face = self.face(style);
         let scale = PxScale::from(self.size(style) * canvas.scale);
-        let scaled = face.as_scaled(scale);
         let width = canvas.pixmap.width() as i32;
         let device = |v: f32| (v * canvas.scale).round() as i32;
         let (left, top) = (device(clip.x).max(0), device(clip.y).max(0));
@@ -321,7 +366,7 @@ impl Fonts {
         let mut caret = (x * canvas.scale).round();
         let baseline = (baseline * canvas.scale).round() as i32;
         let mut glyphs = self.glyphs.borrow_mut();
-        for (_, id, kern) in advances(face, &scaled, text) {
+        for (_, id, kern, advance) in self.advances(style, scale.x, text) {
             caret += kern;
             let whole = caret.floor();
             let quarter = ((caret - whole) * SUBPIXEL).round();
@@ -330,7 +375,7 @@ impl Fonts {
             } else {
                 (whole, quarter)
             };
-            caret += scaled.h_advance(id);
+            caret += advance;
             let key = (style.strong(), id.0, scale.y.to_bits(), quarter as u8);
             let coverage = glyphs.entry(key).or_insert_with(|| {
                 let at = point(quarter / SUBPIXEL, 0.0);
