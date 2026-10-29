@@ -158,11 +158,12 @@ impl Win {
     /// Hand `input` to the app, act on what it asks, and redraw. Pointer
     /// moves are gathered: a fast mouse sends far more than a frame shows,
     /// so only the last one per frame goes to the app (`flush_move`), and
-    /// any other input lets it through first so hover and click agree.
+    /// any other input lets it through first so hover and click agree. A
+    /// move draws only when it changes something (`App::pointer_moved`).
     pub(super) fn input(&mut self, input: Input) {
         if let Input::Move { x, y } = input {
             self.pending_move = Some((x, y));
-            self.changed();
+            self.redraw();
             return;
         }
         self.flush_move();
@@ -172,13 +173,17 @@ impl Win {
         self.changed();
     }
 
-    /// The pointer's last position since the last frame, to the app.
-    fn flush_move(&mut self) {
-        if let Some((x, y)) = self.pending_move.take() {
-            for effect in self.app.handle(Input::Move { x, y }, Instant::now()) {
-                self.effect(effect);
-            }
+    /// The pointer's last position since the last frame, to the app;
+    /// `true` when it can have changed what the window shows.
+    fn flush_move(&mut self) -> bool {
+        let Some((x, y)) = self.pending_move.take() else {
+            return false;
+        };
+        let (effects, shows) = self.app.pointer_moved(x, y, Instant::now());
+        for effect in effects {
+            self.effect(effect);
         }
+        shows
     }
 
     /// The connected monitors by maker and model, where the compositor lays
@@ -271,13 +276,24 @@ impl Win {
 
     /// Draw now, unless a frame callback is due first; then it draws.
     pub(super) fn redraw(&mut self) {
-        if self.configured && !self.frame_pending && self.dirty {
+        if self.configured && !self.frame_pending && (self.dirty || self.pending_move.is_some()) {
             self.draw();
         }
     }
 
     fn draw(&mut self) {
-        self.flush_move();
+        if self.flush_move() {
+            self.dirty = true;
+        }
+        if !self.dirty {
+            // The move changed nothing: no frame, but the next moves still
+            // wait for the display's, so they stay gathered per frame.
+            let surface = self.window.wl_surface();
+            surface.frame(&self.qh, surface.clone());
+            surface.commit();
+            self.frame_pending = true;
+            return;
+        }
         let (w, h, scale) = (self.size.0, self.size.1, self.scale);
         let (bw, bh) = (w * scale, h * scale);
         let fits = |canvas: &Option<Canvas>| {

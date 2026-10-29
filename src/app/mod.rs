@@ -443,6 +443,22 @@ impl App {
         effects
     }
 
+    /// [`App::handle`] for a pointer move, and whether what the window
+    /// shows can have changed by it: the hover went to another target,
+    /// something is dragged, a list is open, a value changed, or something
+    /// moves now. Otherwise the last frame still stands (settings paint
+    /// speed plan, stage A).
+    pub fn pointer_moved(&mut self, x: f32, y: f32, now: Instant) -> (Vec<Effect>, bool) {
+        let hover = self.hover;
+        let effects = self.handle(Input::Move { x, y }, now);
+        let shows = self.hover != hover
+            || self.capture.is_some()
+            || self.open_overlay(now).is_some()
+            || !effects.is_empty()
+            || self.animating(now);
+        (effects, shows)
+    }
+
     fn react(&mut self, input: Input, now: Instant) -> Vec<Effect> {
         let outcome = match input {
             Input::Move { x, y } => self.moved((x, y), now),

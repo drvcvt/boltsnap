@@ -169,5 +169,5 @@ Hyprland nicht als Motion an).
 | 0 | gebaut 29.10. | Ausgangswert (Median je Bild, 760 × 520, Skala 1, je 3 × 480 Bilder): Shelf 1,07–1,21 ms, Recording 1,34–1,38 ms, mit Hover-Blende gleich |
 | B | gebaut 29.10. | 23 Referenzbilder (fünf Seiten × Skala 1 und 2, Hover auf Zeile und Navigation, Galerie × 3) byte-gleich; Shelf 0,96–1,02 ms (−10 %), Recording 1,16–1,27 ms (−14 %); `cargo test` grün |
 | C | gebaut 29.10. | 23 Referenzbilder byte-gleich (der Grenzfall in der Teilung kam nicht vor); Shelf 0,89–0,93 ms (−6 % zu B), Recording 1,01–1,02 ms (−13 % zu B); zusammen mit B −17 % und −26 % zum Ausgangswert; `cargo test` grün |
-| A | geplant | |
+| A | gebaut 29.10. | `tests/paint.rs`: Bewegung auf demselben Control ohne Feder malt nicht, Zeilenwechsel, Teil-Hover, Ziehen und offene Liste malen; Gegenprobe ohne die `animating`-Bedingung lässt den Teil-Hover-Test fehlschlagen. Live offen (Fenster mit bewegter Maus, perf) |
 | D | geplant | |
