@@ -270,13 +270,27 @@ fn fade_mixes_towards_the_colour_and_leaves_that_colour_alone() {
 }
 
 #[test]
-fn a_fade_about_to_end_already_shows_the_end() {
-    // At 255/256 the exact mix of a panel is 27.96: it must show 28, or the
-    // whole page steps one level brighter when the fade stops.
-    let mut canvas = Canvas::new(1, 1, 1).unwrap();
-    canvas.clear(theme::PANEL);
-    canvas.fade(Rect::new(0.0, 0.0, 1.0, 1.0), theme::WINDOW, 255.0 / 256.0);
-    assert_eq!(canvas.pixmap.data()[..3], [theme::PANEL.0; 3]);
+fn a_fading_area_shows_its_exact_mix_on_average() {
+    // A panel fades through only ten levels over the window; rounded per
+    // pixel, the last one lags behind in the spring's tail and the whole
+    // page steps brighter. Dithered, the area's mean follows every step.
+    let (panel, window) = (f32::from(theme::PANEL.0), f32::from(theme::WINDOW.0));
+    for keep in [32, 128, 200, 243, 250, 255] {
+        let mut canvas = Canvas::new(4, 4, 1).unwrap();
+        canvas.clear(theme::PANEL);
+        canvas.fade(
+            Rect::new(0.0, 0.0, 4.0, 4.0),
+            theme::WINDOW,
+            keep as f32 / 256.0,
+        );
+        let reds = canvas.pixmap.data().iter().step_by(4);
+        let mean = reds.map(|&red| f32::from(red)).sum::<f32>() / 16.0;
+        let exact = (panel * keep as f32 + window * (256 - keep) as f32) / 256.0;
+        assert!(
+            (mean - exact).abs() <= 1.0 / 16.0,
+            "keep {keep}: mean {mean}, exact {exact}"
+        );
+    }
 }
 
 #[test]

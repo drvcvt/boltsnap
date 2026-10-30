@@ -210,9 +210,18 @@ steht `keep` bei 255/256, eine Gruppenfläche ist dann 27 statt 28, bis die
 Blende endet und alles außer dem Fensterhintergrund eine Stufe springt.
 Nachgewiesen mit einer Bild-für-Bild-Aufnahme des Seitenwechsels (echte
 Schrift, 240 Bilder): 195 969 Pixel springen bei 408 ms, davor 80 ms auf
-der dunkleren Stufe. Fix: gerundet (`+ 128`). Danach springen dort nur noch
-~5 000 helle Schriftpixel um eine Stufe, wie es die exakte Mischung will.
-Test `a_fade_about_to_end_already_shows_the_end` in `src/ui/tests.rs`.
+der dunkleren Stufe. Erster Fix (`9a6d6b6`): gerundet. Nachschau des
+Nutzers: der Sprung kommt jetzt früher. Grund: eine Gruppenfläche hat von
+18 nach 28 nur zehn Stufen; neun kommen im Abstand von 12–21 ms, die
+letzte erst 66 ms später im Ausklang der Feder (bei 229 ms) und wird als
+Sprung gesehen. Zeitliches Banding. Zweiter Fix: `fade` mischt in 1/4096
+statt 1/256 und dithert mit einer festen 4 × 4-Bayer-Matrix am absoluten
+Fensterpixel (Teilbilder bleiben gleich dem vollen Bild). Aufnahme danach:
+das Mittel der Zeile 300 steigt Bild für Bild stetig, der letzte Schritt
+bei 441 ms ist +0,04 Stufen (vorher +1 auf der ganzen Fläche). Ruhebilder
+unverändert, da `fade` bei `keep = 1` nichts tut. Test
+`a_fading_area_shows_its_exact_mix_on_average` in `src/ui/tests.rs`
+(schlägt mit bloßem Runden fehl: bei keep 243/256 Mittel 27 statt 27,49).
 Live-Nachschau durch den Nutzer offen.
 
 **L2, niedrig, offen: ein Pixel Abweichung im echten Fenster.** Eine

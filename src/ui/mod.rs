@@ -259,9 +259,12 @@ impl Canvas {
     /// Take everything in `rect` towards the opaque `color`, keeping `keep`
     /// (0 to 1) of what is there: what a layer of `color` at `1 − keep`
     /// would do, without blending the pixels that are `color` already.
+    /// Dithered and in fine steps: a flat area between two levels shows both
+    /// in the right share, so a fade glides instead of stepping level by
+    /// level, and its end does not wait in the spring's slow tail.
     pub fn fade(&mut self, rect: Rect, color: Rgb, keep: f32) {
-        let keep = (keep.clamp(0.0, 1.0) * 256.0).round() as u32;
-        if keep >= 256 {
+        let keep = (keep.clamp(0.0, 1.0) * FADE_ONE as f32).round() as u32;
+        if keep >= FADE_ONE {
             return;
         }
         let width = self.pixmap.width() as usize;
@@ -278,19 +281,18 @@ impl Canvas {
         let target = [color.0, color.1, color.2, 255];
         let data = self.pixmap.data_mut();
         for row in top..bottom {
-            for pixel in data[(row * width + left) * 4..(row * width + right) * 4]
+            let pixels = data[(row * width + left) * 4..(row * width + right) * 4]
                 .as_chunks_mut::<4>()
-                .0
-                .iter_mut()
-            {
+                .0;
+            for (column, pixel) in (left..).zip(pixels) {
                 if *pixel == target {
                     continue;
                 }
-                // Rounded: cut off, the last step before `keep` reaches 256
-                // leaves everything one level dark until the fade ends.
+                let threshold = dither(column as i32 + ox, row as i32 + oy);
                 for (channel, to) in pixel.iter_mut().zip(target) {
                     *channel =
-                        ((*channel as u32 * keep + to as u32 * (256 - keep) + 128) >> 8) as u8;
+                        ((*channel as u32 * keep + to as u32 * (FADE_ONE - keep) + threshold)
+                            / FADE_ONE) as u8;
                 }
             }
         }
@@ -342,6 +344,17 @@ impl Canvas {
             None,
         );
     }
+}
+
+/// `Canvas::fade`'s whole: its mix is exact to 1/4096.
+const FADE_ONE: u32 = 4096;
+
+/// The rounding threshold (in 1/`FADE_ONE` of a level) of the window pixel
+/// at `(x, y)`: a 4 × 4 ordered dither whose thresholds average one half, so
+/// a mix keeps its exact value on average.
+fn dither(x: i32, y: i32) -> u32 {
+    const BAYER: [u32; 16] = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
+    (BAYER[((y & 3) * 4 + (x & 3)) as usize] * 2 + 1) * FADE_ONE / 32
 }
 
 pub(crate) fn paint(color: Rgb, alpha: f32) -> Paint<'static> {
