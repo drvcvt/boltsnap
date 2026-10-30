@@ -264,9 +264,19 @@ fn fade_mixes_towards_the_colour_and_leaves_that_colour_alone() {
     canvas.fade(Rect::new(0.0, 0.0, 4.0, 1.0), theme::WINDOW, 0.5);
     let data = canvas.pixmap.data();
     assert_eq!(data[..8], before[..8], "the window colour stays exact");
-    let mid = |a: u8, b: u8| ((a as u32 * 128 + b as u32 * 128) >> 8) as u8;
+    let mid = |a: u8, b: u8| ((a as u32 * 128 + b as u32 * 128 + 128) >> 8) as u8;
     assert_eq!(data[8], mid(theme::TEXT.0, theme::WINDOW.0));
     assert_eq!(data[11], 255);
+}
+
+#[test]
+fn a_fade_about_to_end_already_shows_the_end() {
+    // At 255/256 the exact mix of a panel is 27.96: it must show 28, or the
+    // whole page steps one level brighter when the fade stops.
+    let mut canvas = Canvas::new(1, 1, 1).unwrap();
+    canvas.clear(theme::PANEL);
+    canvas.fade(Rect::new(0.0, 0.0, 1.0, 1.0), theme::WINDOW, 255.0 / 256.0);
+    assert_eq!(canvas.pixmap.data()[..3], [theme::PANEL.0; 3]);
 }
 
 #[test]

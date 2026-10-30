@@ -194,3 +194,37 @@ Hyprland nicht als Motion an).
 | C | gebaut 29.10. | 23 Referenzbilder byte-gleich (der Grenzfall in der Teilung kam nicht vor); Shelf 0,89–0,93 ms (−6 % zu B), Recording 1,01–1,02 ms (−13 % zu B); zusammen mit B −17 % und −26 % zum Ausgangswert; `cargo test` grün |
 | A | gebaut 29.10. | `tests/paint.rs`: Bewegung auf demselben Control ohne Feder malt nicht, Zeilenwechsel, Teil-Hover, Ziehen und offene Liste malen; Gegenprobe ohne die `animating`-Bedingung lässt den Teil-Hover-Test fehlschlagen. Live offen (Fenster mit bewegter Maus, perf) |
 | D | gebaut 29.10. | Erste Fassung mit einer Box um alle Ziele fiel im eigenen Test durch: deren Kante schnitt das Replay-Icon der Navigation, und eine gestrichene Kurve malt tiny-skia an der Pixmap-Kante leicht anders. Seitdem ein Teilbild je Ziel (Zeile, Navigationseintrag), Kanten nur an Element-Grenzen. `tests/paint.rs`: vier Tests, Bild für Bild Teilbild gegen volles Bild byte-gleich (Recording mit Wechseln mitten in der Blende, Shelf und General mit jedem Control und Eintrag nacheinander, Galerie bei Skala 2, Galerie mit Klick auf jedes Control: 66 von 153 Bildern Teilbilder, Schalter, Segmente, Fokus). Gegenprobe ohne Navigationsziele: die drei Hover-Tests schlagen fehl. Ohne die Ziele des letzten Bilds schlägt nichts fehl: eine Feder ist erst fertig, wenn ihr Wert schon pixelgleich am Ziel ist (`motion.rs` `done`); sie bleiben als Sicherheitsnetz. Echte Schrift (`--frames 240`, fünf Seiten × drei Mauspunkte): 240/240 identisch. 23 Referenzbilder byte-gleich. Während der Blende (24 Bilder): Zeilen-Hover Shelf 0,08–0,09 ms, Recording 0,11–0,12 ms (vorher ~1,0–1,3 ms), Navigations-Hover 0,26–0,47 ms. `cargo test` grün (Lib-Suite ~12 s statt ~2 s durch diese Tests im Debug-Build), clippy sauber |
+
+## Live-Abnahme und Befunde, 30.10.
+
+**Messung:** je 25 s ununterbrochen Maus über Zeilen und Navigation der
+Recording-Seite, Fenster nach 25 s per `timeout` zu, `/usr/bin/time`:
+Stand vor dem Plan 53 % CPU (13,0 s user, 0,5 s sys), jetzt 29 % (7,0 s
+user, 0,4 s sys).
+
+**L1, mittel, behoben: Stufensprung am Ende des Seiten-Einblendens.** Vom
+Nutzer gesehen: die Einstellungen werden am Ende der Animation minimal
+heller. Nicht aus diesem Plan, schon vorher so. Ursache: `Canvas::fade`
+(`src/ui/mod.rs`) mischte mit `>> 8` abgeschnitten; im Ausklang der Feder
+steht `keep` bei 255/256, eine Gruppenfläche ist dann 27 statt 28, bis die
+Blende endet und alles außer dem Fensterhintergrund eine Stufe springt.
+Nachgewiesen mit einer Bild-für-Bild-Aufnahme des Seitenwechsels (echte
+Schrift, 240 Bilder): 195 969 Pixel springen bei 408 ms, davor 80 ms auf
+der dunkleren Stufe. Fix: gerundet (`+ 128`). Danach springen dort nur noch
+~5 000 helle Schriftpixel um eine Stufe, wie es die exakte Mischung will.
+Test `a_fade_about_to_end_already_shows_the_end` in `src/ui/tests.rs`.
+Live-Nachschau durch den Nutzer offen.
+
+**L2, niedrig, offen: ein Pixel Abweichung im echten Fenster.** Eine
+Prüf-Version verglich 40 s lang jedes gezeigte Bild mit einem frisch
+gemalten: einmal 1 Pixel bei (302, 491), Skala 1, um 7/255 daneben. Nicht
+nachgestellt; die Tests mit der Ersatzschrift und `--frames` mit der echten
+Schrift waren identisch. Vermutlich eine Kante, die eine Teilbild-Grenze
+schneidet (wie das Replay-Icon in Stufe D). Nächster Schritt: Ort und
+Element bestimmen, dann die Teilbild-Grenze daran ausrichten.
+
+**L3, niedrig, offen: `damage` merkt das Bild vor dem Zeigen.** Findet
+`Buffers::next` keinen Puffer, kehrt `draw` (`window.rs`) zurück, nachdem
+`App::damage` das Bild schon als gemalt vermerkt hat; das nächste Teilbild
+setzt dann auf einem älteren Stand auf. In 40 s Prüflauf nie eingetreten.
+Fix: in diesem Rückweg `full` setzen.

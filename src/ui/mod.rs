@@ -286,8 +286,11 @@ impl Canvas {
                 if *pixel == target {
                     continue;
                 }
+                // Rounded: cut off, the last step before `keep` reaches 256
+                // leaves everything one level dark until the fade ends.
                 for (channel, to) in pixel.iter_mut().zip(target) {
-                    *channel = ((*channel as u32 * keep + to as u32 * (256 - keep)) >> 8) as u8;
+                    *channel =
+                        ((*channel as u32 * keep + to as u32 * (256 - keep) + 128) >> 8) as u8;
                 }
             }
         }
