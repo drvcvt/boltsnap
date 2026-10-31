@@ -540,6 +540,15 @@ mod tests {
         state: crate::record::session::PublicRecordingState,
         armed: bool,
     ) -> (Vec<u8>, controls::ControlsLayout) {
+        controls_pixels_at(font, state, armed, "01:23")
+    }
+
+    fn controls_pixels_at(
+        font: &FontVec,
+        state: crate::record::session::PublicRecordingState,
+        armed: bool,
+        elapsed: &str,
+    ) -> (Vec<u8>, controls::ControlsLayout) {
         let layout = controls::controls_layout(font);
         let mut buf = vec![0u8; (layout.width * layout.height * 4) as usize];
         controls::draw_recording_controls(
@@ -550,7 +559,7 @@ mod tests {
             false,
             None,
             armed,
-            "01:23",
+            elapsed,
             (font, font),
         );
         (buf, layout)
@@ -698,15 +707,23 @@ mod tests {
     fn controls_shots() {
         use crate::record::session::PublicRecordingState;
         let out = std::path::PathBuf::from(std::env::var("CONTROLS_OUT").expect("CONTROLS_OUT"));
-        let (body, _) = crate::platform::shelf::font::load_ui_font_weights(None, (500.0, 600.0));
-        // The same gate with the desktop's face.
+        let (body, strong) =
+            crate::platform::shelf::font::load_ui_font_weights(None, (500.0, 600.0));
+        // The same gates with the desktop's faces.
         assert_controls_ink(&body);
-        for (name, state, armed) in [
-            ("recording", PublicRecordingState::Recording, false),
-            ("paused", PublicRecordingState::Paused, false),
-            ("confirm", PublicRecordingState::Paused, true),
+        controls::tests::assert_titles_clear_the_time(&body, &strong);
+        for (name, state, armed, elapsed) in [
+            ("recording", PublicRecordingState::Recording, false, "01:23"),
+            ("paused", PublicRecordingState::Paused, false, "01:23"),
+            ("confirm", PublicRecordingState::Paused, true, "01:23"),
+            (
+                "paused-long",
+                PublicRecordingState::Paused,
+                false,
+                "1:40:00",
+            ),
         ] {
-            let (buf, layout) = controls_pixels(&body, state, armed);
+            let (buf, layout) = controls_pixels_at(&body, state, armed, elapsed);
             let mut image = RgbaImage::new(layout.width, layout.height);
             for (pixel, bgra) in image.pixels_mut().zip(buf.as_chunks::<4>().0.iter()) {
                 *pixel = image::Rgba([bgra[2], bgra[1], bgra[0], bgra[3]]);

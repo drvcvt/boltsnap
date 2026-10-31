@@ -288,3 +288,42 @@ pub fn draw_recording_controls(
         );
     }
 }
+
+#[cfg(test)]
+pub(super) mod tests {
+    use super::*;
+
+    /// Every title the popup shows ends at least `CTL_PAD` before the
+    /// widest time it can show, so a long recording never runs into it.
+    pub(in crate::shelf::paint) fn assert_titles_clear_the_time(body: &FontVec, strong: &FontVec) {
+        let width = controls_layout(body).width as f32;
+        let (title_px, time_px) = (px(strong, CTL_TITLE_CAP), px(body, CTL_TITLE_CAP));
+        let time = "10:00:00";
+        let time_left =
+            steady_ink_to(body, time, time_px, width - CTL_PAD) + ink(body, time, time_px).0;
+        for title in [
+            "Recording",
+            "Paused",
+            "Save failed",
+            "Saving…",
+            "Recorder stopped",
+            "Recorder stalled",
+            "Cache full",
+            "Disk check failed",
+            "Low disk space",
+        ] {
+            let (left, ink_width) = ink(strong, title, title_px);
+            let title_right = ink_from(strong, title, title_px, CTL_PAD) + left + ink_width;
+            assert!(
+                title_right + CTL_PAD <= time_left,
+                "{title:?} ends at {title_right}, {time:?} starts at {time_left}"
+            );
+        }
+    }
+
+    #[test]
+    fn titles_clear_a_ten_hour_time() {
+        let font = crate::shelf::font::fallback_popup_font();
+        assert_titles_clear_the_time(&font, &font);
+    }
+}

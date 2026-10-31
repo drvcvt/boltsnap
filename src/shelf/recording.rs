@@ -96,9 +96,14 @@ pub fn popup_hit_with(
     .filter(|button| !(recovery && *button == PopupButton::PauseResume))
 }
 
+/// `MM:SS`, from an hour on `H:MM:SS`.
 pub fn fmt_elapsed(secs: u64) -> String {
-    let secs = secs.min(99 * 60 + 59);
-    format!("{:02}:{:02}", secs / 60, secs % 60)
+    let (hours, minutes, seconds) = (secs / 3600, secs / 60 % 60, secs % 60);
+    if hours == 0 {
+        format!("{minutes:02}:{seconds:02}")
+    } else {
+        format!("{hours}:{minutes:02}:{seconds:02}")
+    }
 }
 
 #[cfg(test)]
@@ -164,9 +169,12 @@ mod tests {
     }
 
     #[test]
-    fn elapsed_formats_mmss() {
+    fn elapsed_formats_mmss_and_from_an_hour_hmmss() {
         assert_eq!(fmt_elapsed(0), "00:00");
         assert_eq!(fmt_elapsed(75), "01:15");
-        assert_eq!(fmt_elapsed(7000), "99:59");
+        assert_eq!(fmt_elapsed(3599), "59:59");
+        assert_eq!(fmt_elapsed(3600), "1:00:00");
+        assert_eq!(fmt_elapsed(7000), "1:56:40");
+        assert_eq!(fmt_elapsed(36000), "10:00:00");
     }
 }
