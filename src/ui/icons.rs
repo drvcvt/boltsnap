@@ -1,9 +1,11 @@
 //! Lucide icons from the embedded sprite (`assets/icons/ui/lucide.svg`),
 //! stroked at any size with the theme's stroke width.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::sync::OnceLock;
 
-use tiny_skia::{LineCap, LineJoin, Path, PathBuilder, Stroke, Transform};
+use tiny_skia::{FillRule, LineCap, LineJoin, Path, PathBuilder, PathSegment, Stroke, Transform};
 
 use super::theme::STROKE;
 use super::{Canvas, Rect, Rgb, paint};
@@ -12,7 +14,7 @@ const SPRITE: &str = include_str!("../../assets/icons/ui/lucide.svg");
 /// Lucide draws on a 24 unit grid.
 const GRID: f32 = 24.0;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Icon {
     Activity,
     AppWindow,
@@ -195,52 +197,101 @@ impl Icon {
         paths[index].as_ref()
     }
 
-    /// Whole device pixels for the box, so strokes stay crisp.
-    fn transform(canvas: &Canvas, rect: Rect) -> Transform {
-        let k = canvas.scale * rect.w.min(rect.h) / GRID;
-        Transform::from_row(
-            k,
-            0.0,
-            0.0,
-            k,
-            (rect.x * canvas.scale).round() - canvas.origin.0 as f32,
-            (rect.y * canvas.scale).round() - canvas.origin.1 as f32,
-        )
-    }
-
     /// Fill the icon's outline into the square `rect`, for a closed shape
     /// that stands for a solid mark (the record dot is a filled `circle`).
     pub fn fill(self, canvas: &mut Canvas, rect: Rect, color: Rgb, alpha: f32) {
-        let Some(path) = self.path() else {
-            return;
-        };
-        let transform = Self::transform(canvas, rect);
-        canvas.pixmap.fill_path(
-            path,
-            &paint(color, alpha),
-            tiny_skia::FillRule::Winding,
-            transform,
-            None,
-        );
+        self.paint(canvas, rect, color, alpha, false);
     }
 
     /// Stroke the icon into the square `rect`.
     pub fn draw(self, canvas: &mut Canvas, rect: Rect, color: Rgb, alpha: f32) {
-        let Some(path) = self.path() else {
-            return;
-        };
-        let size = rect.w.min(rect.h);
-        let transform = Self::transform(canvas, rect);
-        let stroke = Stroke {
-            width: STROKE * GRID / size,
-            line_cap: LineCap::Round,
-            line_join: LineJoin::Round,
-            ..Stroke::default()
-        };
-        canvas
-            .pixmap
-            .stroke_path(path, &paint(color, alpha), &stroke, transform, None);
+        self.paint(canvas, rect, color, alpha, true);
     }
+
+    /// Fill the icon's device outline (see [`Icon::outline`]) with the box
+    /// on whole device pixels, so strokes stay crisp. Moved by whole pixels
+    /// only, the outline lands on the same points in a part as in the whole
+    /// frame (settings paint speed plan, L2).
+    fn paint(self, canvas: &mut Canvas, rect: Rect, color: Rgb, alpha: f32, stroked: bool) {
+        let size = rect.w.min(rect.h);
+        let at = Transform::from_translate(
+            (rect.x * canvas.scale).round() - canvas.origin.0 as f32,
+            (rect.y * canvas.scale).round() - canvas.origin.1 as f32,
+        );
+        OUTLINES.with_borrow_mut(|outlines| {
+            if outlines.len() > 256 {
+                outlines.clear();
+            }
+            let key = (self, size.to_bits(), canvas.scale.to_bits(), stroked);
+            let outline = outlines
+                .entry(key)
+                .or_insert_with(|| self.outline(size, canvas.scale, stroked));
+            if let Some(outline) = outline {
+                let paint = paint(color, alpha);
+                canvas
+                    .pixmap
+                    .fill_path(outline, &paint, FillRule::Winding, at, None);
+            }
+        });
+    }
+
+    /// The area the icon covers at `size` and `scale`, in device pixels from
+    /// its box's corner: the outline itself, or stroked with the theme's
+    /// width on the grid as `stroke_path` would. Its points lie on a 1/256
+    /// pixel grid, so adding the whole pixels of any place in the window to
+    /// them is exact.
+    fn outline(self, size: f32, scale: f32, stroked: bool) -> Option<Path> {
+        let k = scale * size / GRID;
+        let path = self.path()?;
+        let path = if stroked {
+            let stroke = Stroke {
+                width: STROKE * GRID / size,
+                line_cap: LineCap::Round,
+                line_join: LineJoin::Round,
+                ..Stroke::default()
+            };
+            path.stroke(&stroke, k)?
+        } else {
+            path.clone()
+        };
+        snapped(&path.transform(Transform::from_scale(k, k))?)
+    }
+}
+
+/// Device outlines by icon, size, scale and whether stroked.
+type Outlines = HashMap<(Icon, u32, u32, bool), Option<Path>>;
+
+thread_local! {
+    /// Each icon outline once (settings paint speed plan, L2).
+    static OUTLINES: RefCell<Outlines> = Default::default();
+}
+
+/// `path` with every point on the 1/256 grid.
+fn snapped(path: &Path) -> Option<Path> {
+    let mut pb = PathBuilder::new();
+    for segment in path.segments() {
+        match segment {
+            PathSegment::MoveTo(p) => pb.move_to(snap(p.x), snap(p.y)),
+            PathSegment::LineTo(p) => pb.line_to(snap(p.x), snap(p.y)),
+            PathSegment::QuadTo(a, p) => pb.quad_to(snap(a.x), snap(a.y), snap(p.x), snap(p.y)),
+            PathSegment::CubicTo(a, b, p) => pb.cubic_to(
+                snap(a.x),
+                snap(a.y),
+                snap(b.x),
+                snap(b.y),
+                snap(p.x),
+                snap(p.y),
+            ),
+            PathSegment::Close => pb.close(),
+        }
+    }
+    pb.finish()
+}
+
+/// `v` rounded to 1/256: eight bits after the point, so `v` plus any whole
+/// number below 2¹⁵ is exact in an `f32`.
+fn snap(v: f32) -> f32 {
+    (v * 256.0).round() / 256.0
 }
 
 /// The body of `<symbol id="id" …>…</symbol>`.

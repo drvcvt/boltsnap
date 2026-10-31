@@ -224,16 +224,52 @@ unverändert, da `fade` bei `keep = 1` nichts tut. Test
 (schlägt mit bloßem Runden fehl: bei keep 243/256 Mittel 27 statt 27,49).
 Live-Nachschau durch den Nutzer offen.
 
-**L2, niedrig, offen: ein Pixel Abweichung im echten Fenster.** Eine
+**L2, niedrig, behoben: ein Pixel Abweichung im echten Fenster.** Eine
 Prüf-Version verglich 40 s lang jedes gezeigte Bild mit einem frisch
-gemalten: einmal 1 Pixel bei (302, 491), Skala 1, um 7/255 daneben. Nicht
-nachgestellt; die Tests mit der Ersatzschrift und `--frames` mit der echten
-Schrift waren identisch. Vermutlich eine Kante, die eine Teilbild-Grenze
-schneidet (wie das Replay-Icon in Stufe D). Nächster Schritt: Ort und
-Element bestimmen, dann die Teilbild-Grenze daran ausrichten.
+gemalten: einmal 1 Pixel bei (302, 491), Skala 1, um 7/255 daneben.
 
-**L3, niedrig, offen: `damage` merkt das Bild vor dem Zeigen.** Findet
+Nachgestellt mit einer Wegwerf-Probe (nicht eingecheckt): echte Schrift,
+jede Seite, Zeiger in Schlangenlinien über das ganze Fenster, jeder siebte
+Halt ein Klick, Teilbild gegen frisch gemaltes Ganzbild. Bei 760 × 520 alle
+Teilbilder gleich (auch gescrollt um 53 und 131 px); bei 980 × 660 auf
+Recording und Replay 52 bis 95 von 1040 Teilbildern mit je 1 Pixel bei
+x = 274, 7/255: das Zeilen-Icon, 24 px im Zeilenrechteck, also nicht an
+der Teilbild-Kante.
+
+Ursache: `Icon::transform` legt die 24er-Gitterkontur mit `k · x + tx` aufs
+Gerät; tx ist im Ganzbild 274, im Teilbild 26. Dasselbe Produkt plus eine
+andere ganze Zahl rundet in f32 in den letzten Bits anders, und ab und zu
+kippt das eine Kantenabdeckung in tiny-skias Rasterung.
+
+Fix (`src/ui/icons.rs`): jedes Icon legt je Größe, Skala und Art (Strich
+oder Fläche) einmal seine Gerätekontur an, schon gestrichen (`Path::stroke`,
+wie `stroke_path` es intern tut) und auf 1/256 Gerätepixel gerundet, und
+füllt sie dann nur noch mit einer Verschiebung um ganze Pixel. Eine Zahl mit
+8 Nachkommabits plus eine ganze Zahl unter 2¹⁵ ist in f32 exakt, also malt
+das Teilbild das Icon bitgleich zum Ganzbild. Abwägung: die Rundung auf
+1/256 px liegt weit unter tiny-skias eigener Auflösung (Supersampling in
+Vierteln); Nebeneffekt ist, dass das Strichrechnen pro Bild entfällt. Ein
+Cache wie die Squircle-Ecken (Stufe C), mit derselben Grenze von 256.
+Gestrichen wird wie bisher im 24er-Gitter mit `res_scale = k` und erst
+danach skaliert: ein erster Versuch strich im Gerätemaßstab, und tiny-skias
+Stroker hat absolute Schwellen, die Kanten sahen dann bis 37/255 anders aus.
+
+Belege: `an_icon_in_a_part_is_the_icon_in_the_whole_frame` (`src/ui/tests.rs`)
+malt jedes Icon gestrichen und gefüllt an vier Lagen, Skala 1 und 2, ins
+Ganzbild und in ein Teilbild; mit dem alten `icons.rs` scheitert er
+(„Gauge at 274, scale 1“), mit dem neuen besteht er. Die Probe danach bei
+980 × 660, alle Seiten, Scroll 0 und 131: 0 Abweichungen. `--render` aller
+Seiten alt gegen neu: je Seite 8 bis 59 einzelne Kantenpixel um höchstens
+16/255, die Kipp-Rundung, die vorher jede Lage im Fenster auch hatte.
+`cargo fmt --check`, `cargo test` (lib 174, bin 416) und clippy grün.
+
+**L3, niedrig, behoben: `damage` merkt das Bild vor dem Zeigen.** Findet
 `Buffers::next` keinen Puffer, kehrt `draw` (`window.rs`) zurück, nachdem
 `App::damage` das Bild schon als gemalt vermerkt hat; das nächste Teilbild
 setzt dann auf einem älteren Stand auf. In 40 s Prüflauf nie eingetreten.
-Fix: in diesem Rückweg `full` setzen.
+Fix: beide Rückwege nach `damage`, die nichts zeigen (kein Puffer, `attach`
+scheitert), rufen `Win::lost_frame`; das setzt `full` und `dirty`, das
+nächste Bild ist also ganz. Der Rückweg ohne Änderung (`changed` gibt
+`None`) braucht das nicht: dort gleicht das Bild dem letzten gezeigten.
+Kein Test: `Win::draw` braucht eine Wayland-Verbindung; geprüft durch
+Lesen des Pfads, `cargo test` und clippy.

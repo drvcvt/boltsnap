@@ -82,6 +82,33 @@ fn path_data_reads_compact_numbers_and_relative_commands() {
 }
 
 #[test]
+fn an_icon_in_a_part_is_the_icon_in_the_whole_frame() {
+    // Placed with `k · x + tx`, an outline rounded differently far from the
+    // pixmap's corner than near it, and now and then an edge pixel of a part
+    // was off from the whole frame by 7/255 (paint speed plan, L2).
+    for scale in [1, 2] {
+        for x in [24.0, 274.0, 513.0, 899.0] {
+            let rect = Rect::new(x, 17.0, theme::ICON, theme::ICON);
+            for icon in Icon::ALL {
+                let mut whole = Canvas::new(940, 48, scale).unwrap();
+                let mut part = whole.part(Rect::new(x - 24.0, 0.0, 48.0, 48.0)).unwrap();
+                for canvas in [&mut whole, &mut part] {
+                    canvas.clear(theme::PANEL);
+                    icon.draw(canvas, rect, theme::TEXT, 0.8);
+                    icon.fill(canvas, rect.inset(4.0), theme::HOVER, 0.5);
+                }
+                let painted = whole.pixmap.data().to_vec();
+                whole.paste(&part);
+                assert!(
+                    whole.pixmap.data() == painted,
+                    "{icon:?} at {x}, scale {scale}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn an_icon_draws_only_inside_its_box() {
     let mut canvas = Canvas::new(40, 40, 2).unwrap();
     canvas.clear(theme::WINDOW);
