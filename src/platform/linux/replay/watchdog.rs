@@ -110,7 +110,7 @@ pub(super) fn spawn(
             starting.store(true, Ordering::Relaxed);
             cancel_start.store(false, Ordering::Relaxed);
             drop(guard);
-            let restarted = super::start(settings, cancel_start.clone());
+            let restarted = super::start::start(settings, cancel_start.clone());
             let mut guard = owner.lock().unwrap();
             starting.store(false, Ordering::Relaxed);
             if cancel_start.load(Ordering::Relaxed) {
