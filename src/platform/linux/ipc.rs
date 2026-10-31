@@ -58,6 +58,42 @@ pub(crate) fn lock_file(path: &Path) -> io::Result<Option<std::fs::File>> {
     }
 }
 
+/// Marks every descriptor from 3 up close-on-exec; the daemon itself keeps
+/// them. It inherits whatever its launcher left open (Hyprland's `exec-once`
+/// left two DMA fences), and every recorder and encoder it starts would hold
+/// them for its whole life.
+pub fn cloexec_inherited() {
+    let marked = unsafe {
+        libc::syscall(
+            libc::SYS_close_range,
+            3,
+            libc::c_uint::MAX,
+            libc::CLOSE_RANGE_CLOEXEC,
+        )
+    };
+    if marked != 0 {
+        cloexec_by_proc();
+    }
+}
+
+/// `cloexec_inherited` before Linux 5.11.
+fn cloexec_by_proc() {
+    let Ok(entries) = std::fs::read_dir("/proc/self/fd") else {
+        return;
+    };
+    let fds: Vec<i32> = entries
+        .flatten()
+        .filter_map(|entry| entry.file_name().to_str()?.parse().ok())
+        .filter(|&fd| fd > 2)
+        .collect();
+    for fd in fds {
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+        if flags >= 0 {
+            unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) };
+        }
+    }
+}
+
 /// Removes a leftover socket of a dead daemon. Anything that is not a socket
 /// is left alone and reported.
 pub fn remove_stale_socket(path: &Path) -> io::Result<()> {
@@ -696,5 +732,18 @@ mod tests {
             systemd_start_args(),
             ["--user", "start", "--no-block", "boltsnap-daemon.service"]
         );
+    }
+
+    #[test]
+    fn inherited_descriptors_close_on_exec() {
+        let cloexec = |fd| unsafe { libc::fcntl(fd, libc::F_GETFD) } & libc::FD_CLOEXEC != 0;
+        for mark in [cloexec_inherited, cloexec_by_proc] {
+            // `dup` leaves the copy without close-on-exec, as a launcher would.
+            let fd = unsafe { libc::dup(2) };
+            assert!(fd > 2 && !cloexec(fd));
+            mark();
+            assert!(cloexec(fd));
+            unsafe { libc::close(fd) };
+        }
     }
 }

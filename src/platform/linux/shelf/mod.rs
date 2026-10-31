@@ -291,6 +291,7 @@ fn log_to_file_when_detached() {
 }
 
 pub fn run_daemon(save_dir_cli: Option<std::path::PathBuf>) -> DynResult<()> {
+    crate::ipc::cloexec_inherited();
     // Single instance: the lock decides before any log rotation or cleanup, so
     // a racing second start cannot delete the winner's socket or media.
     let Some(_lock) = crate::ipc::lock_daemon()? else {
