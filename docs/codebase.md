@@ -95,7 +95,8 @@ arrives before the next tracker becomes visible. Seamless monitor handover is
 not guaranteed. The README now states that limitation.
 
 The [recording and replay review of 2026-10-12](plans/quality/2026-10-12-recording-reliability-review.md)
-is the record for its findings. Fixed in code, not yet checked live:
+is the record for its findings; long recordings and days of replay are in the
+[long-run review of 2026-10-31](plans/quality/2026-10-31-long-run-review.md). Fixed in code, not yet checked live:
 [`record/recover.rs`](../src/record/recover.rs) saves segments a dead daemon
 left; a closed shelf output no longer ends the daemon;
 [`shelf/recording/watch.rs`](../src/platform/linux/shelf/recording/watch.rs) pauses on a stalled

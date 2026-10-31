@@ -916,3 +916,9 @@ Live offen, mit Zustimmung: RP1 mit einem großen Region-Clip aus einem Spiel.
 | --- | --- |
 | RP2, RP3 | umgesetzt 24.10. nach dem Plan oben (`replay/monitor.rs`, `replay/watchdog.rs`, `Session::stop_capture`, `notice`, `retire`, `SAVE_TIMEOUT`); `docs/replay.md` nachgezogen. Checks: `cargo fmt --check`, `cargo clippy --all-targets` ohne Warnung, `cargo test` 25 + 350 grün (3 ignoriert). Live 24.10. (DP-3, explizites `output`): gsr der Replay-Session per SIGKILL beendet; Status `stalled`, `replay save` auf dem alten Ring lieferte 14,75 s mit `input_lost`; nach etwa 20 s neue Session `running`, alter Worker beendet, ein gsr, ein Worker; `replay save` danach 39,5 s. Nicht live: der Fehlerpfad (Neustart scheitert, Backoff) und der geerbte Fallback, weil die Config des Nutzers ein explizites `output` hat; beide decken die Tests. |
 | RP1, RP4 bis RP8 | dokumentiert, nicht umgesetzt |
+
+## 6. Langlauf-Review 2026-10-31
+
+Lange Aufnahmen und tagelanger Replay-Betrieb: eigenes File
+[2026-10-31-long-run-review.md](2026-10-31-long-run-review.md) (L1 bis L6,
+LR1 bis LR7), dort auch Korrekturen zu A4, A8, A10.
