@@ -1,6 +1,6 @@
 # Recording und Replay im Langlauf (Review 2026-10-31)
 
-Status: **Befund, nichts gebaut.** Frage des Nutzers: bleiben lange
+Status: **Befund, nichts gebaut; Plan in [2026-10-31-long-run-fixes.md](2026-10-31-long-run-fixes.md).** Frage des Nutzers: bleiben lange
 Aufnahmen (1 bis 4+ h, 120 fps, NVENC) und ein tagelang laufender
 Replay-Puffer sparsam, und klappen sie bis zur gespeicherten Datei?
 
@@ -134,5 +134,5 @@ Verschlechterung über Stunden, P3 klein.
 5. Kleinkram: L5, LR3, LR4, LR6, LR7.
 6. Nur dokumentiert: L4, L6, LR5 (betreffen den Nutzer derzeit nicht).
 
-Jeder Punkt wird vor dem Bau hier bis auf Dateien, Schritte und
-Regressionstests ausgeplant.
+Ausgeplant (Dateien, Schritte, Regressionstests, Entscheidungen) in
+[2026-10-31-long-run-fixes.md](2026-10-31-long-run-fixes.md).
