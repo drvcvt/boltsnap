@@ -357,6 +357,7 @@ impl Win {
             self.buffers
                 .next(&mut self.pool, (bw as i32, bh as i32), format)
         else {
+            self.lost_frame();
             return;
         };
         if self.rgba {
@@ -369,6 +370,7 @@ impl Win {
         surface.damage_buffer(x, y, dw, dh);
         surface.frame(&self.qh, surface.clone());
         if buffer.attach_to(surface).is_err() {
+            self.lost_frame();
             return;
         }
         self.window.commit();
@@ -380,6 +382,13 @@ impl Win {
         } else {
             self.last = self.canvas.take();
         }
+    }
+
+    /// The frame `damage` was asked for never reached the screen: the next
+    /// builds on an older one than `damage` assumes, so it is whole.
+    fn lost_frame(&mut self) {
+        self.full = true;
+        self.dirty = true;
     }
 
     /// Another `boltsnap settings` wants the window: show its page and map a
