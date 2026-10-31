@@ -181,8 +181,8 @@ session's log stays as `replay-capture.log.old`. The worker's lines go to
 reports in a row is noted in `daemon.log` ("replay capture slowed to …", then
 "back at …"). The settings window's Replay page shows under **Load** the CPU
 (percent of one core) and private memory (what would be freed if it stopped;
-shared libraries do not count) of the buffer's recorder, its helper and the
-worker, measured once a second.
+shared libraries do not count, swapped-out pages do) of the buffer's
+recorder, its helper and the worker, measured once a second.
 
 ## Verification and limits
 

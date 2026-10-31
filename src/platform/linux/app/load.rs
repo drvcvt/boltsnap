@@ -75,7 +75,8 @@ fn ticks(proc: &Path, pid: u32) -> Option<u64> {
 }
 
 /// Private memory of `pid` in bytes: what goes when it ends (replay memory
-/// plan, part 1). Shared libraries other processes map too do not count. A
+/// plan, part 1), swapped-out pages included. Shared libraries other
+/// processes map too do not count. A
 /// process whose `smaps_rollup` is closed to us (`gsr-kms-server` has
 /// capabilities) counts its anonymous pages from `statm`.
 fn private(proc: &Path, pid: u32, page: u64) -> Option<u64> {
@@ -90,13 +91,15 @@ fn private(proc: &Path, pid: u32, page: u64) -> Option<u64> {
     Some(resident.saturating_sub(shared) * page)
 }
 
-/// `Private_Clean + Private_Dirty` of a `smaps_rollup`, in bytes.
+/// `Private_Clean + Private_Dirty + SwapPss` of a `smaps_rollup`, in bytes:
+/// a process that once grew keeps its pages in swap, and they are still its.
 fn private_of_rollup(rollup: &str) -> Option<u64> {
     let kib = |name: &str| -> Option<u64> {
         let line = rollup.lines().find(|line| line.starts_with(name))?;
         line[name.len()..].split_whitespace().next()?.parse().ok()
     };
-    Some((kib("Private_Clean:")? + kib("Private_Dirty:")?) * 1024)
+    let swapped = kib("SwapPss:").unwrap_or(0);
+    Some((kib("Private_Clean:")? + kib("Private_Dirty:")? + swapped) * 1024)
 }
 
 /// Measures the replay processes between two calls.
@@ -179,8 +182,15 @@ mod tests {
             Shared_Clean:      91148 kB\n\
             Private_Clean:     85844 kB\n\
             Private_Dirty:     73188 kB\n\
-            Anonymous:         18916 kB\n";
-        assert_eq!(private_of_rollup(rollup), Some((85844 + 73188) * 1024));
+            Anonymous:         18916 kB\n\
+            Swap:             470772 kB\n\
+            SwapPss:          470772 kB\n";
+        assert_eq!(
+            private_of_rollup(rollup),
+            Some((85844 + 73188 + 470772) * 1024)
+        );
+        let resident = "Private_Clean: 2 kB\nPrivate_Dirty: 3 kB\n";
+        assert_eq!(private_of_rollup(resident), Some(5 * 1024));
         assert_eq!(private_of_rollup("Rss: 1 kB\n"), None);
     }
 

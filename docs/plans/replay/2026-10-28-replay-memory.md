@@ -44,6 +44,9 @@ speicher; sie zählen als privat mit (der Treiber gibt sie beim Beenden frei).
   Puffer-Prozesse: `Private_Clean + Private_Dirty` aus
   `/proc/<pid>/smaps_rollup` (USS, das, was beim Beenden frei wird; wie der
   private Working Set unter Windows). Text und Layout bleiben gleich.
+- Nachtrag 01.11. (LR2 im [Langlauf-Plan](../quality/2026-10-31-long-run-fixes.md)):
+  dazu `SwapPss`. Nach 70 h lagen 470 MB von gsr im Swap, die die Zeile
+  sonst verschwieg; sie gehören weiter dem Prozess.
 - Nicht lesbares `smaps_rollup` (der `gsr-kms-server` mit Capabilities, ein
   Kernel ohne die Datei): für diesen Prozess `statm` resident − shared (sein
   anonymer Teil), damit er nicht verschwindet.
