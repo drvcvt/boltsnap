@@ -4,6 +4,14 @@ use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 
+/// `eprintln!` that never panics: a full disk under `daemon.log` must not
+/// take down the thread that is saving a recording.
+macro_rules! log {
+    ($($arg:tt)*) => {
+        $crate::log_to(&mut std::io::stderr(), format_args!($($arg)*))
+    };
+}
+
 mod config;
 mod platform;
 mod record;
@@ -20,6 +28,11 @@ use crate::clipboard::{copy_to_clipboard, serve_wayland_clipboard, serve_wayland
 use crate::paths::*;
 
 pub type DynResult<T> = Result<T, Box<dyn Error>>;
+
+/// Writes one log line; a failed write is dropped, see `log!`.
+fn log_to(out: &mut impl Write, line: std::fmt::Arguments) {
+    let _ = writeln!(out, "{line}");
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Backend {
@@ -936,5 +949,19 @@ mod tests {
         assert!(a.instant);
         let d = parse_args(&["boltsnap".to_string(), "area".to_string()]).unwrap();
         assert!(!d.instant);
+    }
+
+    #[test]
+    fn a_log_line_to_a_full_disk_is_dropped_not_a_panic() {
+        struct Full;
+        impl Write for Full {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("no space left on device"))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        log_to(&mut Full, format_args!("saved {}", 1));
     }
 }

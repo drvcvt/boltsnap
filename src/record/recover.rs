@@ -110,7 +110,7 @@ pub fn save_in_background(orphans: Vec<Orphan>) {
                 ),
                 Err(error) => format!("Unsaved recording kept in the cache: {error}"),
             };
-            eprintln!("boltsnap daemon: {message}");
+            log!("boltsnap daemon: {message}");
             crate::platform::shelf::notify(&message);
         }
     });

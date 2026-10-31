@@ -707,7 +707,7 @@ impl StopChildrenJob {
                         && is_nonempty(&recorder.path) =>
                 {
                     if !stop.succeeded() {
-                        eprintln!(
+                        log!(
                             "boltsnap daemon: recorder for {} {stop}; keeping its streamed segment",
                             recorder.output.as_deref().unwrap_or("area")
                         );
@@ -759,11 +759,9 @@ impl StopChildrenJob {
                     match stop_child(&mut child, None, graceful_timeout, terminate_timeout) {
                         Ok(stop) if stop.succeeded() => {}
                         Ok(stop) => {
-                            eprintln!("boltsnap daemon: recorder {stop} after saving its segment")
+                            log!("boltsnap daemon: recorder {stop} after saving its segment")
                         }
-                        Err(error) => {
-                            eprintln!("boltsnap daemon: reap recorder after saving: {error}")
-                        }
+                        Err(error) => log!("boltsnap daemon: reap recorder after saving: {error}"),
                     }
                 }
             });

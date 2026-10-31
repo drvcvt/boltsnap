@@ -77,7 +77,7 @@ pub fn finalize_recording(
                     tracks.insert(output.clone(), (logical.samples, logical.size));
                 }
                 Ok(None) => {}
-                Err(error) => eprintln!("boltsnap: read cursor track: {error}"),
+                Err(error) => log!("boltsnap: read cursor track: {error}"),
             }
         }
     }
@@ -157,7 +157,7 @@ pub fn finalize_recording(
             size,
             tools,
         ) {
-            eprintln!("boltsnap: {} has no cursor track: {error}", clip.display());
+            log!("boltsnap: {} has no cursor track: {error}", clip.display());
         }
     }
     super::cursor_sidecar::remove_segment_files(&originals);
@@ -267,7 +267,7 @@ fn keep_recoverable(
                     match rename_noreplace(&path, &kept) {
                         Ok(()) => kept,
                         Err(error) => {
-                            eprintln!(
+                            log!(
                                 "boltsnap: could not keep {} for recovery: {error}",
                                 path.display()
                             );
@@ -346,7 +346,7 @@ pub(crate) fn finalize_group(
 
     for segment in segments {
         if let Err(error) = fs::remove_file(segment) {
-            eprintln!(
+            log!(
                 "boltsnap: finalized {}, but could not remove segment: {error}",
                 segment.display()
             );
@@ -399,7 +399,7 @@ fn compose_outputs(
 
     for path in ordered_paths {
         if let Err(error) = fs::remove_file(&path) {
-            eprintln!(
+            log!(
                 "boltsnap: composed {}, but could not remove input: {error}",
                 path.display()
             );
@@ -505,7 +505,7 @@ fn move_to_disk_with(
 /// Cursor sidecars follow their clip; a failure keeps the clip saved.
 fn move_sidecars(source: &Path, destination: &Path) {
     if let Err(error) = super::cursor_sidecar::move_sidecars(source, destination) {
-        eprintln!("boltsnap: saved {}, but {error}", destination.display());
+        log!("boltsnap: saved {}, but {error}", destination.display());
     }
 }
 
@@ -840,7 +840,7 @@ fn copy_then_remove(source: &Path, destination: &Path) -> io::Result<()> {
     let mut input = File::open(source)?;
     copy_noreplace(&mut input, destination)?;
     if let Err(error) = fs::remove_file(source) {
-        eprintln!(
+        log!(
             "boltsnap: saved {}, but could not remove source {}: {error}",
             destination.display(),
             source.display()
@@ -853,7 +853,7 @@ fn remove_work_file(path: &Path) {
     if let Err(error) = fs::remove_file(path)
         && error.kind() != io::ErrorKind::NotFound
     {
-        eprintln!(
+        log!(
             "boltsnap: could not remove work file {}: {error}",
             path.display()
         );
