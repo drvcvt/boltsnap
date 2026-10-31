@@ -1,7 +1,7 @@
 # Langlauf-Fixes: Plan (2026-10-31)
 
-Status: **geplant, nichts gebaut.** Gebaut wird erst nach dem Go des
-Nutzers, Welle für Welle, ein Commit je ID mit seinem Test.
+Status: **Wellen 0 und 1 umgesetzt (01.11.), Rest geplant.** Gebaut wird
+Welle für Welle nach dem Go des Nutzers, ein Commit je ID mit seinem Test.
 
 Herkunft: alle Befunde aus
 [2026-10-31-long-run-review.md](2026-10-31-long-run-review.md) (L1 bis L6,
@@ -692,12 +692,12 @@ Review vom 12.10. und in `docs/replay.md`.
 
 | Welle | ID | Item | Commit |
 | --- | --- | --- | --- |
-| 0 | S1 | Replay-Start nach `replay/start.rs` | |
-| 1 | A8 | `log!` statt `eprintln!` in `record/` | |
-| 1 | LR2 | Load-Zeile mit Swap | |
-| 1 | LR7 | Socket-Fehler beenden den Worker nicht | |
-| 1 | LR6 | geerbte fds CLOEXEC | |
-| 1 | L5 | Popup-Zeit `H:MM:SS` | |
+| 0 | S1 | Replay-Start nach `replay/start.rs` | `9b377cc` |
+| 1 | A8 | `log!` statt `eprintln!` in `record/` | `fa4e560` |
+| 1 | LR2 | Load-Zeile mit Swap | `012d137` |
+| 1 | LR7 | Socket-Fehler beenden den Worker nicht | `efce9e9` |
+| 1 | LR6 | geerbte fds CLOEXEC | `8f0feb3` |
+| 1 | L5 | Popup-Zeit `H:MM:SS` | `704dce0` |
 | 2 | L2 | Stall über fps-Zeile, mit A10 | |
 | 2 | LR3 | Capture-Log filtert, rotiert erst bei Bereitschaft | |
 | 3 | L3 | Kontingent ohne lange Session und Waisen (R3) | |
@@ -706,3 +706,35 @@ Review vom 12.10. und in `docs/replay.md`.
 | 5 | L1 | Probe, dann Hybrid-MP4 und Rename | |
 | 6 | LR1 | M1, dann Entscheidung F3 | |
 | doku | L4, L6, LR5 | nur Doku | |
+
+## Umsetzung Wellen 0 und 1 (01.11.)
+
+Je Commit `cargo fmt --check` und `cargo test` grün (zuletzt 174 + 419,
+11 ignoriert); für LR7 zusätzlich der Worker-Crate (`cargo test --locked`,
+27 grün) und `worker/tests/live.py`. Nicht installiert, kein Daemon-Neustart,
+nichts live geprüft.
+
+- **S1:** reiner Umzug, `diff` gegen den alten Block zeigt nur Pfade und
+  `pub(super)`. `replay/mod.rs` 724 Zeilen, `replay/start.rs` 263.
+- **A8:** wie geplant; `log!` in `main.rs` über `log_to`, Test mit einem
+  Writer, der `ENOSPC`-artig scheitert. `record/session.rs` 1907 Zeilen.
+- **LR2:** wie geplant. Kein Screenshot: Text und Layout gleich, `WIDEST`
+  deckt 99999 MB.
+- **LR7, Abweichung:** statt `accept_wait` mit Fehler-Einordnung pausiert
+  jeder `accept`-Fehler 100 ms, weil das kürzer ist und ein seltener
+  ECONNABORTED die anderen Clients nur 100 ms aufhält. Damit entfällt der
+  Unit-Test der Einordnung; `live.py` prüft EMFILE per `prlimit` und
+  scheiterte vor dem Fix („Too many open files (os error 24)“, Worker
+  beendet). `set_read_timeout`-Fehler verwerfen die Verbindung. Die
+  Steuerschleife des Daemons pausiert ebenso.
+- **LR6:** wie geplant; Test markiert ein `dup(2)` über beide Wege.
+  Live-Beleg (`/proc/<gsr>/fd` ohne `sync_file`) erst nach dem nächsten
+  Daemon-Neustart.
+- **L5:** wie geplant. Gate 1 als Test `titles_clear_a_ten_hour_time`
+  (Fallback-Font) und im ignorierten `controls_shots` mit den echten
+  Desktop-Fonts (500/600), beide grün. Screenshot `controls-paused-long.png`
+  (pausiert bei 1:40:00, Dark) angesehen: Zeit rechtsbündig 16 vom Rand,
+  Titel frei, Panel-Breite unverändert.
+- Windows: `fmt_elapsed` ist geteilt und gilt dort mit; kein
+  `cargo check --target x86_64-pc-windows-msvc` gelaufen (Backend
+  eingefroren).
