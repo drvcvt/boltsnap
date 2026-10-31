@@ -3,6 +3,7 @@ import concurrent.futures
 import json
 import os
 from pathlib import Path
+import resource
 import socket
 import shutil
 import struct
@@ -87,6 +88,18 @@ os.execv({shutil.which('ffmpeg')!r}, ['ffmpeg'] + sys.argv[1:])
                 pass
             assert time.monotonic() < deadline, status
             time.sleep(0.1)
+        # Out of descriptors, accept fails: the worker waits and keeps its ring.
+        limits = resource.prlimit(worker.pid, resource.RLIMIT_NOFILE)
+        open_fds = {int(fd) for fd in os.listdir(f"/proc/{worker.pid}/fd")}
+        lowest_free = min(set(range(len(open_fds) + 1)) - open_fds)
+        resource.prlimit(worker.pid, resource.RLIMIT_NOFILE, (lowest_free, limits[1]))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            pending = pool.submit(call, "status")
+            time.sleep(1)
+            assert worker.poll() is None, (directory / "worker.log").read_text()
+            assert not pending.done(), pending.result()
+            resource.prlimit(worker.pid, resource.RLIMIT_NOFILE, limits)
+            assert pending.result(timeout=5)["ready"]
         frozen = call("freeze")
         assert frozen["ok"], frozen
         assert not call("freeze")["ok"]

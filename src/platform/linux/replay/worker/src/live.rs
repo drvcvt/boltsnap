@@ -153,13 +153,21 @@ pub fn run(
         if ready == 0 {
             continue;
         }
-        let (mut stream, _) = listener.accept().map_err(|e| e.to_string())?;
-        if crate::socket::configure(&stream).is_err() {
+        // A failed accept is that connection's, never the ring's. Out of
+        // descriptors the connection stays queued and `poll` returns at once,
+        // so the loop pauses instead of spinning.
+        let Ok((mut stream, _)) = listener.accept() else {
+            std::thread::sleep(Duration::from_millis(100));
+            continue;
+        };
+        // Without its timeout a silent client would hold the loop for good.
+        if crate::socket::configure(&stream).is_err()
+            || stream
+                .set_read_timeout(Some(Duration::from_millis(500)))
+                .is_err()
+        {
             continue;
         }
-        stream
-            .set_read_timeout(Some(Duration::from_millis(500)))
-            .map_err(|e| e.to_string())?;
         let request = match wire::read(&mut stream) {
             Ok(r) => r,
             Err(_) => continue,

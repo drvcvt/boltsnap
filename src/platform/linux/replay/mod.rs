@@ -368,7 +368,9 @@ pub(crate) fn serve(sender: calloop::channel::Sender<DaemonEvent>) -> Result<Ser
             if stopping.load(Ordering::Relaxed) {
                 break;
             }
+            // Out of descriptors the connection stays queued; pause, don't spin.
             let Ok(mut stream) = connection else {
+                std::thread::sleep(Duration::from_millis(100));
                 continue;
             };
             if socket::configure(&stream).is_err() || active.load(Ordering::Relaxed) >= 8 {
