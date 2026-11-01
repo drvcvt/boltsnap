@@ -190,11 +190,20 @@ pub fn animated_card_layout(
         .unwrap_or(0);
     let mut thumbs = Vec::with_capacity(items.len());
     let mut y = cfg.pad;
+    // Cards above that have all collapsed take the gap below them along.
+    let mut above_collapsed = 1.0;
+    // `visible` cards' worth of slots, a leaving card holding what is left
+    // of its own and an arriving one what it has scrolled in: the shelf ends
+    // where they are used up, so the card at the bottom slides in or out by
+    // just as much as the other one takes or gives up.
+    let mut slots = visible as f32;
+    let mut bottom = None;
     for (i, (id, w, h, collapse)) in items.iter().enumerate() {
+        let before = y;
         if i > 0 {
-            let gap_collapse = collapse.max(if i == 1 { items[0].3 } else { 0.0 });
-            y += (cfg.gap as f32 * (1.0 - gap_collapse)).round() as u32;
+            y += (cfg.gap as f32 * (1.0 - collapse) * (1.0 - above_collapsed)).round() as u32;
         }
+        above_collapsed *= collapse;
         let height = (*h as f32 * (1.0 - collapse)).round() as u32;
         thumbs.push(ThumbRect {
             id: *id,
@@ -208,21 +217,25 @@ pub fn animated_card_layout(
             h: height,
         });
         y += height;
+        let share = match (i, appear_progress, scroll) {
+            (0, Some(progress), Some(_)) => progress.clamp(0.0, 1.0),
+            _ => 1.0 - collapse,
+        };
+        if bottom.is_none() && share > 0.0 && share >= slots {
+            let used = (y - before) as f32 * slots / share;
+            let end = before + used.round() as u32;
+            // Below the first card, the scroll moves it with the cards.
+            bottom = Some(if i > 0 {
+                end.saturating_sub(scroll.unwrap_or(0))
+            } else {
+                end
+            });
+        }
+        slots -= share.min(slots);
     }
-    let height = if items.len() > visible {
-        cfg.pad * 2
-            + items
-                .iter()
-                .take(visible)
-                .map(|(_, _, h, _)| *h)
-                .sum::<u32>()
-            + cfg.gap * (visible as u32 - 1)
-    } else {
-        y + cfg.pad
-    };
     Layout {
         width: cfg.pad * 2 + widest,
-        height,
+        height: bottom.unwrap_or(y) + cfg.pad,
         thumbs,
     }
 }
@@ -321,5 +334,99 @@ mod tests {
             Some(Hit::Save(7))
         );
         assert_eq!(lay.hit(10_000.0, 10_000.0, &c), None);
+    }
+
+    /// Each card's top edge from the edge the shelf hangs from, which the
+    /// compositor keeps in place.
+    fn from_bottom(layout: &Layout) -> Vec<(u64, i64)> {
+        let height = i64::from(layout.height);
+        let mut cards: Vec<_> = layout
+            .thumbs
+            .iter()
+            .filter(|card| card.h > 0)
+            .map(|card| (card.id, i64::from(card.y) - height))
+            .collect();
+        cards.sort();
+        cards
+    }
+
+    /// Cards newest first as (id, height), `collapse` per id.
+    fn leaving(cards: &[(u64, u32)], collapse: &[(u64, f32)], visible: usize) -> Layout {
+        let items: Vec<_> = cards
+            .iter()
+            .take(visible + collapse.len())
+            .map(|&(id, h)| {
+                let c = collapse
+                    .iter()
+                    .find(|(of, _)| *of == id)
+                    .map_or(0.0, |c| c.1);
+                (id, 200, h, c)
+            })
+            .collect();
+        animated_card_layout(&items, &cfg(), visible, false, None)
+    }
+
+    fn settled(cards: &[(u64, u32)], visible: usize) -> Layout {
+        let sizes: Vec<_> = cards
+            .iter()
+            .take(visible)
+            .map(|&(id, h)| (id, 200, h))
+            .collect();
+        Layout::compute(&sizes, &cfg())
+    }
+
+    const MIXED: [(u64, u32); 8] = [
+        (0, 100),
+        (1, 120),
+        (2, 90),
+        (3, 150),
+        (4, 100),
+        (5, 110),
+        (6, 200),
+        (7, 80),
+    ];
+
+    #[test]
+    fn a_card_leaving_a_full_shelf_ends_where_the_shelf_settles() {
+        let start = leaving(&MIXED, &[(0, 0.0)], 6);
+        assert_eq!(start.height, settled(&MIXED, 6).height);
+        let end = leaving(&MIXED, &[(0, 1.0)], 6);
+        let after = settled(&MIXED[1..], 6);
+        assert_eq!(end.height, after.height);
+        assert_eq!(from_bottom(&end), from_bottom(&after));
+    }
+
+    #[test]
+    fn a_card_arriving_at_a_full_shelf_starts_where_the_shelf_stood() {
+        let items: Vec<_> = MIXED[..7]
+            .iter()
+            .map(|&(id, h)| (id, 200, h, 0.0))
+            .collect();
+        let arriving = |p| animated_card_layout(&items, &cfg(), 6, false, Some(p));
+        // Every card the settled shelf shows stands where it shows it.
+        let matches = |frame: &Layout, settled: &Layout| {
+            let drawn = from_bottom(frame);
+            frame.height == settled.height
+                && from_bottom(settled).iter().all(|card| drawn.contains(card))
+        };
+        assert!(matches(&arriving(0.0), &settled(&MIXED[1..], 6)));
+        assert!(matches(&arriving(1.0), &settled(&MIXED, 6)));
+    }
+
+    #[test]
+    fn overlapping_dismissals_hand_over_without_a_jump() {
+        let end = leaving(&MIXED, &[(0, 1.0), (1, 0.5)], 6);
+        let after = leaving(&MIXED[1..], &[(1, 0.5)], 6);
+        assert_eq!(end.height, after.height);
+        assert_eq!(from_bottom(&end), from_bottom(&after));
+    }
+
+    #[test]
+    fn the_top_two_leaving_take_their_gaps_along() {
+        let cards = &MIXED[..3];
+        let end = leaving(cards, &[(0, 1.0), (1, 1.0)], 6);
+        let after = settled(&cards[2..], 6);
+        assert_eq!(end.height, after.height);
+        assert_eq!(from_bottom(&end), from_bottom(&after));
     }
 }

@@ -262,9 +262,9 @@ impl Daemon {
         self.draw(qh);
     }
 
-    /// Layout for the current frame: disappearing slots collapse, while a sixth
-    /// card remains in the fixed-height viewport just long enough to scroll and
-    /// fade below it as the new card enters at the top.
+    /// Layout for the current frame: disappearing slots collapse and the next
+    /// card slides in from below, while an arriving card at the top scrolls
+    /// the last one out; the shelf's height follows both.
     pub(super) fn animated_layout(&self) -> Layout {
         let cfg = &self.cfg;
         let appear_progress = self.active_appear_progress();
@@ -295,10 +295,27 @@ impl Daemon {
         let top = self.shelf_prefs.corner.is_top();
         let layout =
             animated_card_layout(&items, cfg, self.shelf_prefs.visible, top, appear_progress);
-        if self.active_disappear_count() == 0 {
+        if self.active_disappear_count() == 0 && appear_progress.is_none() {
             return layout;
         }
-        cards::hold_size(layout, (self.width, self.height), top)
+        // Its height changes on every frame; the layer grows once and
+        // shrinks once at the end.
+        let leaving: Vec<u64> = self
+            .anims
+            .iter()
+            .filter(|a| a.kind == AnimKind::Disappear)
+            .map(|a| a.id)
+            .collect();
+        let sizes: Vec<_> = self
+            .model
+            .newest_first()
+            .filter(|t| !leaving.contains(&t.id))
+            .take(self.shelf_prefs.visible)
+            .map(|t| (t.id, t.thumb.width(), t.thumb.height()))
+            .collect();
+        let after = Layout::compute(&sizes, cfg);
+        let held = (self.width.max(after.width), self.height.max(after.height));
+        cards::hold_size(layout, held, top)
     }
 }
 
