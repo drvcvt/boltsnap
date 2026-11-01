@@ -83,7 +83,8 @@ fn pixels_prepare_preserves_rgb_and_unpublished_file_ownership() {
         metadata(),
         pixels.bytes(),
         CardSize::DEFAULT,
-        |png| {
+        |file, png| {
+            assert_eq!(std::fs::read(file).unwrap(), png);
             assert_eq!(image::load_from_memory(png).unwrap().into_rgb8(), rgb);
             Ok(())
         },
@@ -107,7 +108,7 @@ fn pixels_prepare_preserves_rgb_and_unpublished_file_ownership() {
             metadata(),
             pixels.bytes(),
             CardSize::DEFAULT,
-            |_| Err("injected publish failure".into()),
+            |_, _| Err("injected publish failure".into()),
             |_| panic!()
         )
         .is_err()
@@ -119,7 +120,7 @@ fn pixels_prepare_preserves_rgb_and_unpublished_file_ownership() {
         copy_meta,
         pixels.bytes(),
         CardSize::DEFAULT,
-        |_| Ok(()),
+        |_, _| Ok(()),
         |path| {
             copy_path = Some(path.to_owned());
             assert!(path.is_file());

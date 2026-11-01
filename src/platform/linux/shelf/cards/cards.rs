@@ -322,6 +322,20 @@ pub(super) fn write_temp_png(prefix: &str, png: &[u8]) -> Result<std::path::Path
     Ok(path)
 }
 
+/// A new temporary name for `file`, which holds `png`; written out where a
+/// link cannot be made. Like `write_temp_png`, never an existing path.
+fn link_temp_png(
+    prefix: &str,
+    file: &std::path::Path,
+    png: &[u8],
+) -> Result<std::path::PathBuf, String> {
+    let path = crate::paths::temp_png(prefix);
+    match std::fs::hard_link(file, &path) {
+        Ok(()) => Ok(path),
+        Err(_) => write_temp_png(prefix, png),
+    }
+}
+
 /// A shelf card from tightly packed RGB `pixels`: thumbnail, PNG, `last.png`
 /// and, with `metadata.copy`, the clipboard.
 pub(super) fn prepare_pixels(
@@ -340,8 +354,8 @@ pub(super) fn prepare_png(
     finish_add(metadata, png, thumb, publish_last, copy_file)
 }
 
-fn publish_last(png: &[u8]) -> Result<(), String> {
-    crate::paths::publish_last_png(png)
+fn publish_last(file: &std::path::Path, png: &[u8]) -> Result<(), String> {
+    crate::paths::publish_last_linked(file, png)
         .map(|_| ())
         .map_err(|e| format!("publish last PNG: {e}"))
 }
@@ -356,7 +370,7 @@ pub(super) fn prepare_pixels_with(
     metadata: super::super::image_transfer::Metadata,
     pixels: &[u8],
     size: CardSize,
-    publish: impl FnOnce(&[u8]) -> Result<(), String>,
+    publish: impl FnOnce(&std::path::Path, &[u8]) -> Result<(), String>,
     copy: impl FnOnce(&std::path::Path) -> Result<(), String>,
 ) -> Result<PreparedAdd, String> {
     let _timing = super::super::timing::Span::for_request("shelf_pixels_prepare", metadata.trace);
@@ -371,12 +385,13 @@ pub(super) fn prepare_pixels_with(
 }
 
 /// The card's own file, then `last.png` and, with `metadata.copy`, a file for
-/// the clipboard.
+/// the clipboard; both are links to the card's file where they can be, so the
+/// PNG is written once.
 fn finish_add(
     metadata: super::super::image_transfer::Metadata,
     png: Vec<u8>,
     thumb: image::RgbaImage,
-    publish: impl FnOnce(&[u8]) -> Result<(), String>,
+    publish: impl FnOnce(&std::path::Path, &[u8]) -> Result<(), String>,
     copy: impl FnOnce(&std::path::Path) -> Result<(), String>,
 ) -> Result<PreparedAdd, String> {
     let add = PreparedAdd {
@@ -387,9 +402,9 @@ fn finish_add(
         output: metadata.output,
     };
     super::super::timing::mark_request("png_written", metadata.trace);
-    publish(&png)?;
+    publish(&add.path, &png)?;
     if metadata.copy {
-        let clipboard = write_temp_png("clipboard", &png)
+        let clipboard = link_temp_png("clipboard", &add.path, &png)
             .map_err(|e| format!("last PNG saved, shelf item not added: {e}"))?;
         if let Err(e) = copy(&clipboard) {
             let _ = std::fs::remove_file(&clipboard);

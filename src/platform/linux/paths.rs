@@ -182,11 +182,29 @@ pub fn publish_last_png(png: &[u8]) -> io::Result<PathBuf> {
     publish_last_png_at(&cache_dir(), png)
 }
 
+/// `last.png` as one more name of `file`, which holds `png`: nothing is
+/// written where both lie on one file system. An editor saving over the file
+/// in place changes `last.png` with it.
+pub fn publish_last_linked(file: &Path, png: &[u8]) -> io::Result<PathBuf> {
+    publish_last_at(&cache_dir(), |pending| link_or_write(file, pending, png))
+}
+
+/// `to` as a link to `file`, or `png` written there when no link can be made
+/// (another file system, or `file` gone).
+fn link_or_write(file: &Path, to: &Path, png: &[u8]) -> io::Result<()> {
+    fs::hard_link(file, to).or_else(|_| fs::write(to, png))
+}
+
 fn publish_last_png_at(dir: &Path, png: &[u8]) -> io::Result<PathBuf> {
+    publish_last_at(dir, |pending| fs::write(pending, png))
+}
+
+/// Puts the new `last.png` at a pending name, then renames it over the old.
+fn publish_last_at(dir: &Path, put: impl FnOnce(&Path) -> io::Result<()>) -> io::Result<PathBuf> {
     fs::create_dir_all(dir)?;
     let pending = unique_path_in(dir, "last", "png");
     let last = dir.join("last.png");
-    fs::write(&pending, png)?;
+    put(&pending)?;
     if let Err(error) = fs::rename(&pending, &last) {
         let _ = fs::remove_file(pending);
         return Err(error);
@@ -394,6 +412,26 @@ mod tests {
                 .to_string_lossy()
                 .starts_with("boltsnap-capture-")
         );
+    }
+
+    #[test]
+    fn last_png_is_a_link_to_the_card_file_or_a_copy_when_it_cannot_be() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = env::temp_dir().join(format!(
+            "boltsnap-last-link-test-{}-{}",
+            std::process::id(),
+            timestamp()
+        ));
+        fs::create_dir(&dir).unwrap();
+        let card = dir.join("card.png");
+        fs::write(&card, b"png").unwrap();
+        let last = publish_last_at(&dir, |p| link_or_write(&card, p, b"png")).unwrap();
+        let inode = |path: &Path| fs::metadata(path).unwrap().ino();
+        assert_eq!(inode(&last), inode(&card));
+        let gone = dir.join("gone.png");
+        let last = publish_last_at(&dir, |p| link_or_write(&gone, p, b"copy")).unwrap();
+        assert_eq!(fs::read(&last).unwrap(), b"copy");
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
