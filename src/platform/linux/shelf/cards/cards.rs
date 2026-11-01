@@ -322,9 +322,11 @@ pub(super) fn write_temp_png(prefix: &str, png: &[u8]) -> Result<std::path::Path
     Ok(path)
 }
 
+/// A shelf card from tightly packed RGB `pixels`: thumbnail, PNG, `last.png`
+/// and, with `metadata.copy`, the clipboard.
 pub(super) fn prepare_pixels(
     metadata: super::super::image_transfer::Metadata,
-    pixels: &super::super::image_transfer::Pixels,
+    pixels: &[u8],
 ) -> Result<PreparedAdd, String> {
     prepare_pixels_with(
         metadata,
@@ -345,21 +347,18 @@ pub(super) fn prepare_pixels(
 
 pub(super) fn prepare_pixels_with(
     metadata: super::super::image_transfer::Metadata,
-    pixels: &super::super::image_transfer::Pixels,
+    pixels: &[u8],
     size: CardSize,
     publish: impl FnOnce(&[u8]) -> Result<(), String>,
     copy: impl FnOnce(&std::path::Path) -> Result<(), String>,
 ) -> Result<PreparedAdd, String> {
     let _timing = super::super::timing::Span::for_request("shelf_pixels_prepare", metadata.trace);
-    let image = image::ImageBuffer::<image::Rgb<u8>, _>::from_raw(
-        metadata.width,
-        metadata.height,
-        pixels.bytes(),
-    )
-    .ok_or("invalid RGB image")?;
+    let image =
+        image::ImageBuffer::<image::Rgb<u8>, _>::from_raw(metadata.width, metadata.height, pixels)
+            .ok_or("invalid RGB image")?;
     let thumb = crate::shelf::thumbnail::make_rgb_card_thumbnail(&image, size.w, size.h);
     super::super::timing::mark_request("thumbnail_ready", metadata.trace);
-    let png = crate::image_model::png::encode_rgb(pixels.bytes(), metadata.width, metadata.height)
+    let png = crate::image_model::png::encode_rgb(pixels, metadata.width, metadata.height)
         .map_err(|e| format!("encode shelf PNG: {e}"))?;
     let add = PreparedAdd {
         path: write_temp_png("shelf", &png)?,

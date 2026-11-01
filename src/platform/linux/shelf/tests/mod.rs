@@ -81,7 +81,7 @@ fn pixels_prepare_preserves_rgb_and_unpublished_file_ownership() {
     let metadata = || Metadata::new(64, 48, "area".into(), Some("DP-3".into()), false).unwrap();
     let add = prepare_pixels_with(
         metadata(),
-        &pixels,
+        pixels.bytes(),
         CardSize::DEFAULT,
         |png| {
             assert_eq!(image::load_from_memory(png).unwrap().into_rgb8(), rgb);
@@ -105,7 +105,7 @@ fn pixels_prepare_preserves_rgb_and_unpublished_file_ownership() {
     assert!(
         prepare_pixels_with(
             metadata(),
-            &pixels,
+            pixels.bytes(),
             CardSize::DEFAULT,
             |_| Err("injected publish failure".into()),
             |_| panic!()
@@ -117,7 +117,7 @@ fn pixels_prepare_preserves_rgb_and_unpublished_file_ownership() {
     let mut copy_path = None;
     let result = prepare_pixels_with(
         copy_meta,
-        &pixels,
+        pixels.bytes(),
         CardSize::DEFAULT,
         |_| Ok(()),
         |path| {

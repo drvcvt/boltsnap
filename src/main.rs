@@ -577,6 +577,25 @@ fn capture_flow(args: &Args) -> DynResult<()> {
         return capture_to_stdout(mode, args.backend, args.instant);
     }
 
+    // A full-desktop PNG from the running daemon skips connecting to the
+    // compositor and handing the PNG over.
+    #[cfg(target_os = "linux")]
+    if mode == CaptureMode::Full && args.backend.resolved()? == Backend::Wayland {
+        let copy_wish = config::Config::load().copy_to_clipboard();
+        let request = match decide_post_capture(args, Backend::Wayland, copy_wish) {
+            PostCapture::File { copy: false } => {
+                Some((Some(std::path::absolute(target_path(args))?), false))
+            }
+            PostCapture::Shelf { copy } => Some((None, copy)),
+            _ => None,
+        };
+        if let Some((output, copy)) = request
+            && crate::capture::full_in_daemon(output, copy)?
+        {
+            return Ok(());
+        }
+    }
+
     #[cfg(target_os = "linux")]
     if args.output.is_none() && !args.save && args.backend.resolved()? == Backend::Wayland {
         let (resolved, capture_output, image) =
@@ -618,9 +637,7 @@ fn capture_flow(args: &Args) -> DynResult<()> {
             card.h,
         );
         drop(thumbnail);
-        let encoding = crate::platform::timing::Span::new("png_encode");
         let png = crate::capture::encode_png(&image)?;
-        drop(encoding);
         if copy {
             // The clipboard helper outlives this CLI. Keep its uniquely-owned
             // source; last.png can be replaced by another concurrent capture.

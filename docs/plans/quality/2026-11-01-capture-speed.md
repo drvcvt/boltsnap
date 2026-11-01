@@ -297,3 +297,31 @@ Risiken: Daemon-Thread mit offener Wayland-Verbindung (Ereignisse müssen
 gelesen werden, sonst läuft der Puffer voll: der Thread pumpt die
 Verbindung bei jedem Auftrag und verbindet bei Fehlern neu); Speicher
 (Rohbild 16 MB nur während eines Auftrags); `shelf/` wächst nicht.
+
+## Umsetzung D1a (01.11.)
+
+- Gebaut wie geplant, in zwei Schritten statt einem: **D1a** nimmt im Daemon
+  auf und schreibt PNG, `last.png` und Clipboard noch vor der Karte
+  (`prepare_pixels` nimmt jetzt `&[u8]` und wird wiederverwendet); **D1b**
+  (Karte vor dem PNG) folgt.
+- `Request::Capture { output, copy }` (`cmd: "capture"`),
+  `CAPTURE_UNAVAILABLE`; Daemon: `shelf/cards/screenshot.rs` mit warmer
+  libway-Verbindung (einmal neu verbunden bei Fehler), Arm im Client-Worker
+  (`clients.rs`) mit `same_user` und Bild-Permit; CLI:
+  `capture::full_in_daemon` und `ipc::capture_in_daemon` (für eine Datei
+  wird kein Daemon gestartet, nur ein laufender gefragt; nicht-PNG-Endungen
+  bleiben lokal).
+- Windows: ein Arm `Request::Capture` → „capture unavailable: not on
+  Windows“, nötig für den erschöpfenden Match. **Kein `cargo check --target
+  x86_64-pc-windows-msvc`**: das Target ist hier nicht installiert.
+- `main.rs` 979 Zeilen (vorher 965): unter der Grenze, braucht aber bald
+  einen Split nach Konzept (Capture-Ablauf aus `main.rs` heraus).
+- Tests: Protokoll-Rundreise, `daemon_capture` (EOF und
+  `CAPTURE_UNAVAILABLE` → lokal; Fehler nach der Aufnahme → kein zweiter
+  Schuss). `cargo test` 188 + 429.
+- Live (Nutzer-Go für Aufnahmen, YouTube lief nebenher): hyperfine Median
+  `-o` 53,3 → 49,6 ms, Shelf-Weg 72,8 → 66,1 ms. Im Daemon: Aufnahme
+  ~23 ms (libway öffnet weiter zwei Verbindungen je Schuss, erst L1 hilft),
+  PNG 6,5–21 ms (Mittel 10,9, Last), Datei schreiben ~5,6 ms.
+- Messpunkte `daemon_capture`, `daemon_capture_output`, `png_encode` (in
+  `capture::encode_png`) bleiben; ohne `BOLTSNAP_TIMINGS` kosten sie nichts.

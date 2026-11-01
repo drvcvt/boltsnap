@@ -224,6 +224,49 @@ fn send(stream: &mut UnixStream, req: &Request) -> io::Result<Response> {
     Response::read(stream)
 }
 
+/// Asks the daemon for a full-desktop screenshot into `output`, else onto
+/// the shelf. Only the shelf starts a daemon. `None`: no screenshot was
+/// taken (no daemon for a file, an older daemon, or none it could take), so
+/// the caller takes it.
+pub fn capture_in_daemon(output: Option<PathBuf>, copy: bool) -> io::Result<Option<Response>> {
+    let stream = match output {
+        Some(_) => UnixStream::connect(socket_path()).ok(),
+        None => Some(ensure_daemon()?),
+    };
+    let Some(mut stream) = stream else {
+        return Ok(None);
+    };
+    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+    daemon_capture(send(&mut stream, &Request::Capture { output, copy }))
+}
+
+/// A `capture` answer, `None` where no screenshot was taken: an older daemon
+/// drops a request it does not know, a current one says it could not take
+/// any. Any other error came after the capture and is the caller's to show.
+fn daemon_capture(answer: io::Result<Response>) -> io::Result<Option<Response>> {
+    match answer {
+        Ok(response)
+            if response
+                .error
+                .as_deref()
+                .is_some_and(|error| error.starts_with(crate::protocol::CAPTURE_UNAVAILABLE)) =>
+        {
+            Ok(None)
+        }
+        Ok(response) => Ok(Some(response)),
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::UnexpectedEof | io::ErrorKind::ConnectionReset
+            ) =>
+        {
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
+}
+
 pub fn watch_recording() -> io::Result<UnixStream> {
     let mut stream = ensure_daemon()?;
     stream.write_all(&Request::RecordingWatch.encode())?;
@@ -642,6 +685,23 @@ mod tests {
             }
             other => panic!("wrong variant: {other:?}"),
         }
+    }
+
+    #[test]
+    fn only_a_capture_that_never_happened_falls_back_to_the_client() {
+        let unavailable = Response::error(format!(
+            "{}: no outputs",
+            crate::protocol::CAPTURE_UNAVAILABLE
+        ));
+        assert!(daemon_capture(Ok(unavailable)).unwrap().is_none());
+        let eof = io::Error::from(io::ErrorKind::UnexpectedEof);
+        assert!(daemon_capture(Err(eof)).unwrap().is_none());
+        // Captured, then the file could not be written: no second capture.
+        let failed = Response::error("write /x.png: permission denied");
+        assert!(daemon_capture(Ok(failed)).unwrap().is_some());
+        assert!(daemon_capture(Ok(Response::ok(None))).unwrap().is_some());
+        let timeout = io::Error::from(io::ErrorKind::TimedOut);
+        assert!(daemon_capture(Err(timeout)).is_err());
     }
 
     #[test]

@@ -480,6 +480,12 @@ impl ShelfApplication {
             Request::AddVideo { .. } => {
                 return Response::error("add_video is not supported on Windows");
             }
+            Request::Capture { .. } => {
+                return Response::error(format!(
+                    "{}: not on Windows",
+                    crate::protocol::CAPTURE_UNAVAILABLE
+                ));
+            }
             Request::RecordingStatus => return Response::ok(Some(self.recording_snapshot())),
             Request::RecordingWatch => {
                 return Response::error(

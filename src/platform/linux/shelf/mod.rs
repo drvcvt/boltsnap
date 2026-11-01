@@ -25,6 +25,8 @@ mod pending;
 mod placement;
 #[path = "cards/save.rs"]
 mod save;
+#[path = "cards/screenshot.rs"]
+mod screenshot;
 #[path = "recording/session.rs"]
 mod session;
 mod settings;

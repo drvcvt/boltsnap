@@ -160,7 +160,7 @@ pub(super) fn spawn_client_reader(
                 let pixels = super::super::image_transfer::Pixels::map(fd, metadata.len)
                     .map_err(|e| e.to_string())?;
                 super::super::timing::mark_request("pixels_received", metadata.trace);
-                prepare_pixels(metadata, &pixels)
+                prepare_pixels(metadata, pixels.bytes())
             })();
             let _ = tx.send(DaemonEvent::AddPrepared {
                 result,
@@ -199,6 +199,32 @@ pub(super) fn spawn_client_reader(
                     _client: client,
                     _image: image,
                 });
+            }
+            Ok(crate::ipc::Request::Capture { output, copy }) => {
+                // The daemon writes the file and the clipboard for the client.
+                let Some(image) = image.or_else(|| images.acquire()) else {
+                    reject_busy(stream);
+                    return;
+                };
+                let taken = super::super::image_transfer::same_user(&stream)
+                    .map_err(|error| error.to_string())
+                    .and_then(|()| super::screenshot::take(output, copy));
+                match taken {
+                    Ok(super::screenshot::Taken::Card(add)) => {
+                        let _ = tx.send(DaemonEvent::AddPrepared {
+                            result: Ok(add),
+                            stream,
+                            _client: client,
+                            _image: Some(image),
+                        });
+                    }
+                    Ok(super::screenshot::Taken::File) => {
+                        spawn_client_writer(stream, crate::ipc::Response::ok(None).encode());
+                    }
+                    Err(error) => {
+                        spawn_client_writer(stream, crate::ipc::Response::error(error).encode());
+                    }
+                }
             }
             Ok(crate::ipc::Request::AddVideo { path, output, .. }) => {
                 // The daemon reads the named file, so only its own user may name one.
@@ -258,7 +284,9 @@ impl Daemon {
             crate::ipc::Request::Ping => {
                 spawn_client_writer(stream, b"PONG".to_vec());
             }
-            crate::ipc::Request::Add { .. } | crate::ipc::Request::AddVideo { .. } => {
+            crate::ipc::Request::Add { .. }
+            | crate::ipc::Request::AddVideo { .. }
+            | crate::ipc::Request::Capture { .. } => {
                 self.write_response(
                     stream,
                     crate::ipc::Response::error("add request was not prepared"),

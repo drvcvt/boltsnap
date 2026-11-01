@@ -51,6 +51,15 @@ pub enum Request {
         path: PathBuf,
         output: Option<String>,
     },
+    /// Take a full-desktop screenshot in the daemon, over its open Wayland
+    /// connection: into the file `output` (absolute), else onto the shelf and,
+    /// with `copy`, the clipboard. An error starting with
+    /// [`CAPTURE_UNAVAILABLE`] means nothing was captured; the client may
+    /// capture itself.
+    Capture {
+        output: Option<PathBuf>,
+        copy: bool,
+    },
     Ping,
     RecordingStatus,
     RecordingWatch,
@@ -173,6 +182,9 @@ impl RecordingSnapshot {
         })
     }
 }
+
+/// How a daemon's `capture` error starts when it took no screenshot.
+pub const CAPTURE_UNAVAILABLE: &str = "capture unavailable";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Response {
@@ -450,6 +462,13 @@ impl Request {
                 }
                 write_frame(&mut buf, header.to_string().as_bytes(), &[]).unwrap();
             }
+            Request::Capture { output, copy } => {
+                let mut header = json!({ "cmd": "capture", "copy": copy });
+                if let Some(output) = output {
+                    header["output"] = json!(output.to_string_lossy());
+                }
+                write_frame(&mut buf, header.to_string().as_bytes(), &[]).unwrap();
+            }
             Request::Ping => {
                 let header = json!({ "cmd": "ping" });
                 write_frame(&mut buf, header.to_string().as_bytes(), &[]).unwrap();
@@ -608,6 +627,14 @@ impl Request {
                     .and_then(Value::as_str)
                     .filter(|value| !value.is_empty())
                     .map(str::to_owned),
+            }),
+            Some("capture") => Ok(Request::Capture {
+                output: v
+                    .get("output")
+                    .and_then(Value::as_str)
+                    .filter(|path| !path.is_empty())
+                    .map(PathBuf::from),
+                copy: v.get("copy").and_then(Value::as_bool).unwrap_or(false),
             }),
             Some("ping") => Ok(Request::Ping),
             Some("recording_status") => Ok(Request::RecordingStatus),
@@ -808,6 +835,26 @@ mod tests {
                 Request::read(&mut Cursor::new(bytes)).unwrap_err().kind(),
                 io::ErrorKind::InvalidData
             );
+        }
+    }
+
+    #[test]
+    fn capture_roundtrips_with_and_without_a_file() {
+        for (output, copy) in [
+            (Some(PathBuf::from("/tmp/a shot.png")), false),
+            (None, true),
+        ] {
+            let request = Request::Capture {
+                output: output.clone(),
+                copy,
+            };
+            match Request::read(&mut Cursor::new(request.encode())).unwrap() {
+                Request::Capture {
+                    output: read,
+                    copy: read_copy,
+                } => assert_eq!((read, read_copy), (output, copy)),
+                other => panic!("wrong variant: {other:?}"),
+            }
         }
     }
 

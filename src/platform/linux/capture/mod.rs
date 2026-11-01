@@ -33,8 +33,39 @@ pub fn capture(
     Ok((backend, capture_output))
 }
 
+/// A full-desktop PNG taken by the running daemon into `output`, else onto
+/// the shelf. False: the daemon took none and the caller captures itself.
+pub fn full_in_daemon(output: Option<std::path::PathBuf>, copy: bool) -> DynResult<bool> {
+    // The daemon writes PNG only; another extension asks `image`.
+    let png = |path: &Path| {
+        path.extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("png"))
+    };
+    if output.as_deref().is_some_and(|path| !png(path)) {
+        return Ok(false);
+    }
+    let Some(response) = crate::ipc::capture_in_daemon(output.clone(), copy)? else {
+        return Ok(false);
+    };
+    if !response.ok {
+        return Err(response
+            .error
+            .unwrap_or_else(|| "daemon capture failed".into())
+            .into());
+    }
+    match output {
+        Some(path) => println!("Boltsnap captured full via wayland: {}", path.display()),
+        None => println!(
+            "Boltsnap sent full to shelf{}",
+            if copy { " (copied)" } else { "" }
+        ),
+    }
+    Ok(true)
+}
+
 /// The capture as PNG, on every core.
 pub(crate) fn encode_png(image: &image::RgbImage) -> Result<Vec<u8>, String> {
+    let _timing = super::timing::Span::new("png_encode");
     crate::image_model::png::encode_rgb(image.as_raw(), image.width(), image.height())
 }
 
@@ -74,7 +105,7 @@ pub(crate) fn capture_image(
 }
 
 /// Drop alpha in place: no second 12 MB buffer to allocate and fault in.
-fn rgba_to_rgb(image: RgbaImage) -> image::RgbImage {
+pub(crate) fn rgba_to_rgb(image: RgbaImage) -> image::RgbImage {
     let (width, height) = image.dimensions();
     let mut buf = image.into_raw();
     let pixels = buf.len() / 4;
@@ -432,7 +463,7 @@ fn captured_monitor(output: &libway::Output) -> super::select_skia::CapturedMoni
 
 /// libway options whose timeout is what remains of one request-wide budget, so
 /// connect, output discovery and capture cannot each wait the full default.
-fn remaining(start: std::time::Instant) -> libway::CaptureOptions {
+pub(crate) fn remaining(start: std::time::Instant) -> libway::CaptureOptions {
     let mut options = libway::CaptureOptions::default();
     options.timeout = options.timeout.saturating_sub(start.elapsed());
     options
