@@ -1,6 +1,6 @@
 # Vollbild-Screenshot: wo die Zeit hingeht (2026-11-01)
 
-Status: **Messung und Optionen, nichts gebaut.** Frage des Nutzers: „wie
+Status: **Plan, wird umgesetzt (Nutzer 01.11.: „so schnell es geht, wir machen so viel wie moeglich selber“).** Frage des Nutzers: „wie
 koennen wir das noch schneller machen? gpu oder so benutzen?“
 
 ## Alt gegen neu, gleiche Maschine
@@ -58,3 +58,52 @@ Befunde:
    NVIDIA). Ob das schneller ist, ist offen; nur mit Probe.
 4. Nicht: PNG-Stufe senken (`Fast` ist schon die schnelle; `Sub` spart 5 ms
    für 12 % größere Dateien).
+
+## Plan
+
+Entscheidung: eigener paralleler PNG-Encoder statt `mtpng`, weil der Nutzer
+so viel wie möglich selbst will und der Kern klein ist (Filter, ein
+Deflate nur mit Literalen und Läufen, Huffman je Streifen); `crc32fast`
+(schon im Baum über `png`) für die Prüfsummen, weil std keine CRC hat und
+eigene Tabellen langsamer wären als dessen PCLMUL-Weg.
+
+**P1, Encoder** `boltsnap::image_model::png` (Datei `src/image/png.rs`;
+`src/image.rs` wird dafür `src/image/mod.rs`, `src/` wächst nicht, hat
+schon 17 Einträge).
+- `encode_rgb(pixels, width, height) -> Vec<u8>` und `encode_rgba_as_rgb`
+  (Alpha fällt beim Filtern weg, kein Zwischenpuffer). Ausgabe immer
+  8-bit RGB, wie heute.
+- Zeilen in Streifen, einer je Kern (`available_parallelism`), mindestens
+  32 Zeilen je Streifen; `std::thread::scope`.
+- Je Streifen: Filter je Zeile adaptiv (kleinste Summe der Beträge, wie
+  `image` Fast), Deflate als ein dynamischer Block: Literale plus Läufe
+  gleicher Bytes (Abstand 1, Länge 3 bis 258), Huffman aus dem Histogramm
+  des Streifens, auf 15 Bit begrenzt (Häufigkeiten halbieren, bis es passt).
+  Nicht der letzte Streifen endet mit einem leeren Stored-Block
+  (Sync-Flush), also byte-genau; der letzte setzt BFINAL.
+- Jeder Streifen ist ein eigener IDAT-Chunk mit eigener CRC (parallel); der
+  erste trägt den zlib-Kopf, ein letzter kleiner IDAT die Adler-32, aus den
+  Streifen-Teilsummen kombiniert.
+- Tests: Rundreise über den `image`-Decoder für Rauschen, Flächen,
+  Verläufe, 1 × 1, 1 × N, N × 1, weniger Zeilen als Kerne, RGB und RGBA;
+  zlib-Strom samt Adler mit `miniz_oxide::inflate::decompress_to_vec_zlib`
+  (dev-dependency) geprüft; CRCs je Chunk.
+
+**P2, Aufrufer** (alle Linux): `capture/mod.rs:22` (`capture`, Datei),
+`:31-38` (`capture_png`, stdout), `main.rs:621-625` (Standardweg zum
+Shelf), `shelf/cards/cards.rs:364` (Daemon, Raw-Weg). Windows und die
+Test-Screenshots bleiben beim `image`-Encoder.
+
+**P3, RGB-Umwandlung sparen**: wo kein Rand abgeschnitten wird (`Full`,
+`Area`), kodiert `capture` direkt aus RGBA.
+
+**P4, dmabuf-Probe** (nur messen, kein Produktcode): ob eine Aufnahme über
+dmabuf statt shm auf NVIDIA schneller ist. Erst nach P1 bis P3.
+
+Was brechen kann: ein Decoder, der den Strom nicht mag (Rundreise-Tests mit
+zwei Decodern), Dateigröße (Annahme: ±10 % zu heute, wird gemessen), CPU-
+Spitze über alle Kerne für ~5 ms bei jedem Screenshot (Spiel im
+Vordergrund: Threads laufen mit normaler Priorität, wie heute der eine).
+
+Abnahme: Tests grün; hyperfine `-o` alt gegen neu, Median und Dateigröße in
+dieser Datei; ein Screenshot der echten Ausgabe angesehen.
