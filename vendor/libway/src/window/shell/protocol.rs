@@ -194,6 +194,25 @@ impl Dispatch<xdg_surface::XdgSurface, WindowId> for WindowState {
         let xdg_surface::Event::Configure { serial } = event else {
             return;
         };
+        if let Some(record) = state.windows.get_mut(id)
+            && let Some(popup) = record.popup.as_mut()
+        {
+            // A popup sequence needs a placement, from this sequence or the
+            // last one (Hyprland's initial-commit sequence is bare).
+            let Some((x, y, width, height)) = popup.placed else {
+                state.dismiss_popup(*id, false);
+                return;
+            };
+            let mut staged = SuggestedConfiguration::sized(width, height);
+            staged.placement = Some(super::popup::PopupPlacement {
+                x,
+                y,
+                width,
+                height,
+                repositioned: popup.token.take(),
+            });
+            record.staged = staged;
+        }
         configure_surface(state, *id, serial, |serial| surface.ack_configure(serial));
     }
 }

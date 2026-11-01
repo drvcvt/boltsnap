@@ -4,6 +4,9 @@ pub mod client;
 mod cursor;
 #[cfg(feature = "gpu")]
 mod dma;
+mod paint;
+pub use paint::pixel;
+use paint::{buffer_dimensions, paint};
 mod dnd;
 pub use cursor::Fault as CursorFault;
 pub use dnd::{DndCommand, DndConfig, DndControl, DndMetrics, PipePeer, pipe_fds, pipe_open};
@@ -70,6 +73,8 @@ pub struct Config {
     pub outputs: usize,
     pub dma: bool,
     pub reject_dma: bool,
+    /// Sent as the dma-buf device of every EXT session, when set.
+    pub dma_device: Option<u64>,
     pub mode_sizes: Vec<(u32, u32)>,
     pub native_logical_size: bool,
     pub dnd: Option<DndConfig>,
@@ -91,6 +96,7 @@ impl Default for Config {
             outputs: 1,
             dma: false,
             reject_dma: false,
+            dma_device: None,
             mode_sizes: Vec::new(),
             native_logical_size: false,
             dnd: None,
@@ -549,7 +555,7 @@ impl Dispatch<ext_manager::ExtImageCopyCaptureManagerV1, ()> for State {
             }
             #[cfg(feature = "gpu")]
             if s.config.dma {
-                dma::constraints(&session);
+                dma::constraints(&session, s.config.dma_device);
             }
             session.done();
         } else if let ext_manager::Request::CreatePointerCursorSession {
@@ -597,35 +603,6 @@ impl Dispatch<session::ExtImageCopyCaptureSessionV1, Arc<SessionData>> for State
         _: &Arc<SessionData>,
     ) {
         s.metrics.sessions.fetch_sub(1, Ordering::SeqCst);
-    }
-}
-fn buffer_dimensions(buffer: &wl_buffer::WlBuffer) -> (u32, u32) {
-    if let Some(b) = buffer.data::<Buffer>() {
-        return (b.width, b.height);
-    }
-    #[cfg(feature = "gpu")]
-    if let Some(b) = buffer.data::<dma::GpuBufferData>() {
-        return (b.width, b.height);
-    }
-    panic!("unknown test buffer");
-}
-fn paint(buffer: &wl_buffer::WlBuffer, index: usize) {
-    // DMA tests verify fd transport and lifecycle. They do not claim GPU rendering.
-    let Some(b) = buffer.data::<Buffer>() else {
-        return;
-    };
-    // Test server owns its FD and serializes access before sending ready.
-    let mut map = unsafe { MmapOptions::new().map_mut(&*b.file).unwrap() };
-    for y in 0..b.height {
-        for x in 0..b.width {
-            let at = b.offset + (y * b.stride + x * 4) as usize;
-            let pixel = if index.is_multiple_of(2) {
-                0x00102030_u32 + (x << 16) + (y << 8)
-            } else {
-                0x00a0b0c0
-            };
-            map[at..at + 4].copy_from_slice(&pixel.to_le_bytes());
-        }
     }
 }
 impl Dispatch<ext_frame::ExtImageCopyCaptureFrameV1, FrameData> for State {

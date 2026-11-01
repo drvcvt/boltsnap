@@ -56,7 +56,17 @@ struct Seat {
     enter: Option<u32>,
     /// Latest pointer button press with its window, for serial-gated requests.
     press: Option<(WindowId, u32)>,
+    /// Latest pointer press or key press, for popup grabs (R6 D3).
+    latest_input: Option<LatestInput>,
     staged: StagedPointer,
+}
+/// A pointer button or key press, with the root of the pressed window's popup
+/// tree at press time.
+#[derive(Clone, Copy)]
+struct LatestInput {
+    root: WindowId,
+    serial: u32,
+    device: types::InputDevice,
 }
 enum RetiredChild {
     Keyboard { _proxy: WlKeyboard },

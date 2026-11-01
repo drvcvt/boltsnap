@@ -8,7 +8,10 @@ const IMPLICIT: u64 = 0x00ff_ffff_ffff_ffff;
 pub(super) fn advertise(dh: &DisplayHandle) {
     dh.create_global::<State, dmabuf::ZwpLinuxDmabufV1, _>(3, ());
 }
-pub(super) fn constraints(session: &session::ExtImageCopyCaptureSessionV1) {
+pub(super) fn constraints(session: &session::ExtImageCopyCaptureSessionV1, device: Option<u64>) {
+    if let Some(device) = device {
+        session.dmabuf_device(device.to_ne_bytes().to_vec());
+    }
     session.dmabuf_format(
         FORMAT,
         [0u64.to_ne_bytes(), IMPLICIT.to_ne_bytes()].concat(),
@@ -39,7 +42,28 @@ struct Params(Mutex<Vec<Plane>>);
 pub(super) struct GpuBufferData {
     pub width: u32,
     pub height: u32,
-    _planes: Vec<Plane>,
+    planes: Vec<Plane>,
+}
+
+/// Paint a LINEAR buffer through a CPU mapping of its first plane, at its
+/// offset and stride; other layouts are left alone.
+pub(super) fn paint(b: &GpuBufferData, index: usize) {
+    let plane = &b.planes[0];
+    if plane.modifier != 0 {
+        return;
+    }
+    let (offset, stride) = (plane.offset as usize, plane.stride as usize);
+    let len = offset + stride * b.height as usize;
+    let file = File::from(plane.fd.try_clone().unwrap());
+    // SAFETY: the client handed this LINEAR buffer over for the capture and
+    // reads it only after `ready`; the server writes before sending it.
+    let mut map = unsafe { MmapOptions::new().len(len).map_mut(&file).unwrap() };
+    for y in 0..b.height {
+        for x in 0..b.width {
+            let at = offset + y as usize * stride + x as usize * 4;
+            map[at..at + 4].copy_from_slice(&super::pixel(index, x, y).to_le_bytes());
+        }
+    }
 }
 impl Dispatch<dmabuf::ZwpLinuxDmabufV1, ()> for State {
     fn request(
@@ -114,7 +138,7 @@ impl Dispatch<params::ZwpLinuxBufferParamsV1, Params> for State {
                         GpuBufferData {
                             width: width as u32,
                             height: height as u32,
-                            _planes: planes,
+                            planes,
                         },
                     )
                     .unwrap();

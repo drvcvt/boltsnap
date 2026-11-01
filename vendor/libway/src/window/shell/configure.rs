@@ -47,6 +47,8 @@ pub(super) struct SuggestedConfiguration {
     pub(super) width: u32,
     pub(super) height: u32,
     pub(super) states: States,
+    /// A popup's placed rectangle for this sequence.
+    pub(super) placement: Option<super::popup::PopupPlacement>,
 }
 
 impl SuggestedConfiguration {
@@ -60,6 +62,7 @@ impl SuggestedConfiguration {
             width,
             height,
             states: States::parse(states),
+            placement: None,
         })
     }
 
@@ -69,6 +72,7 @@ impl SuggestedConfiguration {
             width,
             height,
             states: States::default(),
+            placement: None,
         }
     }
 
@@ -104,6 +108,7 @@ impl SuggestedConfiguration {
             activated: states.activated,
             tiled: states.tiled,
             revision,
+            placement: self.placement,
         })
     }
 }
@@ -119,6 +124,13 @@ pub(super) fn rescale(
         pixel_height: super::scale::pixel_extent(accepted.height, scale_120)?,
         scale_120,
         revision,
+        // A scale-only change keeps the placement but completes no reposition.
+        placement: accepted
+            .placement
+            .map(|placement| super::popup::PopupPlacement {
+                repositioned: None,
+                ..placement
+            }),
         ..accepted
     })
 }

@@ -191,5 +191,19 @@ fn keyboard_key(
             physical: key,
             down,
         },
-    )
+    )?;
+    if down {
+        let root = state.tree_root(window);
+        state
+            .input
+            .seats
+            .get_mut(&token.name)
+            .expect("live seat")
+            .latest_input = Some(LatestInput {
+            root,
+            serial,
+            device: InputDevice::Keyboard,
+        });
+    }
+    Ok(())
 }

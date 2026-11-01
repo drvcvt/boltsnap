@@ -12,7 +12,7 @@ use super::{
 };
 use crate::{Error, Result};
 use damage::{History, HistoryKey};
-use layout::Layout;
+use layout::{Layout, ShmFormat};
 use slots::{Budget, BufferToken, Slot};
 use std::collections::{BTreeMap, VecDeque};
 use wayland_client::{Proxy, QueueHandle, protocol::wl_shm::WlShm};
@@ -68,9 +68,28 @@ struct CpuOutput {
 pub(crate) struct CpuOutputs {
     entries: BTreeMap<WindowId, CpuOutput>,
     budget: Budget,
+    /// `wl_shm` advertised `ABGR8888`; formats can arrive after `Ready`.
+    abgr: bool,
 }
 
 impl CpuOutputs {
+    /// Record a `wl_shm.format` event.
+    pub(crate) fn shm_format(&mut self, format: wayland_client::protocol::wl_shm::Format) {
+        if format == wayland_client::protocol::wl_shm::Format::Abgr8888 {
+            self.abgr = true;
+        }
+    }
+
+    /// The format new buffers use: a straight copy where the compositor
+    /// offers it and the host is little endian, the swizzle otherwise.
+    fn format(&self) -> ShmFormat {
+        if self.abgr && cfg!(target_endian = "little") {
+            ShmFormat::Abgr8888
+        } else {
+            ShmFormat::Argb8888
+        }
+    }
+
     pub(crate) fn contains(&self, window: WindowId) -> bool {
         self.entries.contains_key(&window)
     }
@@ -123,7 +142,8 @@ impl CpuOutputs {
         let layout = Layout::new(
             frame.configuration.pixel_width,
             frame.configuration.pixel_height,
-        )?;
+        )?
+        .with_format(self.format());
         layout.validate(frame.rgba)?;
         let damage = damage::normalize(frame.damage, layout)?;
         if output.pending_frame.is_some() {
@@ -282,7 +302,9 @@ impl CpuOutput {
         if self.retired {
             return;
         }
-        if self.slots.iter().any(Slot::is_busy) {
+        // A parent with live popup natives stays mapped; the last of them
+        // unmaps it when it goes (`defer_detach`).
+        if self.slots.iter().any(Slot::is_busy) && !self.lease.defer_detach() {
             // The lease keeps the surface alive. Removing its last content avoids
             // retaining that content forever while waiting for buffer releases.
             // Busy slots prove that the first configure was already acknowledged.

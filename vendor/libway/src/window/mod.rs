@@ -26,6 +26,8 @@ mod manage;
 #[cfg(feature = "owned-native-system")]
 mod native;
 mod output;
+#[path = "shell/popup/mod.rs"]
+mod popup;
 #[path = "shell/protocol.rs"]
 mod protocol;
 mod proxy;
@@ -61,6 +63,7 @@ pub use native::{NativeFrame, NativeFrameStart, NativePresenter};
 pub use output::{
     PixelRect, PresentOutcome, PresentationFlags, PresentationOutcome, PresentationTiming,
 };
+pub use popup::{ConstraintAdjustment, PopupAnchor, PopupGravity, PopupOptions, PopupPlacement};
 pub use proxy::{CommandOutcome, CommandSendError, HostWake, WindowProxy};
 use proxy::{HostCommand, WakeState};
 pub use region::{InputRegion, LogicalRect};

@@ -154,6 +154,10 @@ impl Job {
                 );
             self.objects.wlr_frame = Some(frame);
         } else {
+            // Hyprland sends the first damage when the frame is created, which
+            // another job's dma-buf import pump can dispatch before this job's
+            // submit: the frame size must be known from creation on.
+            p.frame_size = p.constraints.size;
             self.objects.ext_frame = Some(
                 self.objects
                     .session
@@ -214,7 +218,7 @@ impl Job {
                     stride,
                     wire,
                 ));
-                (FrameStorage::Cpu(CpuBuffer { shm }), format, stride)
+                (FrameStorage::Cpu(CpuBuffer::shm(shm)), format, stride)
             }
             #[cfg(feature = "gpu")]
             BufferKind::Gpu(allocator) => {
@@ -340,10 +344,16 @@ impl Connection {
         end: Instant,
     ) -> Result<Vec<Frame>> {
         let mut frames: Vec<Option<Frame>> = outputs.iter().map(|_| None).collect();
-        self.capture_batch_each(outputs, options, end, &mut |index, frame| {
-            frames[index] = Some(frame);
-            Ok(())
-        })?;
+        self.capture_batch_each(
+            outputs,
+            options,
+            end,
+            BufferKind::Cpu,
+            &mut |index, frame| {
+                frames[index] = Some(frame);
+                Ok(())
+            },
+        )?;
         frames
             .into_iter()
             .map(|frame| frame.ok_or(Error::SessionStopped))
@@ -355,28 +365,37 @@ impl Connection {
     /// it while the compositor copies the others. The barrier and layout check
     /// run after the last frame; if they fail, or `on_frame` fails, the whole
     /// call fails and the caller discards what it received. A WLR retry hands
-    /// every frame over again.
+    /// every frame over again; an `on_frame` failure is the caller's and never
+    /// retries.
     pub(crate) fn capture_batch_each(
         &mut self,
         outputs: &[Output],
         options: &CaptureOptions,
         end: Instant,
+        kind: BufferKind,
         on_frame: &mut dyn FnMut(usize, Frame) -> Result<()>,
     ) -> Result<()> {
         check_options(options)?;
         self.barrier(options, end)?;
         let mut jobs = outputs
             .iter()
-            .map(|output| Job::new(self, output.clone(), options.clone(), BufferKind::Cpu))
+            .map(|output| Job::new(self, output.clone(), options.clone(), kind.clone()))
             .collect::<Result<Vec<_>>>()?;
-        let mut result = self.run_batch(&mut jobs, end, on_frame);
+        let consumer_failed = std::cell::Cell::new(false);
+        let mut on_frame = |index, frame| {
+            let result = on_frame(index, frame);
+            consumer_failed.set(result.is_err());
+            result
+        };
+        let mut result = self.run_batch(&mut jobs, end, &mut on_frame);
         if let Err(error) = &result
+            && !consumer_failed.get()
             && jobs.iter().all(|job| job.falls_back(self, error))
         {
             for job in &mut jobs {
                 job.use_wlr(self);
             }
-            result = self.run_batch(&mut jobs, end, on_frame);
+            result = self.run_batch(&mut jobs, end, &mut on_frame);
         }
         for job in &mut jobs {
             job.release(self);

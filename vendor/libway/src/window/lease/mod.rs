@@ -22,9 +22,15 @@ use wayland_client::{
 };
 use wayland_protocols::xdg::{
     decoration::zv1::client::zxdg_toplevel_decoration_v1::ZxdgToplevelDecorationV1,
-    shell::client::{xdg_surface::XdgSurface, xdg_toplevel::XdgToplevel, xdg_wm_base::XdgWmBase},
+    shell::client::{
+        xdg_popup::XdgPopup, xdg_surface::XdgSurface, xdg_toplevel::XdgToplevel,
+        xdg_wm_base::XdgWmBase,
+    },
 };
 use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::ZwlrLayerSurfaceV1;
+
+mod pending;
+use pending::PendingNative;
 
 pub(super) const MAX_WINDOWS: usize = 16;
 
@@ -76,6 +82,13 @@ enum Role {
         xdg_surface: XdgSurface,
     },
     Layer(ZwlrLayerSurfaceV1),
+    /// The parent link keeps the parent's role and surface alive until this
+    /// popup's objects are destroyed, so the wire order is always child first.
+    Popup {
+        popup: XdgPopup,
+        xdg_surface: XdgSurface,
+        parent: Arc<WindowNative>,
+    },
 }
 
 /// What a new native window becomes.
@@ -89,6 +102,11 @@ pub(super) enum RoleRequest<'a> {
         output: Option<&'a WlOutput>,
         state: &'a LayerState,
     },
+    Popup {
+        options: &'a super::popup::PopupOptions,
+        parent: Arc<WindowNative>,
+        grab: Option<(wayland_client::protocol::wl_seat::WlSeat, u32)>,
+    },
 }
 
 pub(super) struct WindowNative {
@@ -99,6 +117,12 @@ pub(super) struct WindowNative {
     pub(super) globals: Arc<Globals>,
     retired: AtomicBool,
     presenter_claimed: AtomicBool,
+    /// Live popup natives whose parent this is. CPU retire keeps the surface
+    /// mapped while it is not zero, so no popup sits on an unmapped parent.
+    pub(super) popup_children: AtomicUsize,
+    /// CPU retire skipped its unmap because popups were alive; the last popup
+    /// native to go performs it. Whoever swaps it to false unmaps.
+    detach_deferred: AtomicBool,
 }
 
 impl WindowNative {
@@ -119,12 +143,29 @@ impl WindowNative {
                 output,
                 state,
             } => pending.create_layer(qh, id, namespace, output, state)?,
+            RoleRequest::Popup {
+                options,
+                parent,
+                grab,
+            } => pending.create_popup(qh, id, options, parent, grab)?,
         }
         // Successful role creation initializes every proxy. No intervening step
         // removes a proxy before ownership transfers out of this cleanup guard.
-        let role = match pending.layer.take() {
-            Some(layer) => Role::Layer(layer),
-            None => Role::Toplevel {
+        let role = match (pending.layer.take(), pending.popup.take()) {
+            (Some(layer), _) => Role::Layer(layer),
+            (None, Some(popup)) => {
+                let parent = pending.parent.take().expect("invariant: popup parent");
+                parent.popup_children.fetch_add(1, Ordering::AcqRel);
+                Role::Popup {
+                    popup,
+                    xdg_surface: pending
+                        .xdg_surface
+                        .take()
+                        .expect("invariant: xdg surface created"),
+                    parent,
+                }
+            }
+            (None, None) => Role::Toplevel {
                 toplevel: pending
                     .toplevel
                     .take()
@@ -144,6 +185,8 @@ impl WindowNative {
             globals: pending.globals.clone(),
             retired: AtomicBool::new(false),
             presenter_claimed: AtomicBool::new(false),
+            popup_children: AtomicUsize::new(0),
+            detach_deferred: AtomicBool::new(false),
         };
         pending.credit = false;
         Ok(Arc::new(native))
@@ -161,19 +204,37 @@ impl WindowNative {
         &self.surface
     }
 
-    /// The toplevel role, or InvalidInput for a layer.
+    /// The toplevel role, or InvalidInput for a layer or popup.
     pub(super) fn toplevel(&self) -> Result<&XdgToplevel> {
         match &self.role {
             Role::Toplevel { toplevel, .. } => Ok(toplevel),
-            Role::Layer(_) => Err(Error::InvalidInput("window is not a toplevel")),
+            _ => Err(Error::InvalidInput("window is not a toplevel")),
         }
     }
 
-    /// The layer role, or InvalidInput for a toplevel.
+    /// The layer role, or InvalidInput for a toplevel or popup.
     pub(super) fn layer(&self) -> Result<&ZwlrLayerSurfaceV1> {
         match &self.role {
             Role::Layer(layer) => Ok(layer),
-            Role::Toplevel { .. } => Err(Error::InvalidInput("window is not a layer")),
+            _ => Err(Error::InvalidInput("window is not a layer")),
+        }
+    }
+
+    /// The popup role, or InvalidInput for a toplevel or layer.
+    pub(super) fn popup(&self) -> Result<&XdgPopup> {
+        match &self.role {
+            Role::Popup { popup, .. } => Ok(popup),
+            _ => Err(Error::InvalidInput("window is not a popup")),
+        }
+    }
+
+    /// The `xdg_surface` a popup can name as its parent; `None` for a layer.
+    pub(super) fn xdg_surface(&self) -> Option<&XdgSurface> {
+        match &self.role {
+            Role::Toplevel { xdg_surface, .. } | Role::Popup { xdg_surface, .. } => {
+                Some(xdg_surface)
+            }
+            Role::Layer(_) => None,
         }
     }
 
@@ -219,164 +280,25 @@ impl Drop for WindowNative {
                 xdg_surface.destroy();
             }
             Role::Layer(layer) => layer.destroy(),
+            Role::Popup {
+                popup,
+                xdg_surface,
+                parent,
+            } => {
+                popup.destroy();
+                xdg_surface.destroy();
+                if parent.popup_children.fetch_sub(1, Ordering::AcqRel) == 1
+                    && parent.detach_deferred.swap(false, Ordering::AcqRel)
+                {
+                    // The parent was retired while this popup lived: unmap it
+                    // now that no popup depends on it.
+                    parent.surface.attach(None, 0, 0);
+                    parent.surface.commit();
+                }
+            }
         }
         self.scaling.destroy();
         self.surface.destroy();
-        self.globals.native_windows.fetch_sub(1, Ordering::AcqRel);
-        self.globals.flush_and_notify();
-    }
-}
-
-struct PendingNative {
-    globals: Arc<Globals>,
-    surface: Option<WlSurface>,
-    xdg_surface: Option<XdgSurface>,
-    toplevel: Option<XdgToplevel>,
-    decoration: Option<ZxdgToplevelDecorationV1>,
-    layer: Option<ZwlrLayerSurfaceV1>,
-    scaling: SurfaceScaleObjects,
-    credit: bool,
-}
-
-impl PendingNative {
-    fn reserve(globals: Arc<Globals>) -> Result<Self> {
-        globals
-            .native_windows
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
-                count.checked_add(1).filter(|next| *next <= MAX_WINDOWS)
-            })
-            .map_err(|_| Error::LimitExceeded)?;
-        Ok(Self {
-            globals,
-            surface: None,
-            xdg_surface: None,
-            toplevel: None,
-            decoration: None,
-            layer: None,
-            scaling: SurfaceScaleObjects::default(),
-            credit: true,
-        })
-    }
-
-    fn create_surface(&mut self, qh: &QueueHandle<WindowState>, id: WindowId) -> Result<()> {
-        self.surface = Some(self.globals.compositor.create_surface(qh, id));
-        self.check()?;
-        self.scaling = self.globals.scaling.create_surface(
-            self.surface.as_ref().expect("invariant: surface created"),
-            qh,
-            id,
-        )?;
-        self.check()
-    }
-
-    /// Role setup and state precede the required bufferless first commit.
-    fn create_layer(
-        &mut self,
-        qh: &QueueHandle<WindowState>,
-        id: WindowId,
-        namespace: String,
-        output: Option<&WlOutput>,
-        state: &LayerState,
-    ) -> Result<()> {
-        let surface = self.surface.clone().expect("invariant: surface created");
-        let layer = self.globals.layer_shell.available()?.get_layer_surface(
-            &surface,
-            output,
-            native_layer(state.layer),
-            namespace,
-            qh,
-            id,
-        );
-        send_state(&layer, None, state);
-        self.layer = Some(layer);
-        self.check()?;
-        surface.commit();
-        self.check()
-    }
-
-    fn create_toplevel(
-        &mut self,
-        qh: &QueueHandle<WindowState>,
-        id: WindowId,
-        title: String,
-        app_id: String,
-    ) -> Result<()> {
-        // Each checked construction stores its proxy before the next role uses
-        // it, and this method never removes a stored proxy.
-        self.xdg_surface = Some(self.globals.shell.get_xdg_surface(
-            self.surface.as_ref().expect("invariant: surface created"),
-            qh,
-            id,
-        ));
-        self.check()?;
-        self.toplevel = Some(
-            self.xdg_surface
-                .as_ref()
-                .expect("invariant: xdg surface created")
-                .get_toplevel(qh, id),
-        );
-        self.check()?;
-        let toplevel = self.toplevel.as_ref().expect("invariant: toplevel created");
-        toplevel.set_title(title);
-        toplevel.set_app_id(app_id);
-        // Server-side mode is requested before the first commit; the compositor's
-        // reply, not this request, decides the configured mode.
-        self.decoration = self.globals.decoration.create(toplevel, qh, id);
-        // Role setup precedes the required first bufferless commit.
-        self.surface
-            .as_ref()
-            .expect("invariant: surface created")
-            .commit();
-        self.check()
-    }
-
-    fn check(&self) -> Result<()> {
-        if let Some(error) = self.globals.connection.backend().last_error() {
-            return Err(Error::Wayland(error.to_string()));
-        }
-        if !self.scaling.alive()
-            || self.surface.as_ref().is_some_and(|value| !value.is_alive())
-            || self
-                .xdg_surface
-                .as_ref()
-                .is_some_and(|value| !value.is_alive())
-            || self
-                .toplevel
-                .as_ref()
-                .is_some_and(|value| !value.is_alive())
-            || self
-                .decoration
-                .as_ref()
-                .is_some_and(|value| !value.is_alive())
-            || self.layer.as_ref().is_some_and(|value| !value.is_alive())
-        {
-            return Err(Error::Wayland("native window creation failed".into()));
-        }
-        Ok(())
-    }
-}
-
-impl Drop for PendingNative {
-    fn drop(&mut self) {
-        if !self.credit {
-            return;
-        }
-        if let Some(layer) = &self.layer {
-            layer.destroy();
-        }
-        if let Some(decoration) = &self.decoration {
-            decoration.destroy();
-        }
-        if let Some(toplevel) = &self.toplevel {
-            toplevel.destroy();
-        }
-        if let Some(surface) = &self.xdg_surface {
-            surface.destroy();
-        }
-        self.scaling.destroy();
-        if let Some(surface) = &self.surface {
-            surface.destroy();
-        }
         self.globals.native_windows.fetch_sub(1, Ordering::AcqRel);
         self.globals.flush_and_notify();
     }
@@ -409,6 +331,15 @@ pub(crate) struct PresenterLease {
 }
 
 impl PresenterLease {
+    /// Defer this retired window's unmap to its last popup native. Returns
+    /// false when none is alive (any more): the caller unmaps now.
+    pub(super) fn defer_detach(&self) -> bool {
+        let native = &self.native;
+        native.detach_deferred.store(true, Ordering::Release);
+        !(native.popup_children.load(Ordering::Acquire) == 0
+            && native.detach_deferred.swap(false, Ordering::AcqRel))
+    }
+
     pub(super) fn id(&self) -> WindowId {
         self.native.id
     }

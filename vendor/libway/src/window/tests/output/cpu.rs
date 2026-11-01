@@ -13,7 +13,12 @@ impl GlobalDispatch<wl_shm::WlShm, ()> for State {
         _: &(),
         init: &mut DataInit<'_, Self>,
     ) {
-        init.init(resource, ()).format(wl_shm::Format::Argb8888);
+        let shm = init.init(resource, ());
+        shm.format(wl_shm::Format::Argb8888);
+        if state.shm_abgr {
+            shm.format(wl_shm::Format::Abgr8888);
+        }
+        state.shm = Some(shm);
         state.ledger.push(Request::BindShm);
     }
 }
@@ -64,16 +69,21 @@ impl Dispatch<wl_shm_pool::WlShmPool, Arc<memmap2::Mmap>> for State {
                 stride,
                 format,
             } => {
-                assert_eq!(
-                    format,
-                    wayland_server::WEnum::Value(wl_shm::Format::Argb8888)
-                );
+                let format = match format {
+                    wayland_server::WEnum::Value(wl_shm::Format::Argb8888) => 0,
+                    wayland_server::WEnum::Value(wl_shm::Format::Abgr8888) => {
+                        assert!(state.shm_abgr, "ABGR8888 was never advertised");
+                        wl_shm::Format::Abgr8888 as u32
+                    }
+                    other => panic!("unexpected SHM format {other:?}"),
+                };
                 assert!(offset >= 0 && width > 0 && height > 0 && stride >= width * 4);
                 assert!((offset as usize) + (stride * height) as usize <= map.len());
                 let index = state.buffers.len();
                 let proxy = init.init(id, index);
                 state.buffers.push(Buffer {
                     proxy,
+                    format,
                     map: map.clone(),
                     offset: offset as usize,
                     width,

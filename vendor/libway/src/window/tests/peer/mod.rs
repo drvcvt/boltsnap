@@ -15,7 +15,7 @@ use wayland_protocols::wp::{
     fractional_scale::v1::server::wp_fractional_scale_v1, viewporter::server::wp_viewport,
 };
 use wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::ZxdgToplevelDecorationV1;
-use wayland_protocols::xdg::shell::server::{xdg_surface, xdg_toplevel};
+use wayland_protocols::xdg::shell::server::{xdg_popup, xdg_surface, xdg_toplevel};
 use wayland_server::protocol::{wl_buffer, wl_callback, wl_output, wl_surface};
 use wayland_server::{Display, backend::ClientData};
 
@@ -30,6 +30,8 @@ pub(super) struct Options {
     pub output_count: usize,
     /// False holds back the initial `wl_output.done` until a test emits one.
     pub output_done: bool,
+    /// Also advertise `ABGR8888` from `wl_shm` at bind.
+    pub shm_abgr: bool,
     pub surface_version: u32,
     pub seat_count: usize,
     pub seat_version: u32,
@@ -46,6 +48,8 @@ pub(super) struct Options {
     pub layer_shell_version: u32,
     pub activation: bool,
     pub idle_inhibit: bool,
+    /// Advertised `xdg_wm_base` version.
+    pub shell_version: u32,
 }
 
 impl Default for Options {
@@ -59,6 +63,7 @@ impl Default for Options {
             outputs: false,
             output_count: 2,
             output_done: true,
+            shm_abgr: false,
             surface_version: 6,
             seat_count: 0,
             seat_version: 9,
@@ -75,6 +80,7 @@ impl Default for Options {
             layer_shell_version: 5,
             activation: false,
             idle_inhibit: false,
+            shell_version: 6,
         }
     }
 }
@@ -222,6 +228,31 @@ pub(super) enum Request {
     Inhibitor(usize, usize),
     DestroyInhibitor(usize),
     DestroyIdleInhibitManager,
+    /// Positioner index.
+    Positioner(usize),
+    /// Positioner, width and height.
+    PositionerSize(usize, i32, i32),
+    /// Positioner, x, y, width and height.
+    PositionerAnchorRect(usize, i32, i32, i32, i32),
+    /// Positioner and raw anchor value.
+    PositionerAnchor(usize, u32),
+    /// Positioner and raw gravity value.
+    PositionerGravity(usize, u32),
+    /// Positioner and raw constraint adjustment bits.
+    PositionerConstraint(usize, u32),
+    /// Positioner, x and y.
+    PositionerOffset(usize, i32, i32),
+    PositionerReactive(usize),
+    DestroyPositioner(usize),
+    /// Window, parent window (`None` for a null parent) and positioner.
+    Popup(usize, Option<usize>, usize),
+    /// Window, seat and serial.
+    Grab(usize, usize, u32),
+    /// Window, positioner and token.
+    Reposition(usize, usize, u32),
+    DestroyPopup(usize),
+    /// Layer window and popup window.
+    LayerGetPopup(usize, usize),
 }
 
 #[derive(Debug)]
@@ -233,6 +264,8 @@ pub(super) enum Event {
     Frame(usize),
     Fractional(usize, u32),
     Preferred(usize, i32),
+    /// Send one more `wl_shm.format` with this raw value.
+    ShmFormat(u32),
     Output(usize, i32, bool),
     Enter(usize, usize),
     Leave(usize, usize),
@@ -247,11 +280,14 @@ pub(super) enum Event {
     Layer(LayerWireEvent),
     Activation(ActivationWireEvent),
     IdleInhibit(IdleInhibitWireEvent),
+    Popup(PopupWireEvent),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct BufferSnapshot {
     pub index: usize,
+    /// Raw `wl_shm` format value.
+    pub format: u32,
     pub width: i32,
     pub height: i32,
     pub stride: i32,
@@ -260,6 +296,8 @@ pub(super) struct BufferSnapshot {
 
 pub(super) struct Buffer {
     pub proxy: wl_buffer::WlBuffer,
+    /// Raw `wl_shm` format value.
+    pub format: u32,
     pub map: Arc<memmap2::Mmap>,
     pub offset: usize,
     pub width: i32,
@@ -306,6 +344,7 @@ pub(super) struct Native {
     pub layer: Option<
         wayland_protocols_wlr::layer_shell::v1::server::zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
     >,
+    pub popup: Option<xdg_popup::XdgPopup>,
 }
 
 #[derive(Default)]
@@ -317,6 +356,8 @@ pub(super) struct State {
     pub outputs: Vec<Option<wl_output::WlOutput>>,
     pub output_globals: Vec<Option<wayland_server::backend::GlobalId>>,
     pub hold_output_done: bool,
+    pub shm_abgr: bool,
+    pub shm: Option<wayland_server::protocol::wl_shm::WlShm>,
     pub input: input::InputState,
     pub clipboard: clipboard::ClipboardState,
     pub ime: text_input::TextInputState,
@@ -326,6 +367,7 @@ pub(super) struct State {
     pub primary: primary::PrimaryState,
     pub layer: layer::LayerPeerState,
     pub attention: toplevel::AttentionPeerState,
+    pub popup: roles::popup::PopupPeerState,
 }
 
 pub(super) struct Peer {
@@ -429,6 +471,7 @@ pub(super) use layer::LayerWireEvent;
 mod toplevel;
 pub(super) use toplevel::{ActivationWireEvent, IdleInhibitWireEvent};
 mod roles;
+pub(super) use roles::popup::PopupWireEvent;
 mod text_input;
 pub(super) use text_input::ImeWireEvent;
 mod clipboard;

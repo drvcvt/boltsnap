@@ -275,9 +275,10 @@ impl Dispatch<ext_session::ExtImageCopyCaptureSessionV1, u64> for State {
             }
             ext_session::Event::DmabufDevice { device } => {
                 if device.len() == std::mem::size_of::<libc::dev_t>() && device.len() == 8 {
-                    p.batch().device = Some(u64::from_ne_bytes(
-                        device.as_slice().try_into().expect("checked length"),
-                    ));
+                    let dev =
+                        u64::from_ne_bytes(device.as_slice().try_into().expect("checked length"));
+                    p.batch().device = Some(dev);
+                    s.dmabuf_device = Some(dev);
                 } else {
                     p.error = Some(Error::CaptureFailed(
                         "invalid DMA-BUF device identifier".into(),

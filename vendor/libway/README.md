@@ -11,19 +11,30 @@ Rust 1.88 or newer. MIT licensed. This is an unpublished 0.1 API.
 - EXT image-copy-capture with output capture sources, or WLR screencopy v1–v3.
 - CPU frames backed by sealed-size SHM, with checked packed-pixel conversion.
 - Optional GBM DMA-BUF frames with owned plane descriptors and explicit
-  format/modifier negotiation. No EGL context or GPU readback dependency.
+  format/modifier negotiation. No EGL context.
+- Optional fast desktop tiles read back from DMA-BUFs through Vulkan (loaded at
+  runtime) or a LINEAR mapping, falling back to SHM with a queryable cause.
 - Output capture, upright images, logical regions and mixed-scale desktop images.
 - Persistent EXT sessions, presentation timestamps, damage, deadlines and cancellation.
 
 `default-features = false` builds shared types and the `Display`/`SurfaceHandle` connection layer; enable `capture` for the
-protocol/CPU frame core, `dnd` for drag-and-drop, and `foreign-display` to attach to a
-`wl_display` owned by another library such as winit. The default `image`
+protocol/CPU frame core, `dnd` for drag-and-drop, `foreign-display` to attach to a
+`wl_display` owned by another library such as winit, and `window` for caller-owned
+windows (`owned-native-system` implies `window`). The default `image`
 feature adds `image::RgbaImage`, orientation and composition. `gpu` adds GBM and
-requires the system GBM library and headers (for example `libgbm-dev`). The CPU
-build has no GBM dependency. PNG support is only enabled for examples/tests;
+requires the system GBM library and headers (for example `libgbm-dev`). `vulkan`
+implies `gpu` and adds `capture_desktop_tiles_fast`; it links no Vulkan library
+and loads `libvulkan.so.1` at runtime. The CPU build has no GBM dependency. PNG support is only enabled for examples/tests;
 applications choose their own image codecs.
 
 ## Caller-owned windows
+
+Everything in this section needs the `window` feature (not a default). The
+smallest example is `cargo run --no-default-features --features window --example
+window`: one CPU window with a solid fill that prints `configured WxH`, `shown`
+and, once the compositor closes it, `closed`. Every window example
+(`attention`, `colors`, `layer`, `presentation`, `primary`, `window`) requires
+`--features window`.
 
 `window::Host` owns an independent connection and every participating native
 queue. Call `pump` on the owner thread, drain owned `WindowEvent` values and
@@ -206,7 +217,7 @@ below v5, a later layer change below v2); invalid combinations return
 output went away) retires the window like `Host::close` and publishes `Closed`.
 Toplevel requests (`set_title`, `move_window`, `set_maximized`, ...) on a layer
 return `InvalidInput`. There is no hide/show: close and create again, or present a
-transparent frame with an empty input region. Popups on layers wait for R6.
+transparent frame with an empty input region. Layers can carry popups (below).
 
 `Host::set_input_region` (`All`, `None` for click-through, or up to 64 `Rects`) and
 `Host::set_opaque_region` work on every window, toplevel or layer, in surface-local
@@ -218,6 +229,54 @@ next presented frame, like size limits.
 (`name` is the connector, such as `DP-3`, from `wl_output` v4). `OutputAdded` and
 `OutputRemoved` events follow changes; outputs may be announced after `Ready`.
 [`examples/layer.rs`](examples/layer.rs) is a live check.
+
+### Popups
+
+`Host::create_popup(PopupOptions)` places an `xdg_popup` (menu, dropdown,
+tooltip) on a toplevel, a layer or another popup of the same host and returns an
+ordinary `WindowId`: configurations, CPU and native presentation, input,
+regions and `close` work as for any window.
+
+```rust
+let menu = host.create_popup(PopupOptions {
+    size: (200, 160),
+    anchor_rect: LogicalRect { x: click_x, y: click_y, width: 1, height: 1 },
+    anchor: PopupAnchor::TopLeft,
+    gravity: PopupGravity::BottomRight,
+    constraint_adjustment: ConstraintAdjustment::FLIP_X | ConstraintAdjustment::FLIP_Y,
+    grab: Some(seat), // None for tooltips
+    ..PopupOptions::new(parent)
+})?;
+```
+
+- **Building options.** Always start from `PopupOptions::new(parent)` and
+  override fields, so fields added later do not break the literal.
+- **Parent.** The parent must have presented a frame first. Hyprland never
+  configures a popup on an unmapped toplevel or popup parent. The anchor
+  rectangle must lie inside the parent's current size.
+- **Configurations.** A popup's `Configured` carries
+  `placement: Some(PopupPlacement { x, y, width, height, repositioned })`
+  relative to the parent.
+- **Reposition.** `reposition_popup` (xdg_wm_base v3) returns a token, and the
+  completing configuration reports it in `placement.repositioned`.
+- **Grabs.** `grab: Some(seat)` takes the seat's latest pointer or key press
+  anywhere in the parent's popup tree, so menus opened from the keyboard and
+  submenus work. A grabbing popup sits on a toplevel, a layer or the topmost
+  grabbing popup, with one grab chain per host.
+- **Dismissal.** The compositor's dismissal (`popup_done`) arrives as `Closed`.
+  `WindowEvent::PopupGrabRefused` comes right before it when a grabbing popup
+  is dismissed before its first configuration. Closing any window closes the
+  popups above it first, topmost first, with one `Closed` each.
+- **Hyprland behavior.** Hyprland 0.56.2 ignores the grab serial and the
+  `reactive` hint. A submenu that joins a grab gets no keyboard focus, so route
+  keys from any popup of the tree to the topmost one yourself. A click on a
+  layer dismisses that layer's grabbing popup. A popup without a grab on a
+  layer only gets keys if the layer's keyboard interactivity is not `None`.
+  Popups of toplevels are hit-tested by their rectangle, ignoring the input
+  region (`ViewHitTester.cpp:264`), so a tooltip there is never click-through.
+  Layer popups honour the region.
+- **Live check.** [`examples/popup.rs`](examples/popup.rs) runs all of this
+  live.
 
 ## Window input methods
 
@@ -378,12 +437,43 @@ switch EXT to WLR on an unsupported format/capability; forced backends do not.
 and borrowed FDs. To import asynchronously, keep the frame alive until the
 consumer GPU/encoder finishes, or duplicate descriptors into your own owned
 import object. Frames retain the allocation and device after the allocator or
-capture connection is dropped. GPU objects are deliberately thread-local (`Rc`);
-an encoder integration should design its ownership boundary explicitly.
+capture connection is dropped. GPU objects are `Send`: buffers share their GBM
+device behind a lock, and every GBM call holds it, so a connection with GPU state
+can still live in a `static Mutex`.
 
 `ready` signals capture completion; `wl_buffer.release` is not the completion
 mechanism for these protocols. This implementation follows their implicit
 DMA-BUF synchronization contract. It does not offer explicit sync fences.
+
+### Fast desktop tiles
+
+`features = ["vulkan"]` adds `capture_desktop_tiles_fast(&options)`: the same
+tiles, layout and `Ok(None)` rules as `capture_desktop_tiles`, read back from
+DMA-BUFs when the system allows it. Tiers, fastest first:
+
+1. Vulkan: GBM buffers with a vendor modifier that Vulkan can import
+   (`VK_EXT_image_drm_format_modifier`, `VK_EXT_external_memory_dma_buf`), on
+   the physical device matching the compositor's DMA-BUF device
+   (`VK_EXT_physical_device_drm`), copied to host memory.
+2. LINEAR: a LINEAR GBM buffer read through `mmap` inside a
+   `DMA_BUF_IOCTL_SYNC` window, for systems without a usable Vulkan. This tier
+   is **not checked on real hardware**: no driver on the development system
+   allocates LINEAR (NVIDIA's GBM reports a zero stride). It is tested on real
+   DMA-BUFs from `/dev/udmabuf` against the test server only.
+3. SHM, as `capture_desktop_tiles`.
+
+`DesktopTiles::readback` names the tier used; `tile_readback()` returns it with
+the first reason a faster tier was not used (`ReadbackFallback`). A cause that
+will not change (no loader, extension, device, DMA-BUF support or modifier) turns
+its tier off until `reset_readback()`; a device mismatch is retried once the
+compositor names another device; timeouts and refused imports are retried on the
+next call. Every failure falls through within the same deadline; none panics.
+
+The Vulkan instance, device, queue and host buffers stay on the connection, so
+keep the connection for repeated captures: the first call pays about 70 ms of
+driver setup on the development system, later calls none. Only ARGB8888 and
+XRGB8888 use the GPU tiers; other formats go to SHM. The LINEAR tier needs the
+compositor's device, which a connection learns from its first capture.
 
 ## Bounds and errors
 
@@ -591,7 +681,7 @@ arrive as `ClipboardEvent::PrimarySelection` and are read with the ordinary
 seat cancels that seat's previous read of either kind. Without the global, or after
 its removal, both calls return
 `Unsupported("zwp_primary_selection_device_manager_v1")` until a new Host.
-`ClipboardEvent` is non-exhaustive. `cargo run --example primary` checks it live: a
+`ClipboardEvent` is non-exhaustive. `cargo run --features window --example primary` checks it live: a
 left click sets primary, a middle click prints it.
 
 ## Review and benchmarks

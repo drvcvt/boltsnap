@@ -37,12 +37,18 @@ use wayland_protocols_wlr::screencopy::v1::client::{
 mod batch;
 mod cursor;
 mod events;
+#[cfg(feature = "vulkan")]
+mod fast;
 mod pending;
+mod readback;
 mod stream;
+#[cfg(test)]
+mod tests;
 mod tiles;
 pub use cursor::{CursorEvent, CursorStream};
 pub(crate) use pending::Constraints;
 use pending::Pending;
+pub use readback::{ReadbackFallback, TileReadback};
 pub use stream::Stream;
 pub use tiles::{DesktopTile, DesktopTiles};
 #[cfg(feature = "image")]
@@ -84,6 +90,10 @@ pub(crate) struct State {
     dma: Option<dmabuf::ZwpLinuxDmabufV1>,
     dma_formats: Vec<(u32, u64)>,
     pending: BTreeMap<u64, Pending>,
+    /// The latest `dmabuf_device` a capture session announced.
+    dmabuf_device: Option<u64>,
+    #[cfg(feature = "vulkan")]
+    readback: fast::ReadbackState,
     global_error: Option<Error>,
     limits: Limits,
 }
@@ -151,6 +161,9 @@ impl Connection {
                 dma: None,
                 dma_formats: Vec::new(),
                 pending: BTreeMap::new(),
+                dmabuf_device: None,
+                #[cfg(feature = "vulkan")]
+                readback: Default::default(),
                 global_error: None,
                 limits: options.limits,
             },

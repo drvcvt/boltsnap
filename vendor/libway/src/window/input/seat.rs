@@ -64,6 +64,7 @@ fn admit_seat(
             pointer_focus: None,
             enter: None,
             press: None,
+            latest_input: None,
             staged,
         },
     );
@@ -198,6 +199,12 @@ fn change_keyboard(state: &mut WindowState, seat: &mut Seat, enabled: bool) {
         state.input.children += 1;
     } else if !enabled {
         state.clipboard.blur(seat.token.id, &mut state.events);
+        if seat
+            .latest_input
+            .is_some_and(|input| input.device == InputDevice::Keyboard)
+        {
+            seat.latest_input = None;
+        }
         cancel::cancel_focus(
             seat,
             &mut state.events,
@@ -219,6 +226,12 @@ fn change_pointer(state: &mut WindowState, seat: &mut Seat, enabled: bool) {
     } else if !enabled && seat.pointer.is_some() {
         state.clipboard.retire_press(seat.token.id);
         seat.press = None;
+        if seat
+            .latest_input
+            .is_some_and(|input| input.device == InputDevice::Pointer)
+        {
+            seat.latest_input = None;
+        }
         cancel::cancel_focus(
             seat,
             &mut state.events,

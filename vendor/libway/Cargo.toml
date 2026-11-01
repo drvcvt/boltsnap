@@ -11,9 +11,13 @@ default = ["capture", "image"]
 capture = []
 image = ["capture", "dep:image"]
 gpu = ["capture", "dep:gbm"]
+# Desktop tiles read back from dma-bufs: linear mmap, or Vulkan loaded at runtime.
+vulkan = ["gpu", "dep:ash"]
 dnd = []
 foreign-display = ["dnd", "wayland-client/system"]
-owned-native-system = ["wayland-client/system", "wayland-client/dlopen", "dep:raw-window-handle"]
+# Caller-owned windows (`window::Host`) and the runtime they run on.
+window = []
+owned-native-system = ["window", "wayland-client/system", "wayland-client/dlopen", "dep:raw-window-handle"]
 
 [dependencies]
 wayland-client = "0.31.14"
@@ -23,6 +27,7 @@ memmap2 = "0.9"
 libc = "0.2"
 image = { version = "0.25.10", default-features = false, optional = true }
 gbm = { version = "0.18", default-features = false, optional = true }
+ash = { version = "0.38", default-features = false, features = ["loaded", "std"], optional = true }
 raw-window-handle = { version = "=0.6.2", optional = true, features = ["std"] }
 
 [dev-dependencies]
@@ -42,3 +47,31 @@ required-features = ["image"]
 [[example]]
 name = "frames"
 required-features = ["capture"]
+
+[[example]]
+name = "attention"
+required-features = ["window"]
+
+[[example]]
+name = "colors"
+required-features = ["window"]
+
+[[example]]
+name = "layer"
+required-features = ["window"]
+
+[[example]]
+name = "presentation"
+required-features = ["window"]
+
+[[example]]
+name = "primary"
+required-features = ["window"]
+
+[[example]]
+name = "window"
+required-features = ["window"]
+
+[[example]]
+name = "popup"
+required-features = ["window"]

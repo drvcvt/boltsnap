@@ -50,6 +50,12 @@ pub(super) struct WindowRecord {
     pub(super) layer: Option<LayerState>,
     /// The last requested toplevel size limits.
     pub(super) limits: super::toplevel::SizeLimits,
+    /// The parent window of a popup; `None` for toplevels and layers.
+    pub(super) parent: Option<WindowId>,
+    /// Popup state; `None` for toplevels and layers.
+    pub(super) popup: Option<super::popup::PopupRecord>,
+    /// A frame was presented (CPU or native), so popups may use it as parent.
+    pub(super) mapped: bool,
     #[cfg(feature = "owned-native-system")]
     pub(super) native_pacing: super::native::state::NativePacing,
 }
@@ -110,6 +116,20 @@ pub(crate) struct WindowState {
 }
 
 impl WindowState {
+    /// The toplevel or layer at the base of `id`'s popup chain; `id` itself
+    /// for a toplevel, a layer or an unknown window.
+    pub(in crate::window) fn tree_root(&self, id: WindowId) -> WindowId {
+        let mut root = id;
+        // A chain holds at most the window cap; the bound also stops a cycle.
+        for _ in 0..super::lease::MAX_WINDOWS {
+            match self.windows.get(&root).and_then(|record| record.parent) {
+                Some(parent) => root = parent,
+                None => break,
+            }
+        }
+        root
+    }
+
     pub(crate) fn new(
         connection: &Connection,
         qh: &QueueHandle<Self>,
@@ -187,14 +207,14 @@ impl WindowState {
         self.insert(globals, preferred, Some(state), request)
     }
 
-    fn creation_globals(&self) -> Result<Arc<Globals>> {
+    pub(in crate::window) fn creation_globals(&self) -> Result<Arc<Globals>> {
         if !self.create_allowed {
             return Err(Error::Unsupported("required window global was removed"));
         }
         Ok(self.globals.as_ref().ok_or(Error::NotReady)?.clone())
     }
 
-    fn insert(
+    pub(in crate::window) fn insert(
         &mut self,
         globals: Arc<Globals>,
         preferred: (u32, u32),
@@ -225,6 +245,9 @@ impl WindowState {
                         next_revision: 1,
                         layer,
                         limits: Default::default(),
+                        parent: None,
+                        popup: None,
+                        mapped: false,
                         #[cfg(feature = "owned-native-system")]
                         native_pacing: super::native::state::NativePacing::default(),
                     },
@@ -248,51 +271,6 @@ impl WindowState {
     pub(crate) fn configuration(&self, id: WindowId) -> Result<Option<Configuration>> {
         self.ensure_active()?;
         Ok(self.record(id)?.accepted)
-    }
-
-    pub(crate) fn close(&mut self, id: WindowId) -> Result<()> {
-        self.ensure_live()?;
-        #[cfg(feature = "owned-native-system")]
-        if self
-            .native_attempt
-            .is_some_and(|attempt| attempt.window != id)
-        {
-            return Err(Error::InvalidInput(
-                "another native frame attempt remains open",
-            ));
-        }
-        self.validate_id(id)?;
-        if !self.windows.contains_key(&id) {
-            return Ok(());
-        }
-        // Reserve the discrete notification before touching logical/native ownership.
-        if !self.event_room(1) {
-            let error = Error::LimitExceeded;
-            self.remember(&error);
-            return Err(error);
-        }
-        if let Err(error) = self.text_input.close_window(id, &mut self.events) {
-            self.remember(&error);
-            return Err(error);
-        }
-        self.clipboard.close_window(id, &mut self.events);
-        self.input
-            .cancel(&mut self.events, Some(id), InputCancelReason::WindowClosed);
-        if let Some(record) = self.windows.remove(&id) {
-            #[cfg(feature = "owned-native-system")]
-            if self
-                .native_attempt
-                .is_some_and(|attempt| attempt.window == id)
-            {
-                self.native_attempt = None;
-            }
-            record.native.retire();
-            self.output.retire(id);
-            self.presentation.close_window(id);
-            self.events.push_back(WindowEvent::Closed { window: id });
-            drop(record);
-        }
-        Ok(())
     }
 
     pub(crate) fn set_title(&mut self, id: WindowId, title: String) -> Result<()> {
@@ -367,6 +345,11 @@ impl WindowState {
             let error = Error::Wayland(error.to_string());
             self.remember(&error);
             return Err(error);
+        }
+        if matches!(result, Ok(PresentOutcome::Presented))
+            && let Some(record) = self.windows.get_mut(&id)
+        {
+            record.mapped = true;
         }
         result
     }

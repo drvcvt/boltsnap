@@ -125,6 +125,7 @@ impl Dispatch<ZwlrLayerSurfaceV1, usize> for State {
             R::SetLayer { layer } => Request::LayerSetLayer(index, raw(layer)),
             R::SetExclusiveEdge { edge } => Request::LayerEdge(index, raw(edge)),
             R::AckConfigure { serial } => Request::LayerAck(index, serial),
+            R::GetPopup { popup } => Request::LayerGetPopup(index, *popup.data::<usize>().unwrap()),
             R::Destroy => Request::DestroyLayerSurface(index),
             request => panic!("unexpected layer surface request: {request:?}"),
         });

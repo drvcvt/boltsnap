@@ -1,6 +1,26 @@
-//! Checked tightly packed CPU presentation layout and native ARGB packing.
+//! Checked tightly packed CPU presentation layout and its SHM pixel format:
+//! a plain copy into `ABGR8888`, or the per-pixel swizzle into `ARGB8888`.
 use super::{damage::PixelRect, slots::MAX_SHM_BYTES};
 use crate::{Error, Result};
+
+/// The `wl_shm` format a CPU buffer is created with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ShmFormat {
+    /// Always available. Needs a per-pixel swizzle from RGBA.
+    Argb8888,
+    /// `[31:0] A:B:G:R` little endian, so R, G, B, A in memory: the RGBA input
+    /// as is. Used only when advertised and on a little-endian host.
+    Abgr8888,
+}
+
+impl ShmFormat {
+    pub(crate) fn wire(self) -> wayland_client::protocol::wl_shm::Format {
+        match self {
+            Self::Argb8888 => wayland_client::protocol::wl_shm::Format::Argb8888,
+            Self::Abgr8888 => wayland_client::protocol::wl_shm::Format::Abgr8888,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Layout {
@@ -8,6 +28,8 @@ pub(crate) struct Layout {
     pub(crate) height: i32,
     pub(crate) stride: i32,
     pub(crate) bytes: usize,
+    /// Part of the identity: slots of another format are replaced, not reused.
+    pub(crate) format: ShmFormat,
 }
 
 impl Layout {
@@ -32,7 +54,12 @@ impl Layout {
             height,
             stride,
             bytes,
+            format: ShmFormat::Argb8888,
         })
+    }
+
+    pub(crate) fn with_format(self, format: ShmFormat) -> Self {
+        Self { format, ..self }
     }
 
     pub(crate) fn validate(self, rgba: &[u8]) -> Result<()> {
@@ -49,7 +76,7 @@ impl Layout {
         if target.len() != self.bytes {
             return Err(Error::InvalidDimensions);
         }
-        swizzle(rgba, target);
+        self.pack(rgba, target);
         Ok(())
     }
 
@@ -72,9 +99,18 @@ impl Layout {
         let (stride, x) = (self.stride as usize, rect.x as usize * 4);
         for row in rect.y as usize..rect.bottom() as usize {
             let span = row * stride + x..row * stride + x + rect.width as usize * 4;
-            swizzle(&rgba[span.clone()], &mut target[span]);
+            self.pack(&rgba[span.clone()], &mut target[span]);
         }
         Ok(())
+    }
+}
+
+impl Layout {
+    fn pack(self, rgba: &[u8], target: &mut [u8]) {
+        match self.format {
+            ShmFormat::Abgr8888 => target.copy_from_slice(rgba),
+            ShmFormat::Argb8888 => swizzle(rgba, target),
+        }
     }
 }
 

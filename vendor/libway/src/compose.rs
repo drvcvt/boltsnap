@@ -145,17 +145,23 @@ impl Connection {
         // copies the next output. `placed` keeps the size actually written,
         // which rounding can leave one pixel short of the rectangle.
         let mut placed = rects.clone();
-        self.capture_batch_each(&outputs, &next, end, &mut |index, frame| {
-            let (x, y, w, h) = rects[index];
-            if upright(&frame, (w, h)) {
-                placed[index] = (x, y, frame.width, frame.height);
-                return convert_into(&mut canvas, &frame, x, y);
-            }
-            let pixels = place(&outputs[index], frame, share, scale, &next.limits)?;
-            placed[index] = (x, y, pixels.width(), pixels.height());
-            blit(&mut canvas, &pixels, x, y);
-            Ok(())
-        })?;
+        self.capture_batch_each(
+            &outputs,
+            &next,
+            end,
+            BufferKind::Cpu,
+            &mut |index, frame| {
+                let (x, y, w, h) = rects[index];
+                if upright(&frame, (w, h)) {
+                    placed[index] = (x, y, frame.width, frame.height);
+                    return convert_into(&mut canvas, &frame, x, y);
+                }
+                let pixels = place(&outputs[index], frame, share, scale, &next.limits)?;
+                placed[index] = (x, y, pixels.width(), pixels.height());
+                blit(&mut canvas, &pixels, x, y);
+                Ok(())
+            },
+        )?;
         if covers(&rects, width, height) && !covers(&placed, width, height) {
             fill_gaps(&mut canvas, &placed);
         }
@@ -246,18 +252,23 @@ fn offset(at: i32, origin: i32, scale: f64) -> i64 {
 /// Whether `frame` can be converted straight into its canvas rectangle: CPU
 /// pixels, upright, and within one pixel of the rectangle's size.
 fn upright(frame: &Frame, size: (u32, u32)) -> bool {
-    matches!(frame.storage, FrameStorage::Cpu(_))
+    cpu_bytes(frame).is_some()
         && frame.transform == Transform::Normal
         && !frame.y_inverted
         && near((frame.width, frame.height), size)
 }
+/// The frame's pixels when it lives in CPU memory.
+fn cpu_bytes(frame: &Frame) -> Option<&[u8]> {
+    match &frame.storage {
+        FrameStorage::Cpu(buffer) => Some(buffer.bytes()),
+        #[cfg(feature = "gpu")]
+        FrameStorage::Gpu(_) => None,
+    }
+}
 /// Convert `frame`'s pixels straight into `target` at (`x`, `y`), clipped to
 /// the target, row by row, with the same conversion as [`Frame::rgba8`].
 fn convert_into(target: &mut RgbaImage, frame: &Frame, x: i64, y: i64) -> Result<()> {
-    let FrameStorage::Cpu(buffer) = &frame.storage else {
-        return Err(Error::Unsupported("composition of GPU frames"));
-    };
-    let bytes = buffer.bytes();
+    let bytes = cpu_bytes(frame).ok_or(Error::Unsupported("composition of GPU frames"))?;
     let bpp = frame.format.bytes_per_pixel() as usize;
     let stride = frame.stride as usize;
     if bytes.len() < stride * frame.height as usize || stride < frame.width as usize * bpp {

@@ -69,7 +69,8 @@ impl WindowState {
         // While this owner phase is open no dispatch or other mutation may
         // increase that cancellation count. Ordinary
         // borrowing enforces that; the retained marker also covers forgotten guards.
-        if !self.event_room(1) {
+        // A failed attempt closes the window and every popup above it.
+        if !self.event_room(self.close_order(presenter.id()).len()) {
             return Err(Error::LimitExceeded);
         }
         self.native_attempt = Some(Attempt {
@@ -146,6 +147,10 @@ impl WindowState {
             // close reserves Closed before changing ownership. Admission already
             // checked a slot and no native event dispatch ran during this borrow.
             self.close(id)?;
+        }
+        if scheduled && let Some(record) = self.windows.get_mut(&id) {
+            // The driver commits a buffer for this frame: popups may use it.
+            record.mapped = true;
         }
         self.native_attempt = None;
         Ok(())

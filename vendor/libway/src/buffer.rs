@@ -112,20 +112,37 @@ impl ShmBuffer {
 /// CPU storage is immutable and only accessible after successful capture completion.
 /// GPU storage retains its device, allocation and exported plane descriptors.
 pub enum FrameStorage {
-    /// Completed, immutable shared-memory buffer.
+    /// Completed, immutable CPU bytes.
     Cpu(CpuBuffer),
     /// Completed DMA-BUF allocation and owned exported descriptors (`gpu` feature).
     #[cfg(feature = "gpu")]
     Gpu(crate::gpu::GpuBuffer),
 }
-/// Owned SHM mapping; dropped with its backing descriptor when no longer needed.
-pub struct CpuBuffer {
-    pub(crate) shm: ShmBuffer,
+/// Owned CPU pixels: the shared-memory buffer the compositor filled, or heap
+/// bytes read back from a dma-buf. Dropped with its backing memory.
+pub struct CpuBuffer(CpuBytes);
+enum CpuBytes {
+    Shm(ShmBuffer),
+    /// Read-back bytes. A fresh memfd would cost more than the readback
+    /// itself (page faults on shmem, about 3 ms per 1920x1080 frame).
+    #[cfg(feature = "vulkan")]
+    Heap(Vec<u8>),
 }
 impl CpuBuffer {
+    pub(crate) fn shm(shm: ShmBuffer) -> Self {
+        Self(CpuBytes::Shm(shm))
+    }
+    #[cfg(feature = "vulkan")]
+    pub(crate) fn heap(bytes: Vec<u8>) -> Self {
+        Self(CpuBytes::Heap(bytes))
+    }
     /// Raw completed pixels, including stride padding, in the frame's pixel format.
     pub fn bytes(&self) -> &[u8] {
-        &self.shm.map
+        match &self.0 {
+            CpuBytes::Shm(shm) => &shm.map,
+            #[cfg(feature = "vulkan")]
+            CpuBytes::Heap(bytes) => bytes,
+        }
     }
 }
 
@@ -391,6 +408,14 @@ mod tests {
         assert!(shm.file.set_len(16).is_err());
         assert!(shm.file.set_len(64).is_err());
         assert_eq!(shm.map.len(), 32);
+    }
+    #[test]
+    fn cpu_bytes_are_the_same_from_shm_and_heap() {
+        let mut shm = ShmBuffer::new(8).unwrap();
+        shm.map.copy_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(CpuBuffer::shm(shm).bytes(), [1, 2, 3, 4, 5, 6, 7, 8]);
+        #[cfg(feature = "vulkan")]
+        assert_eq!(CpuBuffer::heap(vec![1, 2, 3]).bytes(), [1, 2, 3]);
     }
     #[test]
     fn row_conversion_of_a_window_matches_the_whole_frame() {

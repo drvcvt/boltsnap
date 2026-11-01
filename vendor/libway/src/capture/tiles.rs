@@ -15,6 +15,7 @@ pub struct DesktopTile {
 
 /// The desktop as tiles at one shared scale. Gaps between outputs are not
 /// covered by any tile; the caller fills them.
+#[non_exhaustive]
 pub struct DesktopTiles {
     /// One tile per output, in output order.
     pub tiles: Vec<DesktopTile>,
@@ -26,6 +27,8 @@ pub struct DesktopTiles {
     pub logical_bounds: Rect,
     /// Pixels per logical unit, shared by every output.
     pub scale: f64,
+    /// The buffer path the tiles came through.
+    pub readback: super::TileReadback,
 }
 
 impl Connection {
@@ -47,7 +50,26 @@ impl Connection {
     ) -> Result<Option<DesktopTiles>> {
         check_options(options)?;
         let end = deadline(options)?;
-        let outputs = self.outputs(options)?;
+        self.desktop_tiles(
+            options,
+            end,
+            super::TileReadback::Shm,
+            |connection, outputs, next, end| connection.capture_batch(outputs, next, end),
+        )
+    }
+
+    /// The shared tile path: checks, one batch through `capture`, the layout
+    /// re-check and the per-frame tile conditions.
+    pub(super) fn desktop_tiles(
+        &mut self,
+        options: &CaptureOptions,
+        end: Instant,
+        readback: super::TileReadback,
+        capture: impl FnOnce(&mut Self, &[Output], &CaptureOptions, Instant) -> Result<Vec<Frame>>,
+    ) -> Result<Option<DesktopTiles>> {
+        let mut first_options = options.clone();
+        first_options.timeout = end.saturating_duration_since(Instant::now());
+        let outputs = self.outputs(&first_options)?;
         let first = outputs.first().ok_or(Error::NoOutputs)?;
         let scale = first.scale();
         if !scale.is_finite() || scale <= 0.0 {
@@ -64,7 +86,7 @@ impl Connection {
         let mut next = options.clone();
         next.timeout = end.saturating_duration_since(Instant::now());
         next.limits.max_bytes = options.limits.max_bytes / outputs.len() as u64;
-        let frames = self.capture_batch(&outputs, &next, end)?;
+        let frames = capture(self, &outputs, &next, end)?;
         let mut verify = options.clone();
         verify.timeout = end.saturating_duration_since(Instant::now());
         if self.outputs(&verify)? != outputs {
@@ -92,6 +114,7 @@ impl Connection {
             height,
             logical_bounds: bounds,
             scale,
+            readback,
         }))
     }
 }
@@ -123,4 +146,16 @@ pub(crate) fn scaled_size(w: u32, h: u32, scale: f64) -> Result<(u32, u32)> {
         return Err(Error::InvalidDimensions);
     }
     Ok((w.round() as u32, h.round() as u32))
+}
+
+#[cfg(test)]
+mod thread_safety {
+    fn send<T: Send>() {}
+    /// Boltsnap keeps a connection in a `static Mutex`, which needs `Send`,
+    /// also with the `gpu` and `vulkan` features.
+    #[test]
+    fn connections_and_frames_are_send() {
+        send::<super::Connection>();
+        send::<crate::Frame>();
+    }
 }

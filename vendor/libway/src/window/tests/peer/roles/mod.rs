@@ -10,13 +10,15 @@ use wayland_server::{
     protocol::{wl_compositor, wl_output, wl_shm, wl_surface},
 };
 
+pub(super) mod popup;
+
 /// Returns the output globals, indexed like the peer's outputs.
 pub(super) fn advertise(dh: &DisplayHandle, options: Options) -> Vec<Option<GlobalId>> {
     if options.compositor {
         dh.create_global::<State, wl_compositor::WlCompositor, _>(options.surface_version, ());
     }
     if options.shell {
-        dh.create_global::<State, xdg_wm_base::XdgWmBase, _>(6, ());
+        dh.create_global::<State, xdg_wm_base::XdgWmBase, _>(options.shell_version, ());
     }
     if options.shm {
         dh.create_global::<State, wl_shm::WlShm, _>(1, ());
@@ -92,6 +94,7 @@ impl Dispatch<wl_compositor::WlCompositor, ()> for State {
                     viewport: None,
                     decoration: None,
                     layer: None,
+                    popup: None,
                 });
                 state.ledger.push(Request::Surface(index));
             }
@@ -213,6 +216,9 @@ impl Dispatch<xdg_wm_base::XdgWmBase, ()> for State {
                 state.windows[index].role = Some(init.init(id, index));
                 state.ledger.push(Request::Role(index));
             }
+            xdg_wm_base::Request::CreatePositioner { id } => {
+                popup::create_positioner(state, id, init)
+            }
             xdg_wm_base::Request::Destroy => state.ledger.push(Request::DestroyShell),
             xdg_wm_base::Request::Pong { serial } => state.ledger.push(Request::Pong(serial)),
             request => panic!("unexpected shell request: {request:?}"),
@@ -235,6 +241,11 @@ impl Dispatch<xdg_surface::XdgSurface, usize> for State {
                 state.windows[*index].toplevel = Some(init.init(id, *index));
                 state.ledger.push(Request::Toplevel(*index));
             }
+            xdg_surface::Request::GetPopup {
+                id,
+                parent,
+                positioner,
+            } => popup::get_popup(state, *index, (id, parent, positioner), init),
             xdg_surface::Request::AckConfigure { serial } => {
                 state.ledger.push(Request::Ack(*index, serial));
             }

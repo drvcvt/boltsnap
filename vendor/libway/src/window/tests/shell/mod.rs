@@ -5,6 +5,7 @@ mod decoration;
 mod layer;
 mod layer_runtime;
 mod manage;
+mod popup;
 mod region;
 mod states;
 mod toplevel;

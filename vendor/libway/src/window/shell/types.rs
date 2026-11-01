@@ -92,6 +92,9 @@ pub struct Configuration {
     pub tiled: Tiled,
     /// Connection-local receive-order revision for this window.
     pub revision: ConfigurationRevision,
+    /// `Some` for popups: the placed rectangle of this configuration,
+    /// relative to the parent.
+    pub placement: Option<super::popup::PopupPlacement>,
 }
 
 /// Retained owned events. Compositor close requests do not close the window.
@@ -142,6 +145,15 @@ pub enum WindowEvent {
     /// `closed` from the compositor, which libway reports as [`Self::Closed`];
     /// libway fabricates no close of its own.
     OutputRemoved(super::OutputId),
+    /// A popup created with a grab was dismissed before its first
+    /// configuration was acknowledged, most likely because the compositor
+    /// refused the grab. Its `Closed` follows directly. This is an inference:
+    /// the protocol has no refusal event, and a click outside within the first
+    /// milliseconds looks the same.
+    PopupGrabRefused {
+        /// The dismissed popup.
+        window: WindowId,
+    },
     /// Logical identity retired; retained leases may still own native resources.
     Closed {
         /// The retired identity, which will never identify another window.

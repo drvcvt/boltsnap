@@ -8,7 +8,9 @@
 //! - `warm`: `capture_desktop` on one connection that stays open;
 //! - `tiles cold` and `tiles warm`: the same with `capture_desktop_tiles`, when
 //!   the desktop allows tiles;
-//! - `to_image` per output: the RGBA conversion composition does per frame.
+//! - `to_image` per output: the RGBA conversion composition does per frame;
+//! - with `--features vulkan`: `fast warm` and `fast cold` for
+//!   `capture_desktop_tiles_fast`, with the tier it used.
 use libway::{CaptureOptions, Connection};
 use std::time::{Duration, Instant};
 
@@ -56,6 +58,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     })?;
     report("tiles cold", &tiles_cold);
     report("tiles warm", &tiles_warm);
+    #[cfg(feature = "vulkan")]
+    {
+        // The dma-buf tiers: report the tier and the first fallback cause.
+        connection.capture_desktop_tiles_fast(&options)?;
+        let (tier, cause) = connection.tile_readback();
+        println!("fast tier: {tier:?}, first fallback: {cause:?}");
+        let fast_warm = time(runs, || {
+            connection.capture_desktop_tiles_fast(&options)?;
+            Ok(())
+        })?;
+        report("fast warm", &fast_warm);
+        let fast_cold = time(runs, || {
+            Connection::connect(&options)?.capture_desktop_tiles_fast(&options)?;
+            Ok(())
+        })?;
+        report("fast cold", &fast_cold);
+    }
     // Where composition time goes: RGBA conversion of one captured tile.
     let tiles = connection
         .capture_desktop_tiles(&options)?

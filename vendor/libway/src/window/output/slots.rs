@@ -93,7 +93,7 @@ impl Slot {
             layout.width,
             layout.height,
             layout.stride,
-            wayland_client::protocol::wl_shm::Format::Argb8888,
+            layout.format.wire(),
             qh,
             token,
         );

@@ -64,6 +64,12 @@ fn stage(
         return Err(Error::LimitExceeded);
     }
     state.input_room(0, new_focus + usize::from(seat.staged.records.is_empty()))?;
+    let root = match &record {
+        PointerObservation::Button {
+            window, down: true, ..
+        } => Some(state.tree_root(*window)),
+        _ => None,
+    };
     let seat = state.input.seats.get_mut(&token.name).expect("live seat");
     seat.staged
         .records
@@ -79,6 +85,11 @@ fn stage(
     {
         state.clipboard.press(token.id, *window, *serial);
         seat.press = Some((*window, *serial));
+        seat.latest_input = root.map(|root| LatestInput {
+            root,
+            serial: *serial,
+            device: InputDevice::Pointer,
+        });
     }
     seat.staged.records.push(record);
     Ok(())
@@ -98,6 +109,25 @@ impl InputSeats {
             .ok_or(Error::InvalidInput("unknown input seat"))?;
         match entry.press {
             Some((target, serial)) if target == window => Ok((entry.proxy.clone(), serial)),
+            _ => Err(Error::NotReady),
+        }
+    }
+
+    /// The seat's latest pointer or key press inside the popup tree rooted at
+    /// `root`, with its native seat (R6 D3). Unknown seat: `InvalidInput`; no
+    /// such press: `NotReady`.
+    pub(in crate::window) fn grab_serial(
+        &self,
+        seat: InputSeatId,
+        root: WindowId,
+    ) -> Result<(WlSeat, u32)> {
+        let entry = self
+            .seats
+            .values()
+            .find(|entry| entry.token.id == seat)
+            .ok_or(Error::InvalidInput("unknown input seat"))?;
+        match entry.latest_input {
+            Some(input) if input.root == root => Ok((entry.proxy.clone(), input.serial)),
             _ => Err(Error::NotReady),
         }
     }

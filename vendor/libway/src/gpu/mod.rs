@@ -1,6 +1,17 @@
 //! Optional GBM allocator. Open a render node explicitly; no modesetting, device
-//! guessing, EGL context, or CPU readback is performed. Objects are thread-local.
+//! guessing, EGL context, or CPU readback is performed. Allocators and buffers are
+//! `Send`; every GBM call on one device, including freeing a buffer, is serialized
+//! by the device's lock, because GBM does not promise thread safety.
 use crate::{Error, Limits, PixelFormat, Result, capture::Constraints};
+
+#[cfg(all(test, feature = "vulkan"))]
+pub(crate) mod fake;
+#[cfg(feature = "vulkan")]
+pub(crate) mod linear;
+#[cfg(feature = "vulkan")]
+pub(crate) mod nodes;
+#[cfg(feature = "vulkan")]
+pub(crate) mod vulkan;
 use std::{
     fs::{File, OpenOptions},
     os::{
@@ -8,16 +19,27 @@ use std::{
         unix::fs::{FileTypeExt, MetadataExt},
     },
     path::{Path, PathBuf},
-    rc::Rc,
-    sync::Arc,
+    sync::{Arc, Mutex, MutexGuard},
 };
 
-/// Explicit GBM device shared by its allocations. Thread-local (`!Send`/`!Sync`);
-/// create and use it on the capture/import thread. Requires `gpu` and system GBM.
+/// Explicit GBM device shared by its allocations. `Send`; clones share one device
+/// whose calls are serialized. Requires `gpu` and system GBM.
 #[derive(Clone)]
 pub struct GpuAllocator {
-    device: Rc<gbm::Device<Arc<File>>>,
+    device: Shared,
     device_id: u64,
+    /// When set, only these formats and modifiers may be chosen (for example
+    /// the ones a readback path can import).
+    allowed: Option<Arc<Allowed>>,
+    /// Test only: hand out udmabuf-backed LINEAR buffers instead of GBM ones.
+    #[cfg(all(test, feature = "vulkan"))]
+    pub(crate) udmabuf: bool,
+}
+/// A readback path's formats and modifiers.
+#[derive(Debug)]
+struct Allowed {
+    formats: Vec<PixelFormat>,
+    modifiers: Vec<u64>,
 }
 impl GpuAllocator {
     /// Open a caller-selected DRM render node for read/write access and initialize GBM.
@@ -30,9 +52,22 @@ impl GpuAllocator {
         }
         let device_id = meta.rdev();
         Ok(Self {
-            device: Rc::new(gbm::Device::new(Arc::new(file))?),
+            device: Arc::new(Mutex::new(gbm::Device::new(Arc::new(file))?)),
             device_id,
+            allowed: None,
+            #[cfg(all(test, feature = "vulkan"))]
+            udmabuf: false,
         })
+    }
+    /// The same device, choosing only among `formats` and `modifiers`.
+    /// INVALID (implicit layout) is never in a readback list, so it is
+    /// excluded too.
+    #[cfg(feature = "vulkan")]
+    pub(crate) fn restricted(&self, formats: Vec<PixelFormat>, modifiers: Vec<u64>) -> Self {
+        Self {
+            allowed: Some(Arc::new(Allowed { formats, modifiers })),
+            ..self.clone()
+        }
     }
     /// Device number (`st_rdev`) used to match compositor DMA-BUF device constraints.
     pub fn device_id(&self) -> u64 {
@@ -44,6 +79,13 @@ impl GpuAllocator {
         global: &[(u32, u64)],
         limits: Limits,
     ) -> Result<GpuBuffer> {
+        #[cfg(all(test, feature = "vulkan"))]
+        if self.udmabuf {
+            return fake::allocate(self, c);
+        }
+        // Held for every GBM call below; a refused buffer object is dropped
+        // while it is still held.
+        let device = lock(&self.device);
         let (width, height) = c.size;
         limits.buffer(
             width,
@@ -51,8 +93,8 @@ impl GpuAllocator {
             width.checked_mul(4).ok_or(Error::InvalidDimensions)?,
             4,
         )?;
-        if let Some(device) = c.device
-            && !same_device(device, self.device_id)
+        if let Some(wanted) = c.device
+            && !same_device(wanted, self.device_id)
         {
             return Err(Error::Unsupported(
                 "capture source requires a different DRM device",
@@ -62,10 +104,20 @@ impl GpuAllocator {
             let Some(format) = PixelFormat::from_drm(*fourcc) else {
                 continue;
             };
+            if self
+                .allowed
+                .as_ref()
+                .is_some_and(|allowed| !allowed.formats.contains(&format))
+            {
+                continue;
+            }
             let Ok(gbm_format) = gbm::Format::try_from(*fourcc) else {
                 continue;
             };
-            let candidates = modifiers(*fourcc, mods, c.dma_any_modifier, global);
+            let mut candidates = modifiers(*fourcc, mods, c.dma_any_modifier, global);
+            if let Some(allowed) = &self.allowed {
+                candidates.retain(|modifier| allowed.modifiers.contains(modifier));
+            }
             if candidates.is_empty() {
                 continue;
             }
@@ -78,7 +130,7 @@ impl GpuAllocator {
             let mut bo = if explicit.is_empty() {
                 None
             } else {
-                self.device
+                device
                     .create_buffer_object_with_modifiers2::<()>(
                         width,
                         height,
@@ -89,8 +141,7 @@ impl GpuAllocator {
                     .ok()
             };
             if bo.is_none() && candidates.contains(&u64::from(gbm::Modifier::Invalid)) {
-                bo = self
-                    .device
+                bo = device
                     .create_buffer_object::<()>(
                         width,
                         height,
@@ -134,8 +185,8 @@ impl GpuAllocator {
                 return Err(Error::LimitExceeded);
             }
             return Ok(GpuBuffer {
-                bo,
-                _device: self.device.clone(),
+                bo: Some(bo),
+                device: self.device.clone(),
                 planes,
                 format,
                 modifier,
@@ -192,12 +243,12 @@ impl Plane {
         self.offset
     }
 }
-/// Owned thread-local GBM allocation, device reference and exported plane descriptors.
+/// Owned GBM allocation, device reference and exported plane descriptors. `Send`.
 /// Keep the whole buffer alive until asynchronous GPU/encoder use has completed.
 pub struct GpuBuffer {
-    // BO must be destroyed before the device's last File handle closes.
-    bo: gbm::BufferObject<()>,
-    _device: Rc<gbm::Device<Arc<File>>>,
+    // Taken in Drop under the device lock, before the device can close.
+    bo: Option<gbm::BufferObject<()>>,
+    device: Shared,
     planes: Vec<Plane>,
     format: PixelFormat,
     modifier: u64,
@@ -217,12 +268,32 @@ impl GpuBuffer {
     }
     /// Actual modifier reported by GBM, which may differ from the implicit import modifier.
     pub fn allocation_modifier(&self) -> u64 {
-        self.bo.modifier().into()
+        self.bo().modifier().into()
     }
     /// Allocation width and height in buffer pixels before transforms.
     pub fn dimensions(&self) -> (u32, u32) {
-        (self.bo.width(), self.bo.height())
+        (self.bo().width(), self.bo().height())
     }
+    fn bo(&self) -> &gbm::BufferObject<()> {
+        self.bo.as_ref().expect("invariant: present until drop")
+    }
+}
+impl Drop for GpuBuffer {
+    fn drop(&mut self) {
+        let _device = lock(&self.device);
+        self.bo.take();
+    }
+}
+
+/// One GBM device; every call on it holds the lock.
+type Shared = Arc<Mutex<gbm::Device<Arc<File>>>>;
+
+/// A poisoned lock only means another thread panicked mid-call; the device
+/// handle itself stays valid, so continue with it.
+fn lock(device: &Shared) -> MutexGuard<'_, gbm::Device<Arc<File>>> {
+    device
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 #[cfg(test)]
@@ -244,6 +315,34 @@ mod tests {
 #[cfg(test)]
 mod hardware_tests {
     use super::*;
+    #[test]
+    #[cfg(feature = "vulkan")]
+    #[ignore = "requires LIBWAY_TEST_RENDER_NODE; allocates only, never captures the desktop"]
+    fn a_restricted_allocator_skips_formats_outside_its_list() {
+        let path =
+            std::env::var_os("LIBWAY_TEST_RENDER_NODE").expect("set an explicit render node");
+        let allocator = GpuAllocator::open(path).unwrap();
+        let (abgr, xrgb) = (PixelFormat::Abgr8888 as u32, PixelFormat::Xrgb8888 as u32);
+        // Implicit layout: NVIDIA's GBM reports a zero stride for LINEAR.
+        let implicit = u64::from(gbm::Modifier::Invalid);
+        let constraints = Constraints {
+            size: (64, 32),
+            dma: vec![(abgr, vec![implicit]), (xrgb, vec![implicit])],
+            device: Some(allocator.device_id()),
+            ..Default::default()
+        };
+        let global = [(abgr, implicit), (xrgb, implicit)];
+        let open = allocator.allocate(&constraints, &global, Limits::default());
+        assert_eq!(open.unwrap().format(), PixelFormat::Abgr8888);
+        let restricted = allocator.restricted(vec![PixelFormat::Xrgb8888], vec![implicit]);
+        let buffer = restricted.allocate(&constraints, &global, Limits::default());
+        assert_eq!(buffer.unwrap().format(), PixelFormat::Xrgb8888);
+        let none = allocator.restricted(vec![PixelFormat::Argb8888], vec![implicit]);
+        assert!(
+            none.allocate(&constraints, &global, Limits::default())
+                .is_err()
+        );
+    }
     #[test]
     #[ignore = "requires LIBWAY_TEST_RENDER_NODE; allocates only, never captures the desktop"]
     fn gbm_allocations_export_owned_planes() {

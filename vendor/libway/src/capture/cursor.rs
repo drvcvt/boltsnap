@@ -378,7 +378,7 @@ impl CursorStream<'_> {
         self.objects.buffer = Some(buffer);
         self.objects.ext_frame = Some(frame);
         self.buffer = Some(ImageBuffer {
-            cpu: CpuBuffer { shm },
+            cpu: CpuBuffer::shm(shm),
             width,
             height,
             stride,

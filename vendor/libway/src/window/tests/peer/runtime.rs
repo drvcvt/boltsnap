@@ -9,6 +9,7 @@ pub(super) fn run(socket: UnixStream, options: Options, mut mailbox: Mailbox<Com
     let mut state = State {
         output_globals,
         hold_output_done: !options.output_done,
+        shm_abgr: options.shm_abgr,
         ..State::default()
     };
     input::advertise(&dh, options, &mut state.input);
@@ -138,6 +139,7 @@ fn buffer_snapshots(state: &State) -> Vec<BufferSnapshot> {
             let length = (buffer.stride * buffer.height) as usize;
             BufferSnapshot {
                 index,
+                format: buffer.format,
                 width: buffer.width,
                 height: buffer.height,
                 stride: buffer.stride,
@@ -153,6 +155,7 @@ fn emit(event: Event, state: &mut State) {
             unreachable!("handled by protocol peer")
         }
         Event::Decoration(window, mode) => decoration::emit(state, window, mode),
+        Event::Popup(event) => roles::popup::emit(event, state),
         Event::RemoveDecorationManager
         | Event::RemoveCursorManager
         | Event::Presentation(_)
@@ -177,6 +180,13 @@ fn emit(event: Event, state: &mut State) {
             .as_ref()
             .unwrap()
             .preferred_scale(scale),
+        Event::ShmFormat(format) => {
+            let format = wayland_server::protocol::wl_shm::Format::try_from(format).unwrap();
+            if format == wayland_server::protocol::wl_shm::Format::Abgr8888 {
+                state.shm_abgr = true;
+            }
+            state.shm.as_ref().unwrap().format(format);
+        }
         Event::Preferred(window, scale) => {
             state.windows[window].surface.preferred_buffer_scale(scale)
         }

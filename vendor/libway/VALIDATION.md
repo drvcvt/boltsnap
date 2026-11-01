@@ -1,5 +1,199 @@
 # Validation
 
+## Desktop tiles over dma-buf (Boltsnap): 2026-11-01
+
+Plan: [dma-buf tiles](docs/plans/phase-a/2026-11-01-dmabuf-tiles.md).
+Status: done. Tier 1 (LINEAR) is **not checked on real hardware**.
+
+**What changed.** `features = ["vulkan"]` adds `capture_desktop_tiles_fast`,
+`tile_readback` and `reset_readback`. Tiers in order: Vulkan readback, LINEAR
+`mmap`, shm. Without the feature nothing changes. Commits:
+
+| Commit | Content |
+| --- | --- |
+| `4604d11` | plan |
+| `c5598d3` | `Send` GPU objects, `vulkan` feature |
+| `32bbaf2`, `5215f91` | readback types, loader probe, DRM node matching |
+| `d8a1b3f` | Vulkan tier and the fallback chain |
+| `947e65f` | heap tiles instead of a fresh memfd per tile |
+| `94a8a7d` | soundness review fixes |
+| `1ba9b42`, `8a7cc07` | LINEAR tier, udmabuf test seam, node lookup gating |
+
+`tools/check.sh full` passed, now with a `vulkan` test row and clippy rows for
+`gpu` and `vulkan` alone. Library test counts: `vulkan` 25 (7 ignored), all
+features 357 (7 ignored).
+
+**Synthetic tests** (no GPU needed):
+
+- LINEAR reads on real dma-bufs from `/dev/udmabuf`: padded rows packed, a
+  plain memfd refused at the sync ioctl, layouts that do not fit refused.
+- Tier switch transitions: transient causes retry, structural ones turn a tier
+  off, a device mismatch is retried only for another device, a failed LINEAR
+  allocation turns only that tier off.
+- A failing frame consumer never retries the batch on WLR (test server).
+- `VulkanReadback` is `Send` and not `Sync`; `Connection` and `Frame` stay
+  `Send` with all features.
+- Render node lookup through a fake `/sys`.
+
+**Hardware tests** (ignored by default; run with
+`LIBWAY_TEST_RENDER_NODE=/dev/dri/renderD128 cargo test --features vulkan --lib
+-- --ignored --test-threads=1`), all passed on the RTX 4060:
+
+- Vulkan import and copy of a pattern written through Vulkan, and failed reads
+  (bogus modifier, a memfd, a past deadline) leaking no fd;
+- a lost readback refusing further reads;
+- the restricted allocator skipping formats outside its list on real GBM;
+- LINEAR tiles end to end through the test server, with udmabuf buffers, a
+  padded stride and two outputs in flight: `LinearDmabuf`, no fallback cause,
+  the server's bytes, every buffer released.
+
+**Live** (owner-approved desktop captures, Hyprland 0.56.2, RTX 4060, two
+1920x1080 outputs at scale 1, release build of `examples/desktop_timing`, median
+of 20 runs each):
+
+Each row is one run of the example at that commit; warm medians unless noted.
+
+| Commit | Composed | shm tiles | Fast tiles | Fast, cold |
+| --- | ---: | ---: | ---: | ---: |
+| `d8a1b3f` (Vulkan, uncached) | 12.89 ms | 12.57 ms | 14.66 ms | 82.21 ms |
+| `947e65f` (heap tiles) | 15.11 ms | 12.30 ms | 8.33 ms | 76.72 ms |
+| `94a8a7d` (review fixes) | 14.34 ms | 12.66 ms | 7.37 ms | 73.44 ms |
+| `1ba9b42` (LINEAR tier added) | not printed | 12.68 ms | 6.91 ms | 72.38 ms |
+
+Run to run, the same path varies by about 1 ms. Every fast run used `Vulkan` with no fallback cause. Cold means a new
+connection: Vulkan instance and device setup, paid once per connection.
+
+**Both outputs in parallel.** A temporary per-phase probe (not committed)
+showed the second output's `ready` at 8.5-11 ms and the first at 1.6-3.5 ms:
+Hyprland copies the outputs one after the other. The first output's Vulkan read
+(import 0.3-0.7 ms, copy and fence 0.8-1.1 ms, map copy 0.8 ms) runs while
+the second is still being copied, so only the last read adds to the total.
+
+## Popups (R6): 2026-11-01
+
+Plan: [R6](docs/plans/phase-b/2026-11-01-r6-xdg-popup.md). Status: built.
+The live run is done except the Escape close and the layer probe.
+
+`tools/check.sh full` passed with these library test counts:
+
+| Feature set | Tests |
+| --- | ---: |
+| `window` | 289 |
+| `owned-native-system` | 310 |
+| all features | 342 (1 ignored) |
+
+The 25 new tests are in `src/window/tests/shell/popup/`. They are literal wire
+traces covering:
+
+- gates and the creation order, with and without a grab and with the
+  fractional pair;
+- validation, version gates and configure sequences, in both XML and
+  Hyprland order, including the bare sequence;
+- the grab press rule by tree root, including wind's Left/Right case, and the
+  single grab chain;
+- `popup_done` and the cascade order (deepest first, newer first), plus the
+  refused-grab event;
+- leases, and the deferred parent unmap with and without an external lease;
+- reposition tokens;
+- layer parents with both keyboard modes;
+- role checks;
+- a native claim on a popup.
+
+A fresh review found three issues, all fixed with tests. They are listed in
+the plan, section 10.
+
+The live run on Hyprland 0.56.2 used `examples/popup.rs` with the owner:
+
+- The menu, the submenu and the tooltip were placed as requested, and every
+  first configure already carried the parent's scale.
+- An outside click dismissed submenu then menu.
+- Reposition completed with tokens 1 and 2.
+- Keys went to the parent while menus were open.
+
+Not exercised live: the Escape close (synthetic only) and the layer-parent
+probe.
+
+Finding: Hyprland ignores the input region of toplevel popups. A tooltip
+with `InputRegion::None` received 272 pointer events, because popups of
+windows are hit-tested by their box (`ViewHitTester.cpp:264`). Layer
+popups honour the region.
+
+## `window` feature gate (R4): 2026-11-01
+
+Plan: [R4](docs/plans/phase-a/2026-11-01-r4-window-feature.md). Status: built.
+
+`tools/check.sh full` passed with the new `window` rows (tests, strict
+Clippy and Rustdoc for `--no-default-features --features window`). Library
+tests per row show the gate:
+
+| Feature set | Tests | Why |
+| --- | ---: | --- |
+| no default features | 9 | no window or runtime code |
+| default | 13 | no window or runtime code |
+| `capture` | 9 | no window or runtime code |
+| `dnd` | 33 | no window or runtime code |
+| `foreign-display` | 33 | no window or runtime code |
+| `window` | 264 | |
+| `owned-native-system` | 284 | |
+| all features | 316 (1 ignored) | |
+
+Gate proof:
+
+- The `--no-default-features --features foreign-display` library build
+  (`liblibway.rlib`, 19 MB) contains 0 `libway::window` or `libway::runtime`
+  symbols and 3585 `libway::dnd` symbols (`nm -C`).
+- `cargo run --example primary` with default features stops with Cargo's
+  "requires the features: `window`".
+- No consumer manifest changes: `owned-native-system` implies `window`.
+
+Live on Hyprland 0.56.2 with
+`cargo run --no-default-features --features window --example window`:
+
+- It printed `configured 950x1032`, then `shown`, then further
+  configurations as the tiled layout changed.
+- The owner did not close the window within the 5-minute safety timeout,
+  so the `closed` path was not exercised live. A one-line rerun closes this
+  open item.
+
+## CPU present without swizzle (R16): 2026-11-01
+
+Plan: [R16](docs/plans/phase-a/2026-11-01-r16-cpu-present-memcpy.md). Status: done.
+
+`tools/check.sh full` passed with these library test counts:
+
+| Feature set | Tests |
+| --- | ---: |
+| no default features | 264 |
+| default | 268 |
+| `capture` | 264 |
+| `dnd` | 291 |
+| `foreign-display` | 291 |
+| `owned-native-system` | 284 |
+| all features | 316 (1 ignored) |
+
+Strict Clippy also passed for default and `capture`-only builds, which
+`check.sh` does not cover.
+
+New tests in `src/window/tests/output/formats.rs`:
+
+- With `ABGR8888` advertised, buffers use it and carry the RGBA input byte
+  for byte, also after a damaged present into a reused slot.
+- Without it, buffers stay `ARGB8888` and the bytes are swizzled.
+- An `ABGR8888` format event that arrives after the first present replaces
+  the idle `ARGB8888` slot on the next present.
+
+Live on Hyprland 0.56.2, with owned windows only:
+
+- `WAYLAND_DEBUG=1 examples/colors` shows
+  `create_buffer(..., 950, 1032, 3800, 875708993)`, which is `ABGR8888`.
+- In a `boltsnap` screenshot cropped to the window, the quadrants are exactly
+  `(255,0,0)`, `(0,255,0)` and `(0,0,255)`. The premultiplied
+  half-transparent white blends with the wallpaper.
+- The debug build of `examples/presentation` presents 240 of 240 frames with
+  a median interval of 4.171 ms, which matches the 239.76 Hz refresh. R1
+  measured 29.7 ms with the swizzle. Hyprland reported flags 0x7 this time
+  (vsync, hw_clock, hw_completion).
+
 ## Multi-output desktop capture speed (Boltsnap): 2026-11-01
 
 Plan: [capture speed](docs/plans/phase-a/2026-11-01-capture-desktop-speed.md).
@@ -263,7 +457,7 @@ consecutive clipboard runs passed (details in the R2 plan's deviations). Clippy
 1.98 added `chunks_exact_to_as_chunks`; seven existing sites use `as_chunks`
 now (separate commit).
 
-Open: `cargo run --no-default-features --example primary` on Hyprland, steps
+Open: `cargo run --no-default-features --features window --example primary` on Hyprland, steps
 (a) to (c) in the plan's proof section, run by the owner because it touches the
 desktop's real primary selection.
 
