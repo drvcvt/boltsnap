@@ -175,8 +175,13 @@ still accepts `.mkv` clips from an older worker.
 ## Logs and load
 
 GPU Screen Recorder's output goes to `replay-capture.log` in Boltsnap's cache,
-every line with its local time, up to 4 MiB per session; the previous
-session's log stays as `replay-capture.log.old`. The worker's lines go to
+every line with its local time, up to 4 MiB per session. Its once-a-second
+"update fps" reports are kept for the first minute, then only once an hour
+and whenever one is below 90 % of the frame rate; every other line is kept.
+A starting session writes to `replay-capture.log.starting` and takes over
+`replay-capture.log` once the buffer is ready; only then the previous
+session's log becomes `replay-capture.log.old`, so restarts that fail never
+push out the log of the session that died. The worker's lines go to
 `daemon.log` with the time. A capture below 90 % of its frame rate for three
 reports in a row is noted in `daemon.log` ("replay capture slowed to …", then
 "back at …"). The settings window's Replay page shows under **Load** the CPU

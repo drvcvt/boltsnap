@@ -176,9 +176,11 @@ fn start_capture(settings: Settings, cancel: &AtomicBool) -> Result<Session, Str
     let cursor = smooth.map_or_else(Vec::new, |(trackers, _feeds)| trackers);
     // One session's log in `replay-capture.log`, the one before in `.old`,
     // each line with its time.
+    let log = capture_log::open(&crate::paths::cache_dir());
+    let logged = log.is_some();
     if let Some(stderr) = capture.stderr.take() {
         let fps = Some((settings.fps, "replay capture"));
-        match capture_log::open(&crate::paths::cache_dir()) {
+        match log {
             Some(log) => capture_log::follow(stderr, log, fps),
             None => capture_log::follow(stderr, std::io::sink(), fps),
         };
@@ -251,6 +253,9 @@ fn start_capture(settings: Settings, cancel: &AtomicBool) -> Result<Session, Str
             socket_call(&session.name, &json!({"version":1,"command":"status"}))
         {
             if status["ready"] == true {
+                if logged {
+                    capture_log::promote(&crate::paths::cache_dir());
+                }
                 return Ok(session);
             }
             if let Some(error) = status["error"].as_str() {

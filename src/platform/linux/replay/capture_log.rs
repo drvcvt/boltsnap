@@ -12,22 +12,37 @@ use std::sync::atomic::{AtomicU32, Ordering};
 const SLOW: f32 = 0.9;
 /// This many reports in a row (gsr reports once a second) make a change.
 const RUN: u32 = 3;
-/// A session's log stops growing here (about 16 hours of gsr's reports);
+/// The first minute of reports reaches the log in full; after that a report
+/// at the target rate only once an hour, so days of buffer keep their
+/// warnings and the end within `MOST_BYTES`.
+const FIRST_REPORTS: u32 = 60;
+const HOURLY: u32 = 3600;
+/// A session's log stops growing here, with a last line saying so;
 /// slowdowns still reach the daemon's log.
 const MOST_BYTES: usize = 4 * 1024 * 1024;
 
-/// The capture log for a new session; the last session's becomes `.old`.
+const LOG: &str = "replay-capture.log";
+const STARTING: &str = "replay-capture.log.starting";
+
+/// The capture log for a starting session. It replaces the last session's
+/// only in `promote`, so failed restarts never push out the log of the
+/// session that died.
 pub(super) fn open(dir: &Path) -> Option<File> {
-    let path = dir.join("replay-capture.log");
-    let _ = std::fs::rename(&path, dir.join("replay-capture.log.old"));
-    File::create(path).ok()
+    File::create(dir.join(STARTING)).ok()
+}
+
+/// The started session's log becomes `replay-capture.log`, the last one `.old`.
+pub(super) fn promote(dir: &Path) {
+    let log = dir.join(LOG);
+    let _ = std::fs::rename(&log, dir.join("replay-capture.log.old"));
+    let _ = std::fs::rename(dir.join(STARTING), log);
 }
 
 /// Empty `from` until it closes, each line with the local time into `to`.
 /// `fps` set (target and what records): gsr's "update fps" reports are
 /// watched, and a slowdown and the recovery go to the daemon's log. Reading
 /// never stops early, so the writer never blocks on a full pipe or dies of a
-/// closed one. Counts the reports read so far.
+/// closed one. Counts the reports read so far, also those left out.
 pub fn follow(
     from: impl Read + Send + 'static,
     mut to: impl Write + Send + 'static,
@@ -47,13 +62,24 @@ pub fn follow(
             let text = String::from_utf8_lossy(&line);
             let text = text.trim_end();
             let now = crate::paths::local_timestamp();
-            if written < MOST_BYTES {
+            let got = reported_fps(text);
+            let count = match got {
+                Some(_) => counted.fetch_add(1, Ordering::Relaxed) + 1,
+                None => counted.load(Ordering::Relaxed),
+            };
+            let routine = pace
+                .as_ref()
+                .zip(got)
+                .is_some_and(|(pace, got)| pace.routine(got, count));
+            if !routine && written < MOST_BYTES {
                 written += now.len() + text.len() + 2;
                 let _ = writeln!(to, "{now} {text}");
-            }
-            let got = reported_fps(text);
-            if got.is_some() {
-                counted.fetch_add(1, Ordering::Relaxed);
+                if written >= MOST_BYTES {
+                    let _ = writeln!(
+                        to,
+                        "{now} boltsnap: log full at 4 MiB, later lines left out"
+                    );
+                }
             }
             if let Some(note) = pace
                 .as_mut()
@@ -88,10 +114,20 @@ impl Pace {
         }
     }
 
+    fn slow(&self, got: u32) -> bool {
+        (got as f32) < self.fps as f32 * SLOW
+    }
+
+    /// Report number `count`, at `got` fps, only repeats what the log
+    /// already says.
+    fn routine(&self, got: u32, count: u32) -> bool {
+        count > FIRST_REPORTS && count % HOURLY != 0 && !self.slow(got)
+    }
+
     /// A report of `got` fps: a message when the capture just slowed down or
     /// recovered.
     fn note(&mut self, got: u32) -> Option<String> {
-        let slow = (got as f32) < self.fps as f32 * SLOW;
+        let slow = self.slow(got);
         if slow == self.slow {
             self.run = 0;
             return None;
@@ -142,11 +178,45 @@ mod tests {
     }
 
     #[test]
+    fn after_the_first_minute_only_slow_reports_and_other_lines_are_kept() {
+        let (from, mut gsr) = std::io::pipe().unwrap();
+        let (mut log, to) = std::io::pipe().unwrap();
+        let reports = follow(from, to, Some((60, "replay capture")));
+        for n in std::iter::repeat_n(60, 70).chain([30]) {
+            writeln!(gsr, "gsr info: update fps: {n}, damage fps: {n}").unwrap();
+        }
+        writeln!(gsr, "gsr warning: something else").unwrap();
+        drop(gsr);
+        let mut text = String::new();
+        log.read_to_string(&mut text).unwrap();
+        let lines: Vec<_> = text.lines().collect();
+        assert_eq!(lines.len(), 62, "{text}");
+        assert!(lines[60].ends_with("update fps: 30, damage fps: 30"));
+        assert!(lines[61].ends_with("gsr warning: something else"));
+        assert_eq!(reports.load(Ordering::Relaxed), 71);
+    }
+
+    #[test]
+    fn a_start_that_never_gets_ready_keeps_the_last_log() {
+        let dir = crate::paths::temp_file("capture-log-failed", "d");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(LOG), "died\n").unwrap();
+        drop(open(&dir).unwrap());
+        drop(open(&dir).unwrap());
+        assert_eq!(std::fs::read_to_string(dir.join(LOG)).unwrap(), "died\n");
+        for file in [LOG, STARTING] {
+            std::fs::remove_file(dir.join(file)).unwrap();
+        }
+        std::fs::remove_dir(&dir).unwrap();
+    }
+
+    #[test]
     fn every_line_gets_the_time_and_the_old_log_stays() {
         let dir = crate::paths::temp_file("capture-log", "d");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("replay-capture.log"), "last session\n").unwrap();
         let log = open(&dir).unwrap();
+        promote(&dir);
         assert_eq!(
             std::fs::read_to_string(dir.join("replay-capture.log.old")).unwrap(),
             "last session\n"

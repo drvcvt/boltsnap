@@ -1,6 +1,6 @@
 # Langlauf-Fixes: Plan (2026-10-31)
 
-Status: **Wellen 0 und 1 und L2 umgesetzt (01.11.), Rest geplant.** Gebaut wird
+Status: **Wellen 0 bis 2 umgesetzt (01.11.), Rest geplant.** Gebaut wird
 Welle für Welle nach dem Go des Nutzers, ein Commit je ID mit seinem Test.
 
 Herkunft: alle Befunde aus
@@ -698,8 +698,8 @@ Review vom 12.10. und in `docs/replay.md`.
 | 1 | LR7 | Socket-Fehler beenden den Worker nicht | `efce9e9` |
 | 1 | LR6 | geerbte fds CLOEXEC | `8f0feb3` |
 | 1 | L5 | Popup-Zeit `H:MM:SS` | `704dce0` |
-| 2 | L2 | Stall über fps-Zeile, mit A10 | siehe Log |
-| 2 | LR3 | Capture-Log filtert, rotiert erst bei Bereitschaft | |
+| 2 | L2 | Stall über fps-Zeile, mit A10 | `85694c4` |
+| 2 | LR3 | Capture-Log filtert, rotiert erst bei Bereitschaft | siehe Log |
 | 3 | L3 | Kontingent ohne lange Session und Waisen (R3) | |
 | 3 | R9 | Platz von `record_dir` prüfen | |
 | 4 | LR4 | Flattern zählt als Serie, `restarts` | |
@@ -759,3 +759,12 @@ nichts live geprüft.
   `args_cover_codec_audio_and_region`; `cargo test` 174 + 421 grün. README
   nennt den neuen Grund. Live offen (Aufnahme, Pause/Resume, `kill -STOP`,
   DPMS), braucht Install und Okay.
+- **LR3:** wie geplant, ohne eigene `Keep`-Struktur: `Pace::routine(got,
+  count)` entscheidet mit dem Zähler aus L2, den `follow` ohnehin führt.
+  Marker-Zeile „log full at 4 MiB, later lines left out“. Tests:
+  `after_the_first_minute_only_slow_reports_and_other_lines_are_kept`
+  (70 ruhige + ein langsamer + eine andere Zeile → 62),
+  `a_start_that_never_gets_ready_keeps_the_last_log` (scheitert am alten
+  `open`), `every_line_…` mit `promote`. `cargo test` 174 + 423 grün.
+  `docs/replay.md` beschreibt Filter und `.starting`. Live offen: nach dem
+  nächsten Replay-Start `replay-capture.log` mit 60 Berichten, danach still.
