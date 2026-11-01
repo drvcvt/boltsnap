@@ -6,6 +6,7 @@
 mod badge;
 pub mod layout;
 pub mod paint;
+mod shadow;
 
 /// What a card holds.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
