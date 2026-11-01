@@ -438,7 +438,7 @@ FFmpeg ist für die endgültige native Zielarchitektur keine Voraussetzung.
 
 Der Windows-Code bleibt in `main`; es gibt keinen separaten Arbeitsbranch oder
 Fork. Falls die Arbeit wiederaufgenommen wird, beginnt sie auf dem aktuellen
-`main` und folgt den Regeln aus `AGENTS.md` und `README.md#contributing`.
+`main` und folgt den Regeln aus `AGENTS.md` und `.github/CONTRIBUTING.md`.
 
 ## Primärquellen
 

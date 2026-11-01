@@ -1,8 +1,8 @@
 # Agent instructions
 
 > [!IMPORTANT]
-> AI agents must read this file and the [Contributing](README.md#contributing)
-> section before changing the repository.
+> AI agents must read this file and the [Contributing guide](.github/CONTRIBUTING.md)
+> before changing the repository.
 
 These rules apply to the whole repository.
 
