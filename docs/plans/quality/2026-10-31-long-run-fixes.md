@@ -1,6 +1,6 @@
 # Langlauf-Fixes: Plan (2026-10-31)
 
-Status: **Wellen 0 bis 2 umgesetzt (01.11.), Rest geplant.** Gebaut wird
+Status: **Wellen 0 bis 3 umgesetzt (01.11.), Rest geplant.** Gebaut wird
 Welle für Welle nach dem Go des Nutzers, ein Commit je ID mit seinem Test.
 
 Herkunft: alle Befunde aus
@@ -700,8 +700,8 @@ Review vom 12.10. und in `docs/replay.md`.
 | 1 | L5 | Popup-Zeit `H:MM:SS` | `704dce0` |
 | 2 | L2 | Stall über fps-Zeile, mit A10 | `85694c4` |
 | 2 | LR3 | Capture-Log filtert, rotiert erst bei Bereitschaft | `2aebaef` |
-| 3 | L3 | Kontingent ohne lange Session und Waisen (R3) | siehe Log |
-| 3 | R9 | Platz von `record_dir` prüfen | |
+| 3 | L3 | Kontingent ohne lange Session und Waisen (R3) | `822e4b4` |
+| 3 | R9 | Platz von `record_dir` prüfen | siehe Log |
 | 4 | LR4 | Flattern zählt als Serie, `restarts` | |
 | 5 | L1 | Probe, dann Hybrid-MP4 und Rename | |
 | 6 | LR1 | M1, dann Entscheidung F3 | |
@@ -785,3 +785,13 @@ nichts live geprüft.
   `record/finalize/tests/cache.rs`: Waise fremder PID mit 2 GiB → Ok
   (scheitert am alten Code), eigene Segmente 1025 → 5 Bytes mit `on_disk`.
   `cargo test` 174 + 425 grün. README nennt Clips, Importe und Waisen.
+- **R9:** wie geplant (`target: Option<Option<PathBuf>>`, `target_warned`,
+  `verdict`). Abweichungen: (1) geprüft wird bei **jeder** langen Aufnahme
+  mit getrenntem `record_dir`, auch `composed`, weil die fertige Datei dort
+  auch nach dem Zusammenfügen im Cache landet (Kopie). (2) `Space::Stop`
+  trägt Zahlen statt Text; die Meldung entsteht in `told` und doppelt nicht
+  mehr „Recording paused: recording paused …“, sondern „only X GB free in
+  DIR, saving needs Y GB“. Geprüft wird der vorhandene Ordner (oder sein
+  Elternordner, wenn `record_dir` noch fehlt). Test
+  `a_separate_target_keeps_room_for_the_finished_file_and_warns_on_its_own`.
+  `cargo test` 174 + 426 grün.

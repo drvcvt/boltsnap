@@ -488,7 +488,9 @@ for 6 seconds, or when free space in
 the recording cache falls to what saving still needs: at least 2 GiB, and
 room to remux everything recorded so far when that remux happens on the cache's
 disk. It warns once 2 GiB before that point. A disk save remuxes straight into
-`record_dir`, so a recording only needs room there once. If the daemon dies
+`record_dir`, so a recording only needs room there once; when `record_dir`
+is on another disk, a long recording also pauses (and warns 2 GiB before)
+while that disk still has room for the finished file. If the daemon dies
 mid-recording (crash, logout, a lost output) or before a failed save was
 retried or discarded, the next start saves the segments it left as
 `boltsnap-<time>-<output>-recovered.mp4` in `record_dir` and says so;

@@ -28,8 +28,10 @@ pub(super) struct Watch {
     reports: HashMap<PathBuf, Arc<AtomicU32>>,
     frames: HashMap<PathBuf, (u64, Instant)>,
     warned: bool,
-    /// `record_dir` lies on another filesystem than the cache.
-    separate_disk: Option<bool>,
+    /// `record_dir` (or the parent it is created in), looked up once; `None`
+    /// inside when it shares the cache's filesystem.
+    target: Option<Option<PathBuf>>,
+    target_warned: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -40,7 +42,10 @@ pub(super) enum Space {
         free: u64,
         stop_at: u64,
     },
-    Stop(String),
+    Stop {
+        free: u64,
+        stop_at: u64,
+    },
 }
 
 impl Watch {
@@ -83,33 +88,48 @@ impl Watch {
         self.frames.retain(|path, _| recording(path));
     }
 
-    pub fn separate_disk(&mut self, cache: &Path, record_dir: impl FnOnce() -> PathBuf) -> bool {
-        *self.separate_disk.get_or_insert_with(|| {
-            use std::os::unix::fs::MetadataExt;
-            let device = |path: &Path| std::fs::metadata(path).map(|meta| meta.dev()).ok();
-            let dir = record_dir();
-            // A directory that does not exist yet is created next to its parent.
-            let target = device(&dir).or_else(|| dir.parent().and_then(device));
-            target.is_some_and(|target| Some(target) != device(cache))
-        })
+    /// `record_dir` when it lies on another filesystem than the cache. An
+    /// unmounted target falls back to its parent's disk, the careful side.
+    pub fn target(
+        &mut self,
+        cache: &Path,
+        record_dir: impl FnOnce() -> PathBuf,
+    ) -> Option<PathBuf> {
+        self.target
+            .get_or_insert_with(|| {
+                use std::os::unix::fs::MetadataExt;
+                let device = |path: &Path| std::fs::metadata(path).map(|meta| meta.dev()).ok();
+                let dir = record_dir();
+                // A directory that does not exist yet is created in its parent.
+                let existing = std::iter::successors(Some(dir.as_path()), |dir| dir.parent())
+                    .take(2)
+                    .find(|dir| device(dir).is_some())?;
+                (device(existing) != device(cache)).then(|| existing.to_owned())
+            })
+            .clone()
     }
 
     /// `recorded` bytes so far; `remux_on_cache`: saving joins them in the cache.
     pub fn space(&mut self, free: u64, recorded: u64, remux_on_cache: bool) -> Space {
-        let stop_at = stop_at(recorded, remux_on_cache);
-        if free <= stop_at {
-            return Space::Stop(format!(
-                "recording paused so it can still be saved: {} free, {} needed",
-                gigabytes(free),
-                gigabytes(stop_at)
-            ));
-        }
-        if !self.warned && free <= stop_at + WARN_AHEAD_BYTES {
-            self.warned = true;
-            return Space::Low { free, stop_at };
-        }
-        Space::Fine
+        verdict(&mut self.warned, free, stop_at(recorded, remux_on_cache))
     }
+
+    /// Free space on a separate `record_dir`, which takes the finished file.
+    pub fn target_space(&mut self, free: u64, recorded: u64) -> Space {
+        let stop_at = remux_space(recorded) + SLACK_BYTES;
+        verdict(&mut self.target_warned, free, stop_at)
+    }
+}
+
+fn verdict(warned: &mut bool, free: u64, stop_at: u64) -> Space {
+    if free <= stop_at {
+        return Space::Stop { free, stop_at };
+    }
+    if !*warned && free <= stop_at + WARN_AHEAD_BYTES {
+        *warned = true;
+        return Space::Low { free, stop_at };
+    }
+    Space::Fine
 }
 
 impl super::Daemon {
@@ -157,27 +177,53 @@ impl super::Daemon {
         // Separate outputs combined at save time are joined in the cache first.
         let composed =
             session.both_mode == crate::config::RecordBothMode::Combined && outputs.len() > 1;
-        let remux_on_cache = !long
-            || composed
-            || !self.watch.separate_disk(&dir, || {
-                crate::config::resolve_record_dir(&crate::config::Config::load())
-            });
+        let target = long
+            .then(|| {
+                self.watch.target(&dir, || {
+                    crate::config::resolve_record_dir(&crate::config::Config::load())
+                })
+            })
+            .flatten();
+        let remux_on_cache = !long || composed || target.is_none();
         let free = match crate::record::finalize::available_space(&dir) {
             Ok(free) => free,
             Err(error) => return Some(("Disk check failed", error)),
         };
-        match self.watch.space(free, recorded, remux_on_cache) {
-            Space::Fine => None,
-            Space::Low { free, stop_at } => {
-                super::notify(&format!(
-                    "Disk space is low: {} free. The recording pauses at {} so it can still be saved.",
-                    gigabytes(free),
-                    gigabytes(stop_at)
-                ));
-                None
-            }
-            Space::Stop(error) => Some(("Low disk space", error)),
+        if let Some(pause) = told(self.watch.space(free, recorded, remux_on_cache), "") {
+            return Some(pause);
         }
+        // A long recording's file ends up on that disk, joined there or copied.
+        let target = target?;
+        let free = match crate::record::finalize::available_space(&target) {
+            Ok(free) => free,
+            Err(error) => return Some(("Disk check failed", error)),
+        };
+        let place = format!(" in {}", target.display());
+        told(self.watch.target_space(free, recorded), &place)
+    }
+}
+
+/// Says `space` once it runs low; `Some` pauses the recording. `place` names
+/// a disk other than the cache's.
+fn told(space: Space, place: &str) -> Option<(&'static str, String)> {
+    match space {
+        Space::Fine => None,
+        Space::Low { free, stop_at } => {
+            super::notify(&format!(
+                "Disk space{place} is low: {} free. The recording pauses at {} so it can still be saved.",
+                gigabytes(free),
+                gigabytes(stop_at)
+            ));
+            None
+        }
+        Space::Stop { free, stop_at } => Some((
+            "Low disk space",
+            format!(
+                "only {} free{place}, saving needs {}",
+                gigabytes(free),
+                gigabytes(stop_at)
+            ),
+        )),
     }
 }
 
@@ -278,6 +324,33 @@ mod tests {
     }
 
     #[test]
+    fn a_separate_target_keeps_room_for_the_finished_file_and_warns_on_its_own() {
+        let mut watch = Watch::default();
+        let recorded = 10 * GIB;
+        let need = remux_space(recorded) + SLACK_BYTES;
+        assert_eq!(watch.target_space(need + 3 * GIB, recorded), Space::Fine);
+        let low = Space::Low {
+            free: need + GIB,
+            stop_at: need,
+        };
+        assert_eq!(watch.target_space(need + GIB, recorded), low);
+        assert_eq!(watch.target_space(need + 1, recorded), Space::Fine);
+        assert_eq!(
+            watch.target_space(need, recorded),
+            Space::Stop {
+                free: need,
+                stop_at: need
+            }
+        );
+        // The cache's disk still warns once itself.
+        let stop = stop_at(recorded, false);
+        assert!(matches!(
+            watch.space(stop + GIB, recorded, false),
+            Space::Low { .. }
+        ));
+    }
+
+    #[test]
     fn low_space_warns_once_then_stops() {
         let mut watch = Watch::default();
         let stop = stop_at(GIB, true);
@@ -290,7 +363,7 @@ mod tests {
             }
         );
         assert_eq!(watch.space(stop + GIB / 2, GIB, true), Space::Fine);
-        assert!(matches!(watch.space(stop, GIB, true), Space::Stop(_)));
+        assert!(matches!(watch.space(stop, GIB, true), Space::Stop { .. }));
         watch.reset();
         assert!(matches!(
             watch.space(stop + GIB, GIB, true),
