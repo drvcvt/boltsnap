@@ -43,6 +43,31 @@ Befunde:
 - PNG ist ein Kern Deflate. Eine GPU hilft da nicht: Deflate ist seriell,
   es gibt keinen brauchbaren GPU-PNG-Encoder (nvJPEG kann nur JPEG).
 
+## Zeitachse eines Schusses (WAYLAND_DEBUG, nur der CLI-Prozess)
+
+Ein `boltsnap full -o`, Zeiten aus dem Protokoll-Log (Debug-Ausgabe bremst,
+die Verhältnisse stimmen):
+
+| Phase | Dauer |
+| --- | ---: |
+| erste Verbindung: Registry, Bind, Outputs (ein `sync` allein 3,5 ms) | ~5,4 ms |
+| zwei weitere Verbindungen, je eine pro Monitor (`compose.rs:114-148`): Registry, Outputs, ein `sync` von 9,6 ms | ~12,3 ms |
+| `capture` → `ready`, Monitor 1 / Monitor 2 | 9,5 / 15,6 ms, nacheinander |
+| Zusammensetzen in die Leinwand, Layout-Prüfung | ~4,3 ms |
+
+Befunde:
+- Gut die Hälfte der „Aufnahme“ ist Setup und Warten auf Roundtrips, kein
+  Kopieren. Die Extra-Verbindungen gibt es, weil libway pro Verbindung nur
+  eine laufende Aufnahme kennt (`capture.rs:150`, `pending:
+  Option<Pending>`); Hyprland kopiert die Monitore trotzdem nacheinander
+  (zweites `ready` 6,3 ms nach dem ersten), die Parallelität bringt also
+  nichts.
+- Hyprland bietet shm XRGB/ARGB (im Speicher BGRX) und dmabuf nur mit
+  NVIDIA-Block-Linear-Modifiern bzw. `INVALID`, kein `LINEAR`: ein
+  dmabuf-Weg müsste auf der GPU entkacheln und zurücklesen.
+- libway wandelt BGRX nach RGBA (`buffer.rs:177`), Boltsnap danach nach RGB
+  (`capture/mod.rs:66`): zwei volle Durchläufe über 16 MB.
+
 ## Optionen
 
 1. **PNG parallel kodieren** (größter, sicherer Hebel): Bild in Streifen
@@ -59,51 +84,95 @@ Befunde:
 4. Nicht: PNG-Stufe senken (`Fast` ist schon die schnelle; `Sub` spart 5 ms
    für 12 % größere Dateien).
 
+## Recherche (01.11.)
+
+Belege aus der Web-Recherche (Upstream-Quellen, ohne Zeilennummern):
+- Hyprland, `src/managers/screenshare/ScreenshareFrame.cpp`: `copyShm()`
+  rendert in einen Offscreen-Framebuffer und liest mit `readPixels` zurück;
+  `src/render/gl/GLFramebuffer.cpp` `readPixels` ist ein synchrones
+  `glReadPixels` ohne PBO, **zeilenweise, wenn der Stride nicht passt**.
+  `copyDmabuf()` rendert direkt in den Client-dmabuf, Abschluss per Callback,
+  kein Zurücklesen. Kopiert wird je Monitor auf dessen nächstem Commit
+  (`ScreenshareManager::onOutputCommit`), ein einfaches `copy` erzwingt
+  dafür einen neuen Frame (`damageMonitor`).
+- Schnelle PNG-Encoder: fpnge (AVX2, 180 bis 800 MP/s je Kern), fpng
+  (RLE-Treffer, vorberechnete Huffman-Tabellen, Filter Up), mtpng (parallel
+  wie pigz, Streifen mit Sync-Flush, kombinierte Adler-32; Größe „winzig“
+  schlechter als libpng). Keine fpnge-Portierung für Rust gefunden.
+  Streifen mit Sync-Flush plus `adler32_combine` sind ein gültiges,
+  bekanntes Verfahren.
+
+Folgen für den Plan: keine Leinwand mit Desktop-Stride (zeilenweises
+`glReadPixels` in Hyprland), Puffer je Monitor dicht gepackt; dmabuf nur als
+Probe.
+
 ## Plan
 
-Entscheidung: eigener paralleler PNG-Encoder statt `mtpng`, weil der Nutzer
-so viel wie möglich selbst will und der Kern klein ist (Filter, ein
-Deflate nur mit Literalen und Läufen, Huffman je Streifen); `crc32fast`
-(schon im Baum über `png`) für die Prüfsummen, weil std keine CRC hat und
-eigene Tabellen langsamer wären als dessen PCLMUL-Weg.
+Ziel: `boltsnap full -o` von 57,6 ms (Median) so weit runter wie möglich,
+gleiche Bilder, Dateigröße höchstens +10 %. Schätzung, nicht gemessen:
+E1 −18 ms, L1 −10 ms, L2 −6 ms, also Richtung 25 ms.
 
-**P1, Encoder** `boltsnap::image_model::png` (Datei `src/image/png.rs`;
-`src/image.rs` wird dafür `src/image/mod.rs`, `src/` wächst nicht, hat
-schon 17 Einträge).
-- `encode_rgb(pixels, width, height) -> Vec<u8>` und `encode_rgba_as_rgb`
-  (Alpha fällt beim Filtern weg, kein Zwischenpuffer). Ausgabe immer
-  8-bit RGB, wie heute.
-- Zeilen in Streifen, einer je Kern (`available_parallelism`), mindestens
-  32 Zeilen je Streifen; `std::thread::scope`.
-- Je Streifen: Filter je Zeile adaptiv (kleinste Summe der Beträge, wie
-  `image` Fast), Deflate als ein dynamischer Block: Literale plus Läufe
-  gleicher Bytes (Abstand 1, Länge 3 bis 258), Huffman aus dem Histogramm
-  des Streifens, auf 15 Bit begrenzt (Häufigkeiten halbieren, bis es passt).
-  Nicht der letzte Streifen endet mit einem leeren Stored-Block
-  (Sync-Flush), also byte-genau; der letzte setzt BFINAL.
-- Jeder Streifen ist ein eigener IDAT-Chunk mit eigener CRC (parallel); der
-  erste trägt den zlib-Kopf, ein letzter kleiner IDAT die Adler-32, aus den
-  Streifen-Teilsummen kombiniert.
-- Tests: Rundreise über den `image`-Decoder für Rauschen, Flächen,
-  Verläufe, 1 × 1, 1 × N, N × 1, weniger Zeilen als Kerne, RGB und RGBA;
-  zlib-Strom samt Adler mit `miniz_oxide::inflate::decompress_to_vec_zlib`
-  (dev-dependency) geprüft; CRCs je Chunk.
+Regeln für jeden Schritt: ein Commit je Schritt mit Test, Dateien unter
+500 Zeilen nach Konzept, kein `unsafe` außer dem, was libway für shm schon
+hat, Diff vor jedem Commit gelesen, `cargo fmt --check` und `cargo test`
+(Root und libway), danach hyperfine alt gegen neu mit Median und Größe hier.
 
-**P2, Aufrufer** (alle Linux): `capture/mod.rs:22` (`capture`, Datei),
-`:31-38` (`capture_png`, stdout), `main.rs:621-625` (Standardweg zum
-Shelf), `shelf/cards/cards.rs:364` (Daemon, Raw-Weg). Windows und die
-Test-Screenshots bleiben beim `image`-Encoder.
+**E1, eigener paralleler PNG-Encoder** `boltsnap::image_model::png`
+(`src/image/png.rs`, Tests in `src/image/png/tests.rs`; `src/image.rs` wird
+`src/image/mod.rs`, `src/` wächst nicht). Entscheidung: selbst statt
+`mtpng`, weil der Nutzer es selbst will, `mtpng` libz braucht und der Kern
+klein ist.
+- Eingabe: Zeilenquelle aus einer oder mehreren Kacheln (Pixel, Stride,
+  Format RGB, RGBA oder BGRX, Position), Lücken schwarz; Ausgabe 8-bit RGB.
+  Umwandlung passiert beim Filtern, kein Zwischenpuffer.
+- Streifen je Kern, mindestens 32 Zeilen; je Streifen adaptiver Filter (5
+  Filter, kleinste Betragssumme) und ein dynamischer Deflate-Block mit
+  Literalen und Läufen eines Bytes (Abstand 1), Huffman aus dem Histogramm,
+  15 Bit Grenze. Nicht letzte Streifen enden mit leerem Stored-Block.
+  Ein IDAT je Streifen mit eigener CRC (`crc32fast`), zlib-Kopf im ersten,
+  Adler-32 kombiniert in einem letzten IDAT.
+- Vergleich im Test (ignoriert, lokal): Filter adaptiv gegen nur Up, Größe
+  und Zeit am echten Bild; die schnellere Variante bleibt, wenn sie höchstens
+  +10 % Größe kostet.
+- Tests: Rundreise über den `image`-Decoder (Rauschen, Flächen, Verläufe,
+  1 × 1, 1 × N, N × 1, weniger Zeilen als Kerne, alle Formate, zwei Kacheln
+  mit Lücke); zlib-Strom samt Adler mit `miniz_oxide` (dev-dependency)
+  geprüft; CRC jedes Chunks.
 
-**P3, RGB-Umwandlung sparen**: wo kein Rand abgeschnitten wird (`Full`,
-`Area`), kodiert `capture` direkt aus RGBA.
+**E2, Aufrufer** (alle Linux): `capture/mod.rs` `capture` und
+`capture_png`, `main.rs` Standardweg zum Shelf, `shelf/cards/cards.rs`
+(Daemon, Raw-Weg). Windows und Test-Screenshots bleiben beim `image`-Encoder.
 
-**P4, dmabuf-Probe** (nur messen, kein Produktcode): ob eine Aufnahme über
-dmabuf statt shm auf NVIDIA schneller ist. Erst nach P1 bis P3.
+**L1, libway: alle Monitore auf einer Verbindung.** `State.pending` wird
+eine Map je Token, `compose` fordert alle Frames auf der eigenen Verbindung
+an und wartet auf alle; die Verbindungen pro Monitor
+(`compose.rs:114-148`) fallen weg. Tests im libway-Crate mit seinem
+Test-Server: zwei Outputs, beide Frames auf einer Verbindung, Fehler eines
+Frames bricht beide ab.
 
-Was brechen kann: ein Decoder, der den Strom nicht mag (Rundreise-Tests mit
-zwei Decodern), Dateigröße (Annahme: ±10 % zu heute, wird gemessen), CPU-
-Spitze über alle Kerne für ~5 ms bei jedem Screenshot (Spiel im
-Vordergrund: Threads laufen mit normaler Priorität, wie heute der eine).
+**L2, libway: Rohbild ohne Zusammensetzen.** Neue API
+`capture_desktop_tiles` gibt die Monitore als dicht gepackte Kacheln im
+Server-Format (BGRX/BGRA) mit Position zurück, wenn alle die gleiche
+Skalierung und keine Drehung haben; sonst `None`, und Boltsnap nimmt den
+alten Weg. Spart die Leinwand-Allokation, die Kopie und beide
+Formatwandlungen. Nur für `full` und den Standardweg zum Shelf; der
+Selector bleibt beim `RgbaImage`.
 
-Abnahme: Tests grün; hyperfine `-o` alt gegen neu, Median und Dateigröße in
-dieser Datei; ein Screenshot der echten Ausgabe angesehen.
+**P4, dmabuf-Probe** (isoliert, kein Produktcode, fail-closed): Zeit von
+`capture` bis `ready` mit dmabuf gegen shm, plus eigenes Zurücklesen per
+Vulkan oder EGL. Nur wenn die Summe deutlich unter shm liegt, eigener Plan.
+
+**Später, eigener Plan:** Aufnahme im Daemon mit warmer Verbindung (spart
+die ~5 ms der ersten Verbindung, braucht eine IPC-Änderung).
+
+Was brechen kann: Decoder, die den Strom nicht mögen (zwei Decoder im
+Test); Monitore mit Skalierung, Drehung oder Lücken (L2 fällt auf den alten
+Weg zurück, Test); ein Fehler eines Frames bei mehreren auf einer Verbindung
+(L1-Test); CPU-Spitze über alle Kerne für wenige ms je Screenshot.
+
+Nicht: kein JPEG/QOI statt PNG, keine niedrigere PNG-Qualität, kein
+Dauer-Capture im Hintergrund (kostet GPU, blockiert Direct Scanout).
+
+Abnahme je Schritt: Tests grün; hyperfine `-o` gegen den Stand davor;
+am Ende ein Screenshot der echten Ausgabe angesehen und gegen das alte PNG
+pixelgleich geprüft.
