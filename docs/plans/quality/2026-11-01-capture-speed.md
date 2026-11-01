@@ -396,3 +396,25 @@ Verbindung bei jedem Auftrag und verbindet bei Fehlern neu); Speicher
   Daemon mit Wayland); live geprüft (Karte, `last.png`).
 - hyperfine `-N`, 30 Läufe, gegen das Binary vor D1: **Shelf-Weg 62,5 →
   26,8 ms**, **`-o` 43,4 → 26,9 ms** (Mediane, ±2,5 statt ±9 ms).
+
+## Entscheidung dmabuf (Nutzer, 01.11.)
+
+„das was uns am meisten bringen wuerde […] und auch im kopf behalten das es
+nicht nur auf meinem pc laufen soll“. Stand: ~27 ms für Shelf und `-o`,
+davon ~13 ms Aufnahme (shm-Grenze: Hyprland liest synchron und
+nacheinander zurück).
+
+Entscheidung: dmabuf in libway, gestuft, nie Pflicht:
+1. dmabuf mit LINEAR-Modifier (bietet der Compositor ihn an, oft auf
+   Mesa): direkt per `mmap` lesen, ohne Vulkan.
+2. dmabuf mit Vendor-Modifier (NVIDIA hier): Import in Vulkan über `ash`
+   (`VK_EXT_external_memory_dma_buf`, `VK_EXT_image_drm_format_modifier`,
+   Gerät über `dmabuf_device` mit `VK_EXT_physical_device_drm`), Kopie in
+   einen Host-Puffer; `libvulkan` erst zur Laufzeit geladen.
+3. shm wie heute, bei fehlendem Vulkan, fehlenden Erweiterungen, anderem
+   Compositor und jedem Fehler, mit einer Log-Zeile beim ersten Rückfall.
+Weil Vulkan (statt EGL/GL): herstellerübergreifend, asynchron je Output
+steuerbar, kein GL-Kontext im Daemon-Thread. Schätzung: Aufnahme ~7–8 ms,
+gesamt ~20 ms. Gebaut im libway-Repo (Prompt an den Nutzer), Boltsnap
+übernimmt per Sync; die Kacheln bleiben CPU-Puffer, Boltsnap ändert sich
+dafür nicht.
