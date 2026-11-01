@@ -245,3 +245,55 @@ entscheidende Probe und geht vor L2.
 Reihenfolge neu: L1 → P4 (Probe dmabuf) → je nach Ergebnis dmabuf-Weg oder
 L2 → D1 Aufnahme im Daemon (eigener Plan, IPC) → PNG aus dem kritischen Pfad
 (eigener Plan) → Feinschliff am PNG-Kern.
+
+## D1: Vollbild-Screenshot im Daemon (Plan, 01.11.)
+
+Messung Shelf-Weg heute (`boltsnap full --no-copy`, `BOLTSNAP_TIMINGS`,
+Mittel aus 5): Capture 32,4 ms, RGB 2,1 ms, Karten-Vorschau 3,1 ms, PNG
+12,4 ms (frischer Prozess: kalte Threads und Seiten), `last.png` schreiben
+~7 ms, PNG an den Daemon und Bestätigung nach dem Zeichnen 16,7 ms; die
+CLI ist nach ~74 ms fertig. Daemon-seitig: `shelf_png_prepare` 0,7–4,7 ms.
+
+Verhalten:
+- `boltsnap full` (Shelf-Weg, mit und ohne Kopie) und `full -o DATEI`
+  fragen den laufenden Daemon: neuer Befehl `capture` mit `output: Option
+  <PathBuf>` (absolut, von der CLI aufgelöst) und `copy: bool`.
+- Der Daemon nimmt auf einem eigenen Capture-Thread auf, mit einer
+  dauerhaft offenen libway-Verbindung (beim ersten Mal aufgebaut; bei einem
+  Fehler einmal neu verbunden, dann Fehler an die CLI).
+- Shelf-Weg: Vorschau aus den Rohpixeln, die Karte erscheint sofort im
+  Zustand „wird geschrieben“ (wie Replay-Clips, `cards/pending.rs`); PNG,
+  Temp-Datei, `last.png` und die Kopie ins Clipboard laufen danach im
+  Hintergrund; Ziehen, Kopieren und Speichern der Karte warten bis dahin
+  (gibt es schon für Replay-Clips). Antwort an die CLI, sobald die Karte
+  steht.
+- `-o`: der Daemon schreibt die Datei und antwortet erst dann.
+- Kein Daemon, alter Daemon („unknown cmd“) oder Capture-Fehler vor der
+  Aufnahme: die CLI nimmt wie heute selbst auf. Ein Fehler nach der Aufnahme
+  geht als Fehler zurück (keine doppelte Aufnahme).
+- Nicht: `area`/`window` (Selector läuft in der CLI; eigener Plan D2 mit
+  dem eingefrorenen Desktop vom Daemon), Windows, X11, Portal (bleiben beim
+  heutigen Weg).
+
+Umsetzung:
+1. `protocol.rs`: `Request::Capture { output, copy }`, Kodierung als `cmd:
+   "capture"`, Rundreise-Test.
+2. `shelf/cards/capture.rs` (neu, `cards/` hat 6 Dateien): Capture-Thread
+   mit Kanal, warme Verbindung, Rückgabe der Rohpixel; Daemon-Event
+   „Screenshot fertig“ in den Event-Loop (`DaemonEvent`).
+3. Karte aus Rohpixeln: Vorschau wie `make_rgb_card_thumbnail`, Karte
+   `pending`; PNG-Thread schreibt Temp-Datei und `last.png`, dann Karte
+   fertig und ggf. Clipboard.
+4. CLI (`main.rs` `capture_flow`, Linux, Wayland, Modus `full`): erst
+   `capture` an den Daemon, Rückfall wie oben.
+5. Tests: Protokoll; Rückfall bei „unknown cmd“ und bei fehlendem Daemon;
+   Karte bleibt `pending`, bis das PNG geschrieben ist; Fehler nach der
+   Aufnahme löst keine zweite Aufnahme aus.
+
+Messung danach: hyperfine `full --no-copy` und `full -o` gegen vorher; Zeit
+bis Karte sichtbar über `process_entry` → `shelf_commit`.
+
+Risiken: Daemon-Thread mit offener Wayland-Verbindung (Ereignisse müssen
+gelesen werden, sonst läuft der Puffer voll: der Thread pumpt die
+Verbindung bei jedem Auftrag und verbindet bei Fehlern neu); Speicher
+(Rohbild 16 MB nur während eines Auftrags); `shelf/` wächst nicht.
