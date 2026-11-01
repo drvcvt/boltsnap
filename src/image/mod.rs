@@ -1,3 +1,5 @@
+pub mod png;
+
 /// Axis-aligned rectangle in surface pixels.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Rect {

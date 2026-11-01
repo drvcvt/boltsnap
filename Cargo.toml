@@ -26,6 +26,15 @@ toml = "0.8"
 # Writes the recording settings back without dropping comments or key order.
 # Already in the tree through `toml`.
 toml_edit = "0.20"
+# CRC-32 for the PNG chunks of `image_model::png`, SIMD; already in the tree
+# through `png`.
+crc32fast = "1.5"
+# Adler-32 of the same stream, SIMD; already in the tree through `fdeflate`.
+simd-adler32 = "0.3"
+
+[dev-dependencies]
+# A second inflater checks the PNG encoder's zlib stream and its Adler-32.
+miniz_oxide = "0.8"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # Vendored until libway has a published release; see vendor/README.md.

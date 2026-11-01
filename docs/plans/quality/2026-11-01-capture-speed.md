@@ -176,3 +176,34 @@ Dauer-Capture im Hintergrund (kostet GPU, blockiert Direct Scanout).
 Abnahme je Schritt: Tests grün; hyperfine `-o` gegen den Stand davor;
 am Ende ein Screenshot der echten Ausgabe angesehen und gegen das alte PNG
 pixelgleich geprüft.
+
+## Umsetzung E1 (01.11.)
+
+- Erster Entwurf (Token je Byte, 5 volle Filter-Puffer, 32-Bit-Bitpuffer,
+  eigene Adler-Schleife) war korrekt und 9 % kleiner als `image` (2,12 statt
+  2,34 MB am echten 3840 × 1080 Bild), aber einthreadig 61 ms gegen 26 ms
+  (Filter 16,7, Tokenisieren 26, Schreiben 14 ms); mit 12 Threads 14 ms,
+  über 6 Threads skaliert es kaum (6 physische Kerne).
+- **Abweichung in der Umsetzung:** Kern wie fdeflate gebaut (gelesen:
+  `fdeflate-0.3.7/src/compress.rs`): Filterkosten ohne Zwischenpuffer in
+  vektorisierbaren Schleifen, Abbruch bei Kosten 0; Deflate scannt in
+  Spannen (Literale, Null-Läufe ab 4) mit `u64`-Sprüngen, Histogramm über
+  die Spannen, 64-Bit-Bitpuffer mit 4 Literalen je Schreibzugriff; Läufe
+  nur noch aus Nullen (nach dem Filtern sind gleiche Flächen Nullen).
+  Huffman bleibt dynamisch je Streifen. Adler-32 über `simd-adler32` (schon
+  im Baum über `fdeflate`), weil eigene SIMD `unsafe` bräuchte; das
+  Kombinieren bleibt eigener Code.
+- Gemessen am echten Bild (Filter einthreadig): nur Up 1,6 ms / 2,66 MB,
+  nur Sub 1,6 ms / 2,45 MB, **nur Paeth 4,8 ms / 2,21 MB**, adaptiv 51 ms /
+  2,16 MB (`image` 2,34 MB). **Entscheidung: nur Paeth**, weil kleiner als
+  heute bei einem Zehntel der Filterzeit; der Kostenvergleich entfällt.
+  Null-Läufe werden wie in fdeflate je 8-Byte-Block erkannt (Ende eines
+  Blocks, volle Nullblöcke, Anfang des nächsten), Bytezähler einmal je
+  Streifen in vier Tabellen (vorher je Spanne neu angelegt: 29,6 ms).
+- **Ergebnis E1** (Release, normale Priorität, 3840 × 1080 Desktop):
+  1 Thread 25,6 ms, 6 Threads 7,5 ms, 12 Threads 6,0–6,8 ms, 2,15 MB;
+  `image` 21–24 ms, 2,34 MB. Etwa 3,7× schneller, 8 % kleiner.
+  Tests: Rundreise über `image`-Decoder und `miniz_oxide` (zlib, Adler,
+  CRC je Chunk) für 1 × 1 bis 1920 × 33, Flächen, Rauschen, RGB/RGBA/BGRX,
+  Kacheln mit Stride und Lücke; Paeth gegen die Spec; Spannen und
+  Lauf-Zerlegung. `cargo test` 186 + 428 grün.

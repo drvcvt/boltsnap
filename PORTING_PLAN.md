@@ -41,7 +41,7 @@ Im Code integriert:
 - `src/lib.rs` als plattformneutral testbarer gemeinsamer Kern
 - portable IPC-Typen und Binärframing in `src/protocol.rs`
 - öffentliche Recording-Zustände im gemeinsamen Protokoll statt im Linux-Backend
-- gemeinsame Selector-Geometrie in `src/image.rs`
+- gemeinsame Selector-Geometrie in `src/image/mod.rs`
 - zentrale Compile-Zeit-Auswahl in `src/platform/mod.rs`
 - unveränderter Linux-IPC-Transport in `src/platform/linux/ipc.rs`
 - nativer Windows-Named-Pipe-Client in `src/platform/windows/ipc.rs`

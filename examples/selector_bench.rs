@@ -3,7 +3,7 @@
 #![allow(dead_code)]
 #[path = "../src/shelf/font.rs"]
 pub mod font;
-#[path = "../src/image.rs"]
+#[path = "../src/image/mod.rs"]
 mod image_model;
 mod shelf {
     pub use crate::font;
