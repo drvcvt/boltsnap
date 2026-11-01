@@ -84,8 +84,8 @@ enum Attempt {
 }
 
 /// Reads one completed dma-buf back as `width * height * 4` packed bytes.
-type Read<'a> =
-    dyn FnMut(&GpuBuffer, u32, u32, Instant) -> std::result::Result<Vec<u8>, ReadbackFallback> + 'a;
+type Read<'a> = dyn FnMut(&GpuBuffer, u32, u32, Instant) -> std::result::Result<CpuBuffer, ReadbackFallback>
+    + 'a;
 
 impl Connection {
     /// Like [`Connection::capture_desktop_tiles`], but reads the outputs back
@@ -248,7 +248,7 @@ impl Connection {
                     width,
                     height,
                 };
-                read_linear(plane.fd(), layout, end)
+                read_linear(plane.fd(), layout, end).map(CpuBuffer::heap)
             },
         )?;
         match result {
@@ -323,7 +323,7 @@ fn to_cpu(
     let bytes = read(buffer, frame.width, frame.height, end)?;
     Ok(Frame {
         stride: frame.width * 4,
-        storage: FrameStorage::Cpu(CpuBuffer::heap(bytes)),
+        storage: FrameStorage::Cpu(bytes),
         ..frame
     })
 }

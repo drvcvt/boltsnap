@@ -15,7 +15,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-fn open() -> (VulkanReadback, GpuAllocator) {
+pub(super) fn open() -> (VulkanReadback, GpuAllocator) {
     let node = PathBuf::from(
         std::env::var_os("LIBWAY_TEST_RENDER_NODE").expect("set an explicit render node"),
     );
@@ -26,7 +26,11 @@ fn open() -> (VulkanReadback, GpuAllocator) {
     (readback, allocator)
 }
 
-fn allocate(allocator: &GpuAllocator, (w, h): (u32, u32), modifier: u64) -> Option<GpuBuffer> {
+pub(super) fn allocate(
+    allocator: &GpuAllocator,
+    (w, h): (u32, u32),
+    modifier: u64,
+) -> Option<GpuBuffer> {
     let format = PixelFormat::Argb8888 as u32;
     let constraints = Constraints {
         size: (w, h),
@@ -41,7 +45,7 @@ fn allocate(allocator: &GpuAllocator, (w, h): (u32, u32), modifier: u64) -> Opti
 
 /// Bytes that differ per pixel and per channel, so a wrong stride, tiling or
 /// swizzle shows.
-fn pattern((w, h): (u32, u32)) -> Vec<u8> {
+pub(super) fn pattern((w, h): (u32, u32)) -> Vec<u8> {
     let mut bytes = Vec::with_capacity((w * h * 4) as usize);
     for y in 0..h {
         for x in 0..w {
@@ -58,10 +62,15 @@ fn pattern((w, h): (u32, u32)) -> Vec<u8> {
 
 /// Write `pixels` into the dma-buf through a second Vulkan import (GBM
 /// cannot map tiled NVIDIA buffers), then hand it back to the foreign queue.
-fn fill(readback: &VulkanReadback, buffer: &GpuBuffer, (w, h): (u32, u32), pixels: &[u8]) {
+pub(super) fn fill(
+    readback: &VulkanReadback,
+    buffer: &GpuBuffer,
+    (w, h): (u32, u32),
+    pixels: &[u8],
+) {
     let usage = vk::ImageUsageFlags::TRANSFER_DST;
     let image = readback.import(buffer, w, h, usage).unwrap();
-    let host = HostBuffer::new(
+    let mut host = HostBuffer::new(
         &readback.device,
         &readback.memory,
         pixels.len() as u64,
@@ -139,12 +148,12 @@ fn fill(readback: &VulkanReadback, buffer: &GpuBuffer, (w, h): (u32, u32), pixel
     result.unwrap();
 }
 
-fn open_fds() -> usize {
+pub(super) fn open_fds() -> usize {
     std::fs::read_dir("/proc/self/fd").unwrap().count()
 }
 
 /// Modifiers that read back and can also be written for the test fill.
-fn testable(readback: &VulkanReadback) -> Vec<u64> {
+pub(super) fn testable(readback: &VulkanReadback) -> Vec<u64> {
     let format = vk::Format::B8G8R8A8_UNORM;
     readback
         .modifiers(PixelFormat::Argb8888)
@@ -217,7 +226,10 @@ fn read_returns_the_written_pattern() {
         fill(&readback, &buffer, size, &pixels);
         let end = Instant::now() + Duration::from_secs(5);
         let read = readback.read(&buffer, size.0, size.1, end).unwrap();
-        assert!(read == pixels, "{modifier:#x}: bytes differ");
+        assert!(
+            read.bytes() == pixels.as_slice(),
+            "{modifier:#x}: bytes differ"
+        );
         eprintln!(
             "{modifier:#x}: {}x{} matches, stride {}",
             size.0,
@@ -237,7 +249,7 @@ fn read_returns_the_written_pattern() {
         let end = start + Duration::from_secs(5);
         let read = readback.read(&buffer, size.0, size.1, end).unwrap();
         times.push(start.elapsed());
-        assert!(read == pixels, "1920x1080 bytes differ");
+        assert!(read.bytes() == pixels.as_slice(), "1920x1080 bytes differ");
     }
     times.sort();
     eprintln!(
@@ -267,7 +279,10 @@ fn failed_reads_leak_nothing() {
     let fds = open_fds();
 
     buffer.modifier = 0x0300_0000_dead_beef;
-    let error = readback.read(&buffer, size.0, size.1, end()).unwrap_err();
+    let error = readback
+        .read(&buffer, size.0, size.1, end())
+        .err()
+        .expect("the read fails");
     eprintln!("bogus modifier: {error}");
     assert!(matches!(error, ReadbackFallback::Import(_)));
     buffer.modifier = modifier;
@@ -282,7 +297,10 @@ fn failed_reads_leak_nothing() {
     let file = std::fs::File::from(memfd);
     file.set_len(1 << 20).unwrap();
     let dmabuf = std::mem::replace(&mut buffer.planes[0].fd, file.into());
-    let error = readback.read(&buffer, size.0, size.1, end()).unwrap_err();
+    let error = readback
+        .read(&buffer, size.0, size.1, end())
+        .err()
+        .expect("the read fails");
     eprintln!("memfd: {error}");
     assert!(matches!(error, ReadbackFallback::Import(_)));
     drop(std::mem::replace(&mut buffer.planes[0].fd, dmabuf));
@@ -292,7 +310,7 @@ fn failed_reads_leak_nothing() {
     match readback.read(&buffer, size.0, size.1, Instant::now()) {
         Ok(read) => {
             eprintln!("past deadline: the GPU finished first");
-            assert!(read == pixels);
+            assert!(read.bytes() == pixels.as_slice());
         }
         Err(error) => {
             eprintln!("past deadline: {error}");
@@ -300,7 +318,7 @@ fn failed_reads_leak_nothing() {
         }
     }
     let read = readback.read(&buffer, size.0, size.1, end()).unwrap();
-    assert!(read == pixels);
+    assert!(read.bytes() == pixels.as_slice());
     assert_eq!(open_fds(), fds, "descriptors leaked");
 }
 
@@ -316,6 +334,9 @@ fn the_readback_is_send_but_not_sync() {
     impl<T: ?Sized> AmbiguousIfSync<()> for T {}
     impl<T: ?Sized + Sync> AmbiguousIfSync<u8> for T {}
     <VulkanReadback as AmbiguousIfSync<_>>::check();
+    // Leased host memory drops on other threads, so its device owner is both.
+    fn send_sync<T: Send + Sync>() {}
+    send_sync::<std::sync::Arc<super::owner::DeviceOwner>>();
 }
 
 #[test]
@@ -329,6 +350,9 @@ fn a_lost_readback_submits_nothing_more() {
     readback.read(&buffer, size.0, size.1, end).unwrap();
     readback.lost.set(true);
     assert!(readback.is_lost());
-    let error = readback.read(&buffer, size.0, size.1, end).unwrap_err();
+    let error = readback
+        .read(&buffer, size.0, size.1, end)
+        .err()
+        .expect("the read fails");
     assert!(matches!(error, ReadbackFallback::Copy(_)), "{error}");
 }

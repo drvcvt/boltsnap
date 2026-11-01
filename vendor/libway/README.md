@@ -475,6 +475,14 @@ driver setup on the development system, later calls none. Only ARGB8888 and
 XRGB8888 use the GPU tiers; other formats go to SHM. The LINEAR tier needs the
 compositor's device, which a connection learns from its first capture.
 
+On the Vulkan tier with cached host memory (`HOST_CACHED`, as on NVIDIA), a
+tile's `CpuBuffer` is the mapped host buffer itself rather than a copy. The
+tile owns that buffer until it is dropped, even after the connection is
+dropped or `reset_readback()` ran, so tiles can go to another thread and the
+next capture can run meanwhile. At most eight buffers are leased at once;
+past that, tiles are copied to the heap. Two idle buffers are kept for the
+next capture. Without cached host memory, tiles are always copied.
+
 ## Bounds and errors
 
 The default operation timeout is 5 seconds. Setup and protocol waits are bounded;

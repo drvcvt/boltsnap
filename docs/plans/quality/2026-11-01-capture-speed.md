@@ -496,3 +496,79 @@ Abnahme: `cargo fmt --check`, `cargo test` grün; Log zeigt Vulkan als Weg;
   geteilt), 46,4 MB anonym, Pss_Dirty 59 MB. Über der Planschwelle von 50 MB:
   Entscheidung beim Nutzer (behalten, oder das Vulkan-Gerät nach einer Weile
   ohne Schuss freigeben, `reset_readback`).
+
+## D3: Heap nach jedem Daemon-Schuss zurückgeben (Plan, 01.11.)
+
+Nutzer: RAM runter, „ohne das wir irgendwas weg geben“. PSS des Daemons nach
+dem ersten Schuss (Kiste swappt, Werte verzerrt): 33,5 MB, davon 19,5 MB
+GPU-Rücklesepuffer (bleiben, sonst langsamer) und ~10 MB anteilige
+Treiberbibliotheken. Nach 5 Schüssen `RssAnon` 30,2 MB plus 20,5 MB im Swap.
+
+Ursache (Annahme, durch die Messung unten zu belegen): glibc hebt die
+mmap-Schwelle nach dem ersten freigegebenen großen Block an (bis 32 MB), die
+8-MB-Kacheln und der PNG-Puffer landen danach in Arenen, die beim Freigeben
+nicht ans System zurückgehen. Der Daemon bliebe zwischen den Schüssen auf
+seiner Spitze.
+
+Bau: `screenshot::release_heap()` ruft `libc::malloc_trim(0)` (nur
+`target_env = "gnu"`, musl hat es nicht und gibt ohnehin zurück); aufgerufen
+in `shelf/clients.rs` am Ende des `Capture`-Arms, wenn Kacheln, PNG und Karte
+schon weg sind; Timing-Span `daemon_heap_trim`.
+
+Abnahme: `RssAnon` nach 5 Schüssen deutlich unter den 30,2 MB von vorher;
+`daemon_heap_trim` unter 1 ms; Tests grün. Nicht: keine Änderung an Puffern,
+Treiber oder Kacheln (das ist libway, an libway-58 geschickt: Kacheln direkt
+aus dem Host-Speicher statt einer Kopie).
+
+Umsetzung D3 (01.11.), **Abweichung vom Plan**: `malloc_trim(0)` nach jedem
+Schuss gebaut und gemessen, ohne Wirkung (`RssAnon` 48,2 MB nach 5 Schüssen,
+Trim 0,03–1,7 ms); die Annahme „freie Seiten in den Arenen“ stimmt nicht,
+wieder entfernt. `smaps` zeigte etwa zehn Thread-Arenen mit je ~2,6 MB
+(PNG-Encoder: ein neuer Thread je Kern und Schuss, dazu die Treiber-Threads).
+A/B über `MALLOC_ARENA_MAX` (13 Schüsse je Lauf, Daemon je neu, Last ~5 durch
+fremden Build):
+
+| Arenen | RssAnon | PSS | Encode+Schreiben Median |
+| --- | ---: | ---: | ---: |
+| Standard (8 je Kern) | 50,2 MB | 83,9 MB | 25–29 ms |
+| 8 | 52,0 MB | 83,3 MB | 24–27 ms |
+| 2 | 28,5 MB | 62,5 MB | 30 ms |
+| 2 | 14,0 MB | 47,7 MB | 27–29 ms |
+
+`few_heap_arenas()` (`mallopt(M_ARENA_MAX, 2)` am Start von `run_daemon`)
+gebaut und auf ruhiger Kiste (Last 1,6–1,8) A/B gemessen, je 26 Schüsse,
+abwechselnd:
+
+| Arenen | RssAnon | PSS | Encode+Schreiben Median |
+| --- | ---: | ---: | ---: |
+| Standard | 38,0 MB | 71,8 MB | 21,8 ms |
+| 2 | 15,1 MB | 49,1 MB | 29,8 ms |
+| Standard | 46,2 MB | 79,8 MB | 25,0 ms |
+| 2 | 28,0 MB | 62,1 MB | 31,0 ms |
+
+Zwei Arenen bremsen den Encoder um 5–8 ms (zwölf Threads teilen sich die
+Locks): verworfen, nichts committet. Möglicher Weg ohne Verlust, nicht gebaut:
+die Puffer je Band im aufrufenden Thread anlegen, damit die Encoder-Threads
+kaum allokieren (eigene Messung nötig).
+
+## D4: Kacheln direkt aus dem Vulkan-Host-Speicher (01.11.)
+
+libway `5a3f3f7` (libway-58, auf Anfrage aus D3): die Kacheln sind der
+gemappte Host-Puffer selbst (Leihe, höchstens 8, 2 bleiben für den nächsten
+Schuss), keine Heap-Kopie; Host-Speicher hier `HOST_CACHED`, PNG daraus so
+schnell wie vom Heap. Boltsnap unverändert, nur Sync.
+
+A/B live (Daemon je neu, je 26 Schüsse `full -o`, Last 1,6–2,3; „alt“ =
+`3af58db`):
+
+| Build | daemon_capture Median | Encode+Schreiben | RssAnon | PSS |
+| --- | ---: | ---: | ---: | ---: |
+| alt | 22,7 ms | 24,2 ms | 40,5 MB | 74,5 MB |
+| geliehene Kacheln | 13,3 ms | 26,0 ms | 48,7 MB | 90,8 MB |
+| alt | 21,7 ms | 25,4 ms | 40,3 MB | 74,3 MB |
+| geliehene Kacheln | 12,8 ms | 25,8 ms | 46,9 MB | 88,9 MB |
+
+Aufnahme ~9 ms schneller (beide Outputs je eigener Puffer statt nacheinander
+durch einen), Encode gleich; Speicher in Ruhe ~15 MB mehr PSS (zwei gemappte
+Puffer bleiben liegen; libway selbst maß +8 MiB). Mit `MAX_IDLE` 1 in libway
+wären es ~8 MB weniger bei ~1 ms mehr je Schuss: Entscheidung beim Nutzer.

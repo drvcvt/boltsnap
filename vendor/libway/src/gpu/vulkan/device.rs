@@ -1,8 +1,8 @@
 //! Instance, physical device choice and logical device of the Vulkan readback.
-use super::{host::HostBuffer, load, vk_format};
+use super::{lease::HostPool, load, owner::DeviceOwner, vk_format};
 use crate::{PixelFormat, capture::ReadbackFallback, gpu::nodes::drm_nodes};
 use ash::{ext, khr, vk};
-use std::{cell::Cell, ffi::CStr, mem::ManuallyDrop, path::PathBuf};
+use std::{cell::Cell, ffi::CStr, path::PathBuf, sync::Arc};
 
 /// Device extensions the import needs on every API version.
 const REQUIRED: [&CStr; 5] = [
@@ -14,13 +14,14 @@ const REQUIRED: [&CStr; 5] = [
 ];
 
 /// One Vulkan device matched to the compositor's GPU, with one queue, one
-/// reusable command buffer and fence, and a few cached host buffers. `Send`
+/// reusable command buffer and fence, and a pool of host buffers. `Send`
 /// but not `Sync` (through `lost`): queue, command buffer, fence and host
 /// memory need external synchronization, which `read(&mut self)` gives.
 pub(crate) struct VulkanReadback {
-    /// Keeps `libvulkan` mapped until `Drop` destroyed every object below;
-    /// leaked with them when the device cannot be drained.
-    entry: ManuallyDrop<ash::Entry>,
+    /// The loader, instance and device; shared with leased host buffers, so
+    /// the device outlives this readback while tiles still hold its memory.
+    pub(super) owner: Arc<DeviceOwner>,
+    /// Copies of the owner's function tables, for brevity.
     pub(super) instance: ash::Instance,
     pub(super) physical: vk::PhysicalDevice,
     pub(super) device: ash::Device,
@@ -31,8 +32,8 @@ pub(crate) struct VulkanReadback {
     pub(super) fence: vk::Fence,
     pub(super) memory_fd: khr::external_memory_fd::Device,
     pub(super) memory: vk::PhysicalDeviceMemoryProperties,
-    /// Readback targets keyed by byte size; never in use between calls.
-    pub(super) host: Vec<HostBuffer>,
+    /// Readback targets: idle ones between calls, leased ones held by tiles.
+    pub(super) host: HostPool,
     render_minor: u32,
     /// The device was lost, or submitted work could not be drained: nothing
     /// is submitted any more, and the owner drops and rebuilds it.
@@ -110,8 +111,9 @@ impl VulkanReadback {
         let memory_fd = khr::external_memory_fd::Device::new(&instance, &device);
         // SAFETY: `chosen.physical` belongs to `instance`.
         let memory = unsafe { instance.get_physical_device_memory_properties(chosen.physical) };
+        let owner = Arc::new(DeviceOwner::new(entry, instance.clone(), device.clone()));
         let mut this = Self {
-            entry: ManuallyDrop::new(entry),
+            owner,
             instance,
             physical: chosen.physical,
             device,
@@ -122,7 +124,7 @@ impl VulkanReadback {
             fence: vk::Fence::null(),
             memory_fd,
             memory,
-            host: Vec::new(),
+            host: HostPool::default(),
             render_minor: chosen.render_minor,
             lost: Cell::new(false),
         };
@@ -260,23 +262,19 @@ impl VulkanReadback {
 
 impl Drop for VulkanReadback {
     fn drop(&mut self) {
-        // SAFETY: waiting idle first means no command buffer, buffer or fence
-        // is in use. Children go before the device and the device before the
-        // instance, and the loader last; null handles (a half-built value)
-        // are valid no-ops. When the wait fails, work may still run: every
-        // object and the loader are leaked instead (fail closed).
+        // When the wait fails, work may still run: every object of the
+        // device, the device itself and the loader are leaked (fail closed).
+        if self.owner.wait_idle().is_err() {
+            self.owner.leak();
+            return;
+        }
+        self.host.close(&self.device);
+        // SAFETY: the device is idle, so the fence and the pool (with its
+        // command buffer) are unused; null handles (a half-built value) are
+        // valid no-ops. The device itself goes with the last `owner` holder.
         unsafe {
-            if self.device.device_wait_idle().is_err() {
-                return;
-            }
-            for host in self.host.drain(..) {
-                host.destroy(&self.device);
-            }
             self.device.destroy_fence(self.fence, None);
             self.device.destroy_command_pool(self.pool, None);
-            self.device.destroy_device(None);
-            self.instance.destroy_instance(None);
-            ManuallyDrop::drop(&mut self.entry);
         }
     }
 }

@@ -1,18 +1,28 @@
-//! Host-visible readback buffers and their small reuse cache.
+//! Host-visible readback buffers, persistently mapped.
 use crate::capture::ReadbackFallback;
 use ash::vk;
 
-/// Host buffers kept for reuse (one per distinct byte size).
-const MAX_HOST_BUFFERS: usize = 4;
-
-/// A host-visible buffer with its own memory. Not destroyed on drop: the
-/// owner calls `destroy` with the device.
+/// A host-visible buffer with its own memory, mapped for its whole life. Not
+/// destroyed on drop: the owner calls `destroy` with the device.
 pub(crate) struct HostBuffer {
     pub(super) buffer: vk::Buffer,
     memory: vk::DeviceMemory,
-    size: u64,
+    pub(super) size: u64,
     coherent: bool,
+    /// HOST_CACHED memory: CPU reads straight from the mapping are as fast as
+    /// from the heap. Uncached or write-combined memory is only copied out.
+    pub(super) cached: bool,
+    /// The whole memory, mapped once after allocation.
+    mapped: *mut u8,
 }
+
+// SAFETY: the mapping belongs to this buffer alone. The GPU writes it only
+// inside a readback submission, which the readback (holding the buffer by
+// `&mut`) waits for before any CPU access; afterwards it is only read,
+// through `&self`, until `destroy` takes the buffer by value.
+unsafe impl Send for HostBuffer {}
+// SAFETY: as above; shared access is read-only.
+unsafe impl Sync for HostBuffer {}
 
 impl HostBuffer {
     /// Create a buffer of `size` bytes in host-visible memory, preferring
@@ -39,13 +49,16 @@ impl HostBuffer {
             memory: vk::DeviceMemory::null(),
             size,
             coherent: false,
+            cached: false,
+            mapped: std::ptr::null_mut(),
         };
         let result = (|| {
             // SAFETY: `buffer` is a live buffer of this device.
             let requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
-            let (index, coherent) = host_memory_type(memory, requirements.memory_type_bits)
+            let (index, flags) = host_memory_type(memory, requirements.memory_type_bits)
                 .ok_or_else(|| ReadbackFallback::Allocation("no host-visible memory".into()))?;
-            this.coherent = coherent;
+            this.coherent = flags.contains(vk::MemoryPropertyFlags::HOST_COHERENT);
+            this.cached = flags.contains(vk::MemoryPropertyFlags::HOST_CACHED);
             let allocate = vk::MemoryAllocateInfo::default()
                 .allocation_size(requirements.size)
                 .memory_type_index(index);
@@ -54,7 +67,15 @@ impl HostBuffer {
                 .map_err(|e| fail("vkAllocateMemory", e))?;
             // SAFETY: fresh memory of the required size, bound once at 0.
             unsafe { device.bind_buffer_memory(buffer, this.memory, 0) }
-                .map_err(|e| fail("vkBindBufferMemory", e))
+                .map_err(|e| fail("vkBindBufferMemory", e))?;
+            // SAFETY: host-visible memory of this device, mapped once as a
+            // whole; freeing the memory in `destroy` unmaps it.
+            this.mapped = unsafe {
+                device.map_memory(this.memory, 0, vk::WHOLE_SIZE, vk::MemoryMapFlags::empty())
+            }
+            .map_err(|e| fail("vkMapMemory", e))?
+            .cast();
+            Ok(())
         })();
         match result {
             Ok(()) => Ok(this),
@@ -75,89 +96,58 @@ impl HostBuffer {
         }
     }
 
-    /// Copy the first `len` bytes out, after the GPU writes completed.
-    pub(super) fn read(
-        &self,
-        device: &ash::Device,
-        len: usize,
-    ) -> Result<Vec<u8>, ReadbackFallback> {
-        let fail =
-            |what: &str, error: vk::Result| ReadbackFallback::Copy(format!("{what}: {error}"));
-        if len as u64 > self.size {
-            return Err(ReadbackFallback::Copy("read past the buffer".into()));
+    /// Make the GPU's writes visible to the CPU, after the submission that
+    /// wrote them completed.
+    pub(super) fn invalidate(&self, device: &ash::Device) -> Result<(), ReadbackFallback> {
+        if self.coherent {
+            return Ok(());
         }
-        // SAFETY: host-visible memory of this device, not mapped elsewhere.
-        let data = unsafe {
-            device.map_memory(self.memory, 0, vk::WHOLE_SIZE, vk::MemoryMapFlags::empty())
-        }
-        .map_err(|e| fail("vkMapMemory", e))?;
         let range = [vk::MappedMemoryRange::default()
             .memory(self.memory)
             .size(vk::WHOLE_SIZE)];
         // SAFETY: the memory is mapped as a whole, so the range is valid.
-        let fresh =
-            self.coherent || unsafe { device.invalidate_mapped_memory_ranges(&range) }.is_ok();
-        let bytes = fresh.then(|| {
-            // SAFETY: the mapping covers at least `size >= len` bytes and the
-            // device finished writing them (fence waited, host barrier).
-            unsafe { std::slice::from_raw_parts(data.cast::<u8>(), len) }.to_vec()
-        });
-        // SAFETY: mapped above; the slice was copied, nothing points into it.
-        unsafe { device.unmap_memory(self.memory) };
-        bytes.ok_or_else(|| ReadbackFallback::Copy("vkInvalidateMappedMemoryRanges failed".into()))
+        unsafe { device.invalidate_mapped_memory_ranges(&range) }
+            .map_err(|e| ReadbackFallback::Copy(format!("vkInvalidateMappedMemoryRanges: {e}")))
+    }
+
+    /// The first `len` bytes of the mapping. The caller made the GPU's
+    /// writes visible (`invalidate`) and no submission writes it any more.
+    pub(super) fn bytes(&self, len: usize) -> &[u8] {
+        assert!(len as u64 <= self.size, "read past the host buffer");
+        // SAFETY: the mapping covers `size >= len` bytes, lives as long as
+        // `self` (until `destroy` takes it by value) and is not written while
+        // shared (see the `Send` impl).
+        unsafe { std::slice::from_raw_parts(self.mapped, len) }
     }
 
     /// Copy `bytes` in for the GPU to read (test uploads).
     #[cfg(test)]
-    pub(super) fn write(&self, device: &ash::Device, bytes: &[u8]) -> Result<(), ReadbackFallback> {
+    pub(super) fn write(
+        &mut self,
+        device: &ash::Device,
+        bytes: &[u8],
+    ) -> Result<(), ReadbackFallback> {
         assert!(bytes.len() as u64 <= self.size);
-        // SAFETY: host-visible memory of this device, not mapped elsewhere.
-        let data = unsafe {
-            device.map_memory(self.memory, 0, vk::WHOLE_SIZE, vk::MemoryMapFlags::empty())
-        }
-        .map_err(|e| ReadbackFallback::Copy(e.to_string()))?;
-        // SAFETY: the mapping holds at least `bytes.len()` bytes and does not
-        // overlap `bytes`.
-        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), data.cast::<u8>(), bytes.len()) };
-        let range = [vk::MappedMemoryRange::default()
-            .memory(self.memory)
-            .size(vk::WHOLE_SIZE)];
-        // SAFETY: the whole memory is mapped; unmapped right after.
-        unsafe {
-            if !self.coherent {
-                let _ = device.flush_mapped_memory_ranges(&range);
-            }
-            device.unmap_memory(self.memory);
+        // SAFETY: the mapping holds at least `bytes.len()` bytes, `&mut self`
+        // means no slice of it is shared and no submission uses it, and it
+        // does not overlap `bytes`.
+        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), self.mapped, bytes.len()) };
+        if !self.coherent {
+            let range = [vk::MappedMemoryRange::default()
+                .memory(self.memory)
+                .size(vk::WHOLE_SIZE)];
+            // SAFETY: the whole memory is mapped.
+            let _ = unsafe { device.flush_mapped_memory_ranges(&range) };
         }
         Ok(())
     }
 }
 
-/// Index of the cached host buffer of exactly `size` bytes, creating it (and
-/// evicting the oldest) when missing. Cached buffers are never in use between
-/// calls, because every call waits for its submission.
-pub(super) fn host_slot(
-    device: &ash::Device,
-    memory: &vk::PhysicalDeviceMemoryProperties,
-    cache: &mut Vec<HostBuffer>,
-    size: u64,
-) -> Result<usize, ReadbackFallback> {
-    if let Some(slot) = cache.iter().position(|host| host.size == size) {
-        return Ok(slot);
-    }
-    let host = HostBuffer::new(device, memory, size, vk::BufferUsageFlags::TRANSFER_DST)?;
-    if cache.len() >= MAX_HOST_BUFFERS {
-        cache.remove(0).destroy(device);
-    }
-    cache.push(host);
-    Ok(cache.len() - 1)
-}
-
-/// A host-visible memory type in `allowed`, best first, and whether it is coherent.
+/// A host-visible memory type in `allowed`, best first, with its flags.
 fn host_memory_type(
     memory: &vk::PhysicalDeviceMemoryProperties,
     allowed: u32,
-) -> Option<(u32, bool)> {
+) -> Option<(u32, vk::MemoryPropertyFlags)> {
     use vk::MemoryPropertyFlags as F;
     let preferred = [
         F::HOST_VISIBLE | F::HOST_CACHED | F::HOST_COHERENT,
@@ -169,8 +159,7 @@ fn host_memory_type(
         let types = memory.memory_types_as_slice().iter().enumerate();
         types.take(32).find_map(|(i, memory_type)| {
             let flags = memory_type.property_flags;
-            (allowed & (1 << i) != 0 && flags.contains(*wanted))
-                .then_some((i as u32, flags.contains(F::HOST_COHERENT)))
+            (allowed & (1 << i) != 0 && flags.contains(*wanted)).then_some((i as u32, flags))
         })
     })
 }

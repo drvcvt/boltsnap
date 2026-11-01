@@ -1,7 +1,7 @@
 //! One dma-buf read back to the CPU: implicit-fence wait, import, copy, map.
-use super::{device::VulkanReadback, host::host_slot, vk_format};
+use super::{device::VulkanReadback, host::HostBuffer, vk_format};
 use crate::gpu::linear::wait_readable;
-use crate::{capture::ReadbackFallback, gpu::GpuBuffer};
+use crate::{CpuBuffer, capture::ReadbackFallback, gpu::GpuBuffer};
 use ash::vk;
 use std::{
     os::fd::{AsRawFd, IntoRawFd},
@@ -29,14 +29,16 @@ pub(super) const COLOR: vk::ImageSubresourceRange = vk::ImageSubresourceRange {
 
 impl VulkanReadback {
     /// Read one completed dma-buf back as tightly packed `width * height * 4`
-    /// bytes in the buffer's own byte order (B,G,R,A/X; X is kept as is).
+    /// bytes in the buffer's own byte order (B,G,R,A/X; X is kept as is):
+    /// leased host memory when it is cached and a lease is free, else a heap
+    /// copy.
     pub(crate) fn read(
         &mut self,
         buffer: &GpuBuffer,
         width: u32,
         height: u32,
         end: Instant,
-    ) -> Result<Vec<u8>, ReadbackFallback> {
+    ) -> Result<CpuBuffer, ReadbackFallback> {
         if self.lost.get() {
             return Err(ReadbackFallback::Copy("the Vulkan device is lost".into()));
         }
@@ -49,9 +51,14 @@ impl VulkanReadback {
             .ok_or_else(|| ReadbackFallback::Import("no plane".into()))?
             .fd();
         wait_readable(fd, end)?;
-        let slot = host_slot(&self.device, &self.memory, &mut self.host, len as u64)?;
-        let image = self.import(buffer, width, height, vk::ImageUsageFlags::TRANSFER_SRC)?;
-        let host = &self.host[slot];
+        let host = self.host.take(&self.device, &self.memory, len as u64)?;
+        let image = match self.import(buffer, width, height, vk::ImageUsageFlags::TRANSFER_SRC) {
+            Ok(image) => image,
+            Err(error) => {
+                self.host.give(&self.device, host);
+                return Err(error);
+            }
+        };
         let family = self.family;
         let submitted = self.submit(
             |device, command| {
@@ -119,15 +126,40 @@ impl VulkanReadback {
             end,
         );
         if self.lost.get() {
-            // Submitted work may still use the image: leak it (fail closed).
+            // Submitted work may still use the image and the host buffer:
+            // leak both (fail closed).
             std::mem::forget(image);
+            let _leaked = host; // no `Drop`: buffer and memory stay allocated
+            // Fail closed for good: whatever a later wait returns, the device
+            // is never destroyed with these children alive, and leases out
+            // now leak too.
+            self.owner.leak();
             return Err(submitted
                 .err()
                 .unwrap_or_else(|| ReadbackFallback::Copy("the Vulkan device is lost".into())));
         }
-        submitted?;
+        // Not lost: the submission completed or was drained.
         drop(image);
-        host.read(&self.device, len)
+        if let Err(error) = submitted {
+            self.host.give(&self.device, host);
+            return Err(error);
+        }
+        self.finish(host, len)
+    }
+
+    /// Hand the written host buffer out: as a lease when its memory is
+    /// cached and the lease cap allows, else as a heap copy.
+    fn finish(&self, host: HostBuffer, len: usize) -> Result<CpuBuffer, ReadbackFallback> {
+        if let Err(error) = host.invalidate(&self.device) {
+            self.host.give(&self.device, host);
+            return Err(error);
+        }
+        if host.cached && self.host.reserve_lease() {
+            return Ok(CpuBuffer::leased(self.host.lease(host, len, &self.owner)));
+        }
+        let bytes = host.bytes(len).to_vec();
+        self.host.give(&self.device, host);
+        Ok(CpuBuffer::heap(bytes))
     }
 
     /// Check that `buffer` can be imported as a `width` x `height` image

@@ -5,12 +5,17 @@ use ash::vk;
 
 mod device;
 mod host;
+mod lease;
+#[cfg(test)]
+mod lease_tests;
+mod owner;
 mod readback;
 #[cfg(test)]
 mod tests;
 
 #[allow(unused_imports, reason = "used by the Vulkan tier, plan step 4")]
 pub(crate) use device::VulkanReadback;
+pub(crate) use lease::HostLease;
 
 /// Load the Vulkan loader, or say why it is unavailable.
 pub(crate) fn load() -> Result<ash::Entry, ReadbackFallback> {

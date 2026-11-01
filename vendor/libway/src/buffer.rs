@@ -118,8 +118,8 @@ pub enum FrameStorage {
     #[cfg(feature = "gpu")]
     Gpu(crate::gpu::GpuBuffer),
 }
-/// Owned CPU pixels: the shared-memory buffer the compositor filled, or heap
-/// bytes read back from a dma-buf. Dropped with its backing memory.
+/// Owned CPU pixels: the shared-memory buffer the compositor filled, or bytes
+/// read back from a dma-buf. Dropped with its backing memory.
 pub struct CpuBuffer(CpuBytes);
 enum CpuBytes {
     Shm(ShmBuffer),
@@ -127,6 +127,10 @@ enum CpuBytes {
     /// itself (page faults on shmem, about 3 ms per 1920x1080 frame).
     #[cfg(feature = "vulkan")]
     Heap(Vec<u8>),
+    /// Read-back bytes left in the Vulkan readback's cached host memory,
+    /// leased to this buffer until it is dropped.
+    #[cfg(feature = "vulkan")]
+    Leased(crate::gpu::vulkan::HostLease),
 }
 impl CpuBuffer {
     pub(crate) fn shm(shm: ShmBuffer) -> Self {
@@ -136,12 +140,23 @@ impl CpuBuffer {
     pub(crate) fn heap(bytes: Vec<u8>) -> Self {
         Self(CpuBytes::Heap(bytes))
     }
+    #[cfg(feature = "vulkan")]
+    pub(crate) fn leased(lease: crate::gpu::vulkan::HostLease) -> Self {
+        Self(CpuBytes::Leased(lease))
+    }
+    /// Whether the bytes are leased host memory rather than a copy.
+    #[cfg(all(test, feature = "vulkan"))]
+    pub(crate) fn is_leased(&self) -> bool {
+        matches!(self.0, CpuBytes::Leased(_))
+    }
     /// Raw completed pixels, including stride padding, in the frame's pixel format.
     pub fn bytes(&self) -> &[u8] {
         match &self.0 {
             CpuBytes::Shm(shm) => &shm.map,
             #[cfg(feature = "vulkan")]
             CpuBytes::Heap(bytes) => bytes,
+            #[cfg(feature = "vulkan")]
+            CpuBytes::Leased(lease) => lease.bytes(),
         }
     }
 }

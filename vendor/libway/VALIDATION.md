@@ -1,5 +1,98 @@
 # Validation
 
+## Fast tiles without the heap copy (Boltsnap): 2026-11-01
+
+Plan: [mapped tiles](docs/plans/phase-a/2026-11-01-mapped-tiles.md). Status:
+done. On the Vulkan tier with HOST_CACHED host memory, a tile's `CpuBuffer` is
+the mapped host buffer, leased until the tile drops. Commits: `865dd47`
+(shared device owner), `5f3a627` (lease pool and read path).
+
+**Probe first.** The RTX 4060 host memory the readback picks is HOST_CACHED
+(type 3, flags 0xe). Read from the mapping or from the heap, the cost is the
+same:
+
+- one read pass: 1.10 ms against 1.08 ms;
+- a PNG encode: 16.7 ms against 16.3 ms;
+- the copy that is now dropped took 0.49 ms per 1920x1080 output.
+
+**Live** (two 1920x1080 outputs, release). PSS comes from
+`desktop_timing memory` in a fresh process, identical over three runs. Fast
+warm is the median of 20 runs on a loaded machine (load average about 5):
+
+| Build | fast warm | PSS idle | one shot held | two held | after a burst |
+| --- | --- | --- | --- | --- | --- |
+| before (`865dd47`) | 8.28 ms | 38 MiB | 54 MiB | 70 MiB | 38 MiB |
+| after (`5f3a627`) | 6.36 ms | 46 MiB | 46 MiB | 62 MiB | 46 MiB |
+
+Shots stay on the Vulkan tier with no fallback. Holding a shot costs 8 MiB
+less, and the idle state costs 8 MiB more: two host buffers stay mapped for
+the next shot. Keeping only one buffer idle matches the old idle size but
+costs about 1 ms per shot.
+
+**Tests.**
+
+- Hardware (`LIBWAY_TEST_RENDER_NODE=/dev/dri/renderD128`, 19 GPU tests):
+  - leases are distinct memory and survive a third read;
+  - a lease outlives the readback and is read on another thread with no fd
+    leak;
+  - at the cap of 8 leases, reads fall back to heap copies, and the idle list
+    stays bounded;
+  - every earlier Vulkan test still passes.
+- `CpuBuffer` and `DesktopTiles` are `Send + Sync`.
+- `tools/check.sh full` passed, and after the review fixes the vulkan,
+  all-features and default rows ran again.
+- An independent soundness review found nothing serious. Two small fixes
+  went in: a lost device leaks its owner, and the test-only write takes
+  `&mut`.
+
+## Conformance runner (R12): 2026-11-01
+
+Plan: [R12](docs/plans/phase-c/2026-11-01-r12-conformance-runner.md).
+Status: done. `tools/check.sh conformance` runs every scenario in a private
+headless Weston 14.0.2 and in a Hyprland 0.56.2 nested in it, without owner
+input and without touching the running session. Details:
+`integration/conformance/README.md`.
+
+**First full run:** 88 of 88 checks passed in 58 s, with every session cleaned
+up and no process left behind. Per part:
+
+| Part | Hyprland (nested) | Weston |
+| --- | --- | --- |
+| isolation | 7/7: private registry with layer shell, only `WAYLAND-1` 1280x720, no clients, virtual pointer moves the cursor | 2/2 |
+| R7 layer shell | 21/21: HUD 0 pointer events under a sweep, prompt focused on its own, Escape from the virtual keyboard closes it, a click into another window closes it, `openlayer`/`closelayer` on socket2 | 1/1 unsupported |
+| R3 toplevel requests | 16/16: `inhibitingIdle` on then off after 5 s, resizes settle at 320x200 and 640x400, `urgent>>ADDR` after focus loss | 3/3 unsupported |
+| R1 presentation | 7/7: 240 answers, 239 presented, 1 discarded, clock 1 flags 0x1 | 5/5: 240 presented, clock 4 |
+| R2 primary selection | 7/7: set, offer with three text MIME types, 20 bytes pasted | not run |
+| DnD | 9/9: "libway" dropped, sender sees `dropped` | not run |
+| R16 colours | 10/10: capture of the nested output, red, green and blue exact, half white 138 grey | not run |
+
+**What this settles.**
+
+- **R2's open owner check** is covered on a real Hyprland: two `primary`
+  windows, a left click to set, a middle click to paste.
+- **R7's focus loss** was never checked live before; it works when the
+  user clicks another window.
+- **R3's unexplained 320x200** is Hyprland. Dwindle floats a window whose
+  max size is below its tile
+  (`src/layout/algorithm/tiled/dwindle/DwindleAlgorithm.cpp:107-114`). The
+  floating size is the xdg window geometry clamped to the limits
+  (`src/managers/XWaylandManager.cpp:86-97`). libway sets no window geometry,
+  so that comes out as the minimum. Whether libway should set one is a
+  roadmap follow-up.
+
+**Observed, not asserted.** A click without pointer motion on the window
+that had focus before an on-demand prompt does not take the keyboard back.
+Hyprland refocuses on a click only when the clicked window is not already its
+focused window (`src/managers/input/InputManager.cpp:901`).
+
+**Rig facts.**
+
+- Headless Weston creates no `wl_seat`, and aquamarine's Wayland backend
+  refuses to start without one. That is why the rig has a seat module.
+- `weston-keyboard` once raced Hyprland's start, so the rig turns the input
+  method off.
+- The rig takes about 20 MB in `~/.cache/libway-rig`.
+
 ## Desktop tiles over dma-buf (Boltsnap): 2026-11-01
 
 Plan: [dma-buf tiles](docs/plans/phase-a/2026-11-01-dmabuf-tiles.md).
