@@ -5,6 +5,7 @@
 //! from the compositor, without composing or converting the desktop first.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, PoisonError};
 
 use crate::image_model::png::{self, Format, Tile};
@@ -16,6 +17,9 @@ use super::placement::focused_monitor_name;
 
 /// The open connection: made by the first shot, dropped by a failed one.
 static CONNECTION: Mutex<Option<libway::Connection>> = Mutex::new(None);
+/// The compositor offers no screen capture protocol (GNOME, KDE): every
+/// shot is the client's, over the portal, without asking libway again.
+static UNSUPPORTED: AtomicBool = AtomicBool::new(false);
 
 /// What a `capture` request came to.
 pub(super) enum Taken {
@@ -172,6 +176,9 @@ impl super::Daemon {
 /// The desktop over the open connection; a connection gone stale since the
 /// last shot is replaced once.
 fn desktop() -> Result<Desktop, String> {
+    if UNSUPPORTED.load(Ordering::Relaxed) {
+        return Err("the compositor offers no screen capture".into());
+    }
     let mut connection = CONNECTION.lock().unwrap_or_else(PoisonError::into_inner);
     let start = std::time::Instant::now();
     let mut retried = false;
@@ -195,7 +202,11 @@ fn desktop() -> Result<Desktop, String> {
             Ok(desktop) => return Ok(desktop),
             Err(error) => {
                 *connection = None;
-                if retried {
+                // A missing protocol stays missing; a new connection only
+                // helps one that went stale.
+                let unsupported = matches!(error, libway::Error::Unsupported(_));
+                UNSUPPORTED.fetch_or(unsupported, Ordering::Relaxed);
+                if retried || unsupported {
                     return Err(error.to_string());
                 }
                 retried = true;
