@@ -1,5 +1,8 @@
 # Full-screen capture benchmark — 2026-07-21
 
+Superseded by [the 2026-11-01 run](full-capture-2026-11-01.md), which also
+measures Boltsnap 1.0.0 again on the newer system.
+
 This is a local end-to-end timing of full-desktop capture to a PNG file. It is
 not a selector, editor, or feature benchmark.
 

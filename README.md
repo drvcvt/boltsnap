@@ -41,19 +41,24 @@ painted by the shelf overlay's code.
 
 ## Full-screen capture benchmark
 
-One local Wayland run on a 3840 x 1080 dual-monitor desktop, writing PNGs to
-`/tmp` (3 warmups, 20 measured runs; lower is better):
+One local Wayland run on a 3840 x 1080 desktop of two 1080p monitors (200 Hz
+and 240 Hz), with the Boltsnap daemon running (3 warmups, 20 measured runs;
+lower is better):
 
 | Tool | Mean | Median | Range | Time vs. Boltsnap |
 |------|-----:|-------:|------:|------------------:|
-| Boltsnap 1.0.0 | 67.1 ms | 67.4 ms | 57.3–75.0 ms | 1.00x |
-| Wayshot 1.5.0 | 235.8 ms | 235.4 ms | 225.4–248.7 ms | 3.51x |
-| grim 1.5.0 | 274.6 ms | 271.9 ms | 265.0–303.5 ms | 4.09x |
-| Flameshot 14.0.0 | 652.1 ms | 648.4 ms | 637.0–681.1 ms | 9.71x |
+| Boltsnap (main, `b5d989c`) | 28.8 ms | 29.2 ms | 20.5–40.0 ms | 1.00x |
+| Boltsnap 1.0.0 | 66.8 ms | 65.2 ms | 58.9–79.3 ms | 2.32x |
+| Wayshot 1.6.0 | 598.2 ms | 593.6 ms | 575.8–665.1 ms | 20.73x |
+| grim 1.5.0 | 726.4 ms | 720.3 ms | 706.1–761.7 ms | 25.18x |
+| Flameshot 13.3.0 | 828.1 ms | 823.8 ms | 810.1–850.3 ms | 28.70x |
 
 This measures full-desktop capture and PNG output only, not each tool's
-selector or editor. The exact commands, machine details, and all 20 timings are
-in [`benchmarks/full-capture-2026-07-21.md`](benchmarks/full-capture-2026-07-21.md).
+selector or editor. The exact commands, machine details, limits, and all 20
+timings are in
+[`benchmarks/full-capture-2026-11-01.md`](benchmarks/full-capture-2026-11-01.md);
+the July run is in
+[`benchmarks/full-capture-2026-07-21.md`](benchmarks/full-capture-2026-07-21.md).
 
 ## Install
 
