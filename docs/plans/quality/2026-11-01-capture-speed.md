@@ -221,3 +221,27 @@ pixelgleich geprüft.
   gegen nachher: **Median 60,5 → 43,4 ms** (Mittel 61,7 → 46,8), Datei 2,7
   → 2,4 MB. Das Ausgabe-PNG dekodiert mit `image` pixelgleich (Speed-Test
   mit `BOLTSNAP_PNG_SAMPLE` auf die echte Datei). `cargo test` 187 + 428.
+
+## Ziel unter 15 ms (Nutzer, 01.11.: „wir muessen unter 15ms kommen wenn moeglich oder noch lower“)
+
+Stand nach E2: 43,4 ms Median. Untergrenze je Teil (gemessen, wo nicht als
+Schätzung markiert):
+- Prozess und Verbindungen ~17 ms → ~2 ms mit L1 und Aufnahme im Daemon
+  (warme Verbindung, gebundene Outputs, vorab angelegte Puffer; die CLI
+  fragt nur per IPC an). Prozessstart allein 1,5 ms (gemessen).
+- Compositor-Kopie mit shm ~16 ms (beide `ready` nach 9,5/15,6 ms) und
+  **nicht drückbar**: synchrones `glReadPixels` ohne PBO, Monitore
+  nacheinander. Mit dmabuf rendert Hyprland asynchron je Monitor auf dessen
+  Commit (Schätzung 5–8 ms für beide), dazu eigenes Zurücklesen von der GPU
+  (Schätzung 2–3 ms; NVIDIA bietet kein LINEAR).
+- Zusammensetzen und Farbwandlung ~6 ms → 0 mit L2.
+- PNG ~7 ms → Schätzung 4–5 ms mit weiterer Arbeit am Kern.
+
+Folgerung: mit shm bleibt es bei ~22–24 ms. Unter 15 ms nur mit dmabuf und
+eigenem Zurücklesen; für Shelf und Clipboard zusätzlich PNG aus dem
+kritischen Pfad (Karte aus Rohpixeln, PNG direkt danach). P4 wird damit die
+entscheidende Probe und geht vor L2.
+
+Reihenfolge neu: L1 → P4 (Probe dmabuf) → je nach Ergebnis dmabuf-Weg oder
+L2 → D1 Aufnahme im Daemon (eigener Plan, IPC) → PNG aus dem kritischen Pfad
+(eigener Plan) → Feinschliff am PNG-Kern.
