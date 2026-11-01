@@ -120,11 +120,13 @@ later gets a library of saved files
 
 - Raw image IPC is Integrated but opt-in; its full-path performance did not
   justify making it the default. See [measurements](screenshot-performance.md).
-- libway GPU capture is a library capability, not an integrated Boltsnap
-  recording backend. Screenshots use CPU buffers; recording uses external
-  recorders. See [libway integration](libway.md). A tiered dmabuf capture
-  (LINEAR mmap, Vulkan readback, shm fallback) is planned in libway for
-  screenshots, see the [capture speed plan](plans/quality/2026-11-01-capture-speed.md).
+- Daemon screenshots read back from dma-bufs (Integrated, `3af58db`,
+  `c8f6bfb`): libway's `vulkan` feature tries Vulkan, then LINEAR mmap, then
+  shm; tiles are leased Vulkan host buffers. Live on Hyprland/NVIDIA via
+  Vulkan; the LINEAR tier is not checked on real hardware (no driver here
+  allocates LINEAR). The CLI without a daemon stays on shm. Recording still uses
+  external recorders. See the [capture speed plan](plans/quality/2026-11-01-capture-speed.md)
+  (D2 to D4) and [libway integration](libway.md).
 - Replay region export crops in NVDEC with NVENC (Integrated, automated
   green: `probe.py --cuvid`, `live.py --encoder h264_nvenc`; not yet live
   accepted from the selector). The Vulkan crop path stays Unavailable: its

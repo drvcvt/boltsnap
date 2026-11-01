@@ -4,8 +4,9 @@ Boltsnap uses the unpublished `libway` 0.1.0 source snapshot in `libway/`.
 The independent development project is `../libway`. Keeping this snapshot in the
 checkout preserves standalone Cargo, CI, release and Nix builds without a local
 sibling directory or an unpublished remote dependency. No generated build output
-is included. The Linux dependency uses CPU capture and the `image` feature;
-GBM/GPU support is optional for other library consumers.
+is included. The Linux dependency enables the `image` and `vulkan` features:
+the daemon reads screenshots back from dma-bufs (links libgbm; the Vulkan loader
+is opened at runtime and optional).
 
 Edit the standalone project, test it, then synchronize deliberately:
 

@@ -24,8 +24,10 @@ retained. libway adds bounded protocol waits, buffer validation and working-memo
 limits. Black desktop gaps are opaque; output captures remain sequential.
 
 The library's optional GPU feature provides owned GBM DMA-BUF frames and persistent
-capture sessions as a foundation for recording consumers. Boltsnap does not enable
-that feature for screenshots. This change does not replace wf-recorder, the replay
+capture sessions as a foundation for recording consumers. Boltsnap did not enable
+that feature for screenshots at the time of this report; since 2026-11-01 it enables
+`vulkan` (which implies `gpu` and links libgbm) for the daemon's screenshots, see
+the [capture speed plan](plans/quality/2026-11-01-capture-speed.md), D2 to D4. This change does not replace wf-recorder, the replay
 worker, audio capture or any encoder. Synthetic WLR capture measurements show lower latency than libwayshot 0.7.3;
 real-compositor and recording performance remain unverified. X11, selector/shelf implementations and the frozen Windows backend were
 not refactored.
