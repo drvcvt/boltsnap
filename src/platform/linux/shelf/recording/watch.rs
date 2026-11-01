@@ -2,13 +2,18 @@
 //! without exiting, and free space running out before the finished recording
 //! can still be saved.
 
+use super::super::replay::capture_log::follow;
 use crate::record::finalize::{RECORDING_DISK_RESERVE_BYTES, remux_space};
+use crate::record::session::ActiveRecorder;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
-/// gsr writes constant-rate Matroska and flushes a cluster every 100 ms, so a
-/// segment that stops growing for this long has a recorder that stopped encoding.
+/// gsr writes constant-rate Matroska and flushes a cluster every 100 ms, and
+/// reports its frame rate once a second right before encoding, so a segment
+/// whose file or reports stand still this long has a recorder that stopped.
 pub(super) const STALL: Duration = Duration::from_secs(6);
 
 /// Space a check may lose before the next one, at well over any bitrate gsr uses.
@@ -19,6 +24,9 @@ const WARN_AHEAD_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 #[derive(Default)]
 pub(super) struct Watch {
     sizes: HashMap<PathBuf, (u64, Instant)>,
+    /// gsr's fps reports read so far, and when that count last moved.
+    reports: HashMap<PathBuf, Arc<AtomicU32>>,
+    frames: HashMap<PathBuf, (u64, Instant)>,
     warned: bool,
     /// `record_dir` lies on another filesystem than the cache.
     separate_disk: Option<bool>,
@@ -41,26 +49,37 @@ impl Watch {
         *self = Self::default();
     }
 
-    /// Note `size` of an active gsr segment; true once it has not grown for `STALL`.
-    pub fn stalled(&mut self, path: &Path, size: u64, now: Instant) -> bool {
-        match self.sizes.get_mut(path) {
-            Some((last, since)) if size > *last => {
-                *last = size;
-                *since = now;
-                false
-            }
-            Some((_, since)) => now.saturating_duration_since(*since) >= STALL,
-            None => {
-                self.sizes.insert(path.to_owned(), (size, now));
-                false
+    /// Each recorder's stderr goes to the daemon's log with the time; gsr's
+    /// fps reports in it are counted for `stalled`.
+    pub fn listen(&mut self, recorders: &mut [ActiveRecorder], fps: u32) {
+        for recorder in recorders {
+            if let Some(stderr) = recorder.child.stderr.take() {
+                let reports = follow(stderr, std::io::stderr(), Some((fps, "recording")));
+                self.reports.insert(recorder.path.clone(), reports);
             }
         }
     }
 
+    /// Note `size` of an active gsr segment: what it stopped doing once its
+    /// file, or its fps reports after the first, stood still for `STALL`.
+    pub fn stalled(&mut self, path: &Path, size: u64, now: Instant) -> Option<&'static str> {
+        if still(&mut self.sizes, path, size, now) {
+            return Some("writing");
+        }
+        // Before the first report, or from a gsr that prints none, only growth counts.
+        let reports = self
+            .reports
+            .get(path)
+            .map_or(0, |reports| reports.load(Ordering::Relaxed));
+        (reports > 0 && still(&mut self.frames, path, reports.into(), now)).then_some("encoding")
+    }
+
     /// Forget segments that are no longer recording.
     pub fn keep_only(&mut self, active: &[&Path]) {
-        self.sizes
-            .retain(|path, _| active.contains(&path.as_path()));
+        let recording = |path: &PathBuf| active.contains(&path.as_path());
+        self.sizes.retain(|path, _| recording(path));
+        self.reports.retain(|path, _| recording(path));
+        self.frames.retain(|path, _| recording(path));
     }
 
     pub fn separate_disk(&mut self, cache: &Path, record_dir: impl FnOnce() -> PathBuf) -> bool {
@@ -105,11 +124,11 @@ impl super::Daemon {
         for path in &active {
             // wf-recorder only writes when the screen changes.
             let gsr = path.extension().is_some_and(|ext| ext == "mkv");
-            if gsr && self.watch.stalled(path, size(path), now) {
+            if gsr && let Some(what) = self.watch.stalled(path, size(path), now) {
                 return Some((
                     "Recorder stalled",
                     format!(
-                        "the recorder stopped writing video for {} s",
+                        "the recorder stopped {what} video for {} s",
                         STALL.as_secs()
                     ),
                 ));
@@ -160,6 +179,27 @@ impl super::Daemon {
     }
 }
 
+/// Note `value` for `path`; true once it has not grown for `STALL`.
+fn still(
+    seen: &mut HashMap<PathBuf, (u64, Instant)>,
+    path: &Path,
+    value: u64,
+    now: Instant,
+) -> bool {
+    match seen.get_mut(path) {
+        Some((last, since)) if value > *last => {
+            *last = value;
+            *since = now;
+            false
+        }
+        Some((_, since)) => now.saturating_duration_since(*since) >= STALL,
+        None => {
+            seen.insert(path.to_owned(), (value, now));
+            false
+        }
+    }
+}
+
 /// Free space at which a recording pauses: the system reserve, or room to
 /// remux what was recorded so far when that remux shares the cache's disk.
 fn stop_at(recorded: u64, remux_on_cache: bool) -> u64 {
@@ -180,20 +220,51 @@ mod tests {
     use super::*;
 
     const GIB: u64 = 1024 * 1024 * 1024;
+    const MS: Duration = Duration::from_millis(1);
 
     #[test]
     fn a_segment_that_stops_growing_stalls_after_the_window() {
         let mut watch = Watch::default();
         let path = Path::new("/cache/boltsnap-segment-1-1-DP_3.mkv");
         let start = Instant::now();
-        assert!(!watch.stalled(path, 0, start));
-        assert!(!watch.stalled(path, 0, start + STALL - Duration::from_millis(1)));
-        assert!(!watch.stalled(path, 10, start + STALL));
+        assert_eq!(watch.stalled(path, 0, start), None);
+        assert_eq!(watch.stalled(path, 0, start + STALL - MS), None);
+        assert_eq!(watch.stalled(path, 10, start + STALL), None);
         // Growth restarts the window.
-        assert!(!watch.stalled(path, 10, start + STALL * 2 - Duration::from_millis(1)));
-        assert!(watch.stalled(path, 10, start + STALL * 2));
+        assert_eq!(watch.stalled(path, 10, start + STALL * 2 - MS), None);
+        assert_eq!(watch.stalled(path, 10, start + STALL * 2), Some("writing"));
         watch.keep_only(&[]);
-        assert!(!watch.stalled(path, 10, start + STALL * 3));
+        assert_eq!(watch.stalled(path, 10, start + STALL * 3), None);
+    }
+
+    #[test]
+    fn frames_that_stop_while_the_file_grows_stall() {
+        let mut watch = Watch::default();
+        let path = Path::new("/cache/boltsnap-segment-1-1-DP_3.mkv");
+        let reports = Arc::new(AtomicU32::new(0));
+        watch.reports.insert(path.to_owned(), reports.clone());
+        let start = Instant::now();
+        for second in 0..3 {
+            reports.store(second, Ordering::Relaxed);
+            let now = start + Duration::from_secs(second.into());
+            assert_eq!(watch.stalled(path, second.into(), now), None);
+        }
+        // The encoder hangs; audio still reaches the file.
+        let last = start + Duration::from_secs(2);
+        assert_eq!(watch.stalled(path, 10, last + STALL - MS), None);
+        assert_eq!(watch.stalled(path, 11, last + STALL), Some("encoding"));
+    }
+
+    #[test]
+    fn no_reports_falls_back_to_growth() {
+        let mut watch = Watch::default();
+        let path = Path::new("/cache/boltsnap-segment-1-1-DP_3.mkv");
+        watch.reports.insert(path.to_owned(), Arc::default());
+        let start = Instant::now();
+        for size in 0..10 {
+            assert_eq!(watch.stalled(path, size, start + STALL * size as u32), None);
+        }
+        assert_eq!(watch.stalled(path, 9, start + STALL * 10), Some("writing"));
     }
 
     #[test]

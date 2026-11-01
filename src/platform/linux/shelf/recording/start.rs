@@ -172,7 +172,9 @@ impl Daemon {
             .cloned()
             .into_iter()
             .collect();
-        let (active, audio) = spawn_initial_segment(&scope, &codec, profile, &tools, &prefs, None)?;
+        let (mut active, audio) =
+            spawn_initial_segment(&scope, &codec, profile, &tools, &prefs, None)?;
+        self.watch.listen(&mut active, profile.fps());
         self.recording = Some(RecordingSession::new(
             scope,
             monitors,
@@ -254,7 +256,7 @@ impl Daemon {
             .collect::<Vec<_>>();
         let scope = CaptureScope::Outputs(names.clone());
         let profile = config.record_profile()?;
-        let (active, audio) = spawn_initial_segment(
+        let (mut active, audio) = spawn_initial_segment(
             &scope,
             &codec,
             profile,
@@ -262,6 +264,7 @@ impl Daemon {
             &self.recording_prefs,
             (both_mode == crate::config::RecordBothMode::Combined).then_some(monitors.as_slice()),
         )?;
+        self.watch.listen(&mut active, profile.fps());
         self.recording = Some(RecordingSession::new(
             scope,
             monitors,

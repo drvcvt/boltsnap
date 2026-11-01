@@ -339,9 +339,11 @@ pub fn spawn_segment(
         tools,
         |command| {
             let parent = unsafe { libc::getpid() };
-            command.stdin(Stdio::null()).stderr(Stdio::inherit());
+            command.stdin(Stdio::null()).stderr(Stdio::piped());
             unsafe {
                 command.pre_exec(move || {
+                    // A recorder outliving the daemon still writes its trailer.
+                    libc::signal(libc::SIGPIPE, libc::SIG_IGN);
                     if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) != 0 {
                         return Err(io::Error::last_os_error());
                     }

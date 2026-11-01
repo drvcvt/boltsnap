@@ -389,5 +389,7 @@ mod tests {
                 .iter()
                 .any(|a| a == "-write-first-frame-ts" || a == "-p")
         );
+        // `-v no` would silence the fps reports the stall check reads.
+        assert!(!region.iter().chain(&output).any(|a| a == "-v"));
     }
 }

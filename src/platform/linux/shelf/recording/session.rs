@@ -151,7 +151,7 @@ impl Daemon {
                 let had_controls = self.popup.is_some();
                 self.remove_popup();
                 let session = self.recording.as_ref().unwrap();
-                let active = match spawn_segment(
+                let mut active = match spawn_segment(
                     &session.scope,
                     &session.codec,
                     session.profile,
@@ -173,6 +173,7 @@ impl Daemon {
                         return Err(error);
                     }
                 };
+                self.watch.listen(&mut active, session.profile.fps());
                 self.recording
                     .as_mut()
                     .unwrap()

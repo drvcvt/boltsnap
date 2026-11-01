@@ -177,11 +177,11 @@ fn start_capture(settings: Settings, cancel: &AtomicBool) -> Result<Session, Str
     // One session's log in `replay-capture.log`, the one before in `.old`,
     // each line with its time.
     if let Some(stderr) = capture.stderr.take() {
-        let fps = Some(settings.fps);
+        let fps = Some((settings.fps, "replay capture"));
         match capture_log::open(&crate::paths::cache_dir()) {
             Some(log) => capture_log::follow(stderr, log, fps),
             None => capture_log::follow(stderr, std::io::sink(), fps),
-        }
+        };
     }
     let input = capture.stdout.take().ok_or("capture pipe missing")?;
     // 64 KiB holds a few ms of video; a keyframe alone is larger. Room for

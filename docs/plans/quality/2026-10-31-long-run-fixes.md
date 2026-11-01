@@ -1,6 +1,6 @@
 # Langlauf-Fixes: Plan (2026-10-31)
 
-Status: **Wellen 0 und 1 umgesetzt (01.11.), Rest geplant.** Gebaut wird
+Status: **Wellen 0 und 1 und L2 umgesetzt (01.11.), Rest geplant.** Gebaut wird
 Welle für Welle nach dem Go des Nutzers, ein Commit je ID mit seinem Test.
 
 Herkunft: alle Befunde aus
@@ -698,7 +698,7 @@ Review vom 12.10. und in `docs/replay.md`.
 | 1 | LR7 | Socket-Fehler beenden den Worker nicht | `efce9e9` |
 | 1 | LR6 | geerbte fds CLOEXEC | `8f0feb3` |
 | 1 | L5 | Popup-Zeit `H:MM:SS` | `704dce0` |
-| 2 | L2 | Stall über fps-Zeile, mit A10 | |
+| 2 | L2 | Stall über fps-Zeile, mit A10 | siehe Log |
 | 2 | LR3 | Capture-Log filtert, rotiert erst bei Bereitschaft | |
 | 3 | L3 | Kontingent ohne lange Session und Waisen (R3) | |
 | 3 | R9 | Platz von `record_dir` prüfen | |
@@ -738,3 +738,24 @@ nichts live geprüft.
 - Windows: `fmt_elapsed` ist geteilt und gilt dort mit; kein
   `cargo check --target x86_64-pc-windows-msvc` gelaufen (Backend
   eingefroren).
+- **Live, 01.11. nach Install (Stand `3ea608f`) und Daemon-Neustart:**
+  Replay kam von allein hoch. LR6: `/proc/<gsr>/fd` ohne `sync_file`,
+  `daemon.log` und Lock; die zwei `sync_file` hält nur der Daemon. LR2:
+  frisch gestartet `SwapPss` 0, gsr 146 MB, Worker 16 MB; der Unterschied
+  zur alten Zahl zeigt sich erst, wenn gsr in den Swap rutscht.
+
+## Umsetzung Welle 2 (01.11.)
+
+- **L2 mit A10:** wie geplant, zwei Abweichungen im Kleinen: `capture_log`
+  ist `pub(crate)`, `follow` `pub` darin (wie `process`); der Name in `fps`
+  ist `&'static str` statt `String`. `listen` sitzt nicht in
+  `spawn_initial_segment` (hat kein `Watch`), sondern direkt nach den drei
+  Spawns: `start.rs` Bereich und Ausgaben, Resume in
+  `shelf/recording/session.rs`. `Pace::note` nimmt jetzt die Zahl, `follow`
+  parst einmal und zählt. `record/session.rs` 1909 Zeilen (Planstand).
+  Tests: `frames_that_stop_while_the_file_grows_stall`,
+  `no_reports_falls_back_to_growth`, Zähler in
+  `every_line_gets_the_time_and_the_old_log_stays`, `-v` in
+  `args_cover_codec_audio_and_region`; `cargo test` 174 + 421 grün. README
+  nennt den neuen Grund. Live offen (Aufnahme, Pause/Resume, `kill -STOP`,
+  DPMS), braucht Install und Okay.

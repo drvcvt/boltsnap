@@ -1,5 +1,5 @@
 use std::io::Write;
-mod capture_log;
+pub(crate) mod capture_log;
 mod card;
 mod cursor;
 mod encode;

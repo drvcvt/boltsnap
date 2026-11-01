@@ -607,7 +607,8 @@ Abweichungen vom Plan, je in einer Zeile:
 | A1 | umgesetzt (`record/recover.rs`, `paths::clean_orphan_rec_files(keep)`); Tests für Namen, Gruppierung, Fallback ohne Join; live offen |
 | A2 | umgesetzt; live offen (Monitor des Shelf abziehen) |
 | A3 | umgesetzt (Remux ins Ziel, `watch::Space`); Tests für Schwelle und Warnung; live offen |
-| A4 | umgesetzt (`watch::Watch::stalled`); Test der Zustandsmaschine; live offen (gsr per SIGSTOP) |
+| A4 | umgesetzt (`watch::Watch::stalled`); Test der Zustandsmaschine; live offen (gsr per SIGSTOP); seit L2 (01.11.) zählen auch gsrs fps-Berichte |
+| A10 | Aufnahme-Teil umgesetzt am 01.11. mit L2 (gsr-stderr mit Zeit, 4 MiB je Segment); Replay-Teil folgt mit LR3, siehe [Langlauf-Plan](2026-10-31-long-run-fixes.md) |
 | A9 | umgesetzt (`setsid` im CLI-Fallback); live offen |
 | D1 | umgesetzt mit obiger Abweichung; live offen |
 | D6 | umgesetzt in der K5-Änderung (`main.rs`); live offen |

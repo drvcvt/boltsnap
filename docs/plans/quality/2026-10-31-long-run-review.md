@@ -1,7 +1,7 @@
 # Recording und Replay im Langlauf (Review 2026-10-31)
 
 Status: **Befund; Plan in [2026-10-31-long-run-fixes.md](2026-10-31-long-run-fixes.md),
-dort umgesetzt: A8, LR2, LR6, LR7, L5 (01.11.).** Frage des Nutzers: bleiben lange
+dort umgesetzt: A8, LR2, LR6, LR7, L5, L2 mit A10 (01.11.).** Frage des Nutzers: bleiben lange
 Aufnahmen (1 bis 4+ h, 120 fps, NVENC) und ein tagelang laufender
 Replay-Puffer sparsam, und klappen sie bis zur gespeicherten Datei?
 

@@ -5,6 +5,8 @@
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 /// Reports below this share of the target frame rate count as slow.
 const SLOW: f32 = 0.9;
@@ -22,16 +24,19 @@ pub(super) fn open(dir: &Path) -> Option<File> {
 }
 
 /// Empty `from` until it closes, each line with the local time into `to`.
-/// `fps` set: gsr's "update fps" reports are watched, and a slowdown and the
-/// recovery go to the daemon's log. Reading never stops early, so the
-/// writer never blocks on a full pipe or dies of a closed one.
-pub(super) fn follow(
+/// `fps` set (target and what records): gsr's "update fps" reports are
+/// watched, and a slowdown and the recovery go to the daemon's log. Reading
+/// never stops early, so the writer never blocks on a full pipe or dies of a
+/// closed one. Counts the reports read so far.
+pub fn follow(
     from: impl Read + Send + 'static,
     mut to: impl Write + Send + 'static,
-    fps: Option<u32>,
-) {
+    fps: Option<(u32, &'static str)>,
+) -> Arc<AtomicU32> {
+    let reports = Arc::new(AtomicU32::new(0));
+    let counted = reports.clone();
     std::thread::spawn(move || {
-        let mut pace = fps.map(Pace::new);
+        let mut pace = fps.map(|(fps, what)| Pace::new(fps, what));
         let mut lines = BufReader::new(from);
         let mut line = Vec::new();
         let mut written = 0;
@@ -46,7 +51,15 @@ pub(super) fn follow(
                 written += now.len() + text.len() + 2;
                 let _ = writeln!(to, "{now} {text}");
             }
-            if let Some(note) = pace.as_mut().and_then(|pace| pace.note(text)) {
+            let got = reported_fps(text);
+            if got.is_some() {
+                counted.fetch_add(1, Ordering::Relaxed);
+            }
+            if let Some(note) = pace
+                .as_mut()
+                .zip(got)
+                .and_then(|(pace, got)| pace.note(got))
+            {
                 // Never `eprintln!`: it panics on a full disk, the thread
                 // would end, and gsr die of the closed pipe.
                 let _ = writeln!(std::io::stderr(), "boltsnap daemon: {now} {note}");
@@ -54,28 +67,30 @@ pub(super) fn follow(
             line.clear();
         }
     });
+    reports
 }
 
 /// Whether the capture keeps its frame rate.
 struct Pace {
     fps: u32,
+    what: &'static str,
     slow: bool,
     run: u32,
 }
 
 impl Pace {
-    fn new(fps: u32) -> Self {
+    fn new(fps: u32, what: &'static str) -> Self {
         Self {
             fps,
+            what,
             slow: false,
             run: 0,
         }
     }
 
-    /// A line from gsr: a message when the capture just slowed down or
+    /// A report of `got` fps: a message when the capture just slowed down or
     /// recovered.
-    fn note(&mut self, line: &str) -> Option<String> {
-        let got = reported_fps(line)?;
+    fn note(&mut self, got: u32) -> Option<String> {
         let slow = (got as f32) < self.fps as f32 * SLOW;
         if slow == self.slow {
             self.run = 0;
@@ -88,9 +103,9 @@ impl Pace {
         self.slow = slow;
         self.run = 0;
         Some(if slow {
-            format!("replay capture slowed to {got} of {} fps", self.fps)
+            format!("{} slowed to {got} of {} fps", self.what, self.fps)
         } else {
-            format!("replay capture back at {got} fps")
+            format!("{} back at {got} fps", self.what)
         })
     }
 }
@@ -107,11 +122,10 @@ mod tests {
 
     #[test]
     fn a_slowdown_and_the_recovery_are_told_once_and_a_single_dip_is_not() {
-        let mut pace = Pace::new(60);
-        let report = |n: u32| format!("gsr info: update fps: {n}, damage fps: {n}");
+        let mut pace = Pace::new(60, "replay capture");
         let mut notes = Vec::new();
         for n in [61, 60, 40, 61, 60, 30, 31, 29, 28, 30, 59, 60, 61, 60] {
-            notes.extend(pace.note(&report(n)));
+            notes.extend(pace.note(n));
         }
         assert_eq!(
             notes,
@@ -120,7 +134,11 @@ mod tests {
                 "replay capture back at 61 fps"
             ]
         );
-        assert_eq!(pace.note("gsr info: something else"), None);
+        assert_eq!(
+            reported_fps("gsr info: update fps: 59, damage fps: 12"),
+            Some(59)
+        );
+        assert_eq!(reported_fps("gsr info: something else"), None);
     }
 
     #[test]
@@ -134,22 +152,26 @@ mod tests {
             "last session\n"
         );
         let (read, write) = std::io::pipe().unwrap();
-        follow(read, log, Some(60));
+        let reports = follow(read, log, Some((60, "replay capture")));
         let mut write = write;
         writeln!(write, "gsr info: update fps: 60, damage fps: 60").unwrap();
+        writeln!(write, "gsr warning: something else").unwrap();
+        writeln!(write, "gsr info: update fps: 59, damage fps: 59").unwrap();
         drop(write);
         let path = dir.join("replay-capture.log");
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         let text = loop {
             let text = std::fs::read_to_string(&path).unwrap();
-            if !text.is_empty() || std::time::Instant::now() > deadline {
+            if text.lines().count() == 3 || std::time::Instant::now() > deadline {
                 break text;
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         };
         // `YYYY-MM-DD_HH-MM-SS ` before the line.
         assert_eq!(text.find(' '), Some(19), "{text}");
-        assert!(text.ends_with("gsr info: update fps: 60, damage fps: 60\n"));
+        assert!(text.ends_with("gsr info: update fps: 59, damage fps: 59\n"));
+        // Every report counts, whatever else gsr says in between.
+        assert_eq!(reports.load(Ordering::Relaxed), 2);
         for file in ["replay-capture.log", "replay-capture.log.old"] {
             std::fs::remove_file(dir.join(file)).unwrap();
         }

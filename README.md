@@ -482,7 +482,8 @@ shelf, D saves to disk, Delete discards (twice).
 
 While recording, the daemon pauses the recording (segments kept, a
 notification and the controls' title say why) when the recorder exits, when a
-GPU Screen Recorder segment stops growing for 6 seconds, or when free space in
+GPU Screen Recorder segment stops growing or stops reporting encoded frames
+for 6 seconds, or when free space in
 the recording cache falls to what saving still needs: at least 2 GiB, and
 room to remux everything recorded so far when that remux happens on the cache's
 disk. It warns once 2 GiB before that point. A disk save remuxes straight into
