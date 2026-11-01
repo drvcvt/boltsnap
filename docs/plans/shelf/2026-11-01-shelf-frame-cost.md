@@ -26,33 +26,39 @@ auch die ruhenden:
 
 ## Ziel
 
-Jeder Shelf-Frame unter 1 ms bei 6 Karten, also Animationen in voller
-Bildrate auf 200/240 Hz; Pixel unverändert (Schatten, Dither, Ecken, Hover,
-Deckkraft), geprüft gegen die heutigen Bilder.
+Jeder Shelf-Frame mit 6 Karten deutlich unter 4,2 ms (240 Hz), angestrebt
+1–2 ms, also Animationen in voller Bildrate; **Pixel identisch** zu heute.
 
-## Plan
+## Plan (Bau-Stand nach dem Lesen von `shelf_card/paint.rs`)
 
-1. **Karten-Sprite je Karte**: Schatten und abgerundete Karte einmal in
-   ein vormultipliziertes Sprite rechnen (Schlüssel: Karte, Größe,
-   Deckkraft-Stufe, Hover-Stand), danach je Frame nur zusammensetzen.
-   Der Schatten hängt nur von der Kartengröße ab, er wird je Größe einmal
-   gerechnet und geteilt.
-2. **Zusammensetzen mit Ganzzahlen**: vormultipliziertes Source-over als
-   `u16`-Mathe je Zeile statt `f32` je Pixel; deckendes Inneres als
-   Zeilenkopie.
-3. **Animierte Karte** (Appear/Dismiss skaliert 0,88 → 1): das Sprite der
-   Karte in der Zielgröße skalieren statt Schatten und Ecken neu zu rechnen.
-4. **Test**: Pixelvergleich alter gegen neuer Weg für Ruhe, Hover-Mitte,
-   Appear-Mitte, Dismiss-Mitte, Deckkraft < 1 (Toleranz 0 außer beim
-   Skalieren, dort ±1); Kosten-Test (ignoriert, lokal) mit dem Ziel < 1 ms.
-   Screenshot der echten Darstellung im Dark Theme (UI-Gate 7).
+Ganze Sprites je Karte verworfen: auf die Karte kommen danach Hover-
+Buttons, Video-Badge und Spinner, und bei einer Appear-Animation rutschen
+alle Karten, ein Sprite müsste ständig neu. Stattdessen nur das Teure und
+Unveränderliche cachen, die Mal-Logik bleibt:
 
-Was brechen kann: Speicher (6 Sprites à ~37 000 Pixel ≈ 1 MB), Cache-
-Invalidierung bei Look-Änderung aus den Settings (`[shelf]` opacity,
-shadow, solid_on_hover, Kartengröße), die Settings-Vorschau teilt die
-Malroutinen (`app/preview/shelf.rs`) und muss gleich bleiben.
+1. **Schattenmaske je Kartengröße** (Schlüssel: Breite, Höhe, `scale`,
+   Nachkommaanteil der Schattenposition): je Pixel der Umgebung der
+   Schattenwert `ALPHA · smoothstep(ramp)` und ob er gedithert wird; beim
+   Malen nur noch `dithered` an der Bildschirmposition und `blend_px` wie
+   heute. Pixel, die die Karte selbst danach überschreibt (`cov > 0` im
+   eigenen Rechteck, Schatten gibt es nur für ruhende Karten), fehlen in
+   der Maske: dort ist heute schon nichts vom Schatten zu sehen.
+2. **Eckenmaske je Kartengröße** (Breite, Höhe, Radius): `rr_coverage` je
+   Pixel einmal; beim Malen für `cov == 1` eine 256er-Tabelle
+   `round(v · a)` je Deckkraft `a` (dieselbe Rechnung, vorher erledigt),
+   für den Rand die heutige Formel mit dem Maskenwert.
+3. Caches thread-lokal (Overlay-Thread und Settings-Vorschau malen
+   getrennt), höchstens 32 Einträge, dann geleert.
+4. **Tests**: die heutigen Funktionen als Referenz im Test-Modul;
+   Pixelgleichheit (Toleranz 0) für Ruhe, Hover-Mitte, Appear-Mitte,
+   Dismiss-Mitte, Deckkraft 0,8 und 1, Vorschau-`scale` 1,25; Kosten-Test
+   (ignoriert, lokal) mit Median und p95; Screenshot der echten Darstellung
+   (UI-Gate 7, `shadow_shot`).
 
-Nicht: kein GPU-Zeichnen, keine Änderung an Timing oder Kurven.
+Was brechen kann: die Settings-Vorschau teilt `draw_shelf` (der Test mit
+`scale` 1,25 deckt sie), Speicher je Maske ~150 KB.
+
+Nicht: kein GPU-Zeichnen, keine Änderung an Timing, Kurven oder Aussehen.
 
 ## Daneben: Selector erscheint nach ~51 ms
 
