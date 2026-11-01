@@ -350,7 +350,6 @@ pub(super) fn prepare_pixels_with(
     publish: impl FnOnce(&[u8]) -> Result<(), String>,
     copy: impl FnOnce(&std::path::Path) -> Result<(), String>,
 ) -> Result<PreparedAdd, String> {
-    use image::ImageEncoder;
     let _timing = super::super::timing::Span::for_request("shelf_pixels_prepare", metadata.trace);
     let image = image::ImageBuffer::<image::Rgb<u8>, _>::from_raw(
         metadata.width,
@@ -360,14 +359,7 @@ pub(super) fn prepare_pixels_with(
     .ok_or("invalid RGB image")?;
     let thumb = crate::shelf::thumbnail::make_rgb_card_thumbnail(&image, size.w, size.h);
     super::super::timing::mark_request("thumbnail_ready", metadata.trace);
-    let mut png = Vec::new();
-    image::codecs::png::PngEncoder::new(&mut png)
-        .write_image(
-            pixels.bytes(),
-            metadata.width,
-            metadata.height,
-            image::ExtendedColorType::Rgb8,
-        )
+    let png = crate::image_model::png::encode_rgb(pixels.bytes(), metadata.width, metadata.height)
         .map_err(|e| format!("encode shelf PNG: {e}"))?;
     let add = PreparedAdd {
         path: write_temp_png("shelf", &png)?,

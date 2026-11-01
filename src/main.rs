@@ -619,9 +619,7 @@ fn capture_flow(args: &Args) -> DynResult<()> {
         );
         drop(thumbnail);
         let encoding = crate::platform::timing::Span::new("png_encode");
-        let mut png = Vec::new();
-        image::DynamicImage::ImageRgb8(image)
-            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)?;
+        let png = crate::capture::encode_png(&image)?;
         drop(encoding);
         if copy {
             // The clipboard helper outlives this CLI. Keep its uniquely-owned

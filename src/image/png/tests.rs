@@ -1,5 +1,9 @@
 use super::*;
 
+fn to_png(width: u32, height: u32, tiles: &[Tile]) -> Vec<u8> {
+    encode(width, height, tiles).expect("encodes")
+}
+
 /// RGB of every pixel, decoded by the `image` crate.
 fn decoded(png: &[u8]) -> (u32, u32, Vec<u8>) {
     let image = image::load_from_memory_with_format(png, image::ImageFormat::Png)
@@ -50,7 +54,7 @@ fn sample(width: u32, height: u32, bytes: usize) -> Vec<u8> {
 
 fn round_trip(width: u32, height: u32) {
     let rgb = sample(width, height, 3);
-    let png = encode(
+    let png = to_png(
         width,
         height,
         &[Tile::whole(&rgb, Format::Rgb, width, height)],
@@ -82,7 +86,7 @@ fn every_shape_comes_back_pixel_for_pixel() {
 #[test]
 fn flat_and_noisy_pictures_come_back() {
     let flat = vec![200; 512 * 400 * 3];
-    let png = encode(512, 400, &[Tile::whole(&flat, Format::Rgb, 512, 400)]);
+    let png = to_png(512, 400, &[Tile::whole(&flat, Format::Rgb, 512, 400)]);
     assert_eq!(decoded(&png).2, flat);
     // A flat picture is almost all runs.
     assert!(png.len() < 4096, "{} bytes", png.len());
@@ -93,7 +97,7 @@ fn flat_and_noisy_pictures_come_back() {
             (state >> 24) as u8
         })
         .collect();
-    let png = encode(300, 200, &[Tile::whole(&noise, Format::Rgb, 300, 200)]);
+    let png = to_png(300, 200, &[Tile::whole(&noise, Format::Rgb, 300, 200)]);
     assert_eq!(decoded(&png).2, noise);
     inflated(&png);
 }
@@ -106,7 +110,7 @@ fn rgba_and_bgrx_lose_only_their_fourth_byte() {
         .chunks_exact(4)
         .flat_map(|p| [p[0], p[1], p[2]])
         .collect();
-    let png = encode(
+    let png = to_png(
         width,
         height,
         &[Tile::whole(&rgba, Format::Rgba, width, height)],
@@ -116,7 +120,7 @@ fn rgba_and_bgrx_lose_only_their_fourth_byte() {
         .chunks_exact(4)
         .flat_map(|p| [p[2], p[1], p[0], 9])
         .collect();
-    let png = encode(
+    let png = to_png(
         width,
         height,
         &[Tile::whole(&bgrx, Format::Bgrx, width, height)],
@@ -146,13 +150,25 @@ fn tiles_land_in_place_with_padded_rows_and_black_gaps() {
             stride: 32 * 4,
         },
     ];
-    let (_, _, rgb) = decoded(&encode(70, 50, &tiles));
+    let (_, _, rgb) = decoded(&to_png(70, 50, &tiles));
     let pixel = |x: usize, y: usize| &rgb[(y * 70 + x) * 3..][..3];
     let bgrx = |p: &[u8]| [p[2], p[1], p[0]];
     assert_eq!(pixel(39, 49), bgrx(&left[(49 * 40 + 39) * 4..]));
     assert_eq!(pixel(40, 0), bgrx(&right[..4]));
     assert_eq!(pixel(69, 19), bgrx(&right[19 * 128 + 29 * 4..]));
     assert_eq!(pixel(55, 30), [0, 0, 0]);
+}
+
+#[test]
+fn sizes_and_tiles_that_do_not_fit_are_errors_not_panics() {
+    let pixels = [0; 12];
+    assert!(encode(0, 1, &[]).is_err());
+    assert!(encode(2, 2, &[Tile::whole(&pixels, Format::Rgb, 2, 3)]).is_err());
+    assert!(encode(4, 4, &[Tile::whole(&pixels, Format::Rgb, 4, 4)]).is_err());
+    let mut outside = Tile::whole(&pixels, Format::Rgb, 2, 2);
+    outside.x = u32::MAX;
+    assert!(encode(4, 4, &[outside]).is_err());
+    assert!(encode_rgb(&pixels, 2, 2).is_ok());
 }
 
 #[test]
@@ -178,7 +194,7 @@ fn speed() {
     let ms = |start: std::time::Instant| start.elapsed().as_secs_f64() * 1000.0;
     for _ in 0..5 {
         let start = std::time::Instant::now();
-        let ours = encode(
+        let ours = to_png(
             width,
             height,
             &[Tile::whole(image.as_raw(), Format::Rgb, width, height)],

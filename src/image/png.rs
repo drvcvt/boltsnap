@@ -65,21 +65,19 @@ impl<'a> Tile<'a> {
     }
 }
 
+/// An RGB image of tightly packed rows as an 8-bit RGB PNG.
+pub fn encode_rgb(pixels: &[u8], width: u32, height: u32) -> Result<Vec<u8>, String> {
+    encode(
+        width,
+        height,
+        &[Tile::whole(pixels, Format::Rgb, width, height)],
+    )
+}
+
 /// An 8-bit RGB PNG of the `width` × `height` picture made of `tiles`, which
 /// must lie inside it and not overlap.
-pub fn encode(width: u32, height: u32, tiles: &[Tile]) -> Vec<u8> {
-    assert!(width > 0 && height > 0, "PNG needs at least one pixel");
-    for tile in tiles {
-        assert!(tile.x + tile.width <= width && tile.y + tile.height <= height);
-        assert!(tile.stride >= tile.width as usize * tile.format.bytes());
-        let rows = tile.height as usize;
-        let needed =
-            rows.saturating_sub(1) * tile.stride + tile.width as usize * tile.format.bytes();
-        assert!(
-            rows == 0 || tile.pixels.len() >= needed,
-            "tile pixels match its size"
-        );
-    }
+pub fn encode(width: u32, height: u32, tiles: &[Tile]) -> Result<Vec<u8>, String> {
+    check(width, height, tiles)?;
     let area: u64 = tiles
         .iter()
         .map(|t| u64::from(t.width) * u64::from(t.height))
@@ -125,7 +123,29 @@ pub fn encode(width: u32, height: u32, tiles: &[Tile]) -> Vec<u8> {
     }
     chunk(&mut png, b"IDAT", &adler.to_be_bytes());
     chunk(&mut png, b"IEND", &[]);
-    png
+    Ok(png)
+}
+
+/// PNG sizes are 1 to 2^31 - 1 a side; every tile inside, with its pixels.
+fn check(width: u32, height: u32, tiles: &[Tile]) -> Result<(), String> {
+    let side = 1..=i32::MAX as u32;
+    if !side.contains(&width) || !side.contains(&height) {
+        return Err(format!("cannot encode a {width} × {height} PNG"));
+    }
+    for tile in tiles {
+        let row = tile.width as usize * tile.format.bytes();
+        let inside = u64::from(tile.x) + u64::from(tile.width) <= u64::from(width)
+            && u64::from(tile.y) + u64::from(tile.height) <= u64::from(height);
+        let rows = tile.height as usize;
+        let needed = rows.checked_sub(1).map_or(0, |r| r * tile.stride + row);
+        if !inside || tile.stride < row || tile.pixels.len() < needed {
+            return Err(format!(
+                "PNG tile {} × {} at {},{} does not fit its pixels or the picture",
+                tile.width, tile.height, tile.x, tile.y
+            ));
+        }
+    }
+    Ok(())
 }
 
 struct Picture<'a> {

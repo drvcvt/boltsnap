@@ -19,8 +19,23 @@ pub fn capture(
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent)?;
     }
-    image.save(output)?;
+    // Another extension asks `image` for that format.
+    match image {
+        DynamicImage::ImageRgb8(rgb)
+            if output
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("png")) =>
+        {
+            fs::write(output, encode_png(&rgb)?)?;
+        }
+        image => image.save(output)?,
+    }
     Ok((backend, capture_output))
+}
+
+/// The capture as PNG, on every core.
+pub(crate) fn encode_png(image: &image::RgbImage) -> Result<Vec<u8>, String> {
+    crate::image_model::png::encode_rgb(image.as_raw(), image.width(), image.height())
 }
 
 pub fn capture_png(
@@ -30,12 +45,7 @@ pub fn capture_png(
     trim: bool,
 ) -> DynResult<(Backend, Option<String>, Vec<u8>)> {
     let (backend, output, image) = capture_image(mode, backend, instant, trim)?;
-    let mut bytes = Vec::new();
-    image.write_to(
-        &mut std::io::Cursor::new(&mut bytes),
-        image::ImageFormat::Png,
-    )?;
-    Ok((backend, output, bytes))
+    Ok((backend, output, encode_png(&image.into_rgb8())?))
 }
 
 pub(crate) fn capture_image(

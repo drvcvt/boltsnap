@@ -207,3 +207,17 @@ pixelgleich geprüft.
   CRC je Chunk) für 1 × 1 bis 1920 × 33, Flächen, Rauschen, RGB/RGBA/BGRX,
   Kacheln mit Stride und Lücke; Paeth gegen die Spec; Spannen und
   Lauf-Zerlegung. `cargo test` 186 + 428 grün.
+
+## Umsetzung E2 (01.11.)
+
+- Wie geplant, vier Stellen: `capture` (nur bei Endung `.png`, sonst
+  `image` wie bisher, damit `-o x.jpg` JPEG bleibt), `capture_png`,
+  `main.rs` Standardweg zum Shelf, `cards.rs` (Daemon, Raw-Weg).
+- Abweichung: `encode` gibt `Result` statt `assert!`, weil der Daemon
+  Breite und Höhe vom Client bekommt und eine Panik ihn beenden würde (der
+  alte `PngEncoder` lieferte dort einen Fehler). Test
+  `sizes_and_tiles_that_do_not_fit_are_errors_not_panics`.
+- hyperfine `full --no-copy -o`, 3 Warmups, 20 Läufe, vorher (`fbc5ea4`)
+  gegen nachher: **Median 60,5 → 43,4 ms** (Mittel 61,7 → 46,8), Datei 2,7
+  → 2,4 MB. Das Ausgabe-PNG dekodiert mit `image` pixelgleich (Speed-Test
+  mit `BOLTSNAP_PNG_SAMPLE` auf die echte Datei). `cargo test` 187 + 428.
