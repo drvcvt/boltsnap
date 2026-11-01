@@ -328,21 +328,28 @@ pub(super) fn prepare_pixels(
     metadata: super::super::image_transfer::Metadata,
     pixels: &[u8],
 ) -> Result<PreparedAdd, String> {
-    prepare_pixels_with(
-        metadata,
-        pixels,
-        card_size(),
-        |png| {
-            crate::paths::publish_last_png(png)
-                .map(|_| ())
-                .map_err(|e| format!("publish last PNG: {e}"))
-        },
-        |path| {
-            super::super::clipboard::copy_temporary_to_clipboard(path, crate::Backend::Wayland)
-                .map(|_| ())
-                .map_err(|e| e.to_string())
-        },
-    )
+    prepare_pixels_with(metadata, pixels, card_size(), publish_last, copy_file)
+}
+
+/// A shelf card for an already encoded `png` and its `thumb`.
+pub(super) fn prepare_png(
+    metadata: super::super::image_transfer::Metadata,
+    png: Vec<u8>,
+    thumb: image::RgbaImage,
+) -> Result<PreparedAdd, String> {
+    finish_add(metadata, png, thumb, publish_last, copy_file)
+}
+
+fn publish_last(png: &[u8]) -> Result<(), String> {
+    crate::paths::publish_last_png(png)
+        .map(|_| ())
+        .map_err(|e| format!("publish last PNG: {e}"))
+}
+
+fn copy_file(path: &std::path::Path) -> Result<(), String> {
+    super::super::clipboard::copy_temporary_to_clipboard(path, crate::Backend::Wayland)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 pub(super) fn prepare_pixels_with(
@@ -360,6 +367,18 @@ pub(super) fn prepare_pixels_with(
     super::super::timing::mark_request("thumbnail_ready", metadata.trace);
     let png = crate::image_model::png::encode_rgb(pixels, metadata.width, metadata.height)
         .map_err(|e| format!("encode shelf PNG: {e}"))?;
+    finish_add(metadata, png, thumb, publish, copy)
+}
+
+/// The card's own file, then `last.png` and, with `metadata.copy`, a file for
+/// the clipboard.
+fn finish_add(
+    metadata: super::super::image_transfer::Metadata,
+    png: Vec<u8>,
+    thumb: image::RgbaImage,
+    publish: impl FnOnce(&[u8]) -> Result<(), String>,
+    copy: impl FnOnce(&std::path::Path) -> Result<(), String>,
+) -> Result<PreparedAdd, String> {
     let add = PreparedAdd {
         path: write_temp_png("shelf", &png)?,
         thumb,

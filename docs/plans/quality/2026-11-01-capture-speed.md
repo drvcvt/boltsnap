@@ -325,3 +325,28 @@ Verbindung bei jedem Auftrag und verbindet bei Fehlern neu); Speicher
   PNG 6,5–21 ms (Mittel 10,9, Last), Datei schreiben ~5,6 ms.
 - Messpunkte `daemon_capture`, `daemon_capture_output`, `png_encode` (in
   `capture::encode_png`) bleiben; ohne `BOLTSNAP_TIMINGS` kosten sie nichts.
+
+## Umsetzung: libway-Sync und Kacheln im Daemon (01.11.)
+
+- libway synchronisiert (`c5aa44b`): L1 (alle Outputs auf einer
+  Verbindung, Komposition je Output sobald fertig), L2
+  (`capture_desktop_tiles`), P4 gemessen (dmabuf-Kopie 4–5 ms je Output
+  statt 8–9,6 ms mit shm; NVIDIA-GBM kann die gekachelten Puffer nicht für
+  die CPU mappen, Zurücklesen nur mit EGL/Vulkan). Vier dnd-Dateien, die
+  upstream zu Ordnern wurden, per safe-rm entfernt (Boltsnap nutzt dnd
+  nicht). Offen in libway: Warnung `irrefutable_let_patterns`
+  `compose.rs:257` ohne Feature `gpu`.
+- Daemon (`screenshot.rs`): Kacheln (ARGB/XRGB → `Format::Bgrx`,
+  ABGR/XBGR → `Rgba`) direkt in den Encoder; sonst `capture_desktop`.
+  Kartenvorschau aus den Kacheln (jedes n-te Pixel auf ≥ 2× Kartengröße,
+  dann der bestehende Box-Filter), Test mit zwei Kacheln und Lücke.
+  `cards.rs`: `prepare_png` und `finish_add` teilen Datei, `last.png` und
+  Clipboard mit `prepare_pixels`.
+- Live (Last durch YouTube, Ausreißer bis 300 ms): Daemon-Aufnahme Median
+  **13,1 ms** (vorher 23), Ausgabe (PNG + Datei bzw. Karte) 21,2 ms. CLI
+  laut strace 2,4 ms bis zur Anfrage, ein `full -o` gesamt 29 ms.
+- Nächste Hebel: Shelf-Weg schreibt das PNG dreimal (Karte, `last.png`,
+  Clipboard) statt einmal plus Hardlinks; Karte vor den Dateien (D1b);
+  Datei streifenweise schreiben, während die übrigen Streifen kodieren;
+  PNG-Kern einthreadig schneller (heute 25 ms auf einem Kern, unter Last
+  zählt das).
