@@ -20,6 +20,8 @@ static CONNECTION: Mutex<Option<libway::Connection>> = Mutex::new(None);
 /// The compositor offers no screen capture protocol (GNOME, KDE): every
 /// shot is the client's, over the portal, without asking libway again.
 static UNSUPPORTED: AtomicBool = AtomicBool::new(false);
+/// The open connection's readback path is in the log.
+static REPORTED: AtomicBool = AtomicBool::new(false);
 
 /// What a `capture` request came to.
 pub(super) enum Taken {
@@ -186,10 +188,14 @@ fn desktop() -> Result<Desktop, String> {
         let options = crate::capture::remaining(start);
         if connection.is_none() {
             *connection = Some(libway::Connection::connect(&options).map_err(|e| e.to_string())?);
+            REPORTED.store(false, Ordering::Relaxed);
         }
         let open = connection.as_mut().expect("connected above");
-        let shot = match open.capture_desktop_tiles(&options) {
-            Ok(Some(tiles)) if tiles.tiles.iter().all(|tile| format(&tile.frame).is_some()) => {
+        // From dma-bufs where the GPU allows it, else shared memory; the
+        // connection keeps the GPU state, so only its first shot sets it up.
+        let shot = match open.capture_desktop_tiles_fast(&options) {
+            Ok(Some(tiles)) if tiles.tiles.iter().all(|tile| pixels(&tile.frame).is_some()) => {
+                report_readback(open);
                 Ok(Desktop::Tiles(tiles))
             }
             // Mixed scales, a rotation or an unknown layout: composed instead.
@@ -215,13 +221,33 @@ fn desktop() -> Result<Desktop, String> {
     }
 }
 
-/// The encoder's name for a frame's layout; `None` for one it cannot read.
-fn format(frame: &libway::Frame) -> Option<Format> {
-    match frame.format {
-        libway::PixelFormat::Argb8888 | libway::PixelFormat::Xrgb8888 => Some(Format::Bgrx),
-        libway::PixelFormat::Abgr8888 | libway::PixelFormat::Xbgr8888 => Some(Format::Rgba),
-        _ => None,
+/// Which path read the open connection's shots back, and why not a faster
+/// one, once per connection: shows in a report which one a system gets.
+fn report_readback(open: &libway::Connection) {
+    if REPORTED.swap(true, Ordering::Relaxed) {
+        return;
     }
+    match open.tile_readback() {
+        (Some(path), Some(cause)) => {
+            eprintln!("boltsnap daemon: screenshots read back via {path:?} ({cause})")
+        }
+        (Some(path), None) => eprintln!("boltsnap daemon: screenshots read back via {path:?}"),
+        (None, _) => {}
+    }
+}
+
+/// A frame's bytes and the encoder's name for their layout; `None` for one
+/// it cannot read.
+fn pixels(frame: &libway::Frame) -> Option<(&[u8], Format)> {
+    let libway::FrameStorage::Cpu(buffer) = &frame.storage else {
+        return None;
+    };
+    let format = match frame.format {
+        libway::PixelFormat::Argb8888 | libway::PixelFormat::Xrgb8888 => Format::Bgrx,
+        libway::PixelFormat::Abgr8888 | libway::PixelFormat::Xbgr8888 => Format::Rgba,
+        _ => return None,
+    };
+    Some((buffer.bytes(), format))
 }
 
 fn tiles(desktop: &libway::DesktopTiles) -> Vec<Tile<'_>> {
@@ -229,10 +255,10 @@ fn tiles(desktop: &libway::DesktopTiles) -> Vec<Tile<'_>> {
         .tiles
         .iter()
         .map(|tile| {
-            let libway::FrameStorage::Cpu(buffer) = &tile.frame.storage;
+            let (pixels, format) = pixels(&tile.frame).expect("checked when captured");
             Tile {
-                pixels: buffer.bytes(),
-                format: format(&tile.frame).expect("checked when captured"),
+                pixels,
+                format,
                 x: tile.x,
                 y: tile.y,
                 width: tile.frame.width,

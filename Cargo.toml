@@ -38,7 +38,9 @@ miniz_oxide = "0.8"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # Vendored until libway has a published release; see vendor/README.md.
-libway = { version = "0.1.0", path = "vendor/libway" }
+# `vulkan`: the daemon reads screenshots back from dma-bufs (links libgbm;
+# libvulkan is loaded at runtime, without it captures use shared memory).
+libway = { version = "0.1.0", path = "vendor/libway", features = ["vulkan"] }
 # Portal screenshot fallback + KWin active-output lookup on compositors
 # without wlr-screencopy (KDE Plasma).
 zbus = "5"
@@ -139,4 +141,4 @@ assets = [
     ["assets/linux/boltsnap-128.png", "usr/share/icons/hicolor/128x128/apps/boltsnap.png", "644"],
     ["assets/linux/boltsnap-256.png", "usr/share/icons/hicolor/256x256/apps/boltsnap.png", "644"],
 ]
-recommends = "libgl1, libegl1, libxkbcommon0, libwayland-client0"
+recommends = "libgl1, libegl1, libxkbcommon0, libwayland-client0, libvulkan1"

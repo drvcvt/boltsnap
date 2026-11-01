@@ -137,7 +137,7 @@ The tagged release binaries can lag behind `main` — for the current shelf and
 screen-recording features, build from source:
 
 ```sh
-sudo pacman -S --needed rust wayland libxkbcommon pkgconf base-devel gpu-screen-recorder
+sudo pacman -S --needed rust wayland libxkbcommon mesa pkgconf base-devel gpu-screen-recorder
 git clone https://github.com/drvcvt/boltsnap
 cd boltsnap
 cargo install --path .        # -> ~/.cargo/bin/boltsnap

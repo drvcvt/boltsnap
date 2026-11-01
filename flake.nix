@@ -20,11 +20,12 @@
           # Wayland
           wayland
           libxkbcommon
-          # Retained graphics runtime; libway's CPU screenshot path itself
-          # does not require DRM/GBM. Other graphics integrations may use these.
+          # Graphics runtime: libway links GBM for dma-buf screenshots and
+          # loads Vulkan at runtime (without it, captures use shared memory).
           libGL
           libdrm
           gbm
+          vulkan-loader
           # X11 stack (winit links it even on Wayland)
           xorg.libX11
           xorg.libXcursor

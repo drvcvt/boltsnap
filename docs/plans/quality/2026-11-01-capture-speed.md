@@ -418,3 +418,81 @@ steuerbar, kein GL-Kontext im Daemon-Thread. Schätzung: Aufnahme ~7–8 ms,
 gesamt ~20 ms. Gebaut im libway-Repo (Prompt an den Nutzer), Boltsnap
 übernimmt per Sync; die Kacheln bleiben CPU-Puffer, Boltsnap ändert sich
 dafür nicht.
+
+## D2: Vulkan-Kacheln im Daemon (Plan, 01.11.)
+
+libway ist fertig (main `1d1f9f5`, Nachricht des libway-Agenten): mit dem
+Feature `vulkan` liefert `Connection::capture_desktop_tiles_fast` dieselben
+Kacheln und `None`-Regeln wie `capture_desktop_tiles`, aus dmabufs gelesen
+(Vulkan → LINEAR → shm, jeder Fehler fällt auf shm, keine Panik). Gemessen
+dort: Vulkan warm 6,91 ms, kalt 72,38 ms (einmal je Connection), shm-Kacheln
+12,68 ms. LINEAR ist auf echter Hardware **nicht geprüft** (kein Treiber hier
+legt LINEAR an).
+
+Verhalten:
+- Nur der Daemon nutzt den schnellen Weg (`shelf/cards/screenshot.rs`
+  `desktop()`): seine Verbindung bleibt offen, die 70 ms Aufsetzen fallen
+  einmal an. Der CLI-Weg ohne Daemon (`capture/mod.rs`) bleibt bei shm, dort
+  wäre jeder Schuss kalt und langsamer.
+- Fällt libway auf einen langsameren Weg, schreibt der Daemon den ersten Grund
+  einmal je Verbindung ins Log (`tile_readback()`), damit Berichte von anderen
+  Rechnern zeigen, welcher Weg lief.
+- Kacheln mit anderem Speicher als CPU-Bytes behandelt `desktop()` wie ein
+  unbekanntes Format: zusammengesetztes Bild statt Kacheln.
+
+Abhängigkeiten (für alle, nicht nur diesen Rechner):
+- `vulkan` zieht `gpu` und linkt **libgbm fest** ein. Entscheidung: annehmen,
+  weil jeder Wayland-Compositor (wlroots, Hyprland, KWin, Mutter) und Xorg mit
+  glamor selbst libgbm braucht, es ist also überall da, wo Boltsnap läuft
+  (statt libway um Laden zur Laufzeit zu bitten: mehr Arbeit in libway für
+  einen Fall, der praktisch nicht vorkommt). Das deb bekommt `libgbm1` über
+  `$auto`; `libvulkan1` kommt zu `recommends` (zur Laufzeit geladen, ohne es
+  nur shm).
+- Bauen aus Quellen braucht die libgbm-Entwicklerdateien: `release.yml` bekommt
+  `libgbm-dev` (die CI hat es schon), die Arch-Zeile der README `mesa`, die
+  Nix-Dateien `vulkan-loader` zur Laufzeit (`gbm` haben sie schon).
+
+Schritte:
+1. `python3 tools/sync-libway.py ../libway`; veraltete Dateien prüfen, nur mit
+   `safe-rm` entfernen.
+2. `Cargo.toml`: `features = ["vulkan"]`, `recommends` um `libvulkan1`;
+   `release.yml`, README, `flake.nix`, `shell.nix` wie oben.
+3. `screenshot.rs`: `capture_desktop_tiles_fast`, Kacheln nur mit CPU-Bytes,
+   eine Log-Zeile beim Rückfall.
+4. Messen: Daemon-Speicher (RSS) vor und nach dem ersten Schuss, erster Schuss
+   nach dem Neustart (kalt), dann `boltsnap full -o` und Shelf-Weg mit
+   hyperfine wie im Benchmark, `BOLTSNAP_TIMINGS` für `daemon_capture`.
+
+Was brechen kann: der Build auf Rechnern ohne libgbm-Entwicklerdateien (deshalb
+README und `release.yml`); der Daemon-Speicher durch ein Vulkan-Gerät
+(gemessen in Schritt 4, bei mehr als ~50 MB zurück zum Nutzer); der erste Schuss
+nach dem Login ist ~60 ms langsamer (Vorwärmen beim Start wäre eine Aufnahme,
+die niemand ausgelöst hat: erst nach der Messung entscheiden).
+
+Nicht: kein Vorwärmen, keine Änderung am CLI-Weg ohne Daemon, keine Arbeit am
+Windows-Backend.
+
+Abnahme: `cargo fmt --check`, `cargo test` grün; Log zeigt Vulkan als Weg;
+`daemon_capture` unter 10 ms warm; Benchmark-Zeile für Boltsnap neu gemessen.
+
+## Umsetzung D2 (01.11.)
+
+- libway auf `1d1f9f5` gesynct; drei in libway verschobene Dateien
+  (`src/gpu.rs`, `src/window/lease.rs`, `src/window/tests/peer/roles.rs`) mit
+  `safe-rm` aus `vendor/` genommen.
+- `Cargo.toml` `features = ["vulkan"]`, `recommends` mit `libvulkan1`;
+  `release.yml` mit `libgbm-dev`; README-Arch-Zeile mit `mesa`; `flake.nix` und
+  `shell.nix` mit `vulkan-loader`.
+- `screenshot.rs`: `capture_desktop_tiles_fast`, `pixels()` nimmt nur
+  CPU-Bytes, `report_readback` schreibt den Weg einmal je Verbindung.
+- `cargo fmt --check`, `cargo test` (190 + 432) grün; `ldd` zeigt
+  `libgbm.so.1`.
+- Live (Daemon neu, `BOLTSNAP_TIMINGS`): Log „screenshots read back via
+  Vulkan“; `daemon_capture` 90,7 ms beim ersten Schuss (kalt), danach 15,5 und
+  9,3 ms (shm vorher ~13 ms). Maschine dabei stark ausgelastet (fremder Build,
+  10 GB Swap), saubere Messung offen.
+- Speicher: Daemon-RSS 12,8 MB → 141,7 MB nach dem ersten Schuss; davon
+  75,7 MB Datei-Seiten (NVIDIA-Treiberbibliotheken, mit anderen Prozessen
+  geteilt), 46,4 MB anonym, Pss_Dirty 59 MB. Über der Planschwelle von 50 MB:
+  Entscheidung beim Nutzer (behalten, oder das Vulkan-Gerät nach einer Weile
+  ohne Schuss freigeben, `reset_readback`).

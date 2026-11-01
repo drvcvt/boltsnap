@@ -12,6 +12,7 @@ let
     libGL
     libdrm
     gbm
+    vulkan-loader
     xorg.libX11
     xorg.libXcursor
     xorg.libXi
