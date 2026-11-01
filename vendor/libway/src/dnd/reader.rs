@@ -96,21 +96,42 @@ pub(crate) fn spawn(
 /// Dispatch and service transfers; wake the consumer once per `events()` drain.
 fn service(core: &Mutex<Core>) -> Result<usize> {
     let mut c = core.lock().unwrap_or_else(|p| p.into_inner());
-    let dispatched = c.service(Instant::now());
+    let dispatched = c.service(Instant::now())?;
     c.wake();
-    dispatched
+    let ready = c.engine.reactor.ready();
+    drop(c);
+    if ready {
+        // Let a waiting consumer run between slices instead of immediately racing its lock.
+        thread::yield_now();
+    }
+    Ok(dispatched)
 }
 fn run(conn: &WlConnection, core: &Mutex<Core>, control: &Control) -> Result<()> {
     let display = conn.backend().poll_fd().as_raw_fd();
     loop {
+        if control.stop.load(Ordering::Acquire) {
+            return Ok(());
+        }
         service(core)?;
+        if control.stop.load(Ordering::Acquire) {
+            return Ok(());
+        }
         // `None`: another reader already queued events for us (libwayland).
         let Some(guard) = conn.prepare_read() else {
             continue;
         };
+        if control.stop.load(Ordering::Acquire) {
+            drop(guard);
+            return Ok(());
+        }
         // The Rust backend does not check our queue in prepare_read; drain what another
         // reader queued before we announced ours, or we would sleep on it.
-        if service(core)? > 0 {
+        let dispatched = service(core)?;
+        if control.stop.load(Ordering::Acquire) {
+            drop(guard);
+            return Ok(());
+        }
+        if dispatched > 0 {
             continue;
         }
         let (mut fds, deadline) = {

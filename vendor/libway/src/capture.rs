@@ -34,9 +34,19 @@ use wayland_protocols::{
 use wayland_protocols_wlr::screencopy::v1::client::{
     zwlr_screencopy_frame_v1 as wlr_frame, zwlr_screencopy_manager_v1 as wlr_manager,
 };
+mod batch;
 mod cursor;
 mod events;
+mod pending;
+mod stream;
+mod tiles;
 pub use cursor::{CursorEvent, CursorStream};
+pub(crate) use pending::Constraints;
+use pending::Pending;
+pub use stream::Stream;
+pub use tiles::{DesktopTile, DesktopTiles};
+#[cfg(feature = "image")]
+pub(crate) use tiles::{near, scaled_size};
 
 static CONNECTION_IDS: AtomicU64 = AtomicU64::new(1);
 
@@ -58,80 +68,6 @@ struct OutputRecord {
     logical_size: Option<(u32, u32)>,
     scale: u32,
 }
-#[derive(Default, Clone)]
-pub(crate) struct Constraints {
-    pub size: (u32, u32),
-    pub shm: Vec<wl_shm::Format>,
-    pub stride: Option<u32>,
-    pub dma: Vec<(u32, Vec<u64>)>,
-    pub dma_any_modifier: bool,
-    pub device: Option<u64>,
-}
-struct Pending {
-    token: u64,
-    constraints: Constraints,
-    frame_size: (u32, u32),
-    batch: Constraints,
-    batch_open: bool,
-    formats_done: bool,
-    ready: bool,
-    error: Option<Error>,
-    transform: Option<Transform>,
-    inverted: bool,
-    timestamp: Option<Duration>,
-    damage: Vec<(u32, u32, u32, u32)>,
-    imported: Option<wl_buffer::WlBuffer>,
-    import_done: bool,
-}
-impl Pending {
-    fn new(token: u64) -> Self {
-        Self {
-            token,
-            constraints: Constraints::default(),
-            frame_size: (0, 0),
-            batch: Constraints::default(),
-            batch_open: false,
-            formats_done: false,
-            ready: false,
-            error: None,
-            transform: None,
-            inverted: false,
-            timestamp: None,
-            damage: Vec::new(),
-            imported: None,
-            import_done: false,
-        }
-    }
-    fn batch(&mut self) -> &mut Constraints {
-        if !self.batch_open {
-            self.batch = Constraints::default();
-            self.batch_open = true;
-        }
-        &mut self.batch
-    }
-    fn reset_frame(&mut self) {
-        self.ready = false;
-        self.frame_size = (0, 0);
-        self.error = None;
-        self.transform = None;
-        self.inverted = false;
-        self.timestamp = None;
-        self.damage.clear();
-        self.import_done = false;
-        if let Some(buffer) = self.imported.take() {
-            buffer.destroy();
-        }
-    }
-}
-impl Drop for Pending {
-    fn drop(&mut self) {
-        // An import can finish in the same event batch as a failure/cancellation.
-        // Keep ownership here until it has explicitly moved into Objects.
-        if let Some(buffer) = self.imported.take() {
-            buffer.destroy();
-        }
-    }
-}
 pub(crate) struct State {
     connection_id: u64,
     next_id: u64,
@@ -147,13 +83,13 @@ pub(crate) struct State {
     wlr: Option<wlr_manager::ZwlrScreencopyManagerV1>,
     dma: Option<dmabuf::ZwpLinuxDmabufV1>,
     dma_formats: Vec<(u32, u64)>,
-    pending: Option<Pending>,
+    pending: BTreeMap<u64, Pending>,
     global_error: Option<Error>,
     limits: Limits,
 }
 impl State {
     fn pending(&mut self, token: u64) -> Option<&mut Pending> {
-        self.pending.as_mut().filter(|p| p.token == token)
+        self.pending.get_mut(&token)
     }
     fn attach_xdg(&mut self, qh: &QueueHandle<Self>) {
         if let Some(manager) = &self.output_manager {
@@ -174,10 +110,6 @@ pub struct Connection {
     queue: EventQueue<State>,
     state: State,
     serial: u64,
-    /// Filesystem path of the server socket, used to open sibling connections.
-    /// `None` for inherited or unnamed sockets.
-    #[cfg(feature = "image")]
-    pub(crate) peer: Option<std::path::PathBuf>,
 }
 impl Connection {
     /// Open the display selected by `WAYLAND_DISPLAY`/`WAYLAND_SOCKET` and discover globals.
@@ -197,14 +129,6 @@ impl Connection {
         Self::initialize(conn, options, deadline)
     }
     fn initialize(conn: WlConnection, options: &CaptureOptions, deadline: Instant) -> Result<Self> {
-        #[cfg(feature = "image")]
-        let peer = conn
-            .backend()
-            .poll_fd()
-            .try_clone_to_owned()
-            .ok()
-            .and_then(|fd| UnixStream::from(fd).peer_addr().ok())
-            .and_then(|addr| addr.as_pathname().map(Into::into));
         let queue = conn.new_event_queue();
         let registry = conn.display().get_registry(&queue.handle(), ());
         let mut this = Self {
@@ -226,13 +150,11 @@ impl Connection {
                 wlr: None,
                 dma: None,
                 dma_formats: Vec::new(),
-                pending: None,
+                pending: BTreeMap::new(),
                 global_error: None,
                 limits: options.limits,
             },
             serial: 0,
-            #[cfg(feature = "image")]
-            peer,
         };
         this.barrier(options, deadline)?;
         this.state.attach_xdg(&this.queue.handle());
@@ -341,21 +263,10 @@ impl Connection {
             .into_iter()
             .find(|o| o.id == id)
             .ok_or(Error::OutputGone)?;
-        let backend = match options.backend {
-            Backend::Auto if self.capabilities().ext_output_capture => Backend::Ext,
-            Backend::Auto if self.state.wlr.is_some() => Backend::Wlr,
-            Backend::Auto => {
-                return Err(Error::Unsupported("EXT output capture or WLR screencopy"));
-            }
-            b => b,
-        };
+        let job = batch::Job::new(self, output, options, kind)?;
         let mut stream = Stream {
             connection: self,
-            output,
-            options,
-            kind,
-            objects: Objects::default(),
-            backend,
+            job,
             closed: false,
             first_deadline: Some(end),
         };
@@ -363,9 +274,7 @@ impl Connection {
             if !stream.falls_back(&error) {
                 return Err(error);
             }
-            stream.objects = Objects::default();
-            stream.backend = Backend::Wlr;
-            stream.prepare(end)?;
+            stream.retry_wlr(end)?;
         }
         Ok(stream)
     }
@@ -389,7 +298,7 @@ impl Connection {
             if let Some(e) = self.state.global_error.take() {
                 return Err(e);
             }
-            if let Some(e) = self.state.pending.as_mut().and_then(|p| p.error.take()) {
+            if let Some(e) = self.state.pending.values_mut().find_map(|p| p.error.take()) {
                 return Err(e);
             }
             if let Some(e) = self.state.cursor.as_mut().and_then(|c| c.error.take()) {
@@ -500,266 +409,5 @@ impl Drop for Objects {
         if let Some(s) = self.source.take() {
             s.destroy();
         }
-    }
-}
-
-/// Sequential output capture that exclusively borrows its connection. Drop to release the
-/// session; previously returned frames remain owned by the caller and valid independently.
-pub struct Stream<'a> {
-    connection: &'a mut Connection,
-    output: Output,
-    options: CaptureOptions,
-    kind: BufferKind,
-    objects: Objects,
-    backend: Backend,
-    closed: bool,
-    first_deadline: Option<Instant>,
-}
-impl Stream<'_> {
-    /// A failed EXT session in Auto mode retries WLR within the same deadline.
-    fn falls_back(&self, error: &Error) -> bool {
-        matches!(
-            error,
-            Error::UnsupportedFormat
-                | Error::Unsupported(_)
-                | Error::CaptureFailed(_)
-                | Error::SessionStopped
-        ) && self.options.backend == Backend::Auto
-            && self.backend == Backend::Ext
-            && self.connection.state.wlr.is_some()
-    }
-    fn prepare(&mut self, end: Instant) -> Result<()> {
-        let c = &mut self.connection;
-        c.serial += 1;
-        let token = c.serial;
-        c.state.pending = Some(Pending::new(token));
-        if self.backend == Backend::Ext {
-            let mgr = c
-                .state
-                .ext
-                .as_ref()
-                .ok_or(Error::Unsupported("ext-image-copy-capture"))?;
-            let sm = c
-                .state
-                .source
-                .as_ref()
-                .ok_or(Error::Unsupported("EXT output capture source"))?;
-            let output = &c
-                .state
-                .outputs
-                .values()
-                .find(|o| o.info.id == self.output.id)
-                .ok_or(Error::OutputGone)?
-                .wl;
-            let qh = c.queue.handle();
-            let source = sm.create_source(output, &qh, ());
-            let opts = if self.options.cursor {
-                ext_manager::Options::PaintCursors
-            } else {
-                ext_manager::Options::empty()
-            };
-            self.objects.session = Some(mgr.create_session(&source, opts, &qh, token));
-            self.objects.source = Some(source);
-            c.pump(&self.options, end, |s| {
-                s.pending.as_ref().is_some_and(|p| p.formats_done)
-            })?;
-        } else if c.state.wlr.is_none() {
-            return Err(Error::Unsupported("wlr-screencopy"));
-        }
-        Ok(())
-    }
-    /// Wait for a completed frame, bounded by the stream's capture options.
-    /// A timeout, cancellation, layout change or capture failure closes the stream;
-    /// later calls return [`Error::SessionStopped`]. EXT can wait for damage after frame one.
-    pub fn next_frame(&mut self) -> Result<Frame> {
-        if self.closed {
-            return Err(Error::SessionStopped);
-        }
-        let end = self
-            .first_deadline
-            .take()
-            .map(Ok)
-            .unwrap_or_else(|| deadline(&self.options))?;
-        let mut result = self.next_inner(end);
-        if result.as_ref().is_err_and(|error| self.falls_back(error)) {
-            self.objects = Objects::default();
-            self.backend = Backend::Wlr;
-            result = self.prepare(end).and_then(|()| self.next_inner(end));
-        }
-        self.objects.frame_done();
-        if result.is_err() {
-            self.closed = true;
-            self.objects = Objects::default();
-            self.connection.state.pending = None;
-        }
-        let _ = self.connection.conn.flush();
-        result
-    }
-    fn next_inner(&mut self, end: Instant) -> Result<Frame> {
-        let c = &mut self.connection;
-        c.barrier(&self.options, end)?;
-        c.pump(&self.options, end, |s| {
-            s.pending.as_ref().is_some_and(|p| !p.batch_open)
-        })?;
-        if !c.output_snapshot()?.contains(&self.output) {
-            return Err(Error::LayoutChanged);
-        }
-        let p = c.state.pending.as_mut().ok_or(Error::SessionStopped)?;
-        p.reset_frame();
-        let token = p.token;
-        let qh = c.queue.handle();
-        if self.backend == Backend::Wlr {
-            p.formats_done = false;
-            p.constraints = Constraints::default();
-            let output = &c
-                .state
-                .outputs
-                .values()
-                .find(|o| o.info.id == self.output.id)
-                .ok_or(Error::OutputGone)?
-                .wl;
-            self.objects.wlr_frame = Some(
-                c.state
-                    .wlr
-                    .as_ref()
-                    .ok_or(Error::Unsupported("wlr-screencopy"))?
-                    .capture_output(i32::from(self.options.cursor), output, &qh, token),
-            );
-            c.pump(&self.options, end, |s| {
-                s.pending.as_ref().is_some_and(|p| p.formats_done)
-            })?;
-        } else {
-            self.objects.ext_frame = Some(
-                self.objects
-                    .session
-                    .as_ref()
-                    .ok_or(Error::SessionStopped)?
-                    .create_frame(&qh, token),
-            );
-        }
-        let constraints = c
-            .state
-            .pending
-            .as_ref()
-            .ok_or(Error::SessionStopped)?
-            .constraints
-            .clone();
-        let (width, height) = constraints.size;
-        // Session constraints may change while this frame is in flight.
-        c.state
-            .pending
-            .as_mut()
-            .ok_or(Error::SessionStopped)?
-            .frame_size = (width, height);
-        let (storage, format, stride) = match &self.kind {
-            BufferKind::Cpu => {
-                let (wire, format) = constraints
-                    .shm
-                    .iter()
-                    .filter_map(|f| PixelFormat::from_shm(*f as u32).map(|fmt| (*f, fmt)))
-                    .min_by_key(|(_, fmt)| fmt.cpu_rank())
-                    .ok_or(Error::UnsupportedFormat)?;
-                let stride = constraints.stride.unwrap_or(
-                    width
-                        .checked_mul(format.bytes_per_pixel())
-                        .ok_or(Error::InvalidDimensions)?,
-                );
-                let bytes =
-                    self.options
-                        .limits
-                        .buffer(width, height, stride, format.bytes_per_pixel())?;
-                let shm = ShmBuffer::new(bytes)?;
-                self.objects.buffer = Some(create_wl_shm(
-                    c.state.shm.as_ref().ok_or(Error::Unsupported("wl_shm"))?,
-                    &qh,
-                    &shm,
-                    width,
-                    height,
-                    stride,
-                    wire,
-                ));
-                (FrameStorage::Cpu(CpuBuffer { shm }), format, stride)
-            }
-            #[cfg(feature = "gpu")]
-            BufferKind::Gpu(allocator) => {
-                let dma = c
-                    .state
-                    .dma
-                    .as_ref()
-                    .ok_or(Error::Unsupported("linux-dmabuf v3"))?;
-                let buffer =
-                    allocator.allocate(&constraints, &c.state.dma_formats, self.options.limits)?;
-                let params = dma.create_params(&qh, token);
-                for (index, plane) in buffer.planes().iter().enumerate() {
-                    use std::os::fd::AsFd;
-                    params.add(
-                        plane.fd().as_fd(),
-                        index as u32,
-                        plane.offset(),
-                        plane.stride(),
-                        (buffer.modifier() >> 32) as u32,
-                        buffer.modifier() as u32,
-                    );
-                }
-                params.create(
-                    width as i32,
-                    height as i32,
-                    buffer.format() as u32,
-                    params::Flags::empty(),
-                );
-                self.objects.params = Some(params);
-                c.pump(&self.options, end, |s| {
-                    s.pending.as_ref().is_some_and(|p| p.import_done)
-                })?;
-                self.objects.buffer = c.state.pending.as_mut().and_then(|p| p.imported.take());
-                if self.objects.buffer.is_none() {
-                    return Err(Error::CaptureFailed("DMA-BUF import rejected".into()));
-                }
-                let format = buffer.format();
-                let stride = buffer.planes()[0].stride();
-                (FrameStorage::Gpu(buffer), format, stride)
-            }
-        };
-        let buffer = self
-            .objects
-            .buffer
-            .as_ref()
-            .ok_or(Error::CaptureFailed("missing buffer".into()))?;
-        if let Some(frame) = &self.objects.ext_frame {
-            frame.attach_buffer(buffer);
-            frame.damage_buffer(0, 0, width as i32, height as i32);
-            frame.capture();
-        }
-        if let Some(frame) = &self.objects.wlr_frame {
-            frame.copy(buffer);
-        }
-        c.pump(&self.options, end, |s| {
-            s.pending.as_ref().is_some_and(|p| p.ready)
-        })?;
-        c.barrier(&self.options, end)?;
-        if !c.output_snapshot()?.contains(&self.output) {
-            return Err(Error::LayoutChanged);
-        }
-        let p = c.state.pending.as_mut().ok_or(Error::SessionStopped)?;
-        Ok(Frame {
-            output: self.output.clone(),
-            backend: self.backend,
-            width,
-            height,
-            stride,
-            format,
-            transform: p.transform.unwrap_or(self.output.transform),
-            y_inverted: p.inverted,
-            presentation_time: p.timestamp,
-            damage: std::mem::take(&mut p.damage),
-            storage,
-        })
-    }
-}
-impl Drop for Stream<'_> {
-    fn drop(&mut self) {
-        self.objects = Objects::default();
-        self.connection.state.pending = None;
-        let _ = self.connection.conn.flush();
     }
 }

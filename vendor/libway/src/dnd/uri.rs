@@ -2,11 +2,9 @@
 //! consumer policy (UTF-8 only, no control characters) belongs to the consumer.
 use super::interop::PayloadKind;
 use crate::TransferError;
-use std::{
-    ffi::OsString,
-    os::unix::ffi::{OsStrExt, OsStringExt},
-    path::PathBuf,
-};
+#[cfg(test)]
+use std::os::unix::ffi::OsStrExt;
+use std::{ffi::OsString, os::unix::ffi::OsStringExt, path::PathBuf};
 
 fn hex(b: u8) -> Option<u8> {
     char::from(b).to_digit(16).map(|d| d as u8)
@@ -89,6 +87,7 @@ pub(crate) fn parse_uri_list(
     }
     Ok(paths)
 }
+#[cfg(test)]
 pub(crate) fn encode_uri_list(paths: &[PathBuf]) -> Vec<u8> {
     let mut out = Vec::new();
     for path in paths {

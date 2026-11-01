@@ -1,7 +1,10 @@
 //! Outgoing drags: data source, icon surface and the send path.
+mod origin;
+
 use super::{
-    Action, DndEvent, DragData, DragIcon, DragId, DragOutcome, DragRequest, SeatId, engine::Engine,
-    interop,
+    Action, DndEvent, DragIcon, DragId, DragOutcome, SeatId,
+    engine::Engine,
+    representations::{Data, Request},
 };
 use crate::{Error, Result, buffer::ShmBuffer};
 use std::time::Instant;
@@ -16,6 +19,21 @@ pub(crate) struct Icon {
     _shm: ShmBuffer,
 }
 impl Icon {
+    fn show(&self, (hx, hy): (i32, i32)) {
+        let surface = &self.surface;
+        if surface.version() >= 5 {
+            surface.offset(-hx, -hy);
+            surface.attach(Some(&self.buffer), 0, 0);
+        } else {
+            surface.attach(Some(&self.buffer), -hx, -hy);
+        }
+        if surface.version() >= 4 {
+            surface.damage_buffer(0, 0, i32::MAX, i32::MAX);
+        } else {
+            surface.damage(0, 0, i32::MAX, i32::MAX);
+        }
+        surface.commit();
+    }
     fn destroy(self) {
         self.buffer.destroy();
         self.surface.destroy();
@@ -24,59 +42,28 @@ impl Icon {
 pub(crate) struct Drag {
     seat: SeatId,
     source: wl_data_source::WlDataSource,
-    data: DragData,
+    data: Data,
     icon: Option<Icon>,
     accepted: bool,
     action: Action,
     sent: bool,
+    /// Buttons held when the drag started from a tracked press. Their release reaching
+    /// us means the compositor ended the press before it saw the drag.
+    held: Vec<u32>,
 }
 
 impl Engine {
-    pub fn start_drag(&mut self, req: DragRequest) -> Result<DragId> {
+    pub fn start_drag(&mut self, req: Request) -> Result<DragId> {
         if !self.ready {
             return Err(Error::NotReady);
         }
         req.origin.validate(&self.conn)?;
-        let mimes = interop::source_mimes(&req.data);
-        if mimes.len() > self.limits.max_mime_types {
-            return Err(Error::LimitExceeded);
-        }
-        for mime in &mimes {
-            if mime.is_empty() || mime.contains('\0') {
-                return Err(Error::InvalidInput(
-                    "MIME names must be nonempty and NUL-free",
-                ));
-            }
-            if mime.len() > 1024 {
-                return Err(Error::LimitExceeded);
-            }
-        }
-        if let Some(icon) = &req.icon {
-            validate_icon(icon)?;
-        }
-        if let DragData::Files(paths) | DragData::FilesAndText { paths, .. } = &req.data
-            && paths.iter().any(|p| !p.is_absolute())
-        {
-            return Err(Error::InvalidInput("dragged files need absolute paths"));
-        }
-        let manager = (self.manager.clone()).ok_or(Error::Unsupported("wl_data_device_manager"))?;
-        let name = match req.seat {
-            Some(SeatId(n)) => n,
-            None => *(self.seats.iter())
-                .filter(|(_, s)| req.serial.is_some() || s.grab_serial.is_some())
-                .map(|(n, _)| n)
-                .next_back()
-                .ok_or(Error::InvalidSerial)?,
-        };
-        let seat = self.seats.get(&name).ok_or(Error::InvalidSerial)?;
-        let serial = req
-            .serial
-            .or(seat.grab_serial)
-            .ok_or(Error::InvalidSerial)?;
-        let device = seat.device.clone().ok_or(Error::NotReady)?;
-        let seat_id = seat.id;
-        let origin = wl_surface::WlSurface::from_id(&self.conn, req.origin.id().clone())
-            .map_err(|_| Error::Wayland("origin surface is gone".into()))?;
+        let manager = self
+            .manager
+            .clone()
+            .ok_or(Error::Unsupported("wl_data_device_manager"))?;
+        let origin = origin::resolve(self, &req)?;
+        let seat_id = origin.seat;
         let hotspot = req.icon.as_ref().map(|i| i.hotspot);
         let icon = req.icon.map(|i| self.make_icon(i)).transpose()?;
         let old: Vec<DragId> = (self.drags.iter())
@@ -88,35 +75,23 @@ impl Engine {
         }
         let id = DragId(self.id, self.next());
         let source = manager.create_data_source(&self.qh, id);
-        for mime in mimes {
-            source.offer(mime);
+        for mime in req.data.mimes() {
+            source.offer(mime.clone());
         }
         if source.version() >= 3 {
             source.set_actions(DndAction::from_bits_truncate(req.actions.to_wire()));
         }
-        device.start_drag(
+        origin.device.start_drag(
             Some(&source),
-            &origin,
+            &origin.surface,
             icon.as_ref().map(|i| &i.surface),
-            serial,
+            origin.serial,
         );
         // The drag owns the grab now. Compositors may never report the release or touch-up
         // that ends it, so the serial must not outlive this drag.
-        self.seats.get_mut(&name).unwrap().end_grab();
-        if let Some((icon, (hx, hy))) = icon.as_ref().zip(hotspot) {
-            let s = &icon.surface;
-            if s.version() >= 5 {
-                s.offset(-hx, -hy);
-                s.attach(Some(&icon.buffer), 0, 0);
-            } else {
-                s.attach(Some(&icon.buffer), -hx, -hy);
-            }
-            if s.version() >= 4 {
-                s.damage_buffer(0, 0, i32::MAX, i32::MAX);
-            } else {
-                s.damage(0, 0, i32::MAX, i32::MAX);
-            }
-            s.commit();
+        self.seats.get_mut(&origin.name).unwrap().end_grab();
+        if let Some((icon, hotspot)) = icon.as_ref().zip(hotspot) {
+            icon.show(hotspot);
         }
         let drag = Drag {
             seat: seat_id,
@@ -126,6 +101,7 @@ impl Engine {
             accepted: false,
             action: Action::None,
             sent: false,
+            held: origin.held,
         };
         self.drags.insert(id, drag);
         Ok(id)
@@ -137,8 +113,12 @@ impl Engine {
         let bytes = (w * h * 4) as usize;
         let mut storage = ShmBuffer::new(bytes)?;
         // Premultiplied RGBA8 to little-endian ARGB8888 as wl_shm expects it.
-        for (dst, src) in
-            (storage.map.chunks_exact_mut(4)).zip(icon.rgba_premultiplied.chunks_exact(4))
+        for (dst, src) in storage
+            .map
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .zip(icon.rgba_premultiplied.as_chunks::<4>().0)
         {
             dst.copy_from_slice(&[src[2], src[1], src[0], src[3]]);
         }
@@ -170,6 +150,23 @@ impl Engine {
         }
         self.push(DndEvent::DragEnded { drag: id, outcome });
     }
+    /// A button of `seat` changed. A new press ends the hold that started a drag; the release
+    /// of the starting press, with no new press in between, can only reach us if the
+    /// compositor had already ended that press when `start_drag` arrived. Hyprland then runs a
+    /// drag nobody holds and discards every click until the next release, so cancel it.
+    pub(crate) fn drag_button(&mut self, seat: SeatId, button: u32, pressed: bool) {
+        let mut dead = Vec::new();
+        for (id, d) in self.drags.iter_mut().filter(|(_, d)| d.seat == seat) {
+            let held = d.held.len();
+            d.held.retain(|b| *b != button);
+            if !pressed && held > 0 && d.held.is_empty() {
+                dead.push(*id);
+            }
+        }
+        for id in dead {
+            self.end_drag(id, DragOutcome::Cancelled);
+        }
+    }
     pub fn shutdown_drags(&mut self) {
         let ids: Vec<DragId> = self.drags.keys().copied().collect();
         for id in ids {
@@ -178,7 +175,7 @@ impl Engine {
     }
 }
 
-fn validate_icon(icon: &DragIcon) -> Result<()> {
+pub(super) fn validate_icon(icon: &DragIcon) -> Result<()> {
     let (w, h) = (icon.width, icon.height);
     if w == 0
         || h == 0
@@ -230,17 +227,24 @@ impl Dispatch<wl_data_source::WlDataSource, DragId> for Engine {
                 });
             }
             wl_data_source::Event::Send { mime_type, fd } => {
-                drag.sent = true;
+                if !drag.data.bounded() {
+                    drag.sent = true;
+                }
                 // Unknown types and overload close the pipe at once: the reader sees EOF.
                 if s.reactor.outgoing() >= max {
                     return;
                 }
-                if let Some(bytes) = interop::materialize(&mut drag.data, &mime_type) {
+                if let Some(bytes) = drag.data.send(&mime_type) {
+                    drag.sent = true;
                     s.reactor.push_outgoing(fd, bytes, Instant::now());
                 }
             }
             wl_data_source::Event::DndFinished => {
-                let outcome = DragOutcome::Dropped(drag.action);
+                let outcome = if !drag.data.bounded() || drag.sent {
+                    DragOutcome::Dropped(drag.action)
+                } else {
+                    DragOutcome::Cancelled
+                };
                 s.end_drag(*id, outcome);
             }
             wl_data_source::Event::Cancelled => {

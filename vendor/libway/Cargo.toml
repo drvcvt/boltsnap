@@ -13,6 +13,7 @@ image = ["capture", "dep:image"]
 gpu = ["capture", "dep:gbm"]
 dnd = []
 foreign-display = ["dnd", "wayland-client/system"]
+owned-native-system = ["wayland-client/system", "wayland-client/dlopen", "dep:raw-window-handle"]
 
 [dependencies]
 wayland-client = "0.31.14"
@@ -22,6 +23,7 @@ memmap2 = "0.9"
 libc = "0.2"
 image = { version = "0.25.10", default-features = false, optional = true }
 gbm = { version = "0.18", default-features = false, optional = true }
+raw-window-handle = { version = "=0.6.2", optional = true, features = ["std"] }
 
 [dev-dependencies]
 wayland-server = "0.31.14"
@@ -31,6 +33,10 @@ image = { version = "0.25.10", default-features = false, features = ["png"] }
 
 [[example]]
 name = "snapshot"
+required-features = ["image"]
+
+[[example]]
+name = "desktop_timing"
 required-features = ["image"]
 
 [[example]]

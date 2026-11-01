@@ -400,9 +400,17 @@ fn removed_capture_manager_is_not_reused() {
 
 #[cfg(feature = "image")]
 #[test]
-fn named_socket_captures_outputs_concurrently_with_identical_pixels() {
+fn desktop_captures_every_output_on_one_connection_in_any_ready_order() {
+    let config = |hold_ready| Config {
+        outputs: 2,
+        mode_sizes: vec![(4, 2), (6, 3)],
+        hold_ready,
+        ..Default::default()
+    };
+    // The server answers only once both captures are in, and then in reverse
+    // order: one capture at a time would time out here.
     let dir = std::env::temp_dir().join(format!(
-        "libway-parallel-{}-{}",
+        "libway-batch-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -411,30 +419,80 @@ fn named_socket_captures_outputs_concurrently_with_identical_pixels() {
     ));
     std::fs::create_dir(&dir).unwrap();
     let path = dir.join("display");
-    let config = || Config {
-        outputs: 2,
-        mode_sizes: vec![(4, 2), (6, 3)],
-        ..Default::default()
-    };
-    let named = Server::listen(config(), &path);
+    let held = Server::listen(config(2), &path);
     let opts = options();
-    let mut parallel = Connection::from_socket(
+    let together = Connection::from_socket(
         std::os::unix::net::UnixStream::connect(&path).unwrap(),
         &opts,
     )
+    .unwrap()
+    .capture_desktop(&opts)
     .unwrap();
-    let concurrent = parallel.capture_desktop(&opts).unwrap();
-    // The main connection plus one sibling per output.
-    assert_eq!(named.metrics.clients.load(Ordering::SeqCst), 3);
-    let (_server, socket) = Server::start(config());
-    let sequential = Connection::from_socket(socket, &opts)
+    // One connection for every output; no sibling connections.
+    assert_eq!(held.metrics.clients.load(Ordering::SeqCst), 1);
+    assert_eq!(held.metrics.captures.load(Ordering::SeqCst), 2);
+    drop(held);
+    let _ = std::fs::remove_dir_all(dir);
+    let (_server, socket) = Server::start(config(0));
+    let immediate = Connection::from_socket(socket, &opts)
         .unwrap()
         .capture_desktop(&opts)
         .unwrap();
-    assert_eq!(concurrent.image, sequential.image);
-    assert_eq!(concurrent.scale, sequential.scale);
-    drop(named);
-    let _ = std::fs::remove_dir_all(dir);
+    assert_eq!(together.image, immediate.image);
+    assert_eq!(together.scale, immediate.scale);
+}
+
+#[cfg(feature = "image")]
+#[test]
+fn one_failed_output_fails_the_desktop_and_releases_every_output() {
+    let (server, socket) = Server::start(Config {
+        outputs: 2,
+        fail_output: Some(1),
+        ..Default::default()
+    });
+    let ext = CaptureOptions {
+        backend: Backend::Ext,
+        ..options()
+    };
+    let mut c = Connection::from_socket(socket, &ext).unwrap();
+    assert!(matches!(
+        c.capture_desktop(&ext),
+        Err(Error::CaptureFailed(_))
+    ));
+    c.outputs(&ext).unwrap();
+    server.settle();
+    for (name, metric) in [
+        ("frames", &server.metrics.frames),
+        ("sessions", &server.metrics.sessions),
+        ("sources", &server.metrics.sources),
+        ("buffers", &server.metrics.buffers),
+    ] {
+        assert_eq!(metric.load(Ordering::SeqCst), 0, "{name}");
+    }
+    // Auto retries the whole batch with WLR within the same deadline.
+    let desktop = c.capture_desktop(&options()).unwrap();
+    assert_eq!(desktop.outputs.len(), 2);
+}
+
+#[cfg(feature = "image")]
+#[test]
+fn a_held_back_ready_times_out_and_releases_every_output() {
+    let (server, socket) = Server::start(Config {
+        outputs: 2,
+        hold_ready: 3,
+        wlr: 0,
+        ..Default::default()
+    });
+    let opts = options();
+    let mut c = Connection::from_socket(socket, &opts).unwrap();
+    let start = Instant::now();
+    assert!(matches!(c.capture_desktop(&opts), Err(Error::Timeout)));
+    assert!(start.elapsed() < Duration::from_secs(2));
+    c.outputs(&opts).unwrap();
+    server.settle();
+    assert_eq!(server.metrics.frames.load(Ordering::SeqCst), 0);
+    assert_eq!(server.metrics.sessions.load(Ordering::SeqCst), 0);
+    assert_eq!(server.metrics.buffers.load(Ordering::SeqCst), 0);
 }
 
 #[cfg(feature = "image")]

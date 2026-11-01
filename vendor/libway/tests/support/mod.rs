@@ -6,7 +6,7 @@ mod cursor;
 mod dma;
 mod dnd;
 pub use cursor::Fault as CursorFault;
-pub use dnd::{DndCommand, DndConfig, DndControl, DndMetrics, pipe_fds, pipe_open};
+pub use dnd::{DndCommand, DndConfig, DndControl, DndMetrics, PipePeer, pipe_fds, pipe_open};
 use memmap2::MmapOptions;
 use std::{
     fs::File,
@@ -73,6 +73,11 @@ pub struct Config {
     pub mode_sizes: Vec<(u32, u32)>,
     pub native_logical_size: bool,
     pub dnd: Option<DndConfig>,
+    /// Hold EXT readies until this many captures are pending, then answer them
+    /// in reverse order. 0 answers each capture at once.
+    pub hold_ready: usize,
+    /// The output index whose EXT frames fail with `failed(unknown)`.
+    pub fail_output: Option<usize>,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -89,6 +94,8 @@ impl Default for Config {
             mode_sizes: Vec::new(),
             native_logical_size: false,
             dnd: None,
+            hold_ready: 0,
+            fail_output: None,
         }
     }
 }
@@ -184,6 +191,7 @@ impl Server {
                 xdg: Vec::new(),
                 output_globals,
                 ext_global,
+                held: Vec::new(),
             };
             while !quit.load(Ordering::Acquire) {
                 if let Some(listener) = &listener {
@@ -247,6 +255,12 @@ struct State {
     xdg: Vec<xdg_output::ZxdgOutputV1>,
     output_globals: Vec<wayland_server::backend::GlobalId>,
     ext_global: Option<wayland_server::backend::GlobalId>,
+    /// EXT captures held back by `Config::hold_ready`.
+    held: Vec<(
+        ext_frame::ExtImageCopyCaptureFrameV1,
+        wl_buffer::WlBuffer,
+        usize,
+    )>,
 }
 struct Pool {
     file: Arc<File>,
@@ -653,6 +667,28 @@ impl Dispatch<ext_frame::ExtImageCopyCaptureFrameV1, FrameData> for State {
                 if matches!(s.config.fault, Fault::Stall | Fault::EarlyFail)
                     || (n > 0 && matches!(s.config.fault, Fault::IdleSecond))
                 {
+                    return;
+                }
+                if s.config.fail_output == Some(data.session.index) {
+                    f.failed(ext_frame::FailureReason::Unknown);
+                    return;
+                }
+                if s.config.hold_ready > 0 {
+                    let buffer = data.buffer.lock().unwrap().clone().unwrap();
+                    s.held.push((f.clone(), buffer, data.session.index));
+                    if s.held.len() < s.config.hold_ready {
+                        return;
+                    }
+                    let held: Vec<_> = s.held.drain(..).rev().collect();
+                    for (frame, buffer, index) in held {
+                        paint(&buffer, index);
+                        s.metrics.captures.fetch_add(1, Ordering::SeqCst);
+                        frame.transform(s.config.transform);
+                        let (bw, bh) = buffer_dimensions(&buffer);
+                        frame.damage(0, 0, bw as i32, bh as i32);
+                        frame.presentation_time(0, 123, 456);
+                        frame.ready();
+                    }
                     return;
                 }
                 let buffer = data.buffer.lock().unwrap();

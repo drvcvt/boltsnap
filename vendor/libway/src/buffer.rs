@@ -101,8 +101,9 @@ impl ShmBuffer {
         {
             return Err(std::io::Error::last_os_error().into());
         }
-        // SAFETY: this library owns a sized, sealed memfd. No Rust references to its bytes
-        // are exposed until the compositor has sent the capture completion event.
+        // SAFETY: this library owns a sized, sealed memfd. Capture exposes bytes
+        // only after completion. Presentation writes only before attachment or
+        // after wl_buffer.release; busy storage is never mutated or reused.
         let map = unsafe { MmapOptions::new().len(bytes).map_mut(&file)? };
         Ok(Self { file, map })
     }
@@ -195,85 +196,63 @@ pub(crate) fn convert_rgba(
         .checked_mul(h as usize)
         .and_then(|n| n.checked_mul(4))
         .ok_or(Error::LimitExceeded)?;
-    if matches!(
-        format,
+    let mut out = zeroed(len)?;
+    let row = w as usize * bpp;
+    for (source, target) in bytes[..size]
+        .chunks_exact(stride as usize)
+        .zip(out.chunks_exact_mut(w as usize * 4))
+    {
+        convert_row(&source[..row], target, format);
+    }
+    Ok(out)
+}
+
+/// Convert `target.len() / 4` pixels from the start of `source` (packed in
+/// `format`, at least that many pixels long) to premultiplied RGBA8 in
+/// `target`. X channels become opaque; ten-bit channels keep their top eight
+/// bits and two-bit alpha scales by 85. The single conversion used by
+/// [`Frame::rgba8`] and by composition straight into a canvas.
+pub(crate) fn convert_row(source: &[u8], target: &mut [u8], format: PixelFormat) {
+    let pixels = target.as_chunks_mut::<4>().0;
+    match format {
         PixelFormat::Argb8888
-            | PixelFormat::Xrgb8888
-            | PixelFormat::Abgr8888
-            | PixelFormat::Xbgr8888
-    ) {
-        let mut out = zeroed(len)?;
-        let swapped = matches!(format, PixelFormat::Argb8888 | PixelFormat::Xrgb8888);
-        let alpha = matches!(format, PixelFormat::Argb8888 | PixelFormat::Abgr8888);
-        let (r, b) = if swapped { (2, 0) } else { (0, 2) };
-        for (source, target) in bytes[..size]
-            .chunks_exact(stride as usize)
-            .zip(out.chunks_exact_mut(w as usize * 4))
-        {
-            for (p, rgba) in source[..w as usize * 4]
-                .chunks_exact(4)
-                .zip(target.chunks_exact_mut(4))
-            {
+        | PixelFormat::Xrgb8888
+        | PixelFormat::Abgr8888
+        | PixelFormat::Xbgr8888 => {
+            let swapped = matches!(format, PixelFormat::Argb8888 | PixelFormat::Xrgb8888);
+            let alpha = matches!(format, PixelFormat::Argb8888 | PixelFormat::Abgr8888);
+            let (r, b) = if swapped { (2, 0) } else { (0, 2) };
+            for (p, rgba) in source.as_chunks::<4>().0.iter().zip(pixels) {
                 rgba.copy_from_slice(&[p[r], p[1], p[b], if alpha { p[3] } else { 255 }]);
             }
         }
-        return Ok(out);
-    }
-    let mut out = Vec::new();
-    out.try_reserve_exact(len)
-        .map_err(|_| Error::LimitExceeded)?;
-    for row in bytes[..size].chunks_exact(stride as usize) {
-        for p in row[..w as usize * bpp].chunks_exact(bpp) {
-            let rgba = match format {
-                PixelFormat::Bgr888 => [p[0], p[1], p[2], 255],
-                PixelFormat::Rgb888 => [p[2], p[1], p[0], 255],
-                f => {
-                    let v = u32::from_le_bytes(p.try_into().map_err(|_| Error::InvalidDimensions)?);
-                    match f {
-                        PixelFormat::Argb8888 | PixelFormat::Xrgb8888 => [
-                            (v >> 16) as u8,
-                            (v >> 8) as u8,
-                            v as u8,
-                            if f == PixelFormat::Argb8888 {
-                                (v >> 24) as u8
-                            } else {
-                                255
-                            },
-                        ],
-                        PixelFormat::Abgr8888 | PixelFormat::Xbgr8888 => [
-                            v as u8,
-                            (v >> 8) as u8,
-                            (v >> 16) as u8,
-                            if f == PixelFormat::Abgr8888 {
-                                (v >> 24) as u8
-                            } else {
-                                255
-                            },
-                        ],
-                        _ => {
-                            let low = ((v & 1023) >> 2) as u8;
-                            let green = (((v >> 10) & 1023) >> 2) as u8;
-                            let high = (((v >> 20) & 1023) >> 2) as u8;
-                            let a =
-                                if matches!(f, PixelFormat::Argb2101010 | PixelFormat::Abgr2101010)
-                                {
-                                    ((v >> 30) * 85) as u8
-                                } else {
-                                    255
-                                };
-                            if matches!(f, PixelFormat::Argb2101010 | PixelFormat::Xrgb2101010) {
-                                [high, green, low, a]
-                            } else {
-                                [low, green, high, a]
-                            }
-                        }
-                    }
-                }
-            };
-            out.extend_from_slice(&rgba);
+        PixelFormat::Bgr888 | PixelFormat::Rgb888 => {
+            let swapped = format == PixelFormat::Rgb888;
+            for (p, rgba) in source.as_chunks::<3>().0.iter().zip(pixels) {
+                *rgba = if swapped {
+                    [p[2], p[1], p[0], 255]
+                } else {
+                    [p[0], p[1], p[2], 255]
+                };
+            }
+        }
+        f => {
+            let alpha = matches!(f, PixelFormat::Argb2101010 | PixelFormat::Abgr2101010);
+            let swapped = matches!(f, PixelFormat::Argb2101010 | PixelFormat::Xrgb2101010);
+            for (p, rgba) in source.as_chunks::<4>().0.iter().zip(pixels) {
+                let v = u32::from_le_bytes(*p);
+                let low = ((v & 1023) >> 2) as u8;
+                let green = (((v >> 10) & 1023) >> 2) as u8;
+                let high = (((v >> 20) & 1023) >> 2) as u8;
+                let a = if alpha { ((v >> 30) * 85) as u8 } else { 255 };
+                *rgba = if swapped {
+                    [high, green, low, a]
+                } else {
+                    [low, green, high, a]
+                };
+            }
         }
     }
-    Ok(out)
 }
 
 pub(crate) fn create_wl_shm<S>(
@@ -412,5 +391,29 @@ mod tests {
         assert!(shm.file.set_len(16).is_err());
         assert!(shm.file.set_len(64).is_err());
         assert_eq!(shm.map.len(), 32);
+    }
+    #[test]
+    fn row_conversion_of_a_window_matches_the_whole_frame() {
+        let source: Vec<u8> = (0..32u8).map(|v| v.wrapping_mul(37)).collect();
+        for format in [
+            PixelFormat::Argb8888,
+            PixelFormat::Xrgb8888,
+            PixelFormat::Abgr8888,
+            PixelFormat::Xbgr8888,
+            PixelFormat::Argb2101010,
+            PixelFormat::Xrgb2101010,
+            PixelFormat::Abgr2101010,
+            PixelFormat::Xbgr2101010,
+            PixelFormat::Rgb888,
+            PixelFormat::Bgr888,
+        ] {
+            let bpp = format.bytes_per_pixel() as usize;
+            let width = (source.len() / bpp) as u32;
+            let whole = convert_rgba(&source, width, 1, width * bpp as u32, format).unwrap();
+            // Pixels 2..5 converted alone land exactly where the whole row put them.
+            let mut window = [0xaa; 12];
+            convert_row(&source[2 * bpp..], &mut window, format);
+            assert_eq!(&window[..], &whole[8..20], "{format:?}");
+        }
     }
 }

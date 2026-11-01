@@ -266,8 +266,10 @@ impl Dispatch<ext_session::ExtImageCopyCaptureSessionV1, u64> for State {
                     return;
                 }
                 let mods = modifiers
-                    .chunks_exact(8)
-                    .map(|v| u64::from_ne_bytes(v.try_into().expect("eight byte chunk")))
+                    .as_chunks::<8>()
+                    .0
+                    .iter()
+                    .map(|v| u64::from_ne_bytes(*v))
                     .collect();
                 p.batch().dma.push((format, mods));
             }

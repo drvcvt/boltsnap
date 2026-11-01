@@ -23,6 +23,231 @@ requires the system GBM library and headers (for example `libgbm-dev`). The CPU
 build has no GBM dependency. PNG support is only enabled for examples/tests;
 applications choose their own image codecs.
 
+## Caller-owned windows
+
+`window::Host` owns an independent connection and every participating native
+queue. Call `pump` on the owner thread, drain owned `WindowEvent` values and
+apply application close policy explicitly. It starts no background reader and
+invokes no application callback during protocol dispatch. Worker threads use
+the bounded send-only `WindowProxy`; retained leases keep native dependencies
+alive after logical close or host shutdown. CPU presentation owns bounded SHM
+buffers and waits for real release/frame events before reuse.
+
+`Host::present_cpu` damages the whole frame. `Host::present_cpu_damaged` takes the
+same complete RGBA frame plus `PixelRect` buffer-pixel regions that changed since
+the last `Presented` frame (wrong regions leave stale pixels on screen). Rects are
+clamped, empty ones ignored, and a list with none left is `InvalidInput`. More than
+16 collapse to their bounding box. Reused slots rewrite only the regions changed
+since the frame they hold and are fully rewritten when that is not provable (fresh,
+older than the last three frames, or another layout in between). The compositor gets
+one `damage_buffer` per rect on `wl_surface` version 4 and later, otherwise whole-
+surface damage; the first frame and any resize or scale change damage everything.
+
+`window::Host` negotiates decorations through the optional
+`zxdg_decoration_manager_v1`. When it was advertised before discovery completed,
+every new window requests server-side mode before its first commit and the decoration
+object is destroyed before its toplevel. `Configuration::decorations` is
+`Decorations::Server` only after the compositor's decoration configure said
+server-side, and `Client` without the manager, after a client-side choice, or before
+any decoration configure; a mode change arrives as an ordinary new `Configured`
+event. A manager that appears after discovery is not bound, and windows are never
+retrofitted. `Configuration` also carries `maximized`, `fullscreen`, `activated` and
+`tiled` (`Tiled { left, right, top, bottom }`) from the toplevel state array, and
+keeps them through scale-only reconfiguration.
+
+`move_window`, `resize_window` (`ResizeEdge`) and `show_window_menu` take a window
+and an `InputSeatId` and use that seat's latest pointer button press on that window.
+Without one they return `NotReady`, and a retired window or unknown seat returns
+`InvalidInput`; nothing is sent in either case. The press is cleared when the seat
+loses its pointer or is removed. `set_maximized`, `set_minimized` and
+`set_fullscreen` (no output preference) need no press. All six are requests: the
+compositor may ignore them, and maximize and fullscreen are confirmed only by a later
+configuration.
+
+`Host::set_cursor_shape(window, CursorShape)` uses the optional
+`wp_cursor_shape_manager_v1`, bound whenever it is advertised. Each `wl_pointer` gets
+a shape device right after `get_pointer`, destroyed before the pointer is released
+(capability loss, seat removal, shutdown). The shape is stored per window until it
+closes, applied at once to every seat whose pointer is inside the window using that
+seat's latest enter serial, and applied again on every later enter. Until a shape is
+set nothing is requested. Without the manager (absent or removed) the call returns
+`Unsupported("wp_cursor_shape_v1")`; there is no xcursor fallback. `CursorShape` is
+a non-exhaustive mirror of the version 1 shapes.
+
+`Host::request_presentation(window, tag)` asks the optional `wp_presentation` (bound
+at version 2 or lower whenever advertised) for feedback on that window's next content
+commit: the commit of a `present_cpu` call that returns `Presented`, or the driver
+commit after `NativeFrame::stage`. Results that commit nothing keep the tag armed;
+arming again before the commit replaces it, and a replaced tag gets no event. Every
+consumed tag produces exactly one `WindowEvent::Presentation { window, tag, outcome }`
+unless the window closes or the host stops first. `Presented` carries the raw
+`clock_id`, the timestamp since that clock's epoch, the predicted refresh (`None` for
+0), the MSC sequence and the raw flags; `Discarded` means the update was never shown;
+`Unavailable` means the manager was gone at commit time or the timing was malformed
+(`tv_nsec` out of range, no clock yet). Timestamps are never guessed, and frame
+callbacks stay the redraw gate. At most eight armed and unanswered requests per window,
+each holding one slot of the 1024-event cap; more return `LimitExceeded`. Without the
+global the call returns `Unsupported("wp_presentation")`. A removed manager is
+destroyed and its outstanding feedback still arrives. `sync_output` is not reported.
+[`examples/presentation.rs`](examples/presentation.rs) is a live check.
+
+For native GPU interop, enable `owned-native-system`. This selects the system
+Wayland transport and exposes a single `NativePresenter` claim implementing
+standard native handle traits. Keep that claim alive for the driver surface,
+for example through an `Arc`; it retains the connection, globals, role and
+surface. It cannot be used after logical retirement. Creating an additional
+foreign surface or reader remains the cooperating driver's responsibility.
+
+Begin each GPU attempt with `Host::begin_native_frame(&claim, revision)` before
+driver configure or acquire. `NeedsFrame` waits for the preceding real callback;
+`Suspended` forbids configure/acquire/present until a new configuration resumes
+the window. A `Ready` guard exclusively borrows both host and claim and provides
+the validated logical/physical configuration. Configure, acquire, encode and
+submit using that snapshot. Then `stage` with the acquired texture's physical
+extent, immediately make the driver's sole present/commit call, and consume the
+guard with `scheduled`. Libway stages scale, viewport and one typed frame callback;
+it never attaches or commits this GPU frame. `scheduled` records the caller's
+acknowledgment, not successful display or GPU completion.
+
+Cancel or drop before staging to retry without native requests. Cancel, error
+or unwind after staging logically closes the window, since a Wayland frame
+callback has no cancellation request. There is no extra commit or fabricated
+callback. Keep driver resources alive until safely released. A forgotten guard
+blocks pump and window mutation; explicitly close the attempt's own window or
+shut down the host to recover. Admission of a separate capability does not service
+native events or mutate that staged window. Driver calls must remain outside
+connection read reservations.
+
+The synthetic guard fixtures and borrow checks do not establish real GPU WSI
+ownership, driver-internal queue/read behavior, physical presentation, recovery
+or idle/pacing performance. Those native acceptance gates remain pending.
+
+### Toplevel requests
+
+```rust
+host.set_size_limits(window, SizeLimits {
+    min_width: 320,
+    min_height: 200,
+    max_width: 640,
+    max_height: 400,
+})?;
+host.set_idle_inhibit(window, true)?; // while a video plays
+host.request_attention(window)?;      // a job finished while unfocused
+```
+
+`Host::set_size_limits` replaces a toplevel's logical size limits; 0 on an axis
+(the `SizeLimits::default()`) means no limit there. Set them right after
+`create_window`, before the first frame. Libway sends only the changed
+`set_min_size`/`set_max_size` requests and no commit of its own, so they apply with
+the window's next presented frame, CPU or native. The compositor may ignore them
+(Hyprland treats 1 or less as unset). `Host::size_limits` reads the stored values
+back. Values above `i32::MAX` return `InvalidDimensions`; max below min on an axis
+where both are set, a layer, or a retired or foreign window return `InvalidInput`;
+nothing is sent on error. Input and opaque regions follow the same rule on
+toplevels (no commit, next frame), while on layers they commit at once (see
+[Layer surfaces](#layer-surfaces)).
+
+`Host::request_attention` asks the compositor to draw the user's attention to a
+toplevel or layer. It sends an `xdg_activation_v1` token without a seat serial
+and activates the window with it once the token arrives; the protocol lets
+compositors refuse focus for such a token. It never moves keyboard focus on its own;
+Hyprland marks the window urgent and focuses it only with `misc:focus_on_activate`.
+While a request for the window is still waiting for its token, another call returns
+`Ok` and sends nothing. Without the global it returns `Unsupported`.
+
+`Host::set_idle_inhibit(window, true)` keeps the screen from blanking, dimming or
+locking while that toplevel or layer is visible; `false` stops it. Both are
+idempotent, and the effect ends when the window closes. Enabling without
+`zwp_idle_inhibit_manager_v1` returns `Unsupported`; disabling always works.
+Retired or foreign windows return `InvalidInput`. None of the three adds a
+`WindowEvent`. [`examples/attention.rs`](examples/attention.rs) is a live check.
+
+### Layer surfaces
+
+`Host::create_layer(LayerOptions)` gives a surface the `zwlr_layer_shell_v1` role
+instead of `xdg_toplevel`, for overlays, HUDs, panels and selectors. It returns an
+ordinary `WindowId`: configurations, `enable_cpu`/`present_cpu`, `claim_native` and
+its raw handles, presentation feedback, input and `close` work unchanged. Wait for
+`Configured` before presenting, as for a toplevel.
+
+```rust
+let hud = host.create_layer(LayerOptions {
+    namespace: "app.hud".into(),
+    output: None, // compositor's choice; or Some(OutputId) from host.outputs()
+    state: LayerState {
+        layer: Layer::Overlay,
+        anchor: Anchor::TOP | Anchor::RIGHT,
+        width: 240,
+        height: 120,
+        margin: [24, 24, 0, 0], // top, right, bottom, left
+        exclusive_zone: ExclusiveZone::Respect,
+        exclusive_edge: None,
+        keyboard: KeyboardInteractivity::None,
+    },
+})?;
+host.set_input_region(hud, InputRegion::None)?; // click-through
+```
+
+`LayerState::default()` is a full-output overlay (all anchors, 0x0, `Ignore`). A 0
+width or height stretches between both opposite anchors, which must be set.
+`ExclusiveZone` maps to the wire values 0 (`Respect`), -1 (`Ignore`) and n
+(`Reserve`). Keyboard: `None` (the default) for HUDs, OSDs and panels; `OnDemand`
+for prompts and dialogs, which then behave like a window (focused when mapped on
+Hyprland, a click elsewhere takes focus and sends `KeyboardObservation::Leave`);
+`Exclusive` only for short full-screen selectors with an Escape path, one overlay
+per output, because it locks the keyboard (on Hyprland the pointer too) until the
+surface goes away. With `output: None` the compositor picks the monitor (Hyprland:
+its focused monitor, not necessarily the one under the user's eyes). `Host::set_layer_state` replaces
+the state, sends only changed requests and commits once without a buffer, so the
+change applies without a new frame; a new size arrives as a configuration. Fields
+the bound version lacks return `Unsupported` (`OnDemand` below v4, an exclusive edge
+below v5, a later layer change below v2); invalid combinations return
+`InvalidInput`; nothing is sent on error. The compositor's `closed` (for example its
+output went away) retires the window like `Host::close` and publishes `Closed`.
+Toplevel requests (`set_title`, `move_window`, `set_maximized`, ...) on a layer
+return `InvalidInput`. There is no hide/show: close and create again, or present a
+transparent frame with an empty input region. Popups on layers wait for R6.
+
+`Host::set_input_region` (`All`, `None` for click-through, or up to 64 `Rects`) and
+`Host::set_opaque_region` work on every window, toplevel or layer, in surface-local
+logical coordinates. On a layer they commit once without a buffer, so the change
+applies without a new frame; on a toplevel they send no commit and apply with the
+next presented frame, like size limits.
+
+`Host::outputs()` lists announced outputs as `OutputInfo { id, name, description }`
+(`name` is the connector, such as `DP-3`, from `wl_output` v4). `OutputAdded` and
+`OutputRemoved` events follow changes; outputs may be announced after `Ready`.
+[`examples/layer.rs`](examples/layer.rs) is a live check.
+
+## Window input methods
+
+`window::Host::enable_ime` requires matching keyboard and text-input-v3 focus
+for the exact window/seat. Supply current configuration, optional UTF-8
+surrounding state (at most 4000 bytes) and a logical candidate rectangle.
+`update_ime` publishes complete state; `disable_ime` retires the exact activation.
+The existing caller-owned event queue publishes `ImeEvent::Focus`, complete
+`Done` transactions and `Ended`. No extra connection, reader, surface commit,
+feature flag or input-method service is created.
+
+Commit counts belong to each native protocol object; activation identities remain
+unique across its replacement. Mismatched same-activation Done blocks still reach
+the app, while only the newest outbound state waits for synchronization. Old
+activations cannot acquire current work. Pending strings replace rather than
+concatenate. Native payload admission caps commit/preedit at 4096 bytes each;
+escaped `ImeText::shared()` Arc clones retain their charge against 128 KiB and
+1024 live allocation records until their final drop. This is payload accounting,
+not an RSS bound. The pinned default Rust transport additionally limits a complete
+wire message to 4096 bytes including headers, so it cannot deliver the full
+4096-byte string cap. The approved system transport remains a separate build path.
+Malformed data (text over 4096 bytes, NUL, bad preedit cursor, cursor on a null
+preedit, or a payload ledger limit hit by the pending batch) drops the whole pending
+batch and retires that activation with `ImeEvent::Ended` at the next `Done`; the
+host keeps running and `enable_ime` may be called again. Protocol-order violations
+(Enter before Leave, a future `Done` count), transport errors and event-queue
+exhaustion still stop the host.
+Applications own document edits, rendering support and producer arbitration.
+Synthetic verification does not establish desktop IME interoperability.
+
 ## CPU capture
 
 This snippet is compiled as a `no_run` doctest on
@@ -60,8 +285,19 @@ result.
 `capture_region(Rect, &options)` uses compositor-global logical coordinates;
 negative origins are valid. Composition uses the highest output scale, an opaque
 black background for gaps, Gaussian resizing, and integer truncation at pixel
-boundaries. Outputs are captured sequentially, not as an atomic multi-monitor
-snapshot. Layout changes abort capture instead of returning mismatched geometry.
+boundaries. All outputs are captured on the calling connection with every capture
+request in flight together; the compositor may still copy them one after another,
+and the result is not an atomic multi-monitor snapshot. One output's failure fails
+the whole call. Layout changes abort capture instead of returning mismatched geometry.
+
+`capture_desktop_tiles(&options)` needs only `capture`, not `image`. It returns one
+`DesktopTile { frame, x, y }` per output, untouched: the server's pixel format,
+`stride == width * 4`, no RGBA conversion, orientation, resize or canvas copy,
+plus the canvas size, logical bounds and scale. It returns `Ok(None)` when tiles
+cannot represent the desktop as is (mixed scales, a rotated or y-inverted output,
+a size that would need resampling, a padded stride); call `capture_desktop` then.
+Gaps between outputs belong to no tile. `examples/desktop_timing.rs` times both
+paths, and captures the live desktop when run.
 
 ## Separate cursor capture
 
@@ -284,6 +520,9 @@ Which directions a compositor bridges is recorded per compositor in
 - `compose.rs`: image orientation, scaling and desktop/region composition.
 - `types.rs`, `error.rs`: portable capture data and errors.
 - `display.rs`: owned, shared or guest connection; surface handles.
+- `runtime/`: private caller-owned coordinator, bounded commands and durable wake.
+- `window/`: owned roles/configuration/leases, CPU SHM output and guarded native
+  driver presentation boundary.
 - `dnd/`: engine (state machine, targets, negotiation), drag (outgoing drags and
   icons), transfer (pipe reactor), uri (URI lists), interop (XDND aliases), reader
   (cooperative reader thread).
@@ -335,10 +574,30 @@ Boltsnap integration can also be tested without a live session by setting
 `LIBWAY_TEST_BOLTSNAP` to a separately built executable and running
 `cargo test --test consumer -- --ignored`. See `VALIDATION.md` for exact coverage.
 
+Ordinary clipboard on the owned window Host now provides explicit eager source,
+current offer, asynchronous receive and cancellation methods. The
+[clipboard result](docs/test-results/coordination/clipboard/README.md) records
+limits, synthetic verification and remaining cross-client acceptance. It uses
+this host's existing eventloop without requiring DnD or a new feature.
+
+Primary selection (middle-click paste) uses the optional
+`zwp_primary_selection_device_manager_v1`, bound at version 1 whenever advertised,
+with one primary device per seat. `Host::set_primary_selection` and
+`Host::primary_selection_offer` follow `set_clipboard` and `clipboard_offer`: same
+focus and press rules, limits and shared budget. The seat's clipboard and primary
+sources are independent, so replacing one never cancels the other. Primary offers
+arrive as `ClipboardEvent::PrimarySelection` and are read with the ordinary
+`receive_clipboard` (the offer id says which selection it is). A new read on a
+seat cancels that seat's previous read of either kind. Without the global, or after
+its removal, both calls return
+`Unsupported("zwp_primary_selection_device_manager_v1")` until a new Host.
+`ClipboardEvent` is non-exhaustive. `cargo run --example primary` checks it live: a
+left click sets primary, a middle click prints it.
+
 ## Review and benchmarks
 
 The [2026-09-23 review](docs/reviews/2026-09-23.md) records confirmed issues and
-API maintenance gaps. The [implementation plan](docs/plans/2026-09-23-review-fixes.md)
+API maintenance gaps. The [implementation plan](docs/plans/done/2026-09-23-review-fixes.md)
 tracks the implemented fixes, regression tests and remaining acceptance criteria.
 The current check results and any unverified environments are in `VALIDATION.md`.
 

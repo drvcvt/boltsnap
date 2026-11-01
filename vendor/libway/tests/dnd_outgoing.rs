@@ -491,3 +491,53 @@ fn foreign_or_destroyed_origins_do_not_cancel_the_active_drag() {
     assert_eq!(server.metrics.dnd.start_drags.lock().unwrap().len(), 1);
     dnd.cancel_drag(first).unwrap();
 }
+
+/// A release reaching us after `start_drag` means the compositor had ended the press before
+/// it saw the drag. Hyprland then runs a drag nobody holds and discards every click until the
+/// next release, so the drag is cancelled at once.
+#[test]
+fn a_release_after_start_drag_cancels_the_drag() {
+    let (server, _display, dnd, origin) = setup(3, true);
+    let control = server.dnd();
+    control.button(900);
+    server.settle();
+    dnd.run(Duration::from_millis(50)).unwrap();
+    dnd.start_drag(request(&origin, DragData::Text("x".into()), None))
+        .unwrap();
+    control.release(901);
+    let events = wait_for(&dnd, |e| matches!(e, DndEvent::DragEnded { .. }));
+    assert_eq!(ended(&events), Some(DragOutcome::Cancelled));
+    server.settle();
+    assert_eq!(server.metrics.dnd.sources_alive.load(Ordering::SeqCst), 0);
+}
+
+/// A new press ends the old hold: its release, for instance a click while a dropped drag
+/// still serves data, must not cancel the drag. Nor does a release for a drag started with
+/// an explicit serial, whose press libway never tracked.
+#[test]
+fn only_the_release_of_the_starting_press_cancels_a_drag() {
+    let (server, _display, dnd, origin) = setup(3, true);
+    let control = server.dnd();
+    control.button(900);
+    server.settle();
+    dnd.run(Duration::from_millis(50)).unwrap();
+    dnd.start_drag(request(&origin, DragData::Text("x".into()), None))
+        .unwrap();
+    control.button(902);
+    control.release(903);
+    server.settle();
+    dnd.run(Duration::from_millis(100)).unwrap();
+    assert_eq!(ended(&dnd.events()), None);
+    let explicit = request(&origin, DragData::Text("y".into()), Some(5));
+    dnd.start_drag(explicit).unwrap();
+    control.release(904);
+    server.settle();
+    dnd.run(Duration::from_millis(100)).unwrap();
+    let events = dnd.events();
+    assert_eq!(
+        ended(&events),
+        Some(DragOutcome::Cancelled),
+        "only the first drag, replaced by the second"
+    );
+    assert_eq!(server.metrics.dnd.sources_alive.load(Ordering::SeqCst), 1);
+}

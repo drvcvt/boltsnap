@@ -122,10 +122,10 @@ fn cursor_errors_are_bounded_and_do_not_poison_the_connection() {
             }
             Ok(())
         })();
-        // libwayland (`foreign-display`) reads 4 KiB per call and pump stops reading while
-        // notices are queued, so depending on how the flood splits it becomes backpressure
-        // or overflows. Both stay bounded; an overflow must be the explicit limit error.
-        let backpressure = cfg!(feature = "foreign-display") && matches!(fault, CursorFault::Flood);
+        // Both backends can split reads before pump sees more than 256 notices. Pump stops
+        // reading while notices are queued: either bounded backpressure or overflow is
+        // valid. An overflow must remain the explicit limit error, on either backend.
+        let backpressure = matches!(fault, CursorFault::Flood);
         match &result {
             Ok(()) => assert!(backpressure, "this fault must fail"),
             Err(e) if backpressure => assert!(matches!(e, Error::LimitExceeded), "{e:?}"),

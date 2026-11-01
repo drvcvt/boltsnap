@@ -231,7 +231,7 @@ impl CursorStream<'_> {
             .wl;
         let qh = c.queue.handle();
         let token = c.state.cursor.as_ref().ok_or(Error::SessionStopped)?.token;
-        c.state.pending = Some(Pending::new(token));
+        c.state.pending.insert(token, Pending::new(token));
         let source = source_manager.create_source(output, &qh, ());
         let session = manager.create_pointer_cursor_session(&source, pointer, &qh, token);
         if self.images {
@@ -271,8 +271,7 @@ impl CursorStream<'_> {
             c.pump(&self.options, end, |s| {
                 s.cursor.as_ref().is_some_and(|c| !c.notices.is_empty())
                     || (!in_flight
-                        && s.pending
-                            .as_ref()
+                        && s.cursor_pending()
                             .is_some_and(|p| p.formats_done && !p.batch_open))
             })?;
             if !c.output_snapshot()?.contains(&self.output) {
@@ -296,7 +295,11 @@ impl CursorStream<'_> {
                         .buffer
                         .take()
                         .ok_or(Error::CaptureFailed("cursor ready without a buffer".into()))?;
-                    let p = c.state.pending.as_mut().ok_or(Error::SessionStopped)?;
+                    let p = c
+                        .state
+                        .pending
+                        .get_mut(&c.state.cursor.as_ref().ok_or(Error::SessionStopped)?.token)
+                        .ok_or(Error::SessionStopped)?;
                     let frame = Frame {
                         output: self.output.clone(),
                         backend: Backend::Ext,
@@ -328,7 +331,11 @@ impl CursorStream<'_> {
 
     fn request_image(&mut self) -> Result<()> {
         let c = &mut self.connection;
-        let p = c.state.pending.as_mut().ok_or(Error::SessionStopped)?;
+        let p = c
+            .state
+            .pending
+            .get_mut(&c.state.cursor.as_ref().ok_or(Error::SessionStopped)?.token)
+            .ok_or(Error::SessionStopped)?;
         let (width, height) = p.constraints.size;
         if width > 1024 || height > 1024 {
             return Err(Error::LimitExceeded);
@@ -390,7 +397,9 @@ impl CursorStream<'_> {
             s.destroy();
         }
         self.objects = Objects::default();
-        self.connection.state.pending = None;
+        if let Some(token) = self.connection.state.cursor.as_ref().map(|c| c.token) {
+            self.connection.state.pending.remove(&token);
+        }
         self.connection.state.cursor = None;
         // The caller owns returned frames; only an unpublished allocation drops here.
         self.buffer = None;
@@ -458,5 +467,12 @@ impl Dispatch<cursor_session::ExtImageCopyCaptureCursorSessionV1, u64> for State
             cursor_session::Event::Hotspot { x, y } => c.hotspot = (x, y),
             _ => {}
         }
+    }
+}
+
+impl State {
+    /// The pending entry of the active cursor stream.
+    fn cursor_pending(&self) -> Option<&Pending> {
+        self.pending.get(&self.cursor.as_ref()?.token)
     }
 }

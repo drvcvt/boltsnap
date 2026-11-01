@@ -221,6 +221,15 @@ fn raw_mime_targets_get_bytes_and_latin1_is_decoded() {
     let control = server.dnd();
     control.offer(&["image/png"], 1, &[("image/png", b"\x89PNG")]);
     control.enter(0, 5., 5.);
+    wait_for(&dnd, |e| {
+        matches!(
+            e,
+            DndEvent::Hover {
+                action: Action::Copy,
+                ..
+            }
+        )
+    });
     control.drop();
     let events = wait_for(&dnd, |e| matches!(e, DndEvent::Dropped { .. }));
     let (transfer, payload, _) = dropped(&events).unwrap();
@@ -530,4 +539,114 @@ fn incoming_mime_limit_keeps_only_the_announced_prefix() {
             assert!(failed(&events).is_none());
         }
     }
+}
+
+/// Hyprland 0.56 fixes the action before `enter` (move whenever the source offers it) and
+/// ignores `set_actions`; a drop completed with that action must still finish.
+#[test]
+fn an_action_sent_before_enter_is_kept_and_finishes_the_drop() {
+    let config = DndConfig {
+        hyprland_actions: true,
+        ..Default::default()
+    };
+    let (server, _display, dnd, handle) = setup(config, DndLimits::default());
+    let m = &server.metrics.dnd;
+    let mut spec = files_target();
+    spec.actions.move_ = false;
+    dnd.register_target(&handle, spec).unwrap();
+    let control = server.dnd();
+    control.offer(
+        &["text/uri-list"],
+        1 | 2,
+        &[("text/uri-list", b"file:///a\r\n")],
+    );
+    control.enter(0, 5., 5.);
+    wait_for(&dnd, |e| {
+        matches!(
+            e,
+            DndEvent::Hover {
+                target: Some(_),
+                ..
+            }
+        )
+    });
+    control.drop();
+    let events = wait_for(&dnd, |e| matches!(e, DndEvent::Dropped { .. }));
+    let (transfer, _, action) = dropped(&events).unwrap();
+    assert_eq!(action, Action::Move);
+    dnd.complete(transfer, Outcome::Accepted(action)).unwrap();
+    server.settle();
+    assert_eq!(m.finishes.load(Ordering::SeqCst), 1);
+    assert_eq!(m.offers_alive.load(Ordering::SeqCst), 0);
+    assert_eq!(m.protocol_errors.load(Ordering::SeqCst), 0);
+}
+
+fn hyprland_drop(config: DndConfig, limits: DndLimits, data: &[u8]) -> (Server, Dnd, Display) {
+    let config = DndConfig {
+        hyprland_actions: true,
+        ..config
+    };
+    let (server, display, dnd, handle) = setup(config, limits);
+    dnd.register_target(&handle, files_target()).unwrap();
+    let control = server.dnd();
+    control.offer(&["text/uri-list"], 1 | 2, &[("text/uri-list", data)]);
+    control.enter(0, 5., 5.);
+    control.drop();
+    (server, dnd, display)
+}
+
+/// Hyprland keeps a drop's drag, and discards every click, until the offer is finished. A
+/// finish after accepting nothing is its abort: the source gets `cancelled`, not success.
+#[test]
+fn a_rejected_hyprland_drop_aborts_the_drag() {
+    let (server, dnd, _display) =
+        hyprland_drop(DndConfig::default(), DndLimits::default(), b"file:///a\r\n");
+    let events = wait_for(&dnd, |e| matches!(e, DndEvent::Dropped { .. }));
+    let (transfer, _, _) = dropped(&events).unwrap();
+    dnd.complete(transfer, Outcome::Rejected).unwrap();
+    server.settle();
+    let m = &server.metrics.dnd;
+    assert_eq!(m.aborts.load(Ordering::SeqCst), 1);
+    assert_eq!(m.offers_alive.load(Ordering::SeqCst), 0);
+    assert_eq!(m.protocol_errors.load(Ordering::SeqCst), 0);
+    assert_eq!(m.accepts.lock().unwrap().last(), Some(&None));
+}
+
+#[test]
+fn a_failed_hyprland_transfer_aborts_the_drag() {
+    let limits = DndLimits {
+        max_payload: 8,
+        ..Default::default()
+    };
+    let (server, dnd, _display) = hyprland_drop(DndConfig::default(), limits, &[b'x'; 64]);
+    let events = wait_for(&dnd, |e| matches!(e, DndEvent::TransferFailed { .. }));
+    assert_eq!(failed(&events), Some(TransferError::TooLarge));
+    server.settle();
+    let m = &server.metrics.dnd;
+    assert_eq!(m.aborts.load(Ordering::SeqCst), 1);
+    assert_eq!(m.offers_alive.load(Ordering::SeqCst), 0);
+    assert_eq!(m.protocol_errors.load(Ordering::SeqCst), 0);
+}
+
+/// Everywhere else the action follows `enter`, and a rejection stays a plain destroy: a
+/// finish there would be a protocol error.
+#[test]
+fn a_rejected_drop_elsewhere_is_only_destroyed() {
+    let (server, _display, dnd, handle) = setup(DndConfig::default(), DndLimits::default());
+    dnd.register_target(&handle, files_target()).unwrap();
+    let control = server.dnd();
+    control.offer(
+        &["text/uri-list"],
+        1,
+        &[("text/uri-list", b"file:///a\r\n")],
+    );
+    control.enter(0, 5., 5.);
+    control.drop();
+    let events = wait_for(&dnd, |e| matches!(e, DndEvent::Dropped { .. }));
+    dnd.complete(dropped(&events).unwrap().0, Outcome::Rejected)
+        .unwrap();
+    server.settle();
+    let m = &server.metrics.dnd;
+    assert_eq!(m.finishes.load(Ordering::SeqCst), 0);
+    assert_eq!(m.offers_alive.load(Ordering::SeqCst), 0);
 }

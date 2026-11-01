@@ -1,7 +1,9 @@
 //! Non-blocking pipe transfers with progress and total deadlines.
+mod service;
+
+use super::representations::Bytes;
 use super::{DndLimits, TransferId};
 use crate::{Result, TransferError};
-use std::sync::Arc;
 use std::{
     io,
     os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd},
@@ -26,7 +28,7 @@ struct Incoming {
 }
 struct Outgoing {
     fd: OwnedFd,
-    data: Arc<[u8]>,
+    data: Bytes,
     offset: usize,
     started: Instant,
     progressed: Instant,
@@ -35,6 +37,8 @@ struct Outgoing {
 pub(crate) struct Reactor {
     incoming: Vec<Incoming>,
     outgoing: Vec<Outgoing>,
+    outgoing_first: bool,
+    ready: bool,
     /// Bumped whenever the set of polled fds changes, so a sleeping reader can be told.
     pub generation: u64,
 }
@@ -78,7 +82,7 @@ impl Reactor {
         });
     }
     /// Writes never block the dispatching thread; the fd is switched to non-blocking.
-    pub fn push_outgoing(&mut self, fd: OwnedFd, data: Arc<[u8]>, now: Instant) {
+    pub fn push_outgoing(&mut self, fd: OwnedFd, data: Bytes, now: Instant) {
         self.generation += 1;
         set_nonblocking(&fd);
         self.outgoing.push(Outgoing {
@@ -91,6 +95,9 @@ impl Reactor {
     }
     pub fn outgoing(&self) -> usize {
         self.outgoing.len()
+    }
+    pub fn ready(&self) -> bool {
+        self.ready
     }
     pub fn cancel_incoming(&mut self, id: TransferId) {
         self.generation += 1;
@@ -129,82 +136,10 @@ impl Reactor {
             let d = deadline(started, progressed, limits)?;
             next = Some(next.map_or(d, |next| next.min(d)));
         }
-        Ok((fds, next))
-    }
-    /// Reads whatever is ready without blocking; returns finished transfers.
-    pub fn service(&mut self, now: Instant, limits: &DndLimits) -> Vec<Done> {
-        let mut done = Vec::new();
-        let mut chunk = [0u8; 64 * 1024];
-        self.incoming.retain_mut(|t| {
-            let result = loop {
-                if expired(t.started, t.progressed, now.max(Instant::now()), limits) {
-                    break Some(Err(TransferError::Timeout));
-                }
-                let n =
-                    unsafe { libc::read(t.fd.as_raw_fd(), chunk.as_mut_ptr().cast(), chunk.len()) };
-                let current = now.max(Instant::now());
-                if expired(t.started, t.progressed, current, limits) {
-                    break Some(Err(TransferError::Timeout));
-                }
-                if n > 0 {
-                    let n = n as usize;
-                    if t.buf.len() + n > limits.max_payload {
-                        break Some(Err(TransferError::TooLarge));
-                    }
-                    t.buf.extend_from_slice(&chunk[..n]);
-                    t.progressed = current;
-                    continue;
-                }
-                if n == 0 {
-                    break Some(Ok(std::mem::take(&mut t.buf)));
-                }
-                match io::Error::last_os_error().kind() {
-                    io::ErrorKind::WouldBlock => break None,
-                    io::ErrorKind::Interrupted => continue,
-                    _ => break Some(Err(TransferError::Io)),
-                }
-            };
-            let Some(result) = result else {
-                return true;
-            };
-            done.push(Done::Incoming { id: t.id, result });
-            false
-        });
-        self.outgoing.retain_mut(|t| {
-            let finished = loop {
-                if expired(t.started, t.progressed, now.max(Instant::now()), limits) {
-                    break true;
-                }
-                let rest = &t.data[t.offset..];
-                if rest.is_empty() {
-                    break true;
-                }
-                // A closed reader yields EPIPE; Rust binaries ignore SIGPIPE by default.
-                let n = unsafe { libc::write(t.fd.as_raw_fd(), rest.as_ptr().cast(), rest.len()) };
-                if n > 0 {
-                    t.offset += n as usize;
-                    t.progressed = now.max(Instant::now());
-                    continue;
-                }
-                if n == 0 {
-                    break false;
-                }
-                match io::Error::last_os_error().kind() {
-                    io::ErrorKind::WouldBlock => break false,
-                    io::ErrorKind::Interrupted => continue,
-                    _ => break true,
-                }
-            };
-            if finished || expired(t.started, t.progressed, now.max(Instant::now()), limits) {
-                done.push(Done::Outgoing);
-                return false;
-            }
-            true
-        });
-        if !done.is_empty() {
-            self.generation += 1;
+        if self.ready {
+            next = Some(next.map_or_else(Instant::now, |next| next.min(Instant::now())));
         }
-        done
+        Ok((fds, next))
     }
 }
 
@@ -290,7 +225,7 @@ mod tests {
             [Done::Incoming { result: Ok(data), .. }] if data == b"ok")
         );
         let (read, write) = open_pipe().unwrap();
-        reactor.push_outgoing(write, Arc::from(b"late".as_slice()), now);
+        reactor.push_outgoing(write, Bytes::from(b"late".to_vec()), now);
         let limits = DndLimits {
             total: Duration::from_secs(1),
             ..Default::default()

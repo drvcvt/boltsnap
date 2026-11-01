@@ -1,6 +1,7 @@
 //! MIME/action mapping shared with X11 clients bridged through XWayland. Compositors
 //! translate X11 target atoms to their names, so `UTF8_STRING`/`TEXT`/`STRING` appear verbatim.
 use super::{Accept, DragData};
+#[cfg(test)]
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,7 +21,24 @@ pub(crate) const TEXT_MIMES: &[(&str, PayloadKind)] = &[
 ];
 /// First accept entry that the offer can satisfy, in the consumer's preference order.
 pub(crate) fn choose_mime(offered: &[String], accepts: &[Accept]) -> Option<(String, PayloadKind)> {
-    choices(offered, accepts).into_iter().next()
+    let has = |mime: &str| offered.iter().any(|offer| offer == mime);
+    for accept in accepts {
+        let choice = match accept {
+            Accept::Files => FILE_MIMES
+                .iter()
+                .find(|mime| has(mime))
+                .map(|mime| (*mime, PayloadKind::Files)),
+            Accept::Text => TEXT_MIMES.iter().find(|(mime, _)| has(mime)).copied(),
+            Accept::Mime(list) => list
+                .iter()
+                .find(|mime| has(mime))
+                .map(|mime| (mime.as_str(), PayloadKind::Bytes)),
+        };
+        if let Some((mime, kind)) = choice {
+            return Some((mime.to_owned(), kind));
+        }
+    }
+    None
 }
 /// Every offered type the consumer accepts, best first: consumer order, then each accept's own
 /// preference. A drop whose first choice fails to decode falls back along this list.
@@ -75,6 +93,7 @@ pub(crate) fn source_mimes(data: &DragData) -> Vec<String> {
 /// Bytes for one requested type; `STRING` is Latin-1 for X11 targets, `?` for the rest.
 /// Only announced types are answered; fixed type names compare without ASCII case, as some
 /// targets request `text/plain;charset=UTF-8`.
+#[cfg(test)]
 pub(crate) fn materialize(data: &mut DragData, mime: &str) -> Option<Arc<[u8]>> {
     let one_of = |list: &[&str]| list.iter().any(|m| m.eq_ignore_ascii_case(mime));
     match data {
@@ -119,6 +138,42 @@ mod tests {
         assert_eq!(files_first.0, "text/uri-list");
         let raw = choose_mime(&s(&["image/png"]), &[Accept::Mime(s(&["image/png"]))]).unwrap();
         assert_eq!(raw, ("image/png".into(), PayloadKind::Bytes));
+    }
+    #[test]
+    fn first_choice_matches_full_fallback_order_for_offer_subsets() {
+        let mimes = [
+            "text/uri-list",
+            "STRING",
+            "TEXT",
+            "UTF8_STRING",
+            "text/plain",
+            "image/png",
+            "custom/type",
+            "text/plain;charset=utf-8",
+        ];
+        for mask in 0..256 {
+            let mut offered: Vec<_> = mimes
+                .iter()
+                .enumerate()
+                .filter(|(bit, _)| mask & (1 << bit) != 0)
+                .map(|(_, mime)| mime.to_string())
+                .collect();
+            if mask % 2 == 0 {
+                offered.reverse();
+            }
+            let raw = || Accept::Mime(s(&["custom/type", "text/plain", "image/png", "text/plain"]));
+            for accepts in [
+                vec![],
+                vec![Accept::Files, Accept::Text, raw()],
+                vec![raw(), Accept::Text, Accept::Files],
+                vec![Accept::Text, Accept::Text, Accept::Files],
+            ] {
+                assert_eq!(
+                    choose_mime(&offered, &accepts),
+                    choices(&offered, &accepts).into_iter().next()
+                );
+            }
+        }
     }
     #[test]
     fn choices_list_every_accepted_type_best_first_without_duplicates() {

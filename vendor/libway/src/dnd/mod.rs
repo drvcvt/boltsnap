@@ -43,33 +43,31 @@
 //! }
 //! ```
 
+mod core;
 mod drag;
 mod engine;
 mod interop;
 mod reader;
+mod representations;
+mod session;
 mod transfer;
 mod uri;
-use crate::{Display, Error, Result, SurfaceHandle, TransferError};
-use engine::Engine;
+use crate::{Error, Result, SurfaceHandle, TransferError};
+use core::Core;
 pub use reader::Reader;
+pub use representations::OutgoingLimits;
+pub use session::{CoordinatedDnd, DispatchReport, Dnd, WaitInterest, WaitView};
 use std::{
-    os::fd::AsRawFd,
     path::PathBuf,
-    sync::{
-        Arc, Mutex, MutexGuard,
-        atomic::{AtomicU64, Ordering},
-    },
     time::{Duration, Instant},
 };
-use wayland_client::EventQueue;
-
-static DND_IDS: AtomicU64 = AtomicU64::new(1);
 
 /// Per-session resource bounds. Numeric zero limits disable the corresponding capacity;
 /// transfer timeouts must be positive and representable by the monotonic clock.
 #[derive(Debug, Clone, Copy)]
 pub struct DndLimits {
-    /// Maximum bytes per incoming representation (default 1 MiB). Outgoing payloads are uncapped.
+    /// Maximum bytes per incoming representation (default 1 MiB). Legacy outgoing drags
+    /// are uncapped; [`OutgoingLimits`] applies to the separate bounded entry point.
     pub max_payload: usize,
     /// Maximum parsed file URI entries (default 1024); no partial file list is returned.
     pub max_entries: usize,
@@ -286,7 +284,7 @@ pub enum DragData {
         /// Text served verbatim to text targets (STRING uses lossy Latin-1 conversion).
         text: String,
     },
-    /// Explicit MIME/payload pairs, materialized when requested.
+    /// Explicit MIME/payload pairs, prepared before starting; equivalent bytes share ownership.
     Static(Vec<(String, Vec<u8>)>),
     /// Called once per requested announced type on the dispatching thread (the reader thread
     /// with [`Dnd::spawn_reader`]) while libway holds its session lock: it must not wait on
@@ -488,273 +486,5 @@ pub(crate) fn read_events(guard: wayland_client::backend::ReadEventsGuard) -> Re
             Ok(())
         }
         other => other.map(drop).map_err(|e| Error::Wayland(e.to_string())),
-    }
-}
-
-pub(crate) struct Core {
-    pub queue: EventQueue<Engine>,
-    pub engine: Engine,
-    /// Installed by the reader; runs under the lock at most once per `events()` drain.
-    pub waker: Option<Box<dyn Fn() + Send>>,
-    /// The reader's wake handle while a reader runs.
-    pub kick: Option<Arc<reader::Control>>,
-    /// The last flush left requests queued; poll for writable space until drained.
-    pub write_pending: bool,
-}
-impl Core {
-    /// Dispatch protocol events, service pipes, flush. Returns the dispatched message count.
-    pub fn service(&mut self, now: Instant) -> Result<usize> {
-        let dispatched = self
-            .queue
-            .dispatch_pending(&mut self.engine)
-            .map_err(|e| Error::Wayland(e.to_string()))?;
-        self.engine.service_transfers(now);
-        self.flush()?;
-        if let Some(e) = self.engine.fatal.take() {
-            return Err(e);
-        }
-        if self.engine.overflowed {
-            return Err(Error::LimitExceeded);
-        }
-        Ok(dispatched)
-    }
-    pub fn flush(&mut self) -> Result<()> {
-        let pending = match self.queue.flush() {
-            Ok(()) => false,
-            Err(e) if would_block(&e) => true,
-            Err(e) => return Err(Error::Wayland(e.to_string())),
-        };
-        if pending != self.write_pending {
-            self.write_pending = pending;
-            if let Some(control) = &self.kick {
-                control.wake();
-            }
-        }
-        Ok(())
-    }
-    /// Tell a sleeping reader that the transfer fds changed under it (consumer-side dispatch
-    /// or request), so it polls the new set instead of sleeping on the old one.
-    pub fn kick(&self, generation: u64) {
-        if let Some(control) = self
-            .kick
-            .as_ref()
-            .filter(|_| self.engine.reactor.generation != generation)
-        {
-            control.wake();
-        }
-    }
-    /// Wake the consumer if events wait and it was not woken since the last drain.
-    pub fn wake(&mut self) {
-        if let Some(waker) = &self.waker
-            && !self.engine.events.is_empty()
-            && !self.engine.wake_armed
-        {
-            self.engine.wake_armed = true;
-            waker();
-        }
-    }
-}
-
-/// One DnD session per display connection. Register targets for any number of surfaces.
-pub struct Dnd {
-    display: Display,
-    core: Arc<Mutex<Core>>,
-}
-impl Dnd {
-    /// Binds registry, seats and data devices on `display`. Sends requests only; readiness
-    /// arrives as [`DndEvent::Ready`].
-    /// Zero or unrepresentable transfer timeouts return [`Error::InvalidInput`] before
-    /// any objects are created. Initial connection write failures are returned directly.
-    pub fn new(display: &Display, options: DndOptions) -> Result<Self> {
-        for duration in [options.limits.inactivity, options.limits.total] {
-            if duration.is_zero() {
-                return Err(Error::InvalidInput("transfer deadlines must be positive"));
-            }
-            checked_deadline(Instant::now(), duration)?;
-        }
-        let conn = display.connection();
-        let queue = conn.new_event_queue::<Engine>();
-        let id = DND_IDS.fetch_add(1, Ordering::Relaxed);
-        let engine = Engine::new(conn, queue.handle(), id, options);
-        let mut core = Core {
-            queue,
-            engine,
-            waker: None,
-            kick: None,
-            write_pending: false,
-        };
-        core.flush()?;
-        Ok(Self {
-            display: display.clone(),
-            core: Arc::new(Mutex::new(core)),
-        })
-    }
-    fn lock(&self) -> MutexGuard<'_, Core> {
-        self.core.lock().unwrap_or_else(|p| p.into_inner())
-    }
-    /// Run a consumer request, send it, and wake the consumer for events it produced.
-    fn request<T>(&self, f: impl FnOnce(&mut engine::Engine) -> Result<T>) -> Result<T> {
-        let mut core = self.lock();
-        let generation = core.engine.reactor.generation;
-        let value = f(&mut core.engine);
-        core.kick(generation);
-        let value = value?;
-        core.flush()?;
-        core.wake();
-        Ok(value)
-    }
-    /// Non-blocking: dispatch already-read events and service transfers. Safe next to a
-    /// reader thread, for example to take in a button press right before [`Dnd::start_drag`].
-    /// Errors from dispatch, connection I/O or event-queue overflow make the session unusable.
-    pub fn dispatch(&self) -> Result<()> {
-        let mut core = self.lock();
-        let generation = core.engine.reactor.generation;
-        let result = core.service(Instant::now());
-        core.kick(generation);
-        core.wake();
-        result.map(drop)
-    }
-    /// Read and dispatch on a background thread, the way winit's own loop coexists with other
-    /// readers. `waker` runs at most once per `events()` drain (and once on failure), also for
-    /// events that the consumer's own calls produce. It runs under the session lock and must
-    /// not block: `EventLoopProxy::send_event` or a channel send. Do not call `run` meanwhile.
-    /// Also do not call `wait_ready` while it runs; wait for the Ready event instead.
-    /// All other consumer methods may run beside the reader. Starting a second reader
-    /// returns [`Error::Unsupported`]. Drop the reader before the DnD session/display owner.
-    pub fn spawn_reader(&self, waker: impl Fn() + Send + 'static) -> Result<Reader> {
-        let conn = self.display.connection().clone();
-        reader::spawn(conn, self.core.clone(), waker)
-    }
-    /// One bounded wait-and-dispatch cycle that reads the socket itself. Returns as soon as
-    /// events are queued. Refused on guest displays, whose owner loop reads; use a reader
-    /// thread there.
-    /// Zero performs at most one nonblocking read cycle. Unrepresentable timeouts return
-    /// [`Error::InvalidInput`]. Do not use concurrently with a reader or another `run` call.
-    pub fn run(&self, timeout: Duration) -> Result<()> {
-        if self.display.is_guest() {
-            return Err(Error::Unsupported("Dnd::run on a foreign display"));
-        }
-        let conn = self.display.connection();
-        let deadline = checked_deadline(Instant::now(), timeout)?;
-        loop {
-            self.dispatch()?;
-            if !self.lock().engine.events.is_empty() {
-                return Ok(());
-            }
-            let Some(guard) = conn.prepare_read() else {
-                if Instant::now() >= deadline {
-                    return Ok(());
-                }
-                continue;
-            };
-            // Another reader may have queued ours before we prepared (Rust backend).
-            if self.lock().service(Instant::now())? > 0 {
-                if Instant::now() >= deadline {
-                    return Ok(());
-                }
-                continue;
-            }
-            let (mut fds, next) = {
-                let mut core = self.lock();
-                core.flush()?;
-                let fd = conn.backend().poll_fd().as_raw_fd();
-                core.engine
-                    .reactor
-                    .poll_set(fd, core.write_pending, &core.engine.limits)?
-            };
-            let wait = next.map_or(deadline, |d| d.min(deadline));
-            let ms = poll_timeout(wait);
-            let ret = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, ms) };
-            if ret < 0 {
-                let err = std::io::Error::last_os_error();
-                if err.kind() != std::io::ErrorKind::Interrupted {
-                    return Err(err.into());
-                }
-            }
-            if fds.iter().any(|fd| fd.revents & libc::POLLNVAL != 0) {
-                return Err(std::io::Error::from_raw_os_error(libc::EBADF).into());
-            }
-            if ret > 0 && fds[0].revents & (libc::POLLIN | libc::POLLERR | libc::POLLHUP) != 0 {
-                read_events(guard)?;
-            } else {
-                drop(guard);
-            }
-            self.dispatch()?;
-            if ret > 0 || Instant::now() >= deadline {
-                return Ok(());
-            }
-        }
-    }
-    /// Block until the initial registry sync finished. Not available on guest displays.
-    /// Zero only checks current readiness, otherwise returning [`Error::Timeout`].
-    /// Unrepresentable timeouts return [`Error::InvalidInput`], even if already ready.
-    pub fn wait_ready(&self, timeout: Duration) -> Result<()> {
-        if self.display.is_guest() {
-            return Err(Error::Unsupported("Dnd::wait_ready on a foreign display"));
-        }
-        let end = checked_deadline(Instant::now(), timeout)?;
-        while !self.lock().engine.ready {
-            if Instant::now() >= end {
-                return Err(Error::Timeout);
-            }
-            self.run(end.saturating_duration_since(Instant::now()))?;
-        }
-        Ok(())
-    }
-    /// Drain queued events; re-arms the reader wakeup.
-    pub fn events(&self) -> Vec<DndEvent> {
-        let mut core = self.lock();
-        core.engine.wake_armed = false;
-        core.engine.events.drain(..).collect()
-    }
-    /// Register a target on a live surface of this display. Invalid action policies,
-    /// foreign safe handles and destroyed safe handles return [`Error::InvalidInput`].
-    /// At capacity returns [`Error::LimitExceeded`]. Unregister before destroying the surface.
-    pub fn register_target(&self, surface: &SurfaceHandle, spec: TargetSpec) -> Result<TargetId> {
-        surface.validate(self.display.connection())?;
-        self.request(|e| e.register_target(surface.id().clone(), spec))
-    }
-    /// Move, resize, enable or disable a target; the current hover is renegotiated.
-    /// None keeps the respective value; geometry is stored as supplied.
-    /// Stale or foreign ids return [`Error::UnknownTarget`].
-    pub fn update_target(
-        &self,
-        id: TargetId,
-        rect: Option<LocalRect>,
-        enabled: Option<bool>,
-    ) -> Result<()> {
-        self.request(|e| e.update_target(id, rect, enabled))
-    }
-    /// Answer a [`DndEvent::Dropped`]; every delivered drop needs exactly one answer and
-    /// counts against `DndLimits::max_transfers` until then.
-    /// See [`Outcome::Accepted`] for valid actions. A mismatch returns [`Error::InvalidInput`]
-    /// without completing the transfer, so the caller can correct or reject it.
-    pub fn complete(&self, transfer: TransferId, outcome: Outcome) -> Result<()> {
-        self.request(|e| e.complete(transfer, outcome))
-    }
-    /// Start a drag from `request.origin`. The previous drag of that seat is cancelled.
-    /// Requires readiness and a valid explicit/tracked serial. Invalid origins, MIME names,
-    /// paths or hotspots are rejected before replacing the previous drag. Size/count bounds
-    /// return `LimitExceeded`; bad icon dimensions return `InvalidDimensions`.
-    pub fn start_drag(&self, request: DragRequest) -> Result<DragId> {
-        self.request(|e| e.start_drag(request))
-    }
-    /// Cancel an active outgoing drag and queue `DragEnded(Cancelled)`. Its already started
-    /// sends may finish. An unknown or ended id returns [`Error::UnknownTransfer`].
-    pub fn cancel_drag(&self, id: DragId) -> Result<()> {
-        self.request(|e| e.cancel_drag(id))
-    }
-    /// Remove a target, abort its still-reading drops and renegotiate hover.
-    /// Already delivered drops still require a `complete` answer. Unknown or foreign
-    /// ids return [`Error::UnknownTarget`]. Call before destroying the owning surface.
-    pub fn unregister_target(&self, id: TargetId) -> Result<()> {
-        self.request(|e| e.unregister_target(id))
-    }
-}
-impl Drop for Dnd {
-    fn drop(&mut self) {
-        let mut core = self.lock();
-        core.engine.shutdown();
-        let _ = core.flush();
     }
 }

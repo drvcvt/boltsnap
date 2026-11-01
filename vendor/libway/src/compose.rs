@@ -1,6 +1,8 @@
-use crate::*;
+use crate::{
+    capture::{near, scaled_size},
+    *,
+};
 use image::{RgbaImage, imageops};
-use std::os::unix::net::UnixStream;
 
 /// CPU composition of outputs at their largest scale (at least 1.0). Requires `image`.
 pub struct DesktopCapture {
@@ -47,8 +49,9 @@ fn orient(mut image: RgbaImage, t: Transform) -> RgbaImage {
 }
 impl Connection {
     /// Capture and compose the entire desktop within one timeout and resource budget.
-    /// Outputs are captured concurrently on separate connections to the same server
-    /// socket when its path is known, otherwise sequentially; never atomically. Layout changes return
+    /// Every output is captured on this connection with all capture requests in
+    /// flight together; the compositor may still copy them one after another, and
+    /// the result is never atomic. Layout changes return
     /// [`Error::LayoutChanged`]; no outputs returns [`Error::NoOutputs`]. Requires `image`.
     ///
     /// ```no_run
@@ -103,7 +106,7 @@ impl Connection {
             width.checked_mul(4).ok_or(Error::InvalidDimensions)?,
             4,
         )?;
-        // Outputs are captured concurrently, so each gets an equal share of the
+        // All frames exist at once, so each output gets an equal share of the
         // budget left after the canvas.
         let share = options
             .limits
@@ -111,74 +114,57 @@ impl Connection {
             .checked_sub(bytes as u64)
             .ok_or(Error::LimitExceeded)?
             / outputs.len() as u64;
-        let placed = match self.peer.clone() {
-            Some(peer) if outputs.len() > 1 => {
-                // One pending capture per connection: give each output its own
-                // connection to the same server.
-                let peer = &peer;
-                std::thread::scope(|scope| {
-                    let workers: Vec<_> = outputs
-                        .iter()
-                        .map(|output| {
-                            scope.spawn(move || {
-                                let socket = UnixStream::connect(peer).map_err(Error::Io)?;
-                                let mut connection = Connection::from_socket(socket, options)?;
-                                let own = connection
-                                    .outputs(options)?
-                                    .into_iter()
-                                    .find(|o| {
-                                        Output {
-                                            id: output.id,
-                                            ..o.clone()
-                                        } == *output
-                                    })
-                                    .ok_or(Error::LayoutChanged)?;
-                                connection.place(&own, share, bounds, scale, options, end)
-                            })
-                        })
-                        .collect();
-                    workers
-                        .into_iter()
-                        .map(|worker| {
-                            worker.join().unwrap_or(Err(Error::CaptureFailed(
-                                "output capture thread panicked".into(),
-                            )))
-                        })
-                        .collect::<Result<Vec<_>>>()
-                })?
+        // All outputs are captured on this connection with every request in
+        // flight together; each gets an equal share of the budget left after
+        // the canvas for its frame, conversion and resize scratch.
+        let mut next = options.clone();
+        next.timeout = end.saturating_duration_since(std::time::Instant::now());
+        next.limits.max_bytes = share / 4;
+        // Canvas rectangle of each output at canvas scale.
+        let rects = outputs
+            .iter()
+            .map(|o| {
+                let (w, h) = scaled_size(o.logical.width, o.logical.height, scale)?;
+                Ok((
+                    offset(o.logical.x, bounds.x, scale),
+                    offset(o.logical.y, bounds.y, scale),
+                    w,
+                    h,
+                ))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let mut raw = crate::buffer::zeroed(bytes)?;
+        // Desktop gaps are opaque black, independent of export codec.
+        if !covers(&rects, width, height) {
+            for p in raw.as_chunks_mut::<4>().0 {
+                p[3] = 255;
             }
-            _ => outputs
-                .iter()
-                .map(|output| self.place(output, share, bounds, scale, options, end))
-                .collect::<Result<Vec<_>>>()?,
-        };
+        }
+        let mut canvas = RgbaImage::from_raw(width, height, raw).ok_or(Error::InvalidDimensions)?;
+        // Each frame is composed as soon as it is ready, while the compositor
+        // copies the next output. `placed` keeps the size actually written,
+        // which rounding can leave one pixel short of the rectangle.
+        let mut placed = rects.clone();
+        self.capture_batch_each(&outputs, &next, end, &mut |index, frame| {
+            let (x, y, w, h) = rects[index];
+            if upright(&frame, (w, h)) {
+                placed[index] = (x, y, frame.width, frame.height);
+                return convert_into(&mut canvas, &frame, x, y);
+            }
+            let pixels = place(&outputs[index], frame, share, scale, &next.limits)?;
+            placed[index] = (x, y, pixels.width(), pixels.height());
+            blit(&mut canvas, &pixels, x, y);
+            Ok(())
+        })?;
+        if covers(&rects, width, height) && !covers(&placed, width, height) {
+            fill_gaps(&mut canvas, &placed);
+        }
         let mut verify = options.clone();
         verify.timeout = end.saturating_duration_since(std::time::Instant::now());
         if self.outputs(&verify)? != original {
             return Err(Error::LayoutChanged);
         }
-        // A single output covering the requested bounds becomes the result
-        // directly, avoiding a second full-size allocation and pixel copy.
-        let image = match placed.as_slice() {
-            [(pixels, 0, 0)] if pixels.dimensions() == (width, height) => {
-                placed.into_iter().next().map(|(pixels, _, _)| pixels)
-            }
-            _ => {
-                let mut raw = crate::buffer::zeroed(bytes)?;
-                // Desktop gaps are opaque black, independent of export codec.
-                if !covers(&placed, width, height) {
-                    for p in raw.chunks_exact_mut(4) {
-                        p[3] = 255;
-                    }
-                }
-                let mut canvas =
-                    RgbaImage::from_raw(width, height, raw).ok_or(Error::InvalidDimensions)?;
-                for (pixels, x, y) in &placed {
-                    blit(&mut canvas, pixels, *x, *y);
-                }
-                Some(canvas)
-            }
-        };
+        let image = Some(canvas);
         Ok(DesktopCapture {
             image: image.ok_or(Error::NoOutputs)?,
             outputs,
@@ -186,75 +172,117 @@ impl Connection {
             scale,
         })
     }
-    /// Capture one output and bring it to canvas scale. Returns the pixels and
-    /// their canvas offset.
-    fn place(
-        &mut self,
-        output: &Output,
-        share: u64,
-        bounds: Rect,
-        scale: f64,
-        options: &CaptureOptions,
-        end: std::time::Instant,
-    ) -> Result<(RgbaImage, i64, i64)> {
-        let mut next = options.clone();
-        next.timeout = end.saturating_duration_since(std::time::Instant::now());
-        // Capture, conversion and transform/resize scratch share this output's
-        // budget. Limits are deliberately conservative instead of overcommitting.
-        next.limits.max_bytes = share / 4;
-        let frame = self.capture(output.id, &next)?;
-        let (ow, oh) = scaled_size(output.logical.width, output.logical.height, scale)?;
-        let output_bytes = next.limits.buffer(
-            ow,
-            oh,
-            ow.checked_mul(4).ok_or(Error::InvalidDimensions)?,
-            4,
-        )?;
-        let upright = frame.transform.size(frame.width, frame.height);
-        let resize = !near(upright, (ow, oh));
-        // image's separable Gaussian resize uses an RGBA32F intermediate.
-        let scratch = if resize {
-            resize_scratch(upright.0, oh)?
-        } else {
-            0
-        };
-        let required = (u64::from(frame.stride) * u64::from(frame.height))
-            .checked_add(u64::from(frame.width) * u64::from(frame.height) * 8)
-            .and_then(|n| n.checked_add(output_bytes as u64))
-            .and_then(|n| n.checked_add(scratch))
-            .ok_or(Error::LimitExceeded)?;
-        if required > share {
-            return Err(Error::LimitExceeded);
-        }
-        let pixels = frame.to_image()?;
-        drop(frame);
-        let pixels = if resize {
-            imageops::resize(&pixels, ow, oh, imageops::FilterType::Gaussian)
-        } else {
-            pixels
-        };
-        let x = ((f64::from(output.logical.x) - f64::from(bounds.x)) * scale).round() as i64;
-        let y = ((f64::from(output.logical.y) - f64::from(bounds.y)) * scale).round() as i64;
-        Ok((pixels, x, y))
+}
+/// Bring one captured output to canvas scale: orient, then resize when needed.
+fn place(
+    output: &Output,
+    frame: Frame,
+    share: u64,
+    scale: f64,
+    limits: &Limits,
+) -> Result<RgbaImage> {
+    let (ow, oh) = scaled_size(output.logical.width, output.logical.height, scale)?;
+    let output_bytes = limits.buffer(
+        ow,
+        oh,
+        ow.checked_mul(4).ok_or(Error::InvalidDimensions)?,
+        4,
+    )?;
+    let upright = frame.transform.size(frame.width, frame.height);
+    let resize = !near(upright, (ow, oh));
+    // image's separable Gaussian resize uses an RGBA32F intermediate.
+    let scratch = if resize {
+        resize_scratch(upright.0, oh)?
+    } else {
+        0
+    };
+    let required = (u64::from(frame.stride) * u64::from(frame.height))
+        .checked_add(u64::from(frame.width) * u64::from(frame.height) * 8)
+        .and_then(|n| n.checked_add(output_bytes as u64))
+        .and_then(|n| n.checked_add(scratch))
+        .ok_or(Error::LimitExceeded)?;
+    if required > share {
+        return Err(Error::LimitExceeded);
     }
+    let pixels = frame.to_image()?;
+    drop(frame);
+    let pixels = if resize {
+        imageops::resize(&pixels, ow, oh, imageops::FilterType::Gaussian)
+    } else {
+        pixels
+    };
+    Ok(pixels)
 }
-/// Rounding can leave the captured buffer one pixel off the scaled logical size;
-/// that is placed as is instead of resampled.
-fn near(a: (u32, u32), b: (u32, u32)) -> bool {
-    a.0.abs_diff(b.0) <= 1 && a.1.abs_diff(b.1) <= 1
-}
-/// Whether the placed images cover every canvas pixel. Outputs do not overlap,
-/// so clipped areas summing to the canvas area means full coverage.
-fn covers(placed: &[(RgbaImage, i64, i64)], width: u32, height: u32) -> bool {
-    let area: u64 = placed
+/// Whether the output rectangles cover every canvas pixel. Outputs do not
+/// overlap, so clipped areas summing to the canvas area means full coverage.
+fn covers(rects: &[(i64, i64, u32, u32)], width: u32, height: u32) -> bool {
+    let area: u64 = rects
         .iter()
-        .map(|(pixels, x, y)| {
-            let w = (x + i64::from(pixels.width())).min(i64::from(width)) - x.max(&0);
-            let h = (y + i64::from(pixels.height())).min(i64::from(height)) - y.max(&0);
+        .map(|&(x, y, w, h)| {
+            let w = (x + i64::from(w)).min(i64::from(width)) - x.max(0);
+            let h = (y + i64::from(h)).min(i64::from(height)) - y.max(0);
             (w.max(0) * h.max(0)) as u64
         })
         .sum();
     area == u64::from(width) * u64::from(height)
+}
+/// Make every canvas pixel outside `placed` opaque black. Only needed when a
+/// frame came out a pixel short after the canvas was judged fully covered.
+fn fill_gaps(canvas: &mut RgbaImage, placed: &[(i64, i64, u32, u32)]) {
+    for (x, y, pixel) in canvas.enumerate_pixels_mut() {
+        let (x, y) = (i64::from(x), i64::from(y));
+        let inside = placed.iter().any(|&(px, py, w, h)| {
+            (px..px + i64::from(w)).contains(&x) && (py..py + i64::from(h)).contains(&y)
+        });
+        if !inside {
+            pixel.0[3] = 255;
+        }
+    }
+}
+/// Canvas offset of a logical coordinate at canvas scale.
+fn offset(at: i32, origin: i32, scale: f64) -> i64 {
+    ((f64::from(at) - f64::from(origin)) * scale).round() as i64
+}
+/// Whether `frame` can be converted straight into its canvas rectangle: CPU
+/// pixels, upright, and within one pixel of the rectangle's size.
+fn upright(frame: &Frame, size: (u32, u32)) -> bool {
+    matches!(frame.storage, FrameStorage::Cpu(_))
+        && frame.transform == Transform::Normal
+        && !frame.y_inverted
+        && near((frame.width, frame.height), size)
+}
+/// Convert `frame`'s pixels straight into `target` at (`x`, `y`), clipped to
+/// the target, row by row, with the same conversion as [`Frame::rgba8`].
+fn convert_into(target: &mut RgbaImage, frame: &Frame, x: i64, y: i64) -> Result<()> {
+    let FrameStorage::Cpu(buffer) = &frame.storage else {
+        return Err(Error::Unsupported("composition of GPU frames"));
+    };
+    let bytes = buffer.bytes();
+    let bpp = frame.format.bytes_per_pixel() as usize;
+    let stride = frame.stride as usize;
+    if bytes.len() < stride * frame.height as usize || stride < frame.width as usize * bpp {
+        return Err(Error::InvalidDimensions);
+    }
+    let (tw, th) = (i64::from(target.width()), i64::from(target.height()));
+    let (left, top) = (x.max(0), y.max(0));
+    let right = (x + i64::from(frame.width)).min(tw);
+    let bottom = (y + i64::from(frame.height)).min(th);
+    if left >= right || top >= bottom {
+        return Ok(());
+    }
+    let pixels = (right - left) as usize;
+    let tstride = tw as usize * 4;
+    let target = &mut **target;
+    for row in top..bottom {
+        let s = (row - y) as usize * stride + (left - x) as usize * bpp;
+        let t = row as usize * tstride + left as usize * 4;
+        crate::buffer::convert_row(
+            &bytes[s..s + pixels * bpp],
+            &mut target[t..t + pixels * 4],
+            frame.format,
+        );
+    }
+    Ok(())
 }
 /// Copy `source` into `target` at (`x`, `y`), clipped to the target, row by row.
 fn blit(target: &mut RgbaImage, source: &RgbaImage, x: i64, y: i64) {
@@ -280,20 +308,6 @@ fn resize_scratch(source_width: u32, destination_height: u32) -> Result<u64> {
         .checked_mul(16)
         .ok_or(Error::LimitExceeded)
 }
-fn scaled_size(w: u32, h: u32, scale: f64) -> Result<(u32, u32)> {
-    let (w, h) = (f64::from(w) * scale, f64::from(h) * scale);
-    if !w.is_finite()
-        || !h.is_finite()
-        || w < 1.0
-        || h < 1.0
-        || w > f64::from(i32::MAX)
-        || h > f64::from(i32::MAX)
-    {
-        return Err(Error::InvalidDimensions);
-    }
-    Ok((w.round() as u32, h.round() as u32))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -323,9 +337,14 @@ mod tests {
         assert_eq!(red(&canvas), [0, 0, 0, 0, 0, 0, 0, 0, 2, 3, 0, 0]);
         blit(&mut canvas, &source, 9, 9);
         assert_eq!(canvas.get_pixel(0, 2)[3], 9);
-        let halves = vec![(RgbaImage::new(2, 3), 0, 0), (RgbaImage::new(3, 3), 2, 0)];
+        let halves = [(0, 0, 2, 3), (2, 0, 3, 3)];
         assert!(covers(&halves, 4, 3));
         assert!(!covers(&halves[..1], 4, 3));
+        // A frame one pixel short leaves its last column opaque black.
+        let mut canvas = RgbaImage::new(4, 3);
+        fill_gaps(&mut canvas, &[(0, 0, 2, 3), (2, 0, 1, 3)]);
+        let alpha: Vec<_> = canvas.pixels().map(|p| p[3]).collect();
+        assert_eq!(alpha, [0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 255]);
     }
     #[test]
     fn inverse_transforms_match_asymmetric_reference_pixels() {

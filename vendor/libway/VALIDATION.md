@@ -1,10 +1,329 @@
 # Validation
 
-## Review fixes: 2026-09-23
+## Multi-output desktop capture speed (Boltsnap): 2026-11-01
+
+Plan: [capture speed](docs/plans/phase-a/2026-11-01-capture-desktop-speed.md).
+Status: done.
+
+**What changed.** Desktop capture now uses one connection for all outputs
+(L1). Each frame is composed straight into the canvas as soon as it is ready
+(L1c). `capture_desktop_tiles` adds raw per-output tiles (L2). Commits:
+
+| Commit | Content |
+| --- | --- |
+| `117bd98` | plan and timing example |
+| `7ff1fbb` | split of `capture.rs` |
+| `bfc19a5` | one connection for all outputs |
+| `dcaa2f6` | tiles |
+| `d9ac043` | pipelined direct composition |
+
+**Synthetic tests.**
+
+- `tests/protocol.rs`, rewritten and new:
+  - every output on one connection, with the server holding readies until
+    both captures are pending and answering in reverse order;
+  - one output's failure fails the call and releases every frame, buffer,
+    session and source; Auto then succeeds over WLR;
+  - a held-back ready times out with the same cleanup.
+- `tests/tiles.rs`:
+  - positions, untouched XRGB8888 bytes and `stride == width * 4`;
+  - mixed scales or a rotated output fall back before capturing;
+  - a y-inverted frame falls back and its buffers are released;
+  - no outputs returns `NoOutputs`.
+- Unit tests:
+  - the shared row converter against whole-frame conversion for every
+    format;
+  - the gap fill when a frame is one pixel short.
+- All existing composition tests stay byte-identical.
+
+The final `tools/check.sh full` passed with these library test counts:
+
+| Feature set | Tests |
+| --- | ---: |
+| no default features | 261 |
+| default | 265 |
+| `capture` | 261 |
+| `dnd` | 288 |
+| `foreign-display` | 288 |
+| `owned-native-system` | 281 |
+| all features | 313 (1 ignored) |
+
+**Live, on the owner's desktop with their okay.** Two 1920x1080 outputs at
+scale 1, Hyprland 0.56.2, NVIDIA RTX 4060, release build, 20 runs, with a
+YouTube video playing:
+
+| Build | warm median |
+| --- | --- |
+| before (`117bd98`) | 18-20 ms |
+| L1 alone | 26-27 ms (regression, fixed by L1c) |
+| after L1c | about 15 ms |
+| tiles | about 13 ms |
+
+The P4 dmabuf probe measured:
+
+- the GPU copy at 4-5.4 ms per output, against 8-9.6 ms for shm;
+- NVIDIA GBM cannot map the tiled dmabuf for CPU readback, so there is no
+  follow-up.
+
+The full table and phase timings are in the plan, section 6.
+
+## Toplevel requests (R3): 2026-11-01
+
+Plan: [R3](docs/plans/done/2026-11-01-r3-toplevel-requests.md). Status: done. The
+plan covers size limits, attention and idle inhibit. Bell, parent and modal
+moved to the roadmap's "later" list (D1). Regions on toplevels no longer commit
+(D3).
+
+`tools/check.sh full` passed as one local invocation (Gentoo, rustc/Cargo 1.98.1,
+locked dependencies, niced, two Cargo jobs). It ran library tests for each
+feature set:
+
+| Feature set | Tests |
+| --- | ---: |
+| no default features | 260 |
+| default | 264 |
+| `capture` | 260 |
+| `dnd` | 287 |
+| `foreign-display` | 287 |
+| `owned-native-system` | 280 |
+| all features | 312 (1 ignored as before) |
+
+The same run also passed the GPU all-target check, formatting, strict Clippy,
+Rustdoc with `-D missing-docs`, and the `integration/dnd-winit` and
+`benchmarks` manifests.
+
+New synthetic tests are in `src/window/tests/shell/toplevel.rs` (12 tests):
+
+- Size limits:
+  - only changed requests are sent, with no commit;
+  - the safe order covers growth, shrinkage, a mixed-axis change (three
+    requests), a min-only change and dropping the maximum;
+  - errors leave the ledger empty;
+  - the limits ride the next presented frame.
+- Attention:
+  - the token sequence carries no serial and no app id;
+  - `activate` is sent before the token destroy;
+  - a request made while one is pending is coalesced;
+  - the attention calls work on layers;
+  - a closed window only gets its token destroyed;
+  - the call is unsupported without the global, and a pending token survives
+    global removal;
+  - shutdown cleanup.
+- Idle inhibit:
+  - enabling and disabling are idempotent;
+  - the inhibitor is destroyed before the surface on close, also while a lease
+    holds the surface, and on shutdown;
+  - the calls work on layers;
+  - without the global, enabling is unsupported and disabling is fine.
+
+`src/window/tests/shell/region.rs` now checks that toplevel regions send no
+commit and that layer input and opaque regions still do. The peer compositor
+gained `src/window/tests/peer/toplevel.rs` for the activation and idle-inhibit
+globals.
+
+Before the final check, a fresh review found a mixed-axis case where two
+size-limit requests in either order briefly had max below min. That is now
+fixed with a three-step order. An audit of the tests against the plan found
+eight gaps, which are now closed. Details are in the plan's section 10.
+
+The live check ran twice on Hyprland 0.56.2 with one owned toplevel, using
+`examples/attention.rs` (debug build). Both runs logged:
+
+```
+configured 950x1032
+shown
+idle inhibit on
+configured 320x200
+attention requested
+idle inhibit off
+done
+```
+
+The second run also had a read-only listener on Hyprland's event socket
+(`.socket2.sock`):
+
+```
+14:38:17 openwindow>>564352489500,7,libway.attention,libway attention
+14:38:19 urgent>>564352489500
+14:38:29 closewindow>>564352489500
+```
+
+- **Attention:** `request_attention` after focus loss made Hyprland mark
+  exactly this window urgent. It did not take focus.
+- **Size limits:** the first configure tiles the window at 950x1032, above the
+  640x400 maximum. Hyprland does not apply size limits to tiled windows, and
+  the protocol allows that.
+- **The 320x200 configure:** it arrived in both runs, even though in the second
+  run the owner only clicked into the window and away. Hyprland chose it on its
+  own, and the cause was not investigated. So this check does not show whether
+  an interactive resize respects the minimum.
+- **Idle inhibit:** created and destroyed without errors. Its screen effect was
+  not observed, because that would need changes to the session's idle
+  timeouts.
+
+## Layer surfaces (R7): 2026-11-01
+
+Plan: [R7](docs/plans/done/2026-11-01-r7-layer-shell.md). Status: done, including the
+live check.
+
+`tools/check.sh full` passed as one local invocation (Gentoo, rustc/Cargo 1.98.1,
+locked dependencies, niced, two Cargo jobs): library tests for no default
+features (248), default (252), `capture` (248), `dnd` (275), `foreign-display`
+(275), `owned-native-system` (268) and all features (300, 1 ignored as before),
+the GPU all-target check, formatting, strict Clippy, Rustdoc with
+`-D missing-docs`, and the `integration/dnd-winit` and `benchmarks` manifests.
+
+New synthetic tests against literal wire traces:
+
+- `src/window/tests/shell/layer.rs` covers creation:
+  - absent global and `NotReady`;
+  - exact creation order with a null and a chosen output, every field's raw wire
+    value;
+  - eleven invalid combinations with an empty ledger;
+  - the version gates v1 to v5, with nothing sent on refusal, and teardown per
+    version.
+- `src/window/tests/shell/layer_runtime.rs` covers runtime behaviour:
+  - configure/ack, with the ack before the observation and before the present
+    commit, 0 replaced by the requested size, two configures in order;
+  - a 0 configure on a stretched axis, which fails without an ack;
+  - state changes that send only the changed requests and one commit;
+  - `closed`, which retires the identity once, cancels keyboard and pointer
+    focus, and destroys the role before the surface;
+  - an own close followed by `closed`;
+  - keys and leave on a layer;
+  - role checks with a real seat;
+  - CPU presentation;
+  - global removal.
+- `src/window/tests/shell/region.rs` covers input and opaque regions.
+- `src/window/tests/scaling.rs` and `src/window/scale/tests.rs` cover output
+  identity: announced only after the first `done`, removal, no reuse, bounded
+  names.
+- `src/window/tests/native/admission.rs` covers raw handles and native frames on
+  a layer.
+
+A fresh review of the diff and an audit of the tests against the plan's 13 test
+items ran before the final check. Their findings are listed in the plan's
+section 11.
+
+Live check on Hyprland 0.56.2 (DP-3 and DP-1, 1920x1080, scale 1), owned test
+surfaces only, `cargo run --no-default-features --example layer` (debug
+build):
+
+```
+hud configured 240x120
+hud shown
+hud pointer events: 0
+prompt configured 360x160
+prompt shown
+prompt keyboard enter
+prompt closed by Escape
+```
+
+The HUD was checked from a screenshot cropped to the corner, which the owner
+confirmed. It sits top right, 24 px from both edges and below the panel
+(`Respect`), translucent with a 2 px border. The owner moved the pointer across
+it and it saw no pointer events (`InputRegion::None`).
+
+The first two runs used `Exclusive` for the prompt. Both logged
+`prompt keyboard enter` and then `prompt timeout`, because the owner pressed
+nothing: the prompt had landed on the other monitor and locked the keyboard.
+Reading the Hyprland source explains this. With a null output, Hyprland picks
+its focused monitor, and `Exclusive` is a hard lock on keyboard and pointer.
+The prompt now uses `OnDemand` (normal window focus, it closes on focus loss),
+and the rustdoc and README say which mode fits which surface.
+
+Unrelated to R7, one parallel full run hit a single
+`dnd_incoming::leave_after_drop_does_not_abort_and_limits_apply` failure. That
+test passed 30 times in a row on its own, and the final full run was green.
+
+## Primary selection (R2): 2026-11-01
+
+Plan: [R2](docs/plans/phase-a/2026-10-20-r2-primary-selection.md). Status: built; the
+owner-run live check is still open, so R2 counts as synthetic-only.
+
+`tools/check.sh full` passed as one local invocation (Gentoo, rustc/Cargo 1.98.1,
+locked dependencies, niced, two Cargo jobs): library tests for no default
+features (225), default (229), `capture` (225), `dnd` (252), `foreign-display`
+(252), `owned-native-system` (244) and all features (276, 1 ignored as before),
+the GPU all-target check, formatting, strict Clippy, Rustdoc with
+`-D missing-docs`, and the `integration/dnd-winit` and `benchmarks` manifests.
+
+New synthetic tests: 12 cases in `src/window/tests/clipboard/primary.rs`: absent
+global, one bind and one device per seat (including a seat added after the bind),
+offers published separately from the clipboard, null selection, reads from the
+primary offer, a primary read superseding a clipboard read, the press/serial
+rule, exact sent bytes with independent clipboard and primary sources,
+compositor cancel, global removal, seat removal and shutdown.
+
+Two fixes were needed to get the suite green. `clipboard/transfer/tests.rs`
+failed intermittently in parallel runs because `signal_tests.rs` spawns a child
+that briefly holds every descriptor between fork and exec; the affected
+assertions now wait (bounded) for the EOF or descriptor reuse they test, and 30
+consecutive clipboard runs passed (details in the R2 plan's deviations). Clippy
+1.98 added `chunks_exact_to_as_chunks`; seven existing sites use `as_chunks`
+now (separate commit).
+
+Open: `cargo run --no-default-features --example primary` on Hyprland, steps
+(a) to (c) in the plan's proof section, run by the owner because it touches the
+desktop's real primary selection.
+
+## Presentation feedback (R1): 2026-10-20
+
+Plan: [R1](docs/plans/done/2026-10-20-r1-presentation-feedback.md). Rust/Cargo 1.95.0,
+locked dependencies. The local machine had under 4 GB RAM available, so every check
+row that needs no system Wayland/GBM headers ran on the Anvil worker `mini`
+(NixOS 25.11); the `owned-native-system` rows there loaded Nix's libwayland 1.24.0
+through `LD_LIBRARY_PATH`. Rows that link the system libwayland or GBM ran locally
+(Gentoo, libwayland 1.24.0), niced, one Cargo job.
+
+New synthetic tests: 15 CPU cases in `src/window/tests/output/presentation.rs` and
+3 native cases in `src/window/tests/native/presentation.rs`. They cover the absent
+global, the bound version, exact `presented` decoding including unknown flag bits and
+refresh 0, unarmed commits, replacement, tags kept armed across `NeedsFrame`, the
+eight-request window cap, event-slot reservations with a nearly full queue, close
+with outstanding feedback, manager removal and re-advertisement, malformed
+`tv_nsec`, `presented` before `clock_id`, shutdown, and native staging (feedback
+after the frame callback, no libway commit, cancel before and after staging). All
+18 pass on both the pure-Rust and the system backend.
+
+`mini`: library tests for no default features, default, `capture`, `dnd` and
+`owned-native-system` passed; strict Clippy (all targets) for default, `dnd` and
+`owned-native-system` passed; Rustdoc with `-D warnings -D missing-docs` for default,
+`dnd` and `owned-native-system` passed. `cargo fmt --check` passed locally.
+
+Local: tests for `foreign-display` (240 library tests) and all features (264 library
+tests, 1 ignored as before), the GPU-without-image all-target check, strict Clippy
+for all features and all-feature Rustdoc with `-D missing-docs` passed. Formatting,
+all-target check and strict Clippy for `integration/dnd-winit` and `benchmarks`
+(default and `gpu`) passed after rebuilding libway from this source (rmeta
+timestamps checked). Together these cover every row of `tools/check.sh full`; the
+script itself was not run as one invocation because of the split. The new
+`examples/presentation.rs` compiles.
+
+Live check, owner-run on Hyprland 0.56.2 (window on DP-3, 1920x1080 at 239.76 Hz,
+VRR off, scale 1), `cargo run --no-default-features --example presentation`
+(debug build):
+
+```
+answers 240: presented 240, discarded 0, unavailable 0
+clock 1 flags 0x5
+median interval Some(29.687ms), median refresh Some(4.170837ms)
+```
+
+All 240 tags were answered with `Presented`; clock 1 is `CLOCK_MONOTONIC`; flags
+0x5 are vsync and hw_completion (no hw_clock); the median refresh of 4.1708 ms
+matches 239.76 Hz. The median interval between presented frames is the example's
+own frame rate (debug build, CPU path, about 34 frames per second) and not part
+of the feedback contract. The owner saw occasional stutter. Measured afterwards
+with copies of the CPU swizzle and the example's frame code: a debug build spends
+26.5 ms per frame swizzling a 950x1040 buffer (the window was tiled by dwindle),
+release 0.44 ms. That matches the 29.7 ms interval; roadmap part R16 removes the
+swizzle where the compositor allows it. MSRV stays unverified.
+
 
 The seven runtime/input findings in [the review](docs/reviews/2026-09-23.md)
 are fixed, with permanent regression tests. The
-[implementation plan](docs/plans/2026-09-23-review-fixes.md) tracks completion.
+[implementation plan](docs/plans/done/2026-09-23-review-fixes.md) tracks completion.
 Current checks ran on Linux x86_64 with Rust/Cargo 1.95.0 and locked dependencies.
 
 `./tools/check.sh full` passed. Counts below separate ordinary tests from doctests;
@@ -200,7 +519,7 @@ end-to-end smoothing/encoding remain unvalidated.
 
 ## Drag-and-drop
 
-Implementation work: 2026-09-22, from `docs/plans/2026-09-22-drag-and-drop.md`.
+Implementation work: 2026-09-22, from `docs/plans/done/2026-09-22-drag-and-drop.md`.
 
 | Check | Result |
 | --- | --- |
