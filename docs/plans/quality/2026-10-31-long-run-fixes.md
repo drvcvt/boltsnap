@@ -808,3 +808,8 @@ nichts live geprüft.
   dann 60 s, dann 300 s), `a_restart_that_lived_long_starts_a_new_series`.
   `docs/replay.md` Watchdog-Absatz. Live offen (gsr zweimal per SIGKILL,
   braucht Okay).
+- **Live, 01.11. nach Install (Stand `88676fa`) und Daemon-Neustart:** LR3:
+  `replay-capture.log` (neue Session, 881 B) erst nach Bereitschaft
+  übernommen, `.old` hält die vorige (98 kB), kein `.starting` übrig. LR4:
+  `replay status` meldet `restarts: 0`. L2, L3, R9 und das Flattern brauchen
+  eine Aufnahme bzw. einen Abbruch und sind live offen.
