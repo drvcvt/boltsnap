@@ -164,6 +164,8 @@ pub struct Daemon {
     saves: save::CardSaves,
     /// Replay clips whose card shows while the worker still writes them.
     pending: pending::PendingClips,
+    /// Screenshot cards whose file is still being written.
+    writing: Vec<u64>,
     press: Option<PressState>,
     /// In-flight per-card appear/dismiss animations.
     anims: Vec<CardAnim>,
@@ -392,6 +394,7 @@ pub fn run_daemon(save_dir_cli: Option<std::path::PathBuf>) -> DynResult<()> {
         frame_requested: None,
         saves: save::CardSaves::default(),
         pending: pending::PendingClips::default(),
+        writing: Vec::new(),
         press: None,
         anims: Vec::new(),
         exit: false,

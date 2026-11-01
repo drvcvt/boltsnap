@@ -53,6 +53,18 @@ pub(crate) enum DaemonEvent {
         stream: UnixStream,
         _client: Permit,
     },
+    /// A daemon screenshot's card can go up; its file is still being written.
+    ScreenshotShown {
+        add: PreparedAdd,
+        stream: UnixStream,
+        _client: Permit,
+    },
+    /// The file of a card from `ScreenshotShown` is written, or failed.
+    ScreenshotWritten {
+        path: std::path::PathBuf,
+        result: Result<(), String>,
+        _image: Permit,
+    },
     ChildrenStopped {
         after: AfterStop,
         result: StopChildrenResult,
@@ -118,6 +130,14 @@ impl Daemon {
                     }
                 };
                 self.write_response(stream, response);
+            }
+            DaemonEvent::ScreenshotShown {
+                add,
+                stream,
+                _client,
+            } => self.screenshot_shown(add, stream),
+            DaemonEvent::ScreenshotWritten { path, result, .. } => {
+                self.screenshot_written(path, result);
             }
             DaemonEvent::VideoPrepared {
                 result,

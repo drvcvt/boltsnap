@@ -11,7 +11,7 @@ use crate::image_model::png::{self, Format, Tile};
 use crate::protocol::CAPTURE_UNAVAILABLE;
 
 use super::PreparedAdd;
-use super::cards::{card_size, prepare_png};
+use super::cards::{card_size, write_card_files};
 use super::placement::focused_monitor_name;
 
 /// The open connection: made by the first shot, dropped by a failed one.
@@ -21,9 +21,27 @@ static CONNECTION: Mutex<Option<libway::Connection>> = Mutex::new(None);
 pub(super) enum Taken {
     /// The PNG is at the requested path.
     File,
-    /// A card for the shelf, with the PNG, `last.png` and any clipboard copy
-    /// already written.
-    Card(PreparedAdd),
+    /// The card can go up now; `rest` then writes its file, `last.png` and
+    /// any clipboard copy.
+    Card { add: PreparedAdd, rest: Unwritten },
+}
+
+/// A shown screenshot card's PNG, still to be encoded and written.
+pub(super) struct Unwritten {
+    desktop: Desktop,
+    path: PathBuf,
+    copy: bool,
+}
+
+impl Unwritten {
+    pub(super) fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+
+    pub(super) fn write(self) -> Result<(), String> {
+        let _timing = super::super::timing::Span::new("daemon_card_file");
+        write_card_files(&self.path, &encode(&self.desktop)?, self.copy)
+    }
 }
 
 /// The desktop as captured: the outputs' own frames where they share one
@@ -33,49 +51,122 @@ enum Desktop {
     Composed(image::RgbImage),
 }
 
+impl Desktop {
+    fn size(&self) -> (u32, u32) {
+        match self {
+            Desktop::Tiles(tiles) => (tiles.width, tiles.height),
+            Desktop::Composed(image) => image.dimensions(),
+        }
+    }
+}
+
 /// A full-desktop screenshot into `output`, or onto the shelf. An error
 /// before anything was captured starts with [`CAPTURE_UNAVAILABLE`].
 pub(super) fn take(output: Option<PathBuf>, copy: bool) -> Result<Taken, String> {
     let capture = super::super::timing::Span::new("daemon_capture");
     let desktop = desktop().map_err(|error| format!("{CAPTURE_UNAVAILABLE}: {error}"))?;
     drop(capture);
-    let _timing = super::super::timing::Span::new("daemon_capture_output");
-    let (width, height, png) = match &desktop {
-        Desktop::Tiles(tiles) => (tiles.width, tiles.height, encode_tiles(tiles)?),
-        Desktop::Composed(image) => (
-            image.width(),
-            image.height(),
-            crate::capture::encode_png(image)?,
-        ),
-    };
     let Some(path) = output else {
-        let size = card_size();
-        let thumb = match &desktop {
-            Desktop::Tiles(desktop) => preview(
-                &tiles(desktop),
-                desktop.width,
-                desktop.height,
-                size.w,
-                size.h,
-            ),
-            Desktop::Composed(image) => thumbnail(image, size.w, size.h),
-        };
-        let metadata = super::super::image_transfer::Metadata::new(
-            width,
-            height,
-            "full".into(),
-            focused_monitor_name(),
-            copy,
-        )
-        .map_err(|error| error.to_string())?;
-        return prepare_png(metadata, png, thumb).map(Taken::Card);
+        return Ok(card(desktop, copy));
     };
+    let _timing = super::super::timing::Span::new("daemon_capture_output");
+    let png = encode(&desktop)?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|error| format!("create {}: {error}", parent.display()))?;
     }
     std::fs::write(&path, png).map_err(|error| format!("write {}: {error}", path.display()))?;
     Ok(Taken::File)
+}
+
+/// The card from a preview alone; its file gets a name now and is written
+/// after the card is up.
+fn card(desktop: Desktop, copy: bool) -> Taken {
+    let size = card_size();
+    let thumb = match &desktop {
+        Desktop::Tiles(tiles) => preview(
+            &self::tiles(tiles),
+            tiles.width,
+            tiles.height,
+            size.w,
+            size.h,
+        ),
+        Desktop::Composed(image) => thumbnail(image, size.w, size.h),
+    };
+    let path = crate::paths::temp_png("shelf");
+    let add = PreparedAdd {
+        path: path.clone(),
+        thumb,
+        trace: None,
+        source: "full".into(),
+        output: focused_monitor_name(),
+    };
+    Taken::Card {
+        add,
+        rest: Unwritten {
+            desktop,
+            path,
+            copy,
+        },
+    }
+}
+
+fn encode(desktop: &Desktop) -> Result<Vec<u8>, String> {
+    let (width, height) = desktop.size();
+    match desktop {
+        Desktop::Tiles(tiles) => png::encode(width, height, &self::tiles(tiles)),
+        Desktop::Composed(image) => crate::capture::encode_png(image),
+    }
+}
+
+impl super::Daemon {
+    /// A daemon screenshot's card, up before its file: pending until
+    /// `screenshot_written`.
+    pub(super) fn screenshot_shown(
+        &mut self,
+        add: PreparedAdd,
+        stream: std::os::unix::net::UnixStream,
+    ) {
+        let Some(qh) = self.qh.clone() else {
+            self.write_response(stream, crate::ipc::Response::error("shelf is not ready"));
+            return;
+        };
+        let id = self.add_prepared(add, &qh);
+        self.writing.push(id);
+        self.write_response(stream, crate::ipc::Response::ok(None));
+    }
+
+    /// The file of the card at `path` is written. A card closed meanwhile
+    /// leaves its file behind, which goes now; a failed write takes the card.
+    pub(super) fn screenshot_written(&mut self, path: PathBuf, result: Result<(), String>) {
+        let card = self
+            .model
+            .newest_first()
+            .find(|card| card.png_path == path)
+            .map(|card| card.id);
+        if let Some(id) = card {
+            self.writing.retain(|&writing| writing != id);
+        }
+        match (card, result) {
+            (Some(id), Ok(())) => {
+                self.model.set_file(id, path);
+            }
+            (Some(id), Err(error)) => {
+                super::notify(&format!("Screenshot not saved: {error}"));
+                if self.remove_card_now(id) {
+                    self.relayout();
+                    if let Some(qh) = self.qh.clone() {
+                        self.draw(&qh);
+                    }
+                }
+            }
+            (None, result) => {
+                if result.is_ok() {
+                    let _ = std::fs::remove_file(&path);
+                }
+            }
+        }
+    }
 }
 
 /// The desktop over the open connection; a connection gone stale since the
@@ -139,10 +230,6 @@ fn tiles(desktop: &libway::DesktopTiles) -> Vec<Tile<'_>> {
             }
         })
         .collect()
-}
-
-fn encode_tiles(desktop: &libway::DesktopTiles) -> Result<Vec<u8>, String> {
-    png::encode(desktop.width, desktop.height, &tiles(desktop))
 }
 
 /// The card thumbnail straight from the tiles of a `width` × `height`

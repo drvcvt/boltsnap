@@ -73,7 +73,7 @@ pub(super) fn shelf_cache_evictions_with_limits(
 }
 
 impl Daemon {
-    pub(super) fn add_prepared(&mut self, mut add: PreparedAdd, qh: &QueueHandle<Self>) {
+    pub(super) fn add_prepared(&mut self, mut add: PreparedAdd, qh: &QueueHandle<Self>) -> u64 {
         // A compositor can omit the terminal drag event and leave redraws
         // blocked. A fresh capture supersedes that stale interaction.
         if self.drag_source.is_some() {
@@ -96,6 +96,7 @@ impl Daemon {
         self.relayout();
         self.place_on_output(add.output.as_deref(), qh);
         self.draw(qh);
+        id
     }
 
     pub(super) fn trim_shelf_cache(&mut self) {

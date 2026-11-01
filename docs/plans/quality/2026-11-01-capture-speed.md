@@ -350,3 +350,49 @@ Verbindung bei jedem Auftrag und verbindet bei Fehlern neu); Speicher
   Datei streifenweise schreiben, während die übrigen Streifen kodieren;
   PNG-Kern einthreadig schneller (heute 25 ms auf einem Kern, unter Last
   zählt das).
+
+## D1b: Karte vor dem PNG (Plan, 01.11.)
+
+- Shelf-Weg im Daemon: nach der Aufnahme nur die Vorschau (aus den Kacheln,
+  ~1 ms), dann sofort die Karte (`DaemonEvent::AddPrepared`, die CLI bekommt
+  ihre Antwort, sobald die Karte steht). Derselbe Worker-Thread kodiert
+  danach das PNG, schreibt die Kartendatei, verlinkt `last.png` und, mit
+  `copy`, die Clipboard-Datei, und meldet `DaemonEvent::ScreenshotWritten
+  { path, result }`.
+- Solange geschrieben wird, gilt die Karte als `pending` (wie Replay-Clips):
+  Kopieren, Ziehen, Öffnen, Speichern und das Aufräumen des Caches warten.
+  Keine sichtbare Anzeige, es geht um Millisekunden.
+- Fehler beim Schreiben: Karte weg, Meldung „Screenshot not saved: …“.
+  Karte schon geschlossen, wenn das Schreiben fertig ist: die Datei wird
+  gelöscht.
+- Bewusst: `last.png` und das Clipboard sind ein paar Millisekunden nach der
+  Antwort an die CLI fertig. `last.png` liest kein Skript (nur Rettung bei
+  verlorener Antwort), Einfügen in dieser Zeit ist praktisch ausgeschlossen.
+- `-o` bleibt synchron (die Datei muss da sein, wenn die CLI endet).
+- Dateien: `screenshot.rs` (Rest schreiben), `clients.rs` (Worker:
+  Karte, dann Rest, dann Event), `events.rs` (Event), `pending.rs`
+  (`is_pending` kennt schreibende Screenshots), `shelf/mod.rs` (Feld im
+  Daemon). Test: Ereignisfolge im Modell (schreibend → fertig; schreibend →
+  Fehler entfernt die Karte; geschlossen → Datei weg).
+
+## Umsetzung D1b und Hardlinks (01.11.)
+
+- Hardlinks (`c38a230`): `last.png` und die Clipboard-Datei sind Links auf
+  die Kartendatei (`paths::publish_last_linked`, `cards::link_temp_png`),
+  Rückfall aufs Schreiben, wenn kein Link geht. Gemessen: 2,4 MB schreiben
+  kostet in `/tmp` 4,6 ms, in `~/.cache` 1,2 ms (Median). Live: `last.png`
+  hat nach einem Schuss 2 Links.
+- D1b wie geplant: `Taken::Card { add, rest }`, `DaemonEvent::ScreenshotShown`
+  (Karte, Antwort an die CLI) und `ScreenshotWritten` (Datei fertig: Karte
+  nicht mehr `pending`, `set_file` setzt `arrived`; Fehler: Karte weg und
+  Meldung; Karte schon geschlossen: Datei weg). `Daemon.writing` hält die
+  schreibenden Karten, `is_pending` kennt sie.
+- Gefunden beim Lesen: `Thumb::edited` vergleicht mit der mtime beim
+  Ankommen. Ohne Datei beim Ankommen hätte eine spätere Bearbeitung nie als
+  Bearbeitung gezählt (beim Schließen gelöscht statt gerettet). `set_file`
+  setzt `arrived` jetzt, Test
+  `a_card_whose_file_came_later_counts_edits_from_then_on`.
+- Nicht automatisch getestet: die Daemon-Handler selbst (brauchen einen
+  Daemon mit Wayland); live geprüft (Karte, `last.png`).
+- hyperfine `-N`, 30 Läufe, gegen das Binary vor D1: **Shelf-Weg 62,5 →
+  26,8 ms**, **`-o` 43,4 → 26,9 ms** (Mediane, ±2,5 statt ±9 ms).

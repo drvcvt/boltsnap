@@ -210,12 +210,19 @@ pub(super) fn spawn_client_reader(
                     .map_err(|error| error.to_string())
                     .and_then(|()| super::screenshot::take(output, copy));
                 match taken {
-                    Ok(super::screenshot::Taken::Card(add)) => {
-                        let _ = tx.send(DaemonEvent::AddPrepared {
-                            result: Ok(add),
+                    Ok(super::screenshot::Taken::Card { add, rest }) => {
+                        // The card goes up first; its PNG follows.
+                        let path = rest.path().to_owned();
+                        let _ = tx.send(DaemonEvent::ScreenshotShown {
+                            add,
                             stream,
                             _client: client,
-                            _image: Some(image),
+                        });
+                        let result = rest.write();
+                        let _ = tx.send(DaemonEvent::ScreenshotWritten {
+                            path,
+                            result,
+                            _image: image,
                         });
                     }
                     Ok(super::screenshot::Taken::File) => {

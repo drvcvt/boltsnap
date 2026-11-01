@@ -232,8 +232,10 @@ impl Daemon {
         (self.pending.lifts(Instant::now(), animations), spin)
     }
 
+    /// The card's file is still being written: a replay clip, or a
+    /// screenshot shown before its PNG.
     pub(super) fn is_pending(&self, id: u64) -> bool {
-        self.pending.is_saving(id)
+        self.pending.is_saving(id) || self.writing.contains(&id)
     }
 }
 

@@ -139,12 +139,16 @@ impl ShelfModel {
     }
 
     /// The file of a card that showed before it was written (a replay clip
-    /// still being exported) is there now; it keeps its lifetime.
+    /// still being exported, a screenshot still being encoded) is there now;
+    /// it keeps its lifetime, and later writes to it count as edits.
     #[cfg_attr(windows, allow(dead_code))]
     pub fn set_file(&mut self, id: u64, path: PathBuf) -> bool {
         let Some(card) = self.thumbs.iter_mut().find(|card| card.id == id) else {
             return false;
         };
+        card.arrived = std::fs::metadata(&path)
+            .and_then(|metadata| metadata.modified())
+            .ok();
         card.png_path = path;
         true
     }
@@ -221,6 +225,29 @@ mod tests {
         assert!(m.replace_thumb(a, RgbaImage::new(4, 4)));
         assert_eq!(m.get(a).unwrap().thumb.dimensions(), (4, 4));
         assert!(!m.replace_thumb(999, RgbaImage::new(1, 1)));
+    }
+
+    #[test]
+    fn a_card_whose_file_came_later_counts_edits_from_then_on() {
+        let path = std::env::temp_dir().join(format!(
+            "boltsnap-late-file-test-{}.png",
+            std::process::id()
+        ));
+        let mut model = ShelfModel::new();
+        let id = model.add(path.clone(), img(), "full".into());
+        std::fs::write(&path, b"capture").unwrap();
+        let past = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(past)
+            .unwrap();
+        assert!(model.set_file(id, path.clone()));
+        assert!(!model.get(id).unwrap().edited(), "as it was written");
+        std::fs::write(&path, b"edited").unwrap();
+        assert!(model.get(id).unwrap().edited());
+        std::fs::remove_file(&path).unwrap();
     }
 
     #[test]

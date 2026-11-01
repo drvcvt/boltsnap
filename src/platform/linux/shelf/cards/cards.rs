@@ -307,19 +307,36 @@ pub(super) fn prepare_add(
 }
 
 pub(super) fn write_temp_png(prefix: &str, png: &[u8]) -> Result<std::path::PathBuf, String> {
-    use std::io::Write;
     let path = crate::paths::temp_png(prefix);
-    // Never truncate an existing file or follow a symlink in the temporary dir.
+    write_new(&path, png).map_err(|e| format!("{prefix} PNG: {e}"))?;
+    Ok(path)
+}
+
+/// `png` into a file that must not exist yet: never truncate an existing
+/// file or follow a symlink in the temporary dir.
+fn write_new(path: &std::path::Path, png: &[u8]) -> Result<(), String> {
+    use std::io::Write;
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(&path)
-        .map_err(|e| format!("create {prefix} PNG: {e}"))?;
+        .open(path)
+        .map_err(|e| format!("create: {e}"))?;
     if let Err(e) = file.write_all(png) {
-        let _ = std::fs::remove_file(&path);
-        return Err(format!("write {prefix} PNG: {e}"));
+        let _ = std::fs::remove_file(path);
+        return Err(format!("write: {e}"));
     }
-    Ok(path)
+    Ok(())
+}
+
+/// A screenshot card's file at `path`, chosen when its card went up, then
+/// `last.png` and, with `copy`, the clipboard.
+pub(super) fn write_card_files(
+    path: &std::path::Path,
+    png: &[u8],
+    copy: bool,
+) -> Result<(), String> {
+    write_new(path, png)?;
+    after_file(path, png, copy, publish_last, copy_file)
 }
 
 /// A new temporary name for `file`, which holds `png`; written out where a
@@ -343,15 +360,6 @@ pub(super) fn prepare_pixels(
     pixels: &[u8],
 ) -> Result<PreparedAdd, String> {
     prepare_pixels_with(metadata, pixels, card_size(), publish_last, copy_file)
-}
-
-/// A shelf card for an already encoded `png` and its `thumb`.
-pub(super) fn prepare_png(
-    metadata: super::super::image_transfer::Metadata,
-    png: Vec<u8>,
-    thumb: image::RgbaImage,
-) -> Result<PreparedAdd, String> {
-    finish_add(metadata, png, thumb, publish_last, copy_file)
 }
 
 fn publish_last(file: &std::path::Path, png: &[u8]) -> Result<(), String> {
@@ -402,18 +410,30 @@ fn finish_add(
         output: metadata.output,
     };
     super::super::timing::mark_request("png_written", metadata.trace);
-    publish(&add.path, &png)?;
-    if metadata.copy {
-        let clipboard = link_temp_png("clipboard", &add.path, &png)
-            .map_err(|e| format!("last PNG saved, shelf item not added: {e}"))?;
-        if let Err(e) = copy(&clipboard) {
-            let _ = std::fs::remove_file(&clipboard);
-            return Err(format!(
-                "last PNG saved, clipboard helper failed, shelf item not added: {e}"
-            ));
-        }
-    }
+    after_file(&add.path, &png, metadata.copy, publish, copy)
+        .map_err(|e| format!("{e}, shelf item not added"))?;
     Ok(add)
+}
+
+/// After a card's `file`: `last.png`, then with `wanted` a link to it for the
+/// clipboard, which `copy` hands over.
+fn after_file(
+    file: &std::path::Path,
+    png: &[u8],
+    wanted: bool,
+    publish: impl FnOnce(&std::path::Path, &[u8]) -> Result<(), String>,
+    copy: impl FnOnce(&std::path::Path) -> Result<(), String>,
+) -> Result<(), String> {
+    publish(file, png)?;
+    if !wanted {
+        return Ok(());
+    }
+    let clipboard =
+        link_temp_png("clipboard", file, png).map_err(|e| format!("last PNG saved: {e}"))?;
+    copy(&clipboard).map_err(|e| {
+        let _ = std::fs::remove_file(&clipboard);
+        format!("last PNG saved, clipboard helper failed: {e}")
+    })
 }
 
 pub(super) fn decode_shelf_image(png: &[u8]) -> Result<image::DynamicImage, String> {
