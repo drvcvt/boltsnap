@@ -235,6 +235,7 @@ fn start_capture(settings: Settings, cancel: &AtomicBool) -> Result<Session, Str
         layout: target.layout(),
         asked: settings.output.clone(),
         output_limit: (settings.memory_mib * 1024 * 1024 / 3) as u64,
+        restarts: 0,
         parent_thread: None,
         notice,
     };

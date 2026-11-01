@@ -1,6 +1,6 @@
 # Langlauf-Fixes: Plan (2026-10-31)
 
-Status: **Wellen 0 bis 3 umgesetzt (01.11.), Rest geplant.** Gebaut wird
+Status: **Wellen 0 bis 4 umgesetzt (01.11.), Rest geplant.** Gebaut wird
 Welle für Welle nach dem Go des Nutzers, ein Commit je ID mit seinem Test.
 
 Herkunft: alle Befunde aus
@@ -701,8 +701,8 @@ Review vom 12.10. und in `docs/replay.md`.
 | 2 | L2 | Stall über fps-Zeile, mit A10 | `85694c4` |
 | 2 | LR3 | Capture-Log filtert, rotiert erst bei Bereitschaft | `2aebaef` |
 | 3 | L3 | Kontingent ohne lange Session und Waisen (R3) | `822e4b4` |
-| 3 | R9 | Platz von `record_dir` prüfen | siehe Log |
-| 4 | LR4 | Flattern zählt als Serie, `restarts` | |
+| 3 | R9 | Platz von `record_dir` prüfen | `d89f273` |
+| 4 | LR4 | Flattern zählt als Serie, `restarts` | siehe Log |
 | 5 | L1 | Probe, dann Hybrid-MP4 und Rename | |
 | 6 | LR1 | M1, dann Entscheidung F3 | |
 | doku | L4, L6, LR5 | nur Doku | |
@@ -795,3 +795,16 @@ nichts live geprüft.
   Elternordner, wenn `record_dir` noch fehlt). Test
   `a_separate_target_keeps_room_for_the_finished_file_and_warns_on_its_own`.
   `cargo test` 174 + 426 grün.
+
+## Umsetzung Welle 4 (01.11.)
+
+- **LR4:** wie geplant, mit kleiner Abweichung in der Form: statt `due`
+  das Flattern entscheiden zu lassen, gibt es `Backoff::flapped(name, now)`
+  (erster toter Blick auf eine vom Watchdog gestartete Session; Log und
+  Notify macht die Schleife) neben `due` und `restarted`. `log!` für
+  Neustart, Ergebnis, Flattern und `restart_failed`. `restarts` im Status
+  (additiv, nur mit Session). Tests:
+  `a_restart_that_dies_again_soon_backs_off_like_a_failed_one` (20 s → 30 s,
+  dann 60 s, dann 300 s), `a_restart_that_lived_long_starts_a_new_series`.
+  `docs/replay.md` Watchdog-Absatz. Live offen (gsr zweimal per SIGKILL,
+  braucht Okay).

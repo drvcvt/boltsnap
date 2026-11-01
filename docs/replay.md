@@ -156,7 +156,12 @@ The watchdog replaces the session after about 15 seconds. It ends only the
 dead capture and keeps the old buffer until the new session runs; an export
 started on the old buffer meanwhile finishes first. If the restart fails, the
 old buffer stays saveable, one notification names the reason, and the watchdog
-tries again after 30 s, 60 s and then every 5 minutes.
+tries again after 30 s, 60 s and then every 5 minutes. A restarted session that
+dies within 5 minutes counts as one more failed restart of the same series (one
+notification, "stopped again N s after restarting"), so a capture that keeps
+dying waits 30 s, 60 s, then 5 minutes instead of restarting every 15 s. Every
+restart and its outcome is logged in `daemon.log`; `replay status` counts them
+as `restarts` since the last manual start.
 
 An open selection survives a failed input: the worker reports it as
 `selection_active` until Save, Cancel or its 120-second expiry, and neither the

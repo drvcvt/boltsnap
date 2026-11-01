@@ -38,6 +38,8 @@ struct Session {
     /// another display, with a notice): what the settings window compares.
     asked: Option<String>,
     output_limit: u64,
+    /// Watchdog restarts since the last manual start.
+    restarts: u32,
     parent_thread: Option<std::sync::mpsc::Sender<()>>,
     /// Why the session captures another monitor than configured; the caller
     /// reports it once.
@@ -469,7 +471,7 @@ pub(crate) fn serve(sender: calloop::channel::Sender<DaemonEvent>) -> Result<Ser
                         let _ = sender.send(DaemonEvent::ReplayStateChanged);
                         return Ok((json!({"ok":true}), Vec::new()));
                     }
-                    let (name, output, output_limit, layout, asked) = {
+                    let (name, output, output_limit, layout, asked, restarts) = {
                         let owner = owner.lock().unwrap();
                         if command == "status" && owner.is_none() {
                             return Ok((
@@ -486,6 +488,7 @@ pub(crate) fn serve(sender: calloop::channel::Sender<DaemonEvent>) -> Result<Ser
                             session.output_limit,
                             session.layout.clone(),
                             session.asked.clone(),
+                            session.restarts,
                         )
                     };
                     if request.get("session").is_some()
@@ -537,6 +540,7 @@ pub(crate) fn serve(sender: calloop::channel::Sender<DaemonEvent>) -> Result<Ser
                         response["layout"] = layout.iter().map(monitor::Placed::to_value).collect();
                     }
                     if command == "status" {
+                        response["restarts"] = json!(restarts);
                         // A running session whose video has stopped arriving is
                         // not the same as a healthy one; say so, because every
                         // control that needs the buffer silently goes dead.
