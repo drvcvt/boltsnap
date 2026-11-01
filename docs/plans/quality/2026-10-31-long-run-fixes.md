@@ -699,8 +699,8 @@ Review vom 12.10. und in `docs/replay.md`.
 | 1 | LR6 | geerbte fds CLOEXEC | `8f0feb3` |
 | 1 | L5 | Popup-Zeit `H:MM:SS` | `704dce0` |
 | 2 | L2 | Stall über fps-Zeile, mit A10 | `85694c4` |
-| 2 | LR3 | Capture-Log filtert, rotiert erst bei Bereitschaft | siehe Log |
-| 3 | L3 | Kontingent ohne lange Session und Waisen (R3) | |
+| 2 | LR3 | Capture-Log filtert, rotiert erst bei Bereitschaft | `2aebaef` |
+| 3 | L3 | Kontingent ohne lange Session und Waisen (R3) | siehe Log |
 | 3 | R9 | Platz von `record_dir` prüfen | |
 | 4 | LR4 | Flattern zählt als Serie, `restarts` | |
 | 5 | L1 | Probe, dann Hybrid-MP4 und Rename | |
@@ -768,3 +768,20 @@ nichts live geprüft.
   `open`), `every_line_…` mit `promote`. `cargo test` 174 + 423 grün.
   `docs/replay.md` beschreibt Filter und `.starting`. Live offen: nach dem
   nächsten Replay-Start `replay-capture.log` mit 60 Berichten, danach still.
+
+## Umsetzung Welle 3 (01.11.)
+
+- **L3 mit R3:** `RECORDING_ON_DISK` und `cache_bytes(dir, own_pid,
+  on_disk)` wie geplant; `Watch::reset` setzt das Flag zurück, sobald keine
+  Aufnahme mehr läuft (statt nur „heilt sich“). Abweichungen: (1) `NotFound`
+  war entgegen dem Plan heute **nicht** toleriert; jetzt übersprungen (R8 aus
+  dem 12.10.-Review, gleiche Funktion). (2) Präfixe nur dort, wo der Aufrufer
+  nicht schon sagt, was scheitert: Start „cannot start recording: “, Import
+  „cannot add the video to the shelf: “, Clip „clip not saved: “. Die
+  Aufnahme-Pause hat schon „Recording paused: “ (`events.rs:159`), Replay-Start
+  „Replay: “ (Tray) bzw. „restart failed: “ (Watchdog). (3) Die Reserve-Meldung
+  „recording stopped to preserve …“ ist ebenso falsch an Start und Clip und
+  heißt jetzt „the disk is down to its 2 GiB reserve (X GB free)“. Tests in
+  `record/finalize/tests/cache.rs`: Waise fremder PID mit 2 GiB → Ok
+  (scheitert am alten Code), eigene Segmente 1025 → 5 Bytes mit `on_disk`.
+  `cargo test` 174 + 425 grün. README nennt Clips, Importe und Waisen.

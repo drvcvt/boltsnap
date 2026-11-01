@@ -3,7 +3,7 @@
 //! can still be saved.
 
 use super::super::replay::capture_log::follow;
-use crate::record::finalize::{RECORDING_DISK_RESERVE_BYTES, remux_space};
+use crate::record::finalize::{RECORDING_DISK_RESERVE_BYTES, RECORDING_ON_DISK, remux_space};
 use crate::record::session::ActiveRecorder;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -47,6 +47,7 @@ impl Watch {
     /// A new recording starts with a clean slate.
     pub fn reset(&mut self) {
         *self = Self::default();
+        RECORDING_ON_DISK.store(false, Ordering::Relaxed);
     }
 
     /// Each recorder's stderr goes to the daemon's log with the time; gsr's
@@ -135,6 +136,7 @@ impl super::Daemon {
             }
         }
         let long = session.is_long(now);
+        RECORDING_ON_DISK.store(long, Ordering::Relaxed);
         // A long recording is headed for disk, not the temporary cache.
         if !long && let Err(error) = crate::record::finalize::check_recording_cache_limit(&dir) {
             return Some(("Cache full", error));

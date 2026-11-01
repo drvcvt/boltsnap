@@ -465,8 +465,9 @@ The recording controls offer:
   at least `record_shelf_to_disk_after_seconds` (default 60) are saved
   permanently to `record_dir` instead and still get a shelf card, so long clips
   survive dismissing and daemon restarts. Once a recording reaches that length
-  it no longer counts toward the 2 GiB temporary cache quota; only the free
-  disk reserve can pause it.
+  it no longer counts toward the 2 GiB temporary cache quota, neither for
+  itself nor for replay clips or imported videos; only the free disk reserve
+  can pause it. Segments a crashed daemon left behind never count.
 - **Save to disk** — finalize permanently in `record_dir`. With the tray toggle
   enabled, the shelf card references that same permanent file; it does not make
   a second copy, and dismissing the card never deletes the disk file.

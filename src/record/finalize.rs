@@ -8,7 +8,7 @@ use std::io::{self, Write};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -767,22 +767,51 @@ pub fn check_recording_cache_limit(dir: &Path) -> Result<(), String> {
     check_recording_cache_capacity(dir, 0)
 }
 
+/// A long recording is headed for `record_dir`; while it is, its segments
+/// leave the shelf's quota. Set by the daemon's recording check, read by the
+/// replay and import threads, which do not see the session.
+pub static RECORDING_ON_DISK: AtomicBool = AtomicBool::new(false);
+
 pub fn check_recording_cache_capacity(dir: &Path, incoming_bytes: u64) -> Result<(), String> {
-    let bytes = fs::read_dir(dir)
+    let on_disk = RECORDING_ON_DISK.load(Ordering::Relaxed);
+    let bytes = cache_bytes(dir, std::process::id(), on_disk)?;
+    require_recording_cache_limit(bytes.saturating_add(incoming_bytes))
+}
+
+/// Bytes in `dir` that count toward the shelf's quota. Segments of a dead
+/// daemon never do (the disk reserve still bounds them), this daemon's not
+/// while its recording is `on_disk`.
+fn cache_bytes(dir: &Path, own_pid: u32, on_disk: bool) -> Result<u64, String> {
+    fs::read_dir(dir)
         .map_err(|error| format!("read recording cache: {error}"))?
         .try_fold(0_u64, |total, entry| {
             let entry = entry.map_err(|error| format!("read recording cache entry: {error}"))?;
-            let metadata = entry
-                .metadata()
-                .map_err(|error| format!("inspect recording cache entry: {error}"))?;
+            let writer = segment_pid(&entry.file_name().to_string_lossy());
+            if writer.is_some_and(|pid| pid != own_pid || on_disk) {
+                return Ok(total);
+            }
+            let metadata = match entry.metadata() {
+                Ok(metadata) => metadata,
+                // Removed since the listing, by a dismiss or a finished save.
+                Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(total),
+                Err(error) => return Err(format!("inspect recording cache entry: {error}")),
+            };
             let bytes = if metadata.is_file() {
                 metadata.len()
             } else {
                 0
             };
             Ok::<_, String>(total.saturating_add(bytes))
-        })?;
-    require_recording_cache_limit(bytes.saturating_add(incoming_bytes))
+        })
+}
+
+/// The daemon behind `boltsnap-segment-<pid>-…` and its `.ts` and cursor files.
+fn segment_pid(name: &str) -> Option<u32> {
+    name.strip_prefix("boltsnap-segment-")?
+        .split('-')
+        .next()?
+        .parse()
+        .ok()
 }
 
 fn require_recording_cache_limit(bytes: u64) -> Result<(), String> {
@@ -790,7 +819,8 @@ fn require_recording_cache_limit(bytes: u64) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!(
-            "recording paused because the temporary recording cache reached 2 GiB ({bytes} bytes used); save or dismiss shelf recordings to free space"
+            "the temporary shelf cache is full ({:.1} GB of 2 GiB); save or dismiss shelf items",
+            bytes as f64 / 1e9
         ))
     }
 }
@@ -800,7 +830,8 @@ fn require_recording_reserve(free: u64) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!(
-            "recording stopped to preserve 2 GiB of free disk space ({free} bytes available)"
+            "the disk is down to its 2 GiB reserve ({:.1} GB free)",
+            free as f64 / 1e9
         ))
     }
 }

@@ -762,7 +762,7 @@ der Beleg.
 - **R2:** Startreihenfolge (`save_in_background` erst nach Eventloop und
   Listener), PDEATHSIG in `run_ffmpeg_in`, `.part`-Ausgabe; Test: Argumente
   enthalten `-f mp4` und `.part`, Cleanup löscht nur eigene Muster.
-- **R3, R8:** Kontingent ohne fremde Waisen, NotFound überspringen.
+- **R3, R8:** Kontingent ohne fremde Waisen, NotFound überspringen. Umgesetzt am 01.11. mit L3, siehe [Langlauf-Plan](2026-10-31-long-run-fixes.md).
 - **R4, R5:** Kill mit Frist und Reaper; EINVAL/EOPNOTSUPP-Fallback.
 - R6, R7, R9, R10, R11 mit Welle 3.
 

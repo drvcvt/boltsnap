@@ -164,7 +164,7 @@ impl Daemon {
         let config = crate::config::Config::load();
         let tools = RecorderTools::default();
         let codec = tools.session_codec(&crate::config::resolve_record_codec(None, &config))?;
-        prepare_recording_cache()?;
+        prepare_recording_cache().map_err(|error| format!("cannot start recording: {error}"))?;
         let scope = CaptureScope::Area(geo);
         let profile = config.record_profile()?;
         let monitors = self.cached_monitors();
@@ -246,7 +246,7 @@ impl Daemon {
         let config = crate::config::Config::load();
         let tools = RecorderTools::default();
         let codec = tools.session_codec(&crate::config::resolve_record_codec(None, &config))?;
-        prepare_recording_cache()?;
+        prepare_recording_cache().map_err(|error| format!("cannot start recording: {error}"))?;
         if monitors.is_empty() {
             return Err("no recording output was selected".into());
         }

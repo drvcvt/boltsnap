@@ -495,11 +495,10 @@ pub(crate) fn serve(sender: calloop::channel::Sender<DaemonEvent>) -> Result<Ser
                     }
                     if command == "save" {
                         timing::mark("replay_save_accepted");
-                        crate::record::finalize::check_recording_cache_capacity(
-                            &crate::paths::rec_dir(),
-                            output_limit,
-                        )?;
-                        crate::record::finalize::check_recording_reserve(&crate::paths::rec_dir())?;
+                        let dir = crate::paths::rec_dir();
+                        crate::record::finalize::check_recording_cache_capacity(&dir, output_limit)
+                            .and_then(|()| crate::record::finalize::check_recording_reserve(&dir))
+                            .map_err(|error| format!("clip not saved: {error}"))?;
                         // Both displays: a full-screen save is the monitor
                         // under the pointer, cut from the canvas.
                         if !layout.is_empty() && request["crop"].is_null() {

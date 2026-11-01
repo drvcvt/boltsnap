@@ -616,7 +616,7 @@ fn recording_cache_counts_regular_files() {
 
     let error = check_recording_cache_limit(&dir).unwrap_err();
 
-    assert!(error.contains("temporary recording cache reached 2 GiB"));
+    assert!(error.contains("temporary shelf cache is full"), "{error}");
     let _ = fs::remove_dir_all(dir);
 }
 
@@ -942,4 +942,5 @@ fn real_cross_filesystem_move_dispatches_when_available() {
     let _ = fs::remove_dir_all(destination_root);
 }
 
+mod cache;
 mod recoverable;

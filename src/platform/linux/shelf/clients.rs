@@ -22,8 +22,9 @@ use super::{Daemon, cards};
 fn prepare_shelf_video(path: &std::path::Path) -> Result<std::path::PathBuf, String> {
     let dir = crate::paths::rec_dir();
     import_shelf_video(path, &dir, |bytes| {
-        prepare_recording_cache()?;
-        check_recording_cache_capacity(&dir, bytes)
+        prepare_recording_cache()
+            .and_then(|()| check_recording_cache_capacity(&dir, bytes))
+            .map_err(|error| format!("cannot add the video to the shelf: {error}"))
     })
 }
 
