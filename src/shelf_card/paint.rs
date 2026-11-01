@@ -67,31 +67,80 @@ pub fn blit_thumb_card_anim(
     let h = sh as f32;
     let r = radius.min(w / 2.0).min(h / 2.0);
     let global = opacity.clamp(0.0, 1.0);
-    for sy in 0..sh {
-        let py = oy + sy;
-        if py >= ch {
-            break;
-        }
-        for sx in 0..sw {
-            let px = ox + sx;
-            if px >= cw {
-                break;
-            }
-            let cov = rr_coverage(sx as f32 + 0.5, sy as f32 + 0.5, w, h, r);
+    let coverage = corner_mask(sw, sh, r);
+    // Premultiplied BGRA: scaling RGB and alpha together by the same factor
+    // keeps the pixel valid while making the card translucent. Inside the
+    // corners the factor is `global` for every pixel, worked out per value.
+    let inside: [u8; 256] = std::array::from_fn(|v| premultiplied(v as u8, global));
+    let inside_alpha = (global * 255.0).round().clamp(0.0, 255.0) as u8;
+    // Clipped at the canvas's right and bottom edges.
+    let columns = sw.min(cw.saturating_sub(ox)) as usize;
+    let rows = sh.min(ch.saturating_sub(oy));
+    if columns == 0 {
+        return;
+    }
+    for sy in 0..rows {
+        let start = ((oy + sy) * cw + ox) as usize * 4;
+        let row = &mut canvas[start..start + columns * 4];
+        let from = &src.as_raw()[(sy * sw) as usize * 4..][..columns * 4];
+        let covers = &coverage[(sy * sw) as usize..][..columns];
+        for ((out, p), &cov) in row
+            .chunks_exact_mut(4)
+            .zip(from.chunks_exact(4))
+            .zip(covers)
+        {
             if cov <= 0.0 {
                 continue; // transparent corner -> leave the canvas untouched
             }
-            // Premultiplied BGRA: scaling RGB and alpha together by the same
-            // factor keeps the pixel valid while making the card translucent.
+            if cov == 1.0 {
+                out.copy_from_slice(&[
+                    inside[usize::from(p[2])],
+                    inside[usize::from(p[1])],
+                    inside[usize::from(p[0])],
+                    inside_alpha,
+                ]);
+                continue;
+            }
             let a = cov * global;
-            let p = src.get_pixel(sx, sy).0;
-            let idx = ((py * cw + px) * 4) as usize;
-            canvas[idx] = (p[2] as f32 * a).round().clamp(0.0, 255.0) as u8;
-            canvas[idx + 1] = (p[1] as f32 * a).round().clamp(0.0, 255.0) as u8;
-            canvas[idx + 2] = (p[0] as f32 * a).round().clamp(0.0, 255.0) as u8;
-            canvas[idx + 3] = (a * 255.0).round().clamp(0.0, 255.0) as u8;
+            out.copy_from_slice(&[
+                premultiplied(p[2], a),
+                premultiplied(p[1], a),
+                premultiplied(p[0], a),
+                (a * 255.0).round().clamp(0.0, 255.0) as u8,
+            ]);
         }
     }
+}
+
+fn premultiplied(value: u8, alpha: f32) -> u8 {
+    (f32::from(value) * alpha).round().clamp(0.0, 255.0) as u8
+}
+
+thread_local! {
+    static CORNERS: std::cell::RefCell<std::collections::HashMap<(u32, u32, u32), std::rc::Rc<Vec<f32>>>> =
+        std::cell::RefCell::default();
+}
+
+/// `rr_coverage` of every pixel of a `w` × `h` card with corner radius `r`,
+/// worked out once per size and kept per painting thread.
+fn corner_mask(w: u32, h: u32, r: f32) -> std::rc::Rc<Vec<f32>> {
+    CORNERS.with(|corners| {
+        let mut corners = corners.borrow_mut();
+        if corners.len() >= 32 {
+            corners.clear();
+        }
+        corners
+            .entry((w, h, r.to_bits()))
+            .or_insert_with(|| {
+                let (fw, fh) = (w as f32, h as f32);
+                let cells = (0..h)
+                    .flat_map(|y| (0..w).map(move |x| (x, y)))
+                    .map(|(x, y)| rr_coverage(x as f32 + 0.5, y as f32 + 0.5, fw, fh, r))
+                    .collect();
+                std::rc::Rc::new(cells)
+            })
+            .clone()
+    })
 }
 
 /// Coverage of a rounded rectangle (size w×h, corner radius r) at point (px,py):
@@ -238,8 +287,13 @@ pub fn draw_shelf<'p>(
     // top of ALL shadows (no card edge is darkened by a neighbour's shadow).
     if frame.look.shadow {
         for r in &layout.thumbs {
-            if !anims.iter().any(|(id, _, _)| *id == r.id) && picture(r.id).is_some() {
-                draw_card_shadow(canvas, cw, ch, r, frame.scale);
+            if anims.iter().any(|(id, _, _)| *id == r.id) {
+                continue;
+            }
+            if let Some((thumb, _)) = picture(r.id) {
+                // A settled card covers its whole rectangle at full size.
+                let covered = thumb.dimensions() == (r.w, r.h);
+                draw_card_shadow(canvas, cw, ch, r, frame.scale, covered);
             }
         }
     }
@@ -478,286 +532,4 @@ fn draw_glyph(
     }
 }
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn plain(w: u32, h: u32, rgba: [u8; 4]) -> RgbaImage {
-        RgbaImage::from_pixel(w, h, image::Rgba(rgba))
-    }
-
-    /// One card of `thumb` alone on a canvas, `hovered` or not.
-    fn shelf_of(
-        thumb: &RgbaImage,
-        kind: CardKind,
-        hovered: bool,
-        look: CardLook,
-    ) -> (Vec<u8>, Layout) {
-        let cfg = LayoutConfig::default();
-        let layout = Layout::compute(&[(1, thumb.width(), thumb.height())], &cfg);
-        let mut canvas = vec![0u8; (layout.width * layout.height * 4) as usize];
-        let frame = Frame {
-            layout: &layout,
-            cfg: &cfg,
-            hovered: if hovered { &[(1, 1.0)] } else { &[] },
-            anims: &[],
-            save_flash: None,
-            save_button: true,
-            saving: &[],
-            spin: 0.0,
-            look,
-            scale: 1.0,
-        };
-        draw_shelf(&mut canvas, layout.width, layout.height, &frame, |id| {
-            (id == 1).then_some((thumb, kind))
-        });
-        (canvas, layout)
-    }
-
-    fn alpha_at(canvas: &[u8], layout: &Layout, x: u32, y: u32) -> u8 {
-        canvas[((y * layout.width + x) * 4 + 3) as usize]
-    }
-
-    #[test]
-    fn card_rounds_corners_no_border() {
-        let img = plain(20, 20, [10, 120, 240, 255]); // low R so we can tell it from white
-        let mut buf = vec![0u8; 20 * 20 * 4];
-        blit_thumb_card_anim(&mut buf, 20, 20, &img, 0, 0, 1.0, 0.8, CARD_RADIUS);
-        // far corner is outside the radius -> transparent
-        assert_eq!(buf[3], 0, "corner should be transparent");
-        // centre carries the card alpha (~0.8*255), the thumbnail colour (low R)
-        let c = ((10 * 20 + 10) * 4) as usize;
-        assert!(
-            buf[c + 3] > 180 && buf[c + 3] < 220,
-            "centre alpha ~0.8, got {}",
-            buf[c + 3]
-        );
-        assert!(buf[c + 2] < 60, "centre R should be the thumbnail's");
-        // left-edge midpoint is the IMAGE colour now, NOT a white border
-        let e = ((10 * 20) * 4) as usize;
-        assert!(
-            buf[e + 3] > 150,
-            "left edge should carry card alpha, got {}",
-            buf[e + 3]
-        );
-        assert!(
-            buf[e + 2] < 60,
-            "left edge R should be the image's, not white"
-        );
-    }
-
-    #[test]
-    fn anim_scale_and_opacity_shrink_and_fade() {
-        let img = plain(40, 40, [10, 120, 240, 255]);
-        // Half scale, half opacity: card occupies the centre, corners of the slot
-        // are untouched (transparent), centre alpha ~ 0.5 * 0.8.
-        let mut buf = vec![0u8; 40 * 40 * 4];
-        blit_thumb_card_anim(&mut buf, 40, 40, &img, 0, 0, 0.5, 0.8 * 0.5, CARD_RADIUS);
-        // slot corner (well outside the centred 20x20 card) stays transparent
-        let corner = ((2 * 40 + 2) * 4) as usize;
-        assert_eq!(buf[corner + 3], 0, "slot corner should be untouched");
-        let c = ((20 * 40 + 20) * 4) as usize;
-        assert!(
-            buf[c + 3] > 70 && buf[c + 3] < 120,
-            "centre alpha ~0.4, got {}",
-            buf[c + 3]
-        );
-    }
-
-    #[test]
-    fn clear_zeros_buffer() {
-        let mut buf = vec![9u8; 16];
-        clear(&mut buf);
-        assert!(buf.iter().all(|&b| b == 0));
-    }
-
-    #[test]
-    fn fill_circle_blends_center_opaqueish() {
-        let mut buf = vec![0u8; 24 * 24 * 4];
-        fill_circle(&mut buf, 24, 24, 12.0, 12.0, 8.0, (10, 20, 30), 0.5);
-        let idx = ((12 * 24 + 12) * 4) as usize;
-        // center alpha ~ 0.5*255
-        assert!(
-            buf[idx + 3] > 100 && buf[idx + 3] < 160,
-            "got a={}",
-            buf[idx + 3]
-        );
-        // corner stays transparent
-        assert_eq!(buf[3], 0);
-    }
-
-    #[test]
-    fn video_card_draws_play_badge() {
-        let thumb = plain(260, 180, [10, 20, 200, 255]);
-        let (canvas, layout) = shelf_of(&thumb, CardKind::Video, false, CardLook::default());
-        let r = &layout.thumbs[0];
-        // plain thumb color sampled away from center
-        let plain = canvas[(((r.y + 8) * layout.width + r.x + 8) * 4 + 2) as usize];
-        // badge at the card center
-        let cidx = (((r.y + r.h / 2) * layout.width + r.x + r.w / 2) * 4) as usize;
-        assert_ne!(
-            canvas[cidx + 2],
-            plain,
-            "video card center should carry the play badge"
-        );
-    }
-
-    #[test]
-    fn hovered_thumb_draws_icon_pixels() {
-        let thumb = plain(260, 180, [10, 20, 200, 255]);
-        let (canvas, layout) = shelf_of(&thumb, CardKind::Image, true, CardLook::default());
-        let cfg = LayoutConfig::default();
-        // thumb body opaque
-        let r = &layout.thumbs[0];
-        let (px, py) = (r.x + r.w / 2, r.y + r.h / 2);
-        let idx = ((py * layout.width + px) * 4) as usize;
-        assert_eq!(canvas[idx + 3], 255, "the hovered card is solid");
-        // a glyph pixel near the close-button centre should differ from the
-        // plain thumbnail colour (button bg darkened or glyph stroke).
-        let bx = r.x + r.w - cfg.pad_icon - cfg.icon / 2;
-        let by = r.y + cfg.pad_icon + cfg.icon / 2;
-        let bidx = ((by * layout.width + bx) * 4) as usize;
-        let plain = canvas[idx + 2]; // R of plain thumb region
-        assert_ne!(
-            canvas[bidx + 2],
-            plain,
-            "button area should not be plain thumb colour"
-        );
-        // a glyph pixel near the save-button (top-left) centre should differ from
-        // the plain thumbnail colour.
-        let sx = r.x + cfg.pad_icon + cfg.icon / 2;
-        let sy = r.y + cfg.pad_icon + cfg.icon / 2;
-        let sidx = ((sy * layout.width + sx) * 4) as usize;
-        assert_ne!(
-            canvas[sidx + 2],
-            plain,
-            "save button area should not be plain thumb colour"
-        );
-    }
-
-    #[test]
-    fn the_look_sets_opacity_hover_and_shadow() {
-        let thumb = plain(190, 132, [200, 200, 200, 255]);
-        let look = CardLook {
-            opacity: 0.5,
-            solid_on_hover: false,
-            shadow: false,
-        };
-        let centre = |(canvas, layout): &(Vec<u8>, Layout)| {
-            let r = &layout.thumbs[0];
-            alpha_at(canvas, layout, r.x + r.w / 2, r.y + r.h / 2)
-        };
-        // Beside the card, inside its shadow's reach.
-        let beside = |(canvas, layout): &(Vec<u8>, Layout)| {
-            let r = &layout.thumbs[0];
-            alpha_at(canvas, layout, r.x + r.w / 2, r.y + r.h + 4)
-        };
-        let rest = shelf_of(&thumb, CardKind::Image, false, look);
-        assert_eq!(centre(&rest), 128);
-        assert_eq!(centre(&shelf_of(&thumb, CardKind::Image, true, look)), 128);
-        assert_eq!(beside(&rest), 0, "no shadow");
-        let default = CardLook::default();
-        assert_eq!(
-            centre(&shelf_of(&thumb, CardKind::Image, false, default)),
-            204
-        );
-        assert_eq!(
-            centre(&shelf_of(&thumb, CardKind::Image, true, default)),
-            255
-        );
-        assert!(beside(&shelf_of(&thumb, CardKind::Image, false, default)) > 0);
-    }
-
-    #[test]
-    fn the_preview_leaves_the_save_button_out() {
-        let thumb = plain(190, 132, [10, 20, 200, 255]);
-        let cfg = LayoutConfig::default();
-        let layout = Layout::compute(&[(1, 190, 132)], &cfg);
-        let draw = |save_button| {
-            let mut canvas = vec![0u8; (layout.width * layout.height * 4) as usize];
-            let frame = Frame {
-                layout: &layout,
-                cfg: &cfg,
-                hovered: &[(1, 1.0)],
-                anims: &[],
-                save_flash: None,
-                save_button,
-                saving: &[],
-                spin: 0.0,
-                look: CardLook::default(),
-                scale: 1.0,
-            };
-            draw_shelf(&mut canvas, layout.width, layout.height, &frame, |_| {
-                Some((&thumb, CardKind::Image))
-            });
-            canvas
-        };
-        let (with, without) = (draw(true), draw(false));
-        let (sx, sy, _, _) = save_cell(&layout.thumbs[0], &cfg);
-        let (cx, cy, _, _) = close_cell(&layout.thumbs[0], &cfg);
-        let at = |x: u32, y: u32| ((y * layout.width + x) * 4) as usize;
-        let centre = |x: u32, y: u32| at(x + cfg.icon / 2, y + cfg.icon / 2);
-        assert_ne!(with[centre(sx, sy)..][..4], without[centre(sx, sy)..][..4]);
-        assert_eq!(with[centre(cx, cy)..][..4], without[centre(cx, cy)..][..4]);
-    }
-
-    #[test]
-    fn half_a_hover_fade_is_half_way_to_solid_with_half_its_buttons() {
-        let thumb = plain(190, 132, [200, 200, 200, 255]);
-        let cfg = LayoutConfig::default();
-        let layout = Layout::compute(&[(1, 190, 132)], &cfg);
-        let draw = |lift: f32| {
-            let mut canvas = vec![0u8; (layout.width * layout.height * 4) as usize];
-            let hovered = [(1, lift)];
-            let frame = Frame {
-                layout: &layout,
-                cfg: &cfg,
-                hovered: if lift > 0.0 { &hovered } else { &[] },
-                anims: &[],
-                save_flash: None,
-                save_button: true,
-                saving: &[],
-                spin: 0.0,
-                look: CardLook::default(),
-                scale: 1.0,
-            };
-            draw_shelf(&mut canvas, layout.width, layout.height, &frame, |_| {
-                Some((&thumb, CardKind::Image))
-            });
-            canvas
-        };
-        let r = &layout.thumbs[0];
-        let centre = (((r.y + r.h / 2) * layout.width + r.x + r.w / 2) * 4 + 3) as usize;
-        let (rest, half, full) = (draw(0.0), draw(0.5), draw(1.0));
-        assert_eq!((rest[centre], full[centre]), (204, 255));
-        assert!((half[centre] as i32 - 230).abs() <= 1, "{}", half[centre]);
-        // The close button's middle: half its darkening at half the fade.
-        let (bx, by, _, _) = close_cell(r, &cfg);
-        let button = (((by + cfg.icon / 2) * layout.width + bx + 2) * 4) as usize;
-        let shade = |canvas: &[u8]| i32::from(full[centre - 3]) - i32::from(canvas[button]);
-        assert!(shade(&half) > 0 && shade(&half) < shade(&full));
-    }
-
-    /// `SHADOW_OUT=file.png cargo test --lib shadow_shot -- --ignored`: one
-    /// card and its shadow, straight alpha, to look at over a dark desktop.
-    #[test]
-    #[ignore]
-    fn shadow_shot() {
-        let out = std::env::var("SHADOW_OUT").expect("SHADOW_OUT");
-        let thumb = plain(190, 132, [60, 60, 60, 255]);
-        let (canvas, layout) = shelf_of(&thumb, CardKind::Image, false, CardLook::default());
-        let mut image = RgbaImage::new(layout.width, layout.height);
-        for (pixel, bgra) in image.pixels_mut().zip(canvas.as_chunks::<4>().0.iter()) {
-            // Premultiplied BGRA to straight RGBA.
-            let a = bgra[3];
-            let straight = |c: u8| {
-                if a == 0 {
-                    0
-                } else {
-                    (u32::from(c) * 255 / u32::from(a)) as u8
-                }
-            };
-            *pixel = image::Rgba([straight(bgra[2]), straight(bgra[1]), straight(bgra[0]), a]);
-        }
-        image.save(out).unwrap();
-    }
-}
+mod tests;

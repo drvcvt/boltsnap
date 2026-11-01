@@ -1,31 +1,108 @@
 //! The soft drop shadow behind each settled shelf card.
 
 use super::layout::ThumbRect;
-use super::paint::{CARD_RADIUS, blend_px};
+use super::paint::{CARD_RADIUS, blend_px, rr_coverage};
+
+const DX: f32 = 0.0;
+/// Downward offset: reads as "lifted".
+const DY: f32 = 3.0;
+/// A wider falloff is more diffuse.
+const BLUR: f32 = 16.0;
+/// Lighter, less heavy.
+const ALPHA: f32 = 0.24;
+/// Masks kept per painting thread before the cache starts over.
+const MOST_MASKS: usize = 32;
+
+/// One pixel of a shadow: its alpha before dithering, 0 where it shows
+/// nothing, and whether it lies in the falloff, which is dithered.
+#[derive(Clone, Copy)]
+struct Cell {
+    shade: f32,
+    dither: bool,
+}
+
+/// A shadow worked out once per card size and scale, for a card at (0, 0):
+/// rows of cells from the box's corner (`x0`, `y0`).
+struct Mask {
+    x0: i32,
+    y0: i32,
+    width: usize,
+    cells: Vec<Cell>,
+}
+
+thread_local! {
+    static MASKS: std::cell::RefCell<std::collections::HashMap<(u32, u32, u32, bool), std::rc::Rc<Mask>>> =
+        std::cell::RefCell::default();
+}
 
 /// Soft drop shadow behind a shelf card, for a subtle "lift" (drawn for every
 /// settled card, independent of hover/opacity). Rounded-box SDF feathered over
 /// `BLUR` px, slightly offset downward; drawn before the cards so each card sits
-/// on top. Only the offset/blur fringe shows (the part under the card is
-/// overwritten by the blit).
-pub(super) fn draw_card_shadow(canvas: &mut [u8], cw: u32, ch: u32, r: &ThumbRect, scale: f32) {
-    const DX: f32 = 0.0;
-    const DY: f32 = 3.0; // downward offset reads as "lifted"
-    const BLUR: f32 = 16.0; // wider falloff = more diffuse
-    const ALPHA: f32 = 0.24; // lighter, less heavy
+/// on top. `covered`: the card is drawn at `r` at its full size, and the
+/// pixels it paints over are skipped, since none of the shadow shows there.
+/// Only the dithering and the blend are per frame; the rest is per size.
+pub(super) fn draw_card_shadow(
+    canvas: &mut [u8],
+    cw: u32,
+    ch: u32,
+    r: &ThumbRect,
+    scale: f32,
+    covered: bool,
+) {
+    let mask = MASKS.with(|masks| {
+        let mut masks = masks.borrow_mut();
+        if masks.len() >= MOST_MASKS {
+            masks.clear();
+        }
+        masks
+            .entry((r.w, r.h, scale.to_bits(), covered))
+            .or_insert_with(|| std::rc::Rc::new(mask(r.w, r.h, scale, covered)))
+            .clone()
+    });
+    for (row, cells) in mask.cells.chunks(mask.width).enumerate() {
+        let py = r.y as i32 + mask.y0 + row as i32;
+        if py < 0 || py >= ch as i32 {
+            continue;
+        }
+        for (column, cell) in cells.iter().enumerate() {
+            if cell.shade == 0.0 {
+                continue;
+            }
+            let px = r.x as i32 + mask.x0 + column as i32;
+            let alpha = if cell.dither {
+                dithered(cell.shade, px, py)
+            } else {
+                cell.shade
+            };
+            blend_px(canvas, cw, ch, px, py, 0, 0, 0, alpha);
+        }
+    }
+}
+
+/// The shadow of a `w` × `h` card at (0, 0).
+fn mask(w: u32, h: u32, scale: f32, covered: bool) -> Mask {
     let blur = BLUR * scale;
-    let (sx, sy) = (r.x as f32 + DX * scale, r.y as f32 + DY * scale);
-    let (w, h) = (r.w as f32, r.h as f32);
+    let (sx, sy) = (DX * scale, DY * scale);
+    let (w, h) = (w as f32, h as f32);
     let rad = CARD_RADIUS * scale;
+    // The card's own corners, as `blit_thumb_card_anim` rounds them.
+    let card_rad = rad.min(w / 2.0).min(h / 2.0);
     let (cxw, cyh) = (w / 2.0, h / 2.0);
     let x0 = (sx - blur - 1.0).floor() as i32;
     let x1 = (sx + w + blur + 1.0).ceil() as i32;
     let y0 = (sy - blur - 1.0).floor() as i32;
     let y1 = (sy + h + blur + 1.0).ceil() as i32;
+    let mut cells = Vec::with_capacity(((x1 - x0 + 1) * (y1 - y0 + 1)) as usize);
     for py in y0..=y1 {
         for px in x0..=x1 {
-            let lx = (px as f32 + 0.5) - sx;
-            let ly = (py as f32 + 0.5) - sy;
+            let (fx, fy) = (px as f32 + 0.5, py as f32 + 0.5);
+            let under_card = covered
+                && fx > 0.0
+                && fy > 0.0
+                && fx < w
+                && fy < h
+                && rr_coverage(fx, fy, w, h, card_rad) > 0.0;
+            let (lx, ly) = (fx - sx, fy - sy);
             // Signed distance to the rounded card rect (<=0 inside).
             let dx = (lx - cxw).abs() - (cxw - rad);
             let dy = (ly - cyh).abs() - (cyh - rad);
@@ -33,18 +110,20 @@ pub(super) fn draw_card_shadow(canvas: &mut [u8], cw: u32, ch: u32, r: &ThumbRec
             let inside = dx.max(dy).min(0.0);
             let sdf = outside + inside - rad;
             let ramp = (1.0 - sdf / blur).clamp(0.0, 1.0);
-            if ramp > 0.0 {
-                // Only the falloff is a gradient; under the card the alpha is
-                // flat and needs no grain.
-                let shade = ALPHA * smoothstep(ramp);
-                let alpha = if ramp < 1.0 {
-                    dithered(shade, px, py)
-                } else {
-                    shade
-                };
-                blend_px(canvas, cw, ch, px, py, 0, 0, 0, alpha);
-            }
+            let shows = ramp > 0.0 && !under_card;
+            // Only the falloff is a gradient; under the card the alpha is
+            // flat and needs no grain.
+            cells.push(Cell {
+                shade: if shows { ALPHA * smoothstep(ramp) } else { 0.0 },
+                dither: ramp < 1.0,
+            });
         }
+    }
+    Mask {
+        x0,
+        y0,
+        width: (x1 - x0 + 1) as usize,
+        cells,
     }
 }
 
@@ -77,8 +156,83 @@ fn dithered(alpha: f32, x: i32, y: i32) -> f32 {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
+
+    /// The shadow as it was drawn before the masks, pixel by pixel.
+    pub(in crate::shelf_card) fn reference_shadow(
+        canvas: &mut [u8],
+        cw: u32,
+        ch: u32,
+        r: &ThumbRect,
+        scale: f32,
+    ) {
+        const DX: f32 = 0.0;
+        const DY: f32 = 3.0; // downward offset reads as "lifted"
+        const BLUR: f32 = 16.0; // wider falloff = more diffuse
+        const ALPHA: f32 = 0.24; // lighter, less heavy
+        let blur = BLUR * scale;
+        let (sx, sy) = (r.x as f32 + DX * scale, r.y as f32 + DY * scale);
+        let (w, h) = (r.w as f32, r.h as f32);
+        let rad = CARD_RADIUS * scale;
+        let (cxw, cyh) = (w / 2.0, h / 2.0);
+        let x0 = (sx - blur - 1.0).floor() as i32;
+        let x1 = (sx + w + blur + 1.0).ceil() as i32;
+        let y0 = (sy - blur - 1.0).floor() as i32;
+        let y1 = (sy + h + blur + 1.0).ceil() as i32;
+        for py in y0..=y1 {
+            for px in x0..=x1 {
+                let lx = (px as f32 + 0.5) - sx;
+                let ly = (py as f32 + 0.5) - sy;
+                // Signed distance to the rounded card rect (<=0 inside).
+                let dx = (lx - cxw).abs() - (cxw - rad);
+                let dy = (ly - cyh).abs() - (cyh - rad);
+                let outside = (dx.max(0.0).powi(2) + dy.max(0.0).powi(2)).sqrt();
+                let inside = dx.max(dy).min(0.0);
+                let sdf = outside + inside - rad;
+                let ramp = (1.0 - sdf / blur).clamp(0.0, 1.0);
+                if ramp > 0.0 {
+                    // Only the falloff is a gradient; under the card the alpha is
+                    // flat and needs no grain.
+                    let shade = ALPHA * smoothstep(ramp);
+                    let alpha = if ramp < 1.0 {
+                        dithered(shade, px, py)
+                    } else {
+                        shade
+                    };
+                    blend_px(canvas, cw, ch, px, py, 0, 0, 0, alpha);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_mask_paints_what_the_shadow_painted_before() {
+        for (scale, rect) in [
+            (1.0, (22, 22, 190, 132)),
+            (1.25, (30, 41, 237, 165)),
+            (1.0, (0, 0, 40, 25)),
+        ] {
+            let r = ThumbRect {
+                id: 1,
+                x: rect.0,
+                y: rect.1,
+                w: rect.2,
+                h: rect.3,
+            };
+            let (cw, ch) = (rect.0 + rect.2 + 60, rect.1 + rect.3 + 60);
+            let background: Vec<u8> = (0..cw * ch * 4).map(|i| (i * 37 % 251) as u8).collect();
+            let mut before = background.clone();
+            reference_shadow(&mut before, cw, ch, &r, scale);
+            let mut now = background.clone();
+            draw_card_shadow(&mut now, cw, ch, &r, scale, false);
+            assert!(before == now, "scale {scale}, {rect:?}");
+            // Drawn twice from the cache, the same again.
+            let mut again = background.clone();
+            draw_card_shadow(&mut again, cw, ch, &r, scale, false);
+            assert!(again == now);
+        }
+    }
 
     #[test]
     fn the_shadow_is_dithered_its_average_kept_and_free_of_bands() {

@@ -71,3 +71,25 @@ Frame bei ~51 ms, der zweite Monitor 3,5 ms später. Ansatz (eigener Plan
 vor dem Bau): Surfaces parallel zur Aufnahme anlegen, Basis und
 abgedunkelte Basis direkt aus libway-Kacheln über mehrere Kerne bauen.
 Schätzung ~20–25 ms bis sichtbar.
+
+## Umsetzung (01.11.)
+
+- `24964bd`: Schatten nach `shelf_card/shadow.rs` verschoben, nur Umzug.
+- Schattenmaske je (Breite, Höhe, `scale`, `covered`) in `shadow.rs`, thread-
+  lokal, höchstens 32; beim Malen nur `dithered` an der Bildschirmposition
+  und `blend_px`. `covered` gilt nur, wenn das Kartenbild genau die Größe
+  seines Rechtecks hat.
+- Eckenmaske je (Breite, Höhe, Radius) in `paint.rs`; deckendes Inneres
+  über eine 256er-Tabelle je Deckkraft; zeilenweise statt `get_pixel`.
+  Gefunden und abgefangen: eine Karte ganz rechts außerhalb der Fläche hätte
+  im neuen Zeilenweg einen Slice hinter dem Canvas gebildet.
+- Tests: Referenzfunktionen (der alte Code) im Test;
+  `the_mask_paints_what_the_shadow_painted_before` (Skalierung 1 und 1,25,
+  aus dem Cache), `shadow_and_card_paint_what_they_painted_before` (ruhend,
+  deckend, animiert, Vorschau 1,25, angeschnitten, außerhalb), Toleranz 0.
+  `frame_cost` (ignoriert): **8,1–8,8 → 2,1–2,25 ms** je Frame (Median,
+  p95 2,4 ms), also unter 4,2 ms (240 Hz) mit fast doppeltem Puffer; 1 ms
+  nicht erreicht, das Dithern je Pixel bleibt für die Pixelgleichheit.
+- Tests von `paint.rs` nach `paint/tests.rs` (`paint.rs` 535 Zeilen).
+- `cargo test` 190 + 432 grün; `shadow_shot` angesehen (Karte, weicher
+  Schatten, keine Bänder).
