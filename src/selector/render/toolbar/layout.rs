@@ -195,6 +195,31 @@ fn extent(rows: &[Vec<(Item, f32)>]) -> (f32, f32) {
     )
 }
 
+/// `width`, made up to 3 px wider where needed so that `justify` widens each
+/// icon-only control of a row without labels by an even number of pixels:
+/// `CTL − ICON_BOX` is even, so `icon_rect` then centres the icon exactly on
+/// whole pixels. The rows with labels take the extra pixels at their end.
+fn centred_icons(rows: &[Vec<(Item, f32)>], width: f32) -> f32 {
+    if rows.len() < 2 {
+        return width;
+    }
+    let icons_only = |row: &&Vec<(Item, f32)>| {
+        row.iter()
+            .all(|(item, _)| matches!(item, Item::Control(i) if *i >= FRAME))
+    };
+    let even = |width: f32| {
+        rows.iter().filter(icons_only).all(|row| {
+            let gaps: f32 = row.windows(2).map(|p| gap(p[0].0, p[1].0)).sum();
+            let rest = width - 2.0 * PAD - gaps - row.iter().map(|(_, w)| w).sum::<f32>();
+            rest.rem_euclid(2.0 * row.len() as f32) == 0.0
+        })
+    };
+    (0..4)
+        .map(|extra| width + extra as f32)
+        .find(|&w| even(w))
+        .unwrap_or(width)
+}
+
 /// With more than one row, every row ends at the right padding, so the
 /// toolbar keeps one edge all round: the size takes a row's rest where it
 /// stands (its text stays at its start), else the row's controls share it in
@@ -235,6 +260,7 @@ pub fn layout(sel: (f32, f32, f32, f32), area: Rect, metrics: &Metrics) -> Optio
     let (arrangement, rows, (width, height)) = (0..ARRANGEMENTS.len()).find_map(|a| {
         let rows = rows(a, metrics);
         let (w, h) = extent(&rows);
+        let w = centred_icons(&rows, w);
         (w + 2.0 * GAP_S <= area.w && h + 2.0 * GAP_S <= area.h).then_some((a, rows, (w, h)))
     })?;
     let rows = justify(rows, width - 2.0 * PAD);
@@ -279,4 +305,45 @@ pub fn layout(sel: (f32, f32, f32, f32), area: Rect, metrics: &Metrics) -> Optio
         size,
         text_offset: metrics.text_offset,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::{AUDIO, FRAME, icon_rect};
+    use super::*;
+
+    /// In the narrow column (`[Record] / [Clip] / [Frame, Audio]`) Frame and
+    /// Audio are widened to the row; whatever the labels' widths in the face
+    /// in use, each icon sits exactly on its control's middle and every row
+    /// still ends at the right padding.
+    #[test]
+    fn widened_icon_only_controls_keep_their_icon_in_the_middle() {
+        for record in 60..=90 {
+            for clip in [record - 7, record - 4, record - 1] {
+                let metrics = Metrics {
+                    widths: [record as f32, clip as f32, CTL, CTL],
+                    text_offset: 30.0,
+                    size: None,
+                    clip: true,
+                };
+                let w = record as f32 + 2.0 * PAD + 3.0 + 2.0 * GAP_S;
+                let area = Rect::new(0.0, 0.0, w, 300.0);
+                let layout = layout((10.0, 200.0, 40.0, 40.0), area, &metrics).expect("fits");
+                assert_eq!(layout.arrangement, 3, "record {record}, clip {clip}");
+                for i in [FRAME, AUDIO] {
+                    let (control, icon) = (layout.controls[i], icon_rect(i, layout.controls[i]));
+                    let off = (icon.x + icon.w / 2.0) - (control.x + control.w / 2.0);
+                    assert_eq!(off, 0.0, "record {record}, clip {clip}, control {i}");
+                }
+                let edge = layout.bounds.right() - PAD;
+                for i in [0, 1, AUDIO] {
+                    assert_eq!(
+                        layout.controls[i].right(),
+                        edge,
+                        "record {record}, clip {clip}"
+                    );
+                }
+            }
+        }
+    }
 }
