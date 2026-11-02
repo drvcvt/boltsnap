@@ -2,7 +2,7 @@
 
 use crate::selector::clip::ClipState;
 use crate::selector::motion::{BarMotion, Targets};
-use crate::selector::{desktop, edit, render, scene::SceneCache};
+use crate::selector::{edit, render, scene::SceneCache};
 use boltsnap::ui::text::Fonts;
 use std::time::Instant;
 
@@ -11,20 +11,11 @@ use std::thread;
 use image::RgbaImage;
 use smithay_client_toolkit::{
     compositor::CompositorState,
-    delegate_compositor, delegate_keyboard, delegate_layer, delegate_output, delegate_pointer,
-    delegate_registry, delegate_seat, delegate_shm,
-    output::{OutputHandler, OutputState},
-    registry::{ProvidesRegistryState, RegistryState},
-    registry_handlers,
+    output::OutputState,
+    registry::RegistryState,
     seat::{SeatState, pointer::ThemedPointer},
-    shell::{
-        WaylandSurface,
-        wlr_layer::{
-            Anchor, KeyboardInteractivity, Layer, LayerShell, LayerShellHandler, LayerSurface,
-            LayerSurfaceConfigure,
-        },
-    },
-    shm::{Shm, ShmHandler, slot::SlotPool},
+    shell::wlr_layer::LayerShell,
+    shm::{Shm, slot::SlotPool},
 };
 use wayland_client::{
     Connection, QueueHandle,
@@ -37,9 +28,12 @@ use crate::DynResult;
 mod input;
 mod present;
 mod snap;
+mod startup;
+mod wayland;
 
 use input::{Interaction, MIN_SEL, contains};
 use present::OutputView;
+use startup::Start;
 
 /// The desktop UI font at the app's two weights, as the settings window and
 /// the shelf resolve it, so the selector reads as part of the same product.
@@ -77,14 +71,13 @@ where
 {
     // Start the screenshot grab so it overlaps with Wayland init below.
     let capture_handle = thread::spawn(capture);
-    let mut sel = run_selector(
+    let start = Start {
         instant,
-        false,
-        true,
-        true,
-        Some(capture_handle),
-        Err(ClipState::Off),
-    )?;
+        record_mode: false,
+        show_frame: true,
+        audio_enabled: true,
+    };
+    let mut sel = run_selector(start, Some(capture_handle), Err(ClipState::Off))?;
     Ok(sel
         .result
         .take()
@@ -111,14 +104,13 @@ pub fn run_select_record(
     initial_show_frame: bool,
     initial_audio_enabled: bool,
 ) -> DynResult<RecordSelectionResult> {
-    let mut sel = run_selector(
-        false,
-        true,
-        initial_show_frame,
-        initial_audio_enabled,
-        None,
-        super::replay::preview_target(),
-    )?;
+    let start = Start {
+        instant: false,
+        record_mode: true,
+        show_frame: initial_show_frame,
+        audio_enabled: initial_audio_enabled,
+    };
+    let mut sel = run_selector(start, None, super::replay::preview_target())?;
     Ok(RecordSelectionResult {
         rect: sel.result_rect.take(),
         show_frame: sel.show_frame,
@@ -136,10 +128,7 @@ pub fn run_select_record(
 /// screenshot (screenshot mode); when `None` (record mode) the backdrop is a
 /// plain translucent dim instead of a frozen frame.
 fn run_selector(
-    instant: bool,
-    record_mode: bool,
-    show_frame: bool,
-    audio_enabled: bool,
+    start: Start,
     capture_handle: Option<thread::JoinHandle<Result<CapturedDesktop, String>>>,
     replay: Result<super::replay::PreviewTarget, ClipState>,
 ) -> DynResult<Selector> {
@@ -152,136 +141,21 @@ fn run_selector(
     let conn = Connection::connect_to_env()?;
     let (globals, mut event_queue) = registry_queue_init::<Selector>(&conn)?;
     super::timing::mark("selector_wayland_connected");
-    let qh = event_queue.handle();
-
-    let compositor = CompositorState::bind(&globals, &qh)?;
-    let shm = Shm::bind(&globals, &qh)?;
-    let layer_shell = LayerShell::bind(&globals, &qh)?;
-    let pool = SlotPool::new(256, &shm)?;
-
-    let mut sel = Selector {
-        registry_state: RegistryState::new(&globals),
-        seat_state: SeatState::new(&globals, &qh),
-        output_state: OutputState::new(&globals, &qh),
-        shm,
-        pool,
-        compositor,
-        layer_shell,
-        views: Vec::new(),
-        captured_monitors: Vec::new(),
-        pointer: None,
-        keyboard: None,
-        image: None,
-        base: None,
-        overlay: None,
-        // The embedded face until the desktop's is loaded (before any frame).
-        chrome: chrome(Fonts::fallback(), clip),
-        motion: BarMotion::new(
-            &bar_targets(None, None, show_frame, audio_enabled, clip, None),
-            Instant::now(),
-        ),
-        pressed: None,
-        pointer_in: false,
-        clip,
-        video: None,
-        surf_w: 0,
-        surf_h: 0,
-        configured: false,
-        mode: Mode::Idle,
-        interaction: None,
-        cursor: (0.0, 0.0),
-        alt_held: false,
-        magnifier_always: crate::config::Config::load().magnifier_always(),
-        result: None,
-        done: false,
-        qh: qh.clone(),
-        needs_redraw: false,
-        instant,
-        record_mode,
-        show_frame,
-        audio_enabled,
-        result_rect: None,
-        result_clip: false,
-        replay_output: replay.as_ref().map(|r| r.output.clone()),
-        frozen: None,
-        clip_reported: false,
-        output_origin: None,
-        // With both displays the selector opens where the pointer is.
-        target_name: replay.as_ref().and_then(|r| r.monitor().map(String::from)),
-        failure: None,
-        snap: Default::default(),
-    };
+    let mut sel = Selector::new(&globals, event_queue.handle(), start, clip, replay.as_ref())?;
 
     // Discover outputs (names) so we can target the focused monitor. This
     // roundtrip overlaps with the capture thread (screenshot mode).
     event_queue.roundtrip(&mut sel)?;
 
-    // Screenshot mode: block on the capture result; the grab ran during setup.
-    // Record mode: nothing to join — the backdrop is built from a transparent
+    // Record mode: nothing to join; the backdrop is built from a transparent
     // base on the first configure.
     if let Some(handle) = capture_handle {
-        let image = handle
-            .join()
-            .map_err(|_| "capture worker panicked".to_string())??;
-        sel.target_name = image.preferred_output;
-        sel.captured_monitors = image.monitors;
-        sel.image = Some(image.image);
+        sel.adopt_capture(handle)?;
     }
-
-    let outputs: Vec<_> = if record_mode {
-        let output = if let Some(name) = &sel.target_name {
-            sel.output_state.outputs().find(|o| {
-                sel.output_state
-                    .info(o)
-                    .is_some_and(|i| i.name.as_ref() == Some(name))
-            })
-        } else {
-            sel.focused_output()
-        }
-        .ok_or("capture monitor disconnected")?;
-        sel.output_origin = sel
-            .output_state
-            .info(&output)
-            .map(|i| i.logical_position.unwrap_or(i.location));
-        sel.video = sel.output_state.info(&output).and_then(|i| video_size(&i));
-        // Both displays: the frozen frame comes cut to this monitor.
-        if replay.as_ref().is_some_and(|r| r.monitor().is_none()) {
-            sel.replay_output = sel.output_state.info(&output).and_then(|i| i.name);
-        }
-        vec![(output, (0, 0, 1, 1))]
+    let targets = if start.record_mode {
+        vec![sel.record_output(replay.as_ref())?]
     } else {
-        let regions: Vec<_> = sel
-            .captured_monitors
-            .iter()
-            .map(|m| (m.origin.0, m.origin.1, m.logical_size.0, m.logical_size.1))
-            .collect();
-        let (left, top, w, h) = desktop::bounds(&regions).ok_or("invalid desktop layout")?;
-        sel.surf_w = w;
-        sel.surf_h = h;
-        sel.output_origin = Some((left, top));
-        sel.captured_monitors
-            .iter()
-            .map(|m| {
-                let output = sel
-                    .output_state
-                    .outputs()
-                    .find(|o| {
-                        sel.output_state
-                            .info(o)
-                            .is_some_and(|i| i.name.as_ref() == Some(&m.name))
-                    })
-                    .ok_or("capture monitor disconnected")?;
-                Ok((
-                    output,
-                    (
-                        (i64::from(m.origin.0) - i64::from(left)) as u32,
-                        (i64::from(m.origin.1) - i64::from(top)) as u32,
-                        m.logical_size.0,
-                        m.logical_size.1,
-                    ),
-                ))
-            })
-            .collect::<Result<Vec<_>, &str>>()?
+        sel.capture_outputs()?
     };
     sel.chrome = chrome(
         font_handle.join().map_err(|_| "font worker panicked")?,
@@ -290,31 +164,7 @@ fn run_selector(
     if let Some(video) = sel.video {
         sel.set_video(video);
     }
-    for (output, viewport) in outputs {
-        let surface = sel.compositor.create_surface(&qh);
-        let layer = sel.layer_shell.create_layer_surface(
-            &qh,
-            surface,
-            Layer::Overlay,
-            Some("boltsnap-select"),
-            Some(&output),
-        );
-        layer.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
-        layer.set_size(0, 0);
-        layer.set_exclusive_zone(-1);
-        layer.set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
-        layer.commit();
-        sel.views.push(OutputView {
-            layer,
-            output,
-            viewport,
-            configured: false,
-            buffers: Vec::new(),
-            committed_generation: None,
-            frame_pending: false,
-            needs_redraw: true,
-        });
-    }
+    sel.open_views(targets);
     if !sel.target_layout_valid() {
         return Err("capture monitor layout changed during capture".into());
     }
@@ -325,55 +175,7 @@ fn run_selector(
         .insert(events.handle())
         .map_err(|e| format!("selector event source: {e}"))?;
     if let Some(target) = replay {
-        let (sender, receiver) =
-            calloop::channel::channel::<Option<super::replay::FrozenSelection>>();
-        events
-            .handle()
-            .insert_source(receiver, |event, _, sel| {
-                let calloop::channel::Event::Msg(frozen) = event else {
-                    return;
-                };
-                let failed = |sel: &mut Selector| {
-                    sel.clip = ClipState::Failed;
-                    sel.request_redraw();
-                };
-                let Some(mut frozen) = frozen else {
-                    return failed(sel);
-                };
-                if sel.replay_output.as_deref() != Some(frozen.output.as_str()) {
-                    return failed(sel);
-                }
-                sel.image = frozen.preview.take();
-                sel.base = Some(match sel.image.as_ref() {
-                    Some(image) => {
-                        render::base_pixmap_from_image(image, sel.surf_w.max(1), sel.surf_h.max(1))
-                    }
-                    None => return failed(sel),
-                });
-                sel.overlay = sel.base.as_ref().map(SceneCache::new);
-                for view in &mut sel.views {
-                    view.committed_generation = None;
-                    for buffer in &mut view.buffers {
-                        buffer.generation = None;
-                    }
-                }
-                let size = frozen.size();
-                sel.frozen = Some(frozen);
-                if sel.video != Some(size) {
-                    sel.set_video(size);
-                }
-                sel.clip = ClipState::Ready;
-                sel.clip_reported = false;
-                sel.request_redraw();
-            })
-            .map_err(|e| format!("replay preview source: {e}"))?;
-        let on = sel.replay_output.clone();
-        thread::spawn(move || {
-            let _ = sender.send(super::replay::FrozenSelection::prepare(
-                &target,
-                on.as_deref(),
-            ));
-        });
+        startup::watch_replay_preview(&events, target, sel.replay_output.clone())?;
     }
     while !sel.done {
         events.dispatch(None, &mut sel)?;
@@ -659,132 +461,6 @@ impl Selector {
         }
     }
 }
-
-impl OutputHandler for Selector {
-    fn output_state(&mut self) -> &mut OutputState {
-        &mut self.output_state
-    }
-    fn new_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {
-        if !self.record_mode && !self.views.is_empty() {
-            self.failure = Some("monitor connected during selection; retry capture".into());
-            self.done = true;
-        }
-    }
-    fn update_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {
-        if !self.target_layout_valid() {
-            self.failure = Some("capture monitor layout changed".into());
-            self.done = true;
-        }
-    }
-    fn output_destroyed(
-        &mut self,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-        output: wl_output::WlOutput,
-    ) {
-        if self.views.iter().any(|v| v.output == output) {
-            self.failure = Some("capture monitor disconnected".into());
-            self.done = true;
-        }
-    }
-}
-
-impl LayerShellHandler for Selector {
-    fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &LayerSurface) {
-        // Surface went away without a confirm = cancel.
-        self.done = true;
-    }
-    fn configure(
-        &mut self,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-        layer: &LayerSurface,
-        configure: LayerSurfaceConfigure,
-        _: u32,
-    ) {
-        if !self.target_layout_valid() {
-            self.failure = Some("capture monitor layout changed".into());
-            self.done = true;
-            return;
-        }
-        let Some(view) = self.views.iter_mut().find(|v| &v.layer == layer) else {
-            return;
-        };
-        let w = if configure.new_size.0 == 0 {
-            view.viewport.2
-        } else {
-            configure.new_size.0
-        };
-        let h = if configure.new_size.1 == 0 {
-            view.viewport.3
-        } else {
-            configure.new_size.1
-        };
-        if !self.record_mode && (w, h) != (view.viewport.2, view.viewport.3) {
-            self.failure = Some("capture monitor size changed".into());
-            self.done = true;
-            return;
-        }
-        if self.record_mode {
-            self.surf_w = w;
-            self.surf_h = h;
-            view.viewport = (0, 0, w, h);
-        }
-        view.configured = true;
-        if self.record_mode && self.video.is_none() {
-            // No mode from the compositor: the surface's own pixels.
-            self.set_video((w, h));
-        }
-        if self.views.iter().any(|v| !v.configured) {
-            return;
-        }
-        let (w, h) = (self.surf_w, self.surf_h);
-        if self
-            .base
-            .as_ref()
-            .is_none_or(|base| base.width() != w || base.height() != h)
-        {
-            self.base = Some(match self.image.as_ref() {
-                Some(img) => render::base_pixmap_from_image(img, w, h),
-                None => render::transparent_base(w, h),
-            });
-            self.overlay = self.base.as_ref().map(SceneCache::new);
-            for view in &mut self.views {
-                for slot in &mut view.buffers {
-                    slot.generation = None;
-                }
-                view.committed_generation = None;
-            }
-        }
-        if !self.configured {
-            super::timing::mark("selector_configured");
-        }
-        self.configured = true;
-        self.request_redraw();
-    }
-}
-
-impl ShmHandler for Selector {
-    fn shm_state(&mut self) -> &mut Shm {
-        &mut self.shm
-    }
-}
-
-impl ProvidesRegistryState for Selector {
-    fn registry(&mut self) -> &mut RegistryState {
-        &mut self.registry_state
-    }
-    registry_handlers![OutputState, SeatState];
-}
-
-delegate_compositor!(Selector);
-delegate_output!(Selector);
-delegate_shm!(Selector);
-delegate_seat!(Selector);
-delegate_keyboard!(Selector);
-delegate_pointer!(Selector);
-delegate_layer!(Selector);
-delegate_registry!(Selector);
 
 #[cfg(test)]
 mod shots;
