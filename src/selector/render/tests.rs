@@ -396,3 +396,50 @@ fn record_audio_button_has_distinct_on_and_off_rendering() {
     assert!(on.data().iter().any(|byte| *byte != 0));
     assert!(off.data().iter().any(|byte| *byte != 0));
 }
+
+/// The dimming tables paint exactly what tiny-skia's fill painted, for
+/// every premultiplied colour and alpha and over uneven thread bands, into
+/// both copies; the first `reset_regions`, which skips the copy, too.
+#[test]
+fn cached_overlay_dims_as_the_fill_did() {
+    let grid = {
+        let mut grid = Pixmap::new(256, 256).unwrap();
+        for (i, pixel) in grid
+            .data_mut()
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .enumerate()
+        {
+            let (c, a) = ((i % 256) as u8, (i / 256) as u8);
+            let c = c.min(a);
+            *pixel = [c, c / 2, a - c, a];
+        }
+        grid
+    };
+    let noise = {
+        let mut noise = Pixmap::new(333, 77).unwrap();
+        let mut x = 0x9e37_79b9u32;
+        for pixel in noise.data_mut().as_chunks_mut::<4>().0.iter_mut() {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            let [r, g, b, _] = x.to_le_bytes();
+            *pixel = [r, g, b, 255];
+        }
+        noise
+    };
+    for base in [grid, noise] {
+        let mut expected = base.clone();
+        dim_and_restore_with_style(&mut expected, None, SCREENSHOT_OVERLAY_STYLE);
+        let mut cache = CachedOverlay::new(&base);
+        assert_eq!(cache.dimmed.data(), expected.data());
+        assert_eq!(cache.frame().data(), expected.data());
+        let selection = Some((10.0, 5.0, 40.0, 30.0));
+        let mut reset = base.clone();
+        dim_and_restore(&mut reset, selection);
+        let (w, h) = (base.width(), base.height());
+        let frame = cache.reset_regions(&base, selection, &[(0, 0, w, h)]);
+        assert_eq!(frame.pixmap.data(), reset.data());
+    }
+}

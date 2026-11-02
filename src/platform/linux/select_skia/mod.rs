@@ -148,15 +148,19 @@ fn run_selector(
     event_queue.roundtrip(&mut sel)?;
 
     // Record mode: nothing to join; the backdrop is built from a transparent
-    // base on the first configure.
+    // base on the first configure. Screenshot mode: the overlays and their
+    // configure round trip run while the capture does.
     if let Some(handle) = capture_handle {
+        sel.open_early_views();
+        conn.flush()?;
         sel.adopt_capture(handle)?;
-    }
-    let targets = if start.record_mode {
-        vec![sel.record_output(replay.as_ref())?]
+        let targets = sel.capture_outputs()?;
+        sel.prepare_backdrop();
+        sel.adopt_views(targets);
     } else {
-        sel.capture_outputs()?
-    };
+        let target = sel.record_output(replay.as_ref())?;
+        sel.open_views(vec![target]);
+    }
     sel.chrome = chrome(
         font_handle.join().map_err(|_| "font worker panicked")?,
         sel.clip,
@@ -164,7 +168,6 @@ fn run_selector(
     if let Some(video) = sel.video {
         sel.set_video(video);
     }
-    sel.open_views(targets);
     if !sel.target_layout_valid() {
         return Err("capture monitor layout changed during capture".into());
     }

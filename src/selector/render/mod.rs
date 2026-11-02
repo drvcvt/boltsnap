@@ -70,19 +70,52 @@ pub struct CachedOverlay {
     dimmed: Pixmap,
     /// Drawn on at scale 1: the selector's buffer is in logical pixels.
     frame: Canvas,
+    /// `frame` still holds exactly `dimmed`: nothing was reset or drawn.
+    fresh: bool,
 }
 
 impl CachedOverlay {
+    /// `base` dimmed as `dim_and_restore_with_style` dims it without a
+    /// selection, into `dimmed` and `frame` in one pass over a few threads:
+    /// a 4K desktop is 33 MB to fill before the selector's first frame.
     pub fn new(base: &Pixmap) -> Self {
-        let mut dimmed = base.clone();
-        dim_and_restore_with_style(&mut dimmed, None, SCREENSHOT_OVERLAY_STYLE);
+        let (w, h) = (base.width(), base.height());
+        let mut dimmed = Pixmap::new(w, h).expect("pixmap alloc");
+        let mut frame = Pixmap::new(w, h).expect("pixmap alloc");
+        let (colour, alpha) = dim_tables(SCREENSHOT_OVERLAY_STYLE);
+        let row = w as usize * 4;
+        let threads = std::thread::available_parallelism().map_or(1, |n| n.get().min(4));
+        let band = (h as usize).div_ceil(threads).max(1) * row;
+        std::thread::scope(|scope| {
+            let bands = base
+                .data()
+                .chunks(band)
+                .zip(dimmed.data_mut().chunks_mut(band))
+                .zip(frame.data_mut().chunks_mut(band));
+            for ((src, dim), out) in bands {
+                scope.spawn(|| {
+                    let pixels = src.as_chunks::<4>().0.iter();
+                    let targets = dim.as_chunks_mut::<4>().0.iter_mut();
+                    for ((s, d), o) in pixels.zip(targets).zip(out.as_chunks_mut::<4>().0) {
+                        *d = [
+                            colour[s[0] as usize],
+                            colour[s[1] as usize],
+                            colour[s[2] as usize],
+                            alpha[s[3] as usize],
+                        ];
+                        *o = *d;
+                    }
+                });
+            }
+        });
         Self {
             frame: Canvas {
-                pixmap: dimmed.clone(),
+                pixmap: frame,
                 scale: 1.0,
                 origin: (0, 0),
             },
             dimmed,
+            fresh: true,
         }
     }
 
@@ -94,12 +127,15 @@ impl CachedOverlay {
     ) -> &mut Canvas {
         let selected = selection_bounds(sel, base.width(), base.height());
         let stride = base.width() as usize * 4;
+        let dimmed = !std::mem::take(&mut self.fresh);
         for &(x0, y0, x1, y1) in regions {
             for y in y0..y1 {
                 let start = y as usize * stride + x0 as usize * 4;
                 let end = y as usize * stride + x1 as usize * 4;
-                self.frame.pixmap.data_mut()[start..end]
-                    .copy_from_slice(&self.dimmed.data()[start..end]);
+                if dimmed {
+                    self.frame.pixmap.data_mut()[start..end]
+                        .copy_from_slice(&self.dimmed.data()[start..end]);
+                }
                 if let Some((sx0, sy0, sx1, sy1)) = selected {
                     let (left, right) = (x0.max(sx0), x1.min(sx1));
                     if y >= sy0 && y < sy1 && left < right {
@@ -124,10 +160,12 @@ impl CachedOverlay {
             (base.width(), base.height()),
             (self.dimmed.width(), self.dimmed.height())
         );
-        self.frame
-            .pixmap
-            .data_mut()
-            .copy_from_slice(self.dimmed.data());
+        if !std::mem::take(&mut self.fresh) {
+            self.frame
+                .pixmap
+                .data_mut()
+                .copy_from_slice(self.dimmed.data());
+        }
         if let Some((x0, y0, x1, y1)) = selection_bounds(sel, base.width(), base.height()) {
             let stride = base.width() as usize * 4;
             let span = (x1 - x0) as usize * 4;
@@ -291,6 +329,30 @@ pub fn dim_and_restore_with_style(
             pm.fill_rect(rect, &selection_dim, Transform::identity(), None);
         }
     }
+}
+
+/// What `dim_and_restore_with_style` makes of each colour value and of each
+/// alpha value of a premultiplied pixel, without a selection. Source-over
+/// with black maps a colour channel by itself and the alpha by itself, so
+/// tiny-skia's own fill over the 256 pixels `(i, i, i, i)` gives both tables
+/// with its exact rounding.
+fn dim_tables(style: OverlayStyle) -> ([u8; 256], [u8; 256]) {
+    let mut probe = Pixmap::new(256, 1).expect("pixmap alloc");
+    for (i, pixel) in probe
+        .data_mut()
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .enumerate()
+    {
+        *pixel = [i as u8; 4];
+    }
+    dim_and_restore_with_style(&mut probe, None, style);
+    let pixels = probe.data().as_chunks::<4>().0;
+    (
+        std::array::from_fn(|i| pixels[i][0]),
+        std::array::from_fn(|i| pixels[i][3]),
+    )
 }
 
 /// Build a rounded-rectangle path (corner radius clamped to half the smaller side).

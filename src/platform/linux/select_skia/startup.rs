@@ -197,29 +197,74 @@ impl Selector {
     /// (unmapped until the first frame).
     pub(super) fn open_views(&mut self, targets: Vec<Target>) {
         for (output, viewport) in targets {
-            let surface = self.compositor.create_surface(&self.qh);
-            let layer = self.layer_shell.create_layer_surface(
-                &self.qh,
-                surface,
-                Layer::Overlay,
-                Some("boltsnap-select"),
-                Some(&output),
-            );
-            layer.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
-            layer.set_size(0, 0);
-            layer.set_exclusive_zone(-1);
-            layer.set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
-            layer.commit();
-            self.views.push(OutputView {
-                layer,
-                output,
-                viewport,
-                configured: false,
-                buffers: Vec::new(),
-                committed_generation: None,
-                frame_pending: false,
-                needs_redraw: true,
-            });
+            let view = self.open_view(output, viewport);
+            self.views.push(view);
+        }
+    }
+
+    /// Screenshot mode, while the capture still runs: an overlay on every
+    /// output, so the compositor's configure is already waiting when the
+    /// frozen desktop is there. [`Self::adopt_views`] fits them to it.
+    pub(super) fn open_early_views(&mut self) {
+        let outputs: Vec<_> = self
+            .output_state
+            .outputs()
+            .map(|o| (o, (0, 0, 0, 0)))
+            .collect();
+        self.open_views(outputs);
+    }
+
+    /// The early overlays fitted to the captured monitors, in their order:
+    /// each takes its monitor's viewport, an output that was not captured
+    /// loses its overlay, a captured one without an overlay gets one.
+    pub(super) fn adopt_views(&mut self, targets: Vec<Target>) {
+        let mut early = std::mem::take(&mut self.views);
+        for (output, viewport) in targets {
+            let view = match early.iter().position(|view| view.output == output) {
+                Some(index) => OutputView {
+                    viewport,
+                    ..early.swap_remove(index)
+                },
+                None => self.open_view(output, viewport),
+            };
+            self.views.push(view);
+        }
+    }
+
+    /// The frozen desktop as the overlay's base and dimmed backdrop, built
+    /// before the event loop so the first configure can draw at once.
+    pub(super) fn prepare_backdrop(&mut self) {
+        let (w, h) = (self.surf_w, self.surf_h);
+        if let Some(image) = &self.image {
+            let base = render::base_pixmap_from_image(image, w, h);
+            self.overlay = Some(SceneCache::new(&base));
+            self.base = Some(base);
+        }
+    }
+
+    fn open_view(&self, output: wl_output::WlOutput, viewport: desktop::Viewport) -> OutputView {
+        let surface = self.compositor.create_surface(&self.qh);
+        let layer = self.layer_shell.create_layer_surface(
+            &self.qh,
+            surface,
+            Layer::Overlay,
+            Some("boltsnap-select"),
+            Some(&output),
+        );
+        layer.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
+        layer.set_size(0, 0);
+        layer.set_exclusive_zone(-1);
+        layer.set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
+        layer.commit();
+        OutputView {
+            layer,
+            output,
+            viewport,
+            configured: false,
+            buffers: Vec::new(),
+            committed_generation: None,
+            frame_pending: false,
+            needs_redraw: true,
         }
     }
 }
