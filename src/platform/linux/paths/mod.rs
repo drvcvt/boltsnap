@@ -123,11 +123,12 @@ pub fn home_dir() -> PathBuf {
 }
 
 pub fn config_dir() -> PathBuf {
-    if let Some(config) = xdg_base(env::var_os("XDG_CONFIG_HOME")) {
-        config.join("boltsnap")
-    } else {
-        home_dir().join(".config").join("boltsnap")
-    }
+    config_home().join("boltsnap")
+}
+
+/// `$XDG_CONFIG_HOME`, else `~/.config`.
+fn config_home() -> PathBuf {
+    xdg_base(env::var_os("XDG_CONFIG_HOME")).unwrap_or_else(|| home_dir().join(".config"))
 }
 
 /// An `XDG_*_HOME` value, which the spec says to ignore when it is empty or
@@ -137,7 +138,35 @@ fn xdg_base(value: Option<std::ffi::OsString>) -> Option<PathBuf> {
 }
 
 pub fn default_screenshot_dir() -> PathBuf {
-    home_dir().join("Bilder").join("boltsnap")
+    pictures_dir().join("boltsnap")
+}
+
+/// The user's pictures folder as xdg-user-dirs names it in
+/// `user-dirs.dirs` (`~/Bilder` on a German system), else `~/Pictures`.
+pub fn pictures_dir() -> PathBuf {
+    let home = home_dir();
+    fs::read_to_string(config_home().join("user-dirs.dirs"))
+        .ok()
+        .and_then(|text| pictures_dir_in(&text, &home))
+        .unwrap_or_else(|| home.join("Pictures"))
+}
+
+/// `XDG_PICTURES_DIR` from a `user-dirs.dirs` text: `"$HOME/…"` or an
+/// absolute path, the only two forms the file allows.
+fn pictures_dir_in(user_dirs: &str, home: &Path) -> Option<PathBuf> {
+    let value = user_dirs
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("XDG_PICTURES_DIR="))
+        .last()?;
+    let value = value.trim().trim_matches('"');
+    let path = match value.strip_prefix("$HOME") {
+        Some(rest) if rest.is_empty() || rest.starts_with('/') => {
+            home.join(rest.trim_start_matches('/'))
+        }
+        Some(_) => return None,
+        None => PathBuf::from(value),
+    };
+    path.is_absolute().then_some(path)
 }
 
 pub fn normalize_path(path: &Path) -> PathBuf {
@@ -151,10 +180,7 @@ pub fn normalize_path(path: &Path) -> PathBuf {
 }
 
 pub fn default_save_path() -> PathBuf {
-    let home = env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
-    home.join("Pictures")
+    pictures_dir()
         .join("Screenshots")
         .join(format!("boltsnap-{}.png", timestamp()))
 }

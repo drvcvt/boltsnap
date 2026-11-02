@@ -637,7 +637,8 @@ pub fn expand_path(raw: &str) -> PathBuf {
     PathBuf::from(out)
 }
 
-/// The shelf save directory: CLI flag > `$BOLTSNAP_SAVE_DIR` > config > `~/Bilder/boltsnap`.
+/// The shelf save directory: CLI flag > `$BOLTSNAP_SAVE_DIR` > config >
+/// `boltsnap` in the pictures folder (`paths::default_screenshot_dir`).
 pub fn resolve_save_dir(cli: Option<&Path>, cfg: &Config) -> PathBuf {
     if let Some(p) = cli {
         return p.to_path_buf();

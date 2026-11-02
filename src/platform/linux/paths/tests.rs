@@ -170,3 +170,31 @@ fn permanent_recording_names_are_sanitized_and_never_overwrite() {
     assert_eq!(bare, dir.join("boltsnap-2026-07-12_12-00-00"));
     let _ = fs::remove_dir_all(dir);
 }
+
+#[test]
+fn the_pictures_folder_comes_from_user_dirs() {
+    use std::path::{Path, PathBuf};
+    let home = Path::new("/home/u");
+    let at = |text: &str| super::pictures_dir_in(text, home);
+    let file = "# written by xdg-user-dirs-update\n\
+                XDG_DESKTOP_DIR=\"$HOME/Schreibtisch\"\n\
+                XDG_PICTURES_DIR=\"$HOME/Bilder\"\n";
+    assert_eq!(at(file), Some(PathBuf::from("/home/u/Bilder")));
+    assert_eq!(
+        at("XDG_PICTURES_DIR=\"/data/photos\""),
+        Some(PathBuf::from("/data/photos"))
+    );
+    assert_eq!(
+        at("XDG_PICTURES_DIR=$HOME/Pics"),
+        Some(PathBuf::from("/home/u/Pics"))
+    );
+    assert_eq!(
+        at("XDG_PICTURES_DIR=\"$HOME\""),
+        Some(PathBuf::from("/home/u"))
+    );
+    // Commented out, missing, relative or another variable: not set.
+    assert_eq!(at("# XDG_PICTURES_DIR=\"$HOME/Bilder\""), None);
+    assert_eq!(at("XDG_MUSIC_DIR=\"$HOME/Musik\""), None);
+    assert_eq!(at("XDG_PICTURES_DIR=\"Bilder\""), None);
+    assert_eq!(at("XDG_PICTURES_DIR=\"$HOMEX/Bilder\""), None);
+}

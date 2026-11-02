@@ -5,8 +5,9 @@ Create `~/.config/boltsnap/config.toml` on Linux or
 
 ```toml
 # Directory where the shelf Save button writes timestamped PNGs.
-# Default: ~/Bilder/boltsnap
-save_dir = "~/Bilder/boltsnap"
+# Default: boltsnap in your pictures folder (XDG_PICTURES_DIR from
+# ~/.config/user-dirs.dirs, else ~/Pictures), e.g. ~/Pictures/boltsnap
+save_dir = "~/Pictures/boltsnap"
 ```
 
 Two more top-level keys shape a capture (Linux, Wayland):
