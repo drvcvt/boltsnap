@@ -63,6 +63,14 @@ configured save directory.
 
 ## Settings window
 
+<p align="center">
+  <img src="../../assets/screenshots/settings-shelf.png" alt="The Shelf page of the settings window: two cards to try out at their real size, card size, count, corner and the cards' look" width="640">
+</p>
+
+<p align="center">
+  <img src="../../assets/screenshots/settings-recording.png" alt="The Recording page: display, frame rate, codec, cursor, audio and where recordings are saved" width="640">
+</p>
+
 `boltsnap settings` opens one window per session; a second call raises it.
 Each row writes its own key to `config.toml` through the daemon as you change
 it, so the shelf, the tray and the next recording follow at once; keys you did

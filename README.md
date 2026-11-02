@@ -9,11 +9,11 @@ all run inside Boltsnap, without grim, slurp or wl-copy.
 A full-desktop screenshot to PNG takes 29 ms on a two-monitor desktop, 20 to 28 times faster than grim, Wayshot or Flameshot.
 
 <p align="center">
-  <img src="assets/screenshots/settings-shelf.png" alt="The Shelf page of the settings window: two cards to try out at their real size, card size, count, corner and the cards' look" width="760">
+  <img src="assets/screenshots/selector.png" alt="The region selector over two windows: the screen dimmed outside a 760 by 430 selection, its size above it and handles on its edges" width="760">
 </p>
 
 <p align="center">
-  <img src="assets/screenshots/settings-recording.png" alt="The Recording page: display, frame rate, codec, cursor, audio and where recordings are saved" width="760">
+  <img src="assets/screenshots/shelf.png" alt="The shelf: three earlier screenshots stacked as cards, the newest hovered with its save and close buttons" width="298">
 </p>
 
 <p align="center">
