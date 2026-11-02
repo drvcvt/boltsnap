@@ -1,5 +1,10 @@
 name: Release
 
+# Builds a pushed `vX.Y.Z` tag (or, started by hand, the tag given) into a
+# DRAFT release; publishing stays a manual step. No third-party actions: only
+# GitHub's own checkout, pinned to a commit; Rust comes from the runner's
+# rustup. See docs/plans/release/2026-10-28-updater.md, "Sicherheitsmodell".
+
 on:
   push:
     tags:
@@ -7,20 +12,51 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag to release (e.g. v0.4.0)'
+        description: 'Existing tag to build into a draft release (e.g. v1.1.0)'
         required: true
 
-permissions:
-  contents: write
+permissions: {}
 
 jobs:
   linux-x86_64:
     name: Linux x86_64 (binary + .deb)
+    # 22.04 on purpose: the older glibc lets the binary run on more systems.
     runs-on: ubuntu-22.04
+    permissions:
+      contents: write
     env:
-      TAG_NAME: ${{ github.event.inputs.tag || github.ref_name }}
+      TAG_NAME: ${{ inputs.tag || github.ref_name }}
+      RUST_VERSION: 1.98.1
+      CARGO_DEB_VERSION: 3.8.0
     steps:
-      - uses: actions/checkout@v4
+      - name: Check the tag name
+        run: |
+          set -euo pipefail
+          if ! printf '%s\n' "$TAG_NAME" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::tag '$TAG_NAME' is not vX.Y.Z"
+            exit 1
+          fi
+
+      # actions/checkout v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: refs/tags/${{ env.TAG_NAME }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check the tag is on main and matches Cargo.toml
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "::error::$TAG_NAME is not on main"
+            exit 1
+          fi
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          if [ "v$version" != "$TAG_NAME" ]; then
+            echo "::error::Cargo.toml says $version, the tag says $TAG_NAME"
+            exit 1
+          fi
 
       - name: Install build dependencies
         run: |
@@ -33,9 +69,11 @@ jobs:
             libgl1-mesa-dev libegl1-mesa-dev libgbm-dev \
             libfontconfig1-dev
 
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
+      - name: Install Rust
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal
+          rustup default "$RUST_VERSION"
+          rustc --version
 
       - name: Cargo build (release)
         run: cargo build --release --locked
@@ -47,11 +85,9 @@ jobs:
         run: strip target/release/boltsnap
 
       - name: Stage binary tarball
-        id: stage
         run: |
           set -euo pipefail
-          TAG="${TAG_NAME}"
-          NAME="boltsnap-${TAG}-x86_64-linux"
+          NAME="boltsnap-${TAG_NAME}-x86_64-linux"
           mkdir -p "dist/${NAME}"
           install -Dm755 target/release/boltsnap "dist/${NAME}/boltsnap"
           install -Dm644 README.md             "dist/${NAME}/README.md"
@@ -59,14 +95,11 @@ jobs:
           install -Dm644 -t "dist/${NAME}/assets/linux" assets/linux/*
           tar -C dist -czvf "dist/${NAME}.tar.gz" "${NAME}"
           rm -rf "dist/${NAME}"
-          echo "tarball=dist/${NAME}.tar.gz" >> "$GITHUB_OUTPUT"
-
-      - name: Install cargo-deb
-        run: cargo install --locked cargo-deb
 
       - name: Build .deb
         run: |
           set -euo pipefail
+          cargo install --locked "cargo-deb@${CARGO_DEB_VERSION}"
           cargo deb --no-build --output dist/
           ls -la dist/
 
@@ -76,14 +109,12 @@ jobs:
           sha256sum *.tar.gz *.deb > SHA256SUMS
           cat SHA256SUMS
 
-      - name: Create / update GitHub release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ env.TAG_NAME }}
-          name: boltsnap ${{ env.TAG_NAME }}
-          generate_release_notes: true
-          fail_on_unmatched_files: true
-          files: |
-            dist/*.tar.gz
-            dist/*.deb
-            dist/SHA256SUMS
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG_NAME" --repo "$GITHUB_REPOSITORY" \
+            --draft --verify-tag --generate-notes \
+            --title "boltsnap $TAG_NAME" \
+            dist/*.tar.gz dist/*.deb dist/SHA256SUMS
