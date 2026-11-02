@@ -20,23 +20,19 @@ A full-desktop screenshot to PNG takes 29 ms on a two-monitor desktop, 20 to 28 
   <img src="assets/screenshots/recording-controls.png" alt="The recording controls while recording and while paused: Pause or Resume, Save to shelf, Save to disk, Discard, each with its key" width="510">
 </p>
 
-All three images are drawn by Boltsnap itself, without a window, with default
-settings.
-
 ## Features
 
-- **Screenshots** of a region, a window or the whole desktop. The region
-  selector freezes every monitor, works across monitor edges and, with Ctrl
-  held, snaps to edges in the picture and (on Hyprland) to windows.
-- **Shelf**: every screenshot and recording shows up as a card. Click to open,
-  drag into another app, right-click to copy, save or dismiss on hover.
-- **Screen recording** with pause and resume, saving to the shelf or to disk,
-  system and microphone audio, and an optional smoothed cursor.
-- **Replay clips** (experimental, Hyprland): the last seconds of the screen, or
-  a region of them, saved after the fact.
-- **Settings window** for the shelf, screenshots, recording and replay; every
-  change applies at once.
-- **Pipes**: `-o -` writes the PNG to stdout for any editor.
+- Region, window and full-desktop screenshots. The selector freezes all
+  monitors, spans monitor edges and, with Ctrl held, snaps to edges in the
+  picture and to windows on Hyprland.
+- A shelf of recent captures: click a card to open it, drag it into any app,
+  right-click to copy it.
+- Screen recording with pause and resume, system and microphone audio, and an
+  optional smoothed cursor.
+- Replay clips on Hyprland (experimental): save the last seconds of the screen,
+  or part of it, after the fact.
+- A settings window whose changes apply immediately.
+- `-o -` pipes the PNG into any editor.
 
 ## Speed
 
@@ -44,8 +40,8 @@ settings.
   <img src="assets/benchmark.svg" alt="Bar chart of the median time for a full-desktop screenshot to PNG: Boltsnap (main) 29 ms, Boltsnap 1.0.0 65 ms, Wayshot 1.6.0 594 ms, grim 1.5.0 720 ms, Flameshot 13.3.0 824 ms" width="680">
 </p>
 
-| Tool | Median | Compared to Boltsnap |
-|------|-------:|---------------------:|
+| Tool | Median | vs. Boltsnap |
+|------|-------:|-------------:|
 | Boltsnap (main) | 29.2 ms | 1.0x |
 | Boltsnap 1.0.0 | 65.2 ms | 2.2x |
 | Wayshot 1.6.0 | 593.6 ms | 20.3x |
@@ -56,11 +52,10 @@ Full-desktop capture to a PNG file on 3840 × 1080 (two 1080p monitors at
 200 Hz and 240 Hz), 20 runs each. Commands, machine and all timings:
 [`benchmarks/full-capture-2026-11-01.md`](benchmarks/full-capture-2026-11-01.md).
 
-Most of the gain comes from three things. The shelf daemon keeps its Wayland
-connection open, so a screenshot starts without connecting. Where the GPU
-driver allows it, each monitor is read back from the GPU through Vulkan in
-parallel instead of being copied by the compositor one after the other.
-Boltsnap's own PNG encoder then compresses one band of the image per CPU core.
+The shelf daemon keeps its Wayland connection open, so a screenshot starts
+without connecting. Where the GPU driver allows it, the monitors are read back
+through Vulkan in parallel instead of being copied by the compositor one after
+another, and the PNG encoder compresses one band of the image per CPU core.
 
 ## Install
 
