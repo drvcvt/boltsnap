@@ -60,97 +60,117 @@ pub(crate) fn capture_flow(args: &Args) -> DynResult<()> {
         return capture_to_stdout(mode, args.backend, args.instant);
     }
 
-    // A full-desktop PNG from the running daemon skips connecting to the
-    // compositor and handing the PNG over.
     #[cfg(target_os = "linux")]
-    if mode == CaptureMode::Full && args.backend.resolved()? == Backend::Wayland {
-        let copy_wish = config::Config::load().copy_to_clipboard();
-        let request = match decide_post_capture(args, Backend::Wayland, copy_wish) {
-            PostCapture::File { copy: false } => {
-                Some((Some(std::path::absolute(target_path(args))?), false))
-            }
-            PostCapture::Shelf { copy } => Some((None, copy)),
-            _ => None,
-        };
-        if let Some((output, copy)) = request
-            && crate::capture::full_in_daemon(output, copy)?
-        {
-            return Ok(());
-        }
+    if mode == CaptureMode::Full
+        && args.backend.resolved()? == Backend::Wayland
+        && full_from_daemon(args)?
+    {
+        return Ok(());
     }
 
     #[cfg(target_os = "linux")]
     if args.output.is_none() && !args.save && args.backend.resolved()? == Backend::Wayland {
-        let (resolved, capture_output, image) =
-            crate::capture::capture_image(mode, args.backend, args.instant, true)?;
-        let copy = matches!(
-            decide_post_capture(args, resolved, config::Config::load().copy_to_clipboard()),
-            PostCapture::Shelf { copy: true }
-        );
-        let image = image.into_rgb8();
-        // Measured desktop regressions keep the raw transport experimental.
-        if std::env::var("BOLTSNAP_RAW_TRANSFER").as_deref() == Ok("1")
-            && crate::platform::image_transfer::try_add(
-                &image,
-                mode.label(),
-                capture_output.clone(),
-                copy,
-            )?
-        {
-            println!(
-                "Boltsnap sent {} to shelf{}",
-                mode.label(),
-                if copy {
-                    " (clipboard helper started)"
-                } else {
-                    ""
-                }
-            );
-            return Ok(());
-        }
-        // Default PNG transport, also used after an older daemon closes the
-        // nonmutating raw offer. No image has been accepted on that path yet.
-        // The card thumbnail comes along so the shelf need not decode the PNG.
-        let thumbnail = crate::platform::timing::Span::new("card_thumbnail");
-        let card = crate::config::Config::load().shelf_prefs().card;
-        let thumb = crate::shelf::thumbnail::make_rgb_card_thumbnail(
-            &image::ImageBuffer::from_raw(image.width(), image.height(), image.as_raw().as_slice())
-                .expect("RGB view matches its image"),
-            card.w,
-            card.h,
-        );
-        drop(thumbnail);
-        let png = crate::capture::encode_png(&image)?;
-        if copy {
-            // The clipboard helper outlives this CLI. Keep its uniquely-owned
-            // source; last.png can be replaced by another concurrent capture.
-            let output = target_path(args);
-            if let Some(parent) = output.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            fs::write(&output, &png)?;
-            copy_temporary_capture(&output, resolved)?;
-        }
-        let last = crate::paths::publish_last_png(&png)?;
-        send_shelf_add(crate::ipc::Request::Add {
-            source: mode.label().into(),
-            png,
-            output: capture_output,
-            thumb: Some(crate::protocol::CardThumb {
-                width: thumb.width(),
-                height: thumb.height(),
-                rgba: thumb.into_raw(),
-            }),
-        })
-        .map_err(|error| format!("{error}; the screenshot is kept at {}", last.display()))?;
+        return wayland_to_shelf(args, mode);
+    }
+
+    capture_to_file(args, mode)
+}
+
+/// A full-desktop PNG from the running daemon skips connecting to the
+/// compositor and handing the PNG over. False: this sink or this daemon
+/// cannot, so the CLI captures itself.
+#[cfg(target_os = "linux")]
+fn full_from_daemon(args: &Args) -> DynResult<bool> {
+    let copy_wish = config::Config::load().copy_to_clipboard();
+    let (output, copy) = match decide_post_capture(args, Backend::Wayland, copy_wish) {
+        PostCapture::File { copy: false } => (Some(std::path::absolute(target_path(args))?), false),
+        PostCapture::Shelf { copy } => (None, copy),
+        _ => return Ok(false),
+    };
+    Ok(crate::capture::full_in_daemon(output, copy)?)
+}
+
+/// Wayland without `-o`/`--save`: the capture goes straight to the shelf.
+#[cfg(target_os = "linux")]
+fn wayland_to_shelf(args: &Args, mode: CaptureMode) -> DynResult<()> {
+    let (resolved, capture_output, image) =
+        crate::capture::capture_image(mode, args.backend, args.instant, true)?;
+    let copy = matches!(
+        decide_post_capture(args, resolved, config::Config::load().copy_to_clipboard()),
+        PostCapture::Shelf { copy: true }
+    );
+    let image = image.into_rgb8();
+    // Measured desktop regressions keep the raw transport experimental.
+    if std::env::var("BOLTSNAP_RAW_TRANSFER").as_deref() == Ok("1")
+        && crate::platform::image_transfer::try_add(
+            &image,
+            mode.label(),
+            capture_output.clone(),
+            copy,
+        )?
+    {
         println!(
             "Boltsnap sent {} to shelf{}",
             mode.label(),
-            if copy { " (copied)" } else { "" }
+            if copy {
+                " (clipboard helper started)"
+            } else {
+                ""
+            }
         );
         return Ok(());
     }
+    // Default PNG transport, also used after an older daemon closes the
+    // nonmutating raw offer. No image has been accepted on that path yet.
+    let thumb = card_thumb(&image);
+    let png = crate::capture::encode_png(&image)?;
+    if copy {
+        // The clipboard helper outlives this CLI. Keep its uniquely-owned
+        // source; last.png can be replaced by another concurrent capture.
+        let output = target_path(args);
+        if let Some(parent) = output.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(&output, &png)?;
+        copy_temporary_capture(&output, resolved)?;
+    }
+    let last = crate::paths::publish_last_png(&png)?;
+    send_shelf_add(crate::ipc::Request::Add {
+        source: mode.label().into(),
+        png,
+        output: capture_output,
+        thumb: Some(thumb),
+    })
+    .map_err(|error| format!("{error}; the screenshot is kept at {}", last.display()))?;
+    println!(
+        "Boltsnap sent {} to shelf{}",
+        mode.label(),
+        if copy { " (copied)" } else { "" }
+    );
+    Ok(())
+}
 
+/// The card thumbnail comes along so the shelf need not decode the PNG.
+#[cfg(target_os = "linux")]
+fn card_thumb(image: &image::RgbImage) -> crate::protocol::CardThumb {
+    let _timing = crate::platform::timing::Span::new("card_thumbnail");
+    let card = crate::config::Config::load().shelf_prefs().card;
+    let thumb = crate::shelf::thumbnail::make_rgb_card_thumbnail(
+        &image::ImageBuffer::from_raw(image.width(), image.height(), image.as_raw().as_slice())
+            .expect("RGB view matches its image"),
+        card.w,
+        card.h,
+    );
+    crate::protocol::CardThumb {
+        width: thumb.width(),
+        height: thumb.height(),
+        rgba: thumb.into_raw(),
+    }
+}
+
+/// Every other sink: the capture lands in a file first, then goes to the
+/// clipboard, the shelf or stays where `-o`/`--save` put it.
+fn capture_to_file(args: &Args, mode: CaptureMode) -> DynResult<()> {
     let output = target_path(args);
     let (resolved, capture_output) = capture(mode, &output, args.backend, args.instant)?;
     #[cfg(target_os = "windows")]
